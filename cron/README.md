@@ -1,0 +1,337 @@
+# Cron 定时任务说明
+
+## 架构概览
+
+```
+cron/
+├── _common.sh                      ← 公共库（环境初始化、日志、运行器）
+├── cron.hourly/
+│   └── run_hourly                  ← 盘中/收盘行情快照
+├── cron.workdayly/
+│   ├── run_fetch                   ← Phase 1: API 数据获取
+│   ├── run_kline_cache             ← Phase 2: K线缓存增量更新
+│   ├── run_analysis                ← Phase 3: 本地数据分析
+│   └── run_workdayly               ← 编排器：串行执行 Phase 1→2→3
+└── cron.monthly/
+    └── run_monthly                 ← 月度缓存清理
+```
+
+所有脚本共享 `_common.sh` 公共库，消除重复的环境初始化代码。每个脚本仅 10~15 行。
+
+---
+
+## 脚本一览
+
+| 脚本 | 频率 | Python 入口 | 说明 |
+|------|------|-------------|------|
+| `run_hourly` | 盘中/收盘 | `basic_data_daily_job.py` | 实时行情快照 |
+| `run_fetch` | 工作日 | `fetch_daily_job.py` | API 数据采集（行情+选股+资金流向） |
+| `run_kline_cache` | 工作日 | `kline_cache_daily_job.py` | K线缓存增量更新（~5000只股票） |
+| `run_analysis` | 工作日 | `analysis_daily_job.py` | 本地分析（GPT+指标+策略+回测） |
+| `run_workdayly` | 工作日 | — | 编排器：串行调用上述三个脚本 |
+| `run_monthly` | 每月1日 | — | 智能清理退市/除权缓存 |
+
+---
+
+## _common.sh 公共库
+
+每个脚本在运行前 source `_common.sh`，获得以下能力：
+
+| 函数 | 用途 |
+|------|------|
+| `init_env` | 设置 PATH/PYTHONPATH/编码、加载 `.env`、创建日志目录 |
+| `log_info` / `log_warn` / `log_error` | 带时间戳的分级日志（写入 `$LOG_FILE`） |
+| `elapsed_fmt` | 秒数格式化（`1h05m30s` / `3m22s` / `45s`） |
+| `check_trade_day` | 非交易日自动 `exit 0`（节假日、周末不执行） |
+| `run_job "标签" "脚本路径" [超时]` | 运行 Python 脚本，记录耗时和退出码 |
+| `run_sub "标签" "脚本路径"` | 运行 Shell 子脚本（用于 `run_workdayly` 编排） |
+| `stop_services_for_memory "原因"` | 停止 nginx + Quantia Web 服务，释放内存 |
+| `start_services_after_memory` | 恢复之前停止的服务 |
+
+### 脚本模板
+
+```bash
+#!/bin/bash
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/workdayly.log
+
+check_trade_day "任务名称"
+run_job "任务标签" "quantia/job/xxx_job.py"
+```
+
+Docker 版区别仅在前两行：
+
+```bash
+PROJECT_ROOT=/data/Quantia
+source /etc/cron/_common.sh
+```
+
+---
+
+## 每日流水线
+
+三阶段独立运行，互不阻塞：
+
+```
+  18:00          20:00              22:00          04:00(月初)
+    │              │                  │              │
+    ▼              ▼                  ▼              ▼
+┌─────────┐  ┌──────────────┐  ┌──────────┐  ┌──────────┐
+│run_fetch │→│run_kline_cache│→│run_analysis│  │run_monthly│
+│(API调用) │  │(缓存更新)     │  │(本地计算)  │  │(缓存清理) │
+│~5-15min  │  │~20-60min     │  │~10min     │  │           │
+└─────────┘  └──────────────┘  └──────────┘  └──────────┘
+     ↓
+ cn_job_status
+  (完成标记)─────→ kline_cache 前置检查
+```
+
+**阶段间依赖**：
+- `run_kline_cache` 通过 `cn_job_status` 表检查 `run_fetch` 是否已完成，未完成则自动跳过
+- `run_analysis` 无硬依赖，即使缓存未更新也能用历史数据运行
+- 每个阶段失败不影响后续阶段继续执行
+
+**`run_workdayly` 编排器**：适合单机一键运行，串行调用 `run_fetch → run_kline_cache → run_analysis`，等价于分别调度。
+
+---
+
+## Crontab 配置
+
+### 裸机部署（推荐拆分模式）
+
+```bash
+crontab -e
+
+# 假设项目在 /root/Quantia
+# ── 盘中行情快照 ──
+30 12 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
+18 15 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
+
+# ── 数据获取 + 凌晨重试 ──
+0  18 * * 1-5  flock -xn /tmp/quantia_fetch.lock    /root/Quantia/cron/cron.workdayly/run_fetch
+0  1  * * 2-6  flock -xn /tmp/quantia_fetch.lock    /root/Quantia/cron/cron.workdayly/run_fetch
+
+# ── K线缓存更新 + 凌晨重试 ──
+0  20 * * 1-5  flock -xn /tmp/quantia_kline.lock    /root/Quantia/cron/cron.workdayly/run_kline_cache
+30 1  * * 2-6  flock -xn /tmp/quantia_kline.lock    /root/Quantia/cron/cron.workdayly/run_kline_cache
+
+# ── 数据分析 + 凌晨重试 ──
+0  22 * * 1-5  flock -xn /tmp/quantia_analysis.lock /root/Quantia/cron/cron.workdayly/run_analysis
+30 2  * * 2-6  flock -xn /tmp/quantia_analysis.lock /root/Quantia/cron/cron.workdayly/run_analysis
+
+# ── 月度缓存清理 ──
+0  4  1 * *    /root/Quantia/cron/cron.monthly/run_monthly
+```
+
+> **flock 说明**：`-x` 排他锁 + `-n` 非阻塞，同类任务只能有一个在运行，后来者立即退出。
+> 获取/K线/分析使用**不同锁文件**，三者互不阻塞。
+
+### Docker 容器
+
+Docker 定时任务在 Dockerfile 中自动配置，时间表与裸机相同，脚本路径为 `/etc/cron.*`。
+新增 `_common.sh` 由 `COPY cron/_common.sh /etc/cron/_common.sh` 部署到容器中。
+
+---
+
+## 手动执行
+
+```bash
+# 执行每小时任务
+./cron/cron.hourly/run_hourly
+
+# 执行完整每日任务（fetch → kline_cache → analysis）
+./cron/cron.workdayly/run_workdayly
+
+# 仅执行数据获取
+./cron/cron.workdayly/run_fetch
+
+# 仅执行K线缓存增量更新
+./cron/cron.workdayly/run_kline_cache
+
+# 仅执行数据分析
+./cron/cron.workdayly/run_analysis
+
+# 月度清理（智能清理）
+./cron/cron.monthly/run_monthly
+
+# 月度清理（全量清除）
+./cron/cron.monthly/run_monthly --all
+```
+
+首次部署需设置可执行权限：
+
+```bash
+chmod +x cron/_common.sh cron/cron.hourly/* cron/cron.workdayly/* cron/cron.monthly/*
+```
+
+---
+
+## 日志输出
+
+日志写入 `quantia/log/` 目录：
+
+| 文件 | 来源 |
+|------|------|
+| `hourly.log` | `run_hourly` |
+| `workdayly.log` | `run_fetch` / `run_kline_cache` / `run_analysis` / `run_workdayly` |
+| `monthly.log` | `run_monthly` |
+
+日志格式示例：
+
+```
+[2026-01-15 18:00:02] [INFO]  ────── 数据获取 (fetch_daily_job) 开始 ──────
+[2026-01-15 18:12:35] [INFO]  ────── 数据获取 (fetch_daily_job) 完成 ✓ (12m33s) ──────
+[2026-01-15 20:00:01] [INFO]  ────── K线缓存增量更新 (kline_cache_daily_job) 开始 ──────
+[2026-01-15 20:45:18] [INFO]  ────── K线缓存增量更新 (kline_cache_daily_job) 完成 ✓ (45m17s) ──────
+[2026-01-15 22:00:01] [INFO]  ────── 数据分析 (analysis_daily_job) 开始 ──────
+[2026-01-15 22:08:44] [INFO]  ────── 数据分析 (analysis_daily_job) 完成 ✓ (8m43s) ──────
+```
+
+`run_workdayly` 编排模式下，额外输出阶段分隔符：
+
+```
+[2026-01-15 18:00:01] [INFO]  ============ 每日完整任务开始 ============
+[2026-01-15 18:00:01] [INFO]  ══════ Phase 1: 数据获取 开始 ══════
+[2026-01-15 18:00:02] [INFO]  ────── 数据获取 (fetch_daily_job) 开始 ──────
+...
+[2026-01-15 18:12:35] [INFO]  ────── 数据获取 (fetch_daily_job) 完成 ✓ (12m33s) ──────
+[2026-01-15 18:12:35] [INFO]  ══════ Phase 1: 数据获取 完成 ✓ (12m34s) ══════
+[2026-01-15 18:12:35] [INFO]  ══════ Phase 2: K线缓存更新 开始 ══════
+...
+[2026-01-15 19:58:10] [INFO]  ============ 每日完整任务结束 ✓ (全部成功, 1h58m09s) ============
+```
+
+---
+
+## 重试安全性（幂等性保证）
+
+所有任务均**可安全重试**，不会因重复执行导致数据冗余或资源浪费：
+
+### 防重复执行机制
+
+| 机制 | 层级 | 说明 |
+|------|------|------|
+| `flock -xn` | Shell | 排他锁+非阻塞，同类任务只能有一个实例 |
+| `check_trade_day()` | Shell | 非交易日自动跳过 |
+| `is_data_fresh()` | Python | 各表数据新鲜度检查，已有完整数据时跳过 |
+| `is_job_completed()` | Python | `run_fetch` 整体完成检查（`cn_job_status` 表） |
+| `_is_analysis_done()` | Python | 分析数据已存在（≥1000条）时自动跳过 |
+| `_check_fetch_completed()` | Python | `run_kline_cache` 前置检查：fetch 未完成则跳过 |
+
+### 数据写入幂等性
+
+| 操作 | 机制 | 安全 |
+|------|------|------|
+| DB 数据入库 | `DELETE WHERE date=X` → `INSERT` | ✅ 重跑覆盖旧数据 |
+| 并发写入 | `INSERT ... ON DUPLICATE KEY UPDATE` | ✅ 主键冲突自动更新 |
+| K线缓存更新 | 增量模式：只拉新数据 | ✅ 已有数据不重拉 |
+| 回测计算 | 只处理 `backtest IS NULL` 的记录 | ✅ 已回测的不重算 |
+
+---
+
+## 异常恢复
+
+### K线缓存
+
+- 增量逻辑：读取 `.meta` 最后日期 → 只从数据源拉取新增数据 → 合并写入
+- 缓存损坏（写入时崩溃）：下次读取自动检测 → 触发全量重拉
+- API 拉取失败：返回已有缓存数据，不覆盖写入
+
+### 各 Job 异常后重跑
+
+| Job | 重跑恢复 | 可补历史 | 说明 |
+|-----|---------|---------|------|
+| `fetch_daily_job` | ✅ | ✅ 增量 | 缓存机制，首次全量，后续补缺 |
+| `basic_data_daily_job` | ✅ | ❌ 仅当天 | 实时行情快照，不提供历史回查 |
+| `selection_data_daily_job` | ✅ | ❌ 仅当天 | 综合选股为实时快照 |
+| `basic_data_other_daily_job` | ✅ | ⚠️ 部分 | 龙虎榜/资金流为实时 |
+| `streaming_analysis_job` | ✅ | ✅ 可补跑 | 基于缓存计算，支持日期参数 |
+| `backtest_data_daily_job` | ✅ | ✅ 自动补 | 查询 NULL 字段自动补填 |
+
+### 补跑历史数据
+
+```bash
+cd /root/Quantia
+
+# 补跑单个日期
+python3 quantia/job/strategy_data_daily_job.py 2026-02-06
+
+# 补跑日期区间
+python3 quantia/job/strategy_data_daily_job.py 2026-02-01 2026-02-06
+
+# 补跑多个指定日期
+python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
+```
+
+---
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `QUANTIA_FORCE_FETCH` | — | 设为 `1` 强制执行数据获取（跳过新鲜度检查） |
+| `QUANTIA_FORCE_KLINE_CACHE` | — | 设为 `1` 强制执行K线缓存更新（跳过前置检查） |
+| `QUANTIA_FORCE_ANALYSIS` | — | 设为 `1` 强制执行数据分析（跳过已完成检查） |
+| `QUANTIA_FRESH_STOCK_SPOT` | 3000 | stock_spot 新鲜度阈值（行数） |
+| `QUANTIA_FRESH_ETF_SPOT` | 200 | etf_spot 新鲜度阈值（行数） |
+| `QUANTIA_FRESH_SELECTION` | 100 | selection 新鲜度阈值（行数） |
+| `QUANTIA_FRESH_FUND_FLOW` | 2000 | fund_flow 新鲜度阈值（行数） |
+| `HIST_DATA_DEFAULT_YEARS` | 10 (Docker: 3) | 历史K线默认获取年数 |
+| `QUANTIA_BATCH_SIZE` | 50 | 流式分析每批处理股票数 |
+| `QUANTIA_ANALYSIS_WORKERS` | 2 | 流式分析并发线程数 |
+| `QUANTIA_KLINE_CACHE_WORKERS` | 2 | K线缓存更新并发数 |
+| `QUANTIA_BACKTEST_OUTER_WORKERS` | 1 | 回测外层并发（按表） |
+| `QUANTIA_BACKTEST_INNER_WORKERS` | 2 | 回测内层并发（按股票） |
+| `QUANTIA_STOP_SERVICES` | nginx | 内存密集任务前停止的系统服务（空格分隔） |
+| `QUANTIA_NO_SERVICE_STOP` | 0 | 设为 `1` 禁用自动停止/恢复服务 |
+| `QUANTIA_SETTLEMENT_HOUR` | 18 | API 数据结算时间（小时） |
+
+可通过 `.env` 文件或系统环境变量设置，`_common.sh` 的 `init_env` 会自动加载 `.env` 文件。
+
+---
+
+## OOM 防护（低内存服务器）
+
+1.6GB 服务器同时运行 MySQL + nginx + Quantia Web + Python 分析任务时容易 OOM。
+`run_workdayly` 在 Phase 2/3（K线缓存 + 数据分析）前自动停止 nginx 和 Quantia Web 服务，
+完成后自动恢复。
+
+### 工作流程
+
+```
+Phase 1: 数据获取（低内存，服务照常运行）
+    ↓
+◆ 停止 nginx + Quantia Web（释放 ~200MB）
+    ↓
+Phase 2: K线缓存更新（内存密集）
+Phase 3: 数据分析（内存密集）
+    ↓
+◆ 恢复 nginx + Quantia Web
+```
+
+### 配置
+
+```bash
+# .env - 自定义需要停止的服务
+QUANTIA_STOP_SERVICES=nginx          # 默认只停 nginx
+
+# 如果不需要 OOM 防护（内存充足的机器）
+QUANTIA_NO_SERVICE_STOP=1
+```
+
+### 手动运行内存密集任务时
+
+如果单独运行 `run_kline_cache` 或 `run_analysis`（不通过 `run_workdayly`），
+需要手动停止/恢复服务，或在脚本中调用：
+
+```bash
+source cron/_common.sh && init_env
+stop_services_for_memory "手动K线缓存更新"
+bash cron/cron.workdayly/run_kline_cache
+start_services_after_memory
+```
+Python 端由 `quantia/lib/envconfig.py` 统一加载 `.env`。完整变量列表见项目根目录 `.env.example`。

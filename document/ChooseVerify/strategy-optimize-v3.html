@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>策略对比优化中心 — v3 修正版</title>
+<style>
+/* ═══ Element Plus 风格基础变量 ═══ */
+:root {
+  --bg:#f5f7fa;--card:#fff;--border:#e4e7ed;--border-l:#ebeef5;
+  --text:#303133;--text2:#606266;--text3:#909399;--ph:#c0c4cc;
+  --brand:#409eff;--brand-l:#ecf5ff;--brand-d:#337ecc;
+  /* A股色: 红涨绿跌 */
+  --rate-pos:#cf1322;--rate-pos-bg:#fff1f0;
+  --rate-neg:#389e0d;--rate-neg-bg:#f6ffed;
+  /* 风险类: 蓝=好 灰=差 (避免红绿歧义) */
+  --risk-good:#1890ff;--risk-good-bg:#e6f7ff;
+  --risk-bad:#8c8c8c;--risk-bad-bg:#fafafa;
+  /* 评分 */
+  --rank1:#cf1322;--rank2:#d46b08;--rank3:#096dd9;--rank-n:#bfbfbf;
+  --warn:#e6a23c;--warn-bg:#fdf6ec;
+  --r:4px;--sh:0 2px 12px rgba(0,0,0,.06);
+  /* 侧边栏匹配真实系统 */
+  --sidebar-bg:#304156;--sidebar-logo:#263445;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);font-size:13px;line-height:1.6}
+a{color:var(--brand);text-decoration:none}
+
+/* ═══ Layout: 匹配 layout/index.vue ═══ */
+.layout{display:flex;height:100vh;overflow:hidden}
+.sidebar{width:220px;background:var(--sidebar-bg);color:#bfcbd9;flex-shrink:0;display:flex;flex-direction:column;overflow:hidden}
+.sidebar-logo{height:50px;display:flex;align-items:center;justify-content:center;background:var(--sidebar-logo);gap:8px}
+.sidebar-logo .icon{color:var(--brand);font-size:20px}
+.sidebar-logo .title{color:#fff;font-size:16px;font-weight:600}
+.sidebar-menu{flex:1;overflow-y:auto;padding:6px 0}
+.menu-group{padding:8px 20px 4px;font-size:10px;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:1px}
+.menu-item{display:flex;align-items:center;gap:8px;padding:10px 20px;font-size:13px;color:#bfcbd9;cursor:pointer;transition:.2s;border-left:3px solid transparent}
+.menu-item:hover{background:rgba(255,255,255,.05);color:#fff}
+.menu-item.active{color:var(--brand);border-left-color:var(--brand);background:rgba(64,158,255,.08)}
+.menu-sub{padding-left:28px}
+.main-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.header{height:50px;background:#fff;border-bottom:1px solid #e6e6e6;display:flex;align-items:center;padding:0 20px;box-shadow:0 1px 4px rgba(0,21,41,.08);font-size:14px;color:var(--text2);gap:8px}
+.content{flex:1;overflow-y:auto;padding:20px}
+
+/* ═══ Cards ═══ */
+.card{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);margin-bottom:16px;border:1px solid var(--border-l)}
+.card-h{padding:14px 18px;border-bottom:1px solid var(--border-l);display:flex;align-items:center;justify-content:space-between}
+.card-h h3{font-size:14px;font-weight:600}
+.card-h .sub{font-size:11px;color:var(--text3)}
+.card-b{padding:18px}
+
+/* ═══ Tabs: 匹配 el-tabs ═══ */
+.el-tabs{border-bottom:2px solid var(--border-l);display:flex;gap:0;margin-bottom:20px;background:var(--card);padding:0 16px;border-radius:var(--r) var(--r) 0 0}
+.el-tab{padding:12px 20px;font-size:14px;cursor:pointer;color:var(--text2);border-bottom:2px solid transparent;margin-bottom:-2px;transition:.2s;font-weight:500}
+.el-tab:hover{color:var(--brand)}
+.el-tab.active{color:var(--brand);border-bottom-color:var(--brand)}
+.sub-tabs{display:flex;gap:0;margin-bottom:16px}
+.sub-tab{padding:8px 16px;font-size:12px;cursor:pointer;color:var(--text2);background:#fff;border:1px solid var(--border);transition:.2s}
+.sub-tab:first-child{border-radius:var(--r) 0 0 var(--r)}
+.sub-tab:last-child{border-radius:0 var(--r) var(--r) 0}
+.sub-tab:not(:first-child){border-left:0}
+.sub-tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+.sub-tab:hover:not(.active){background:var(--brand-l);color:var(--brand)}
+
+/* ═══ Forms: 匹配 el-form ═══ */
+.toolbar{padding:14px 18px;display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;background:var(--card);border-radius:var(--r);margin-bottom:16px;border:1px solid var(--border-l)}
+.fg{display:flex;flex-direction:column;gap:4px}
+.fl{font-size:12px;color:var(--text3);font-weight:500}
+.fi{border:1px solid #dcdfe6;border-radius:var(--r);padding:7px 12px;font-size:13px;outline:none;transition:.2s;min-width:120px;background:#fff}
+.fi:focus{border-color:var(--brand);box-shadow:0 0 0 2px rgba(64,158,255,.12)}
+select.fi{appearance:none;background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Cpath d='M2 3.5l3 3 3-3' fill='none' stroke='%23909399' stroke-width='1.5'/%3E%3C/svg%3E") right 8px center no-repeat;padding-right:24px}
+.btn{padding:8px 20px;border-radius:var(--r);font-size:13px;cursor:pointer;border:1px solid #dcdfe6;transition:.2s;font-weight:500;background:#fff;color:var(--text2)}
+.btn:hover{border-color:var(--brand);color:var(--brand)}
+.btn-p{background:var(--brand);color:#fff;border-color:var(--brand)}
+.btn-p:hover{background:var(--brand-d)}
+.btn-sm{padding:5px 12px;font-size:12px}
+.radio-group{display:inline-flex;gap:0}
+.radio-g{padding:7px 14px;border:1px solid #dcdfe6;font-size:12px;cursor:pointer;background:#fff;color:var(--text2)}
+.radio-g:first-child{border-radius:var(--r) 0 0 var(--r)}
+.radio-g:last-child{border-radius:0 var(--r) var(--r) 0}
+.radio-g:not(:first-child){border-left:0}
+.radio-g.a{background:var(--brand-l);color:var(--brand);border-color:var(--brand)}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:var(--r);font-size:12px;cursor:pointer;border:1px solid var(--border);background:#fff;color:var(--text2)}
+.chip.sel{background:var(--brand-l);color:var(--brand);border-color:var(--brand)}
+.chip .x{font-size:10px;opacity:.6}
+.chip-add{border-style:dashed;color:var(--ph)}
+
+/* ═══ Grid ═══ */
+.g{display:grid;gap:16px;margin-bottom:16px}
+.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:1fr 1fr 1fr}
+.g23{grid-template-columns:2fr 1fr}.g32{grid-template-columns:3fr 2fr}
+
+/* ═══ Table: 匹配 .cmp-table ═══ */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{background:#fafafa;font-weight:600;padding:10px 12px;border-bottom:2px solid var(--border);text-align:left;white-space:nowrap;color:var(--text2)}
+td{padding:8px 12px;border-bottom:1px solid #f0f0f0;color:var(--text)}
+tr:hover td{background:var(--brand-l)}
+.is-best{font-weight:700}
+.cat-row td{background:#fafafa;font-weight:600;font-size:11px;padding:6px 12px}
+.rank{display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;border-radius:var(--r);font-size:10px;font-weight:700;color:#fff}
+.r1{background:var(--rank1)}.r2{background:var(--rank2)}.r3{background:var(--rank3)}.rn{background:var(--rank-n)}
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:500}
+.t-tech{background:#e6f7ff;color:#096dd9}.t-pat{background:#fff7e6;color:#d46b08}.t-vol{background:#f6ffed;color:#389e0d}
+.text-pos{color:var(--rate-pos)}.text-neg{color:var(--rate-neg)}
+.text-good{color:var(--risk-good)}.text-bad{color:var(--risk-bad)}
+
+/* ═══ Stats ═══ */
+.stat{background:#fff;border-radius:var(--r);padding:16px;text-align:center;border:1px solid var(--border-l)}
+.stat .lb{font-size:10px;color:var(--text3);letter-spacing:.5px}
+.stat .vl{font-size:22px;font-weight:700;margin:4px 0}
+.stat .delta{font-size:11px}
+
+/* ═══ Charts ═══ */
+.chart{background:#fafbfc;border:1px dashed var(--border);border-radius:var(--r);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--text3);font-size:12px;position:relative}
+.chart .ic{font-size:28px;opacity:.3}
+.chart .spec{font-size:10px;color:var(--ph);text-align:center;max-width:400px;line-height:1.5}
+.chart .data-src{position:absolute;top:6px;right:8px;font-size:9px;color:var(--ph);background:#fff;padding:1px 6px;border-radius:2px;border:1px solid var(--border-l)}
+
+/* ═══ Badges ═══ */
+.badge{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600}
+.b-pos{background:var(--rate-neg-bg);color:var(--rate-neg)}
+.b-neg{background:var(--warn-bg);color:var(--warn)}
+.b-flat{background:#f5f5f5;color:#8c8c8c}
+.b-best{background:var(--risk-good-bg);color:var(--risk-good)}
+
+/* ═══ Sections ═══ */
+.sec-title{font-size:13px;font-weight:600;margin:20px 0 10px;padding-left:8px;border-left:3px solid var(--brand);color:var(--text)}
+.tip{font-size:10px;color:var(--ph);margin-top:8px}
+.panel{display:none}.panel.active{display:block}
+.subpanel{display:none}.subpanel.active{display:block}
+
+/* mini box-plot */
+.boxplot{display:inline-flex;align-items:center;height:14px;position:relative;min-width:80px}
+.boxplot .whisker{height:1px;background:#bfbfbf}
+.boxplot .box{height:10px;border-radius:2px;background:var(--brand-l);border:1px solid var(--brand);position:relative}
+.boxplot .median{position:absolute;top:0;bottom:0;width:2px;background:var(--brand)}
+
+/* ═══ Responsive ═══ */
+@media(max-width:1200px){.sidebar{width:64px}.sidebar .title,.menu-group,.menu-item span:not(.icon){display:none}.menu-item{justify-content:center;padding:12px}.g2,.g3,.g23,.g32{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="layout">
+<!-- ═══════ 侧边栏 (匹配 layout/Sidebar.vue) ═══════ -->
+<aside class="sidebar">
+  <div class="sidebar-logo">
+    <span class="icon">📈</span>
+    <span class="title">Quantia</span>
+  </div>
+  <div class="sidebar-menu">
+    <div class="menu-group">数据中心</div>
+    <div class="menu-item"><span>📊</span> <span>大盘走势</span></div>
+    <div class="menu-item"><span>📋</span> <span>股票数据</span></div>
+    <div class="menu-group">分析工具</div>
+    <div class="menu-item"><span>📈</span> <span>技术指标</span></div>
+    <div class="menu-item"><span>🔺</span> <span>K线形态</span></div>
+    <div class="menu-group">选股验证</div>
+    <div class="menu-item active"><span>⚖️</span> <span>策略对比</span></div>
+    <div class="menu-item menu-sub"><span>🎯</span> <span>买卖点优化</span></div>
+    <div class="menu-item menu-sub"><span>🧬</span> <span>策略融合</span></div>
+    <div class="menu-group">回测交易</div>
+    <div class="menu-item"><span>📉</span> <span>回测看板</span></div>
+    <div class="menu-item"><span>📝</span> <span>策略管理</span></div>
+    <div class="menu-item"><span>💰</span> <span>模拟交易</span></div>
+    <div class="menu-group">智能助手</div>
+    <div class="menu-item"><span>🤖</span> <span>AI 助手</span></div>
+  </div>
+</aside>
+
+<div class="main-wrap">
+<!-- ═══════ 顶栏 (匹配 layout/Navbar.vue) ═══════ -->
+<header class="header">
+  <span style="cursor:pointer;font-size:16px">☰</span>
+  <span style="color:var(--ph)">选股验证</span>
+  <span style="color:var(--ph)">/</span>
+  <span style="font-weight:500">策略对比</span>
+  <span style="flex:1"></span>
+  <span style="font-size:12px;color:var(--text3)">最后更新: 2026-05-14</span>
+</header>
+
+<!-- ═══════ 内容区 ═══════ -->
+<main class="content">
+
+<!-- ═══════ 主 Tab 导航 (匹配 el-tabs) ═══════ -->
+<div class="el-tabs">
+  <div class="el-tab active" onclick="swMain(this,0)">策略对比</div>
+  <div class="el-tab" onclick="swMain(this,1)">买卖点优化</div>
+  <div class="el-tab" onclick="swMain(this,2)">策略融合</div>
+</div>
+
+<!-- ══════════════════════════════════════════════ -->
+<!--  PAGE 0: 策略对比                             -->
+<!-- ══════════════════════════════════════════════ -->
+<div class="panel active" id="pg0">
+
+<!-- 工具栏 -->
+<div class="toolbar">
+  <div class="fg">
+    <span class="fl">对比策略 (2-5)</span>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <span class="chip sel">均线多头 <span class="x">✕</span></span>
+      <span class="chip sel">突破确认 <span class="x">✕</span></span>
+      <span class="chip sel">海龟交易 <span class="x">✕</span></span>
+      <span class="chip sel">趋势回调 <span class="x">✕</span></span>
+      <span class="chip chip-add">+ 添加</span>
+    </div>
+  </div>
+  <div class="fg">
+    <span class="fl">统计周期</span>
+    <div class="radio-group"><div class="radio-g">近1月</div><div class="radio-g a">近3月</div><div class="radio-g">近6月</div><div class="radio-g">近1年</div></div>
+  </div>
+  <div class="fg">
+    <span class="fl">基准指数</span>
+    <select class="fi"><option>沪深300</option><option>中证500</option><option>上证50</option></select>
+  </div>
+  <div class="fg"><button class="btn btn-p">开始对比</button></div>
+</div>
+
+<!-- ——— 指标矩阵 + 综合评分 (2:1 比例) ——— -->
+<div class="g g23">
+  <!-- 核心指标矩阵 -->
+  <div class="card">
+    <div class="card-h">
+      <h3>核心指标对比矩阵</h3>
+      <span class="sub">数据来源: cn_stock_backtest 表 (avg_rate_N) + 策略明细表 (rate_1..100)</span>
+    </div>
+    <div class="card-b" style="padding:0;overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th width="130">指标</th>
+            <th style="border-top:3px solid #1890ff">均线多头</th>
+            <th style="border-top:3px solid #cf1322">突破确认</th>
+            <th style="border-top:3px solid #52c41a">海龟交易</th>
+            <th style="border-top:3px solid #fa8c16">趋势回调</th>
+            <th width="50">最优</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- ── 收益 (红涨=好) ── -->
+          <tr class="cat-row"><td colspan="6" style="color:var(--brand)">收益指标</td></tr>
+          <tr>
+            <td>5日平均收益</td>
+            <td class="is-best text-pos">+3.52%</td><td>+2.88%</td><td>+2.15%</td><td>+1.85%</td>
+            <td><span class="rank r1">1</span></td>
+          </tr>
+          <tr>
+            <td>10日平均收益</td>
+            <td class="is-best text-pos">+5.12%</td><td>+4.35%</td><td>+3.88%</td><td>+3.22%</td>
+            <td><span class="rank r1">1</span></td>
+          </tr>
+          <tr>
+            <td>20日平均收益</td>
+            <td>+8.25%</td><td>+6.78%</td><td class="is-best text-pos">+9.52%</td><td>+5.92%</td>
+            <td><span class="rank r3">3</span></td>
+          </tr>
+          <!-- ── 风险 (蓝=好, 避免红绿歧义) ── -->
+          <tr class="cat-row"><td colspan="6" style="color:var(--risk-good)">风险指标 <span style="font-weight:400;font-size:10px">(蓝色=最优)</span></td></tr>
+          <tr>
+            <td>最大回撤</td>
+            <td>-12.5%</td><td class="is-best text-good">-8.2%</td><td>-18.6%</td><td>-10.8%</td>
+            <td><span class="rank r2">2</span></td>
+          </tr>
+          <tr>
+            <td>收益波动率 σ</td>
+            <td>4.52%</td><td class="is-best text-good">3.88%</td><td>6.15%</td><td>4.12%</td>
+            <td><span class="rank r2">2</span></td>
+          </tr>
+          <!-- ── 核心目标 (高亮行) ── -->
+          <tr class="cat-row"><td colspan="6" style="color:var(--rate-pos)">风险调整后收益 <span style="font-weight:400;font-size:10px">(核心优化目标)</span></td></tr>
+          <tr style="background:var(--risk-good-bg)">
+            <td style="font-weight:600">⭐ 夏普比率</td>
+            <td style="font-size:14px">2.35</td>
+            <td class="is-best text-pos" style="font-size:14px">2.68</td>
+            <td>1.52</td><td>1.88</td>
+            <td><span class="rank r2">2</span></td>
+          </tr>
+          <tr style="background:var(--risk-good-bg)">
+            <td style="font-weight:600">⭐ 索提诺比率</td>
+            <td>3.12</td><td class="is-best text-pos" style="font-size:14px">3.85</td><td>1.88</td><td>2.55</td>
+            <td><span class="rank r2">2</span></td>
+          </tr>
+          <tr>
+            <td>Calmar 比率</td>
+            <td>3.40</td><td class="is-best text-pos">4.29</td><td>2.62</td><td>2.65</td>
+            <td><span class="rank r2">2</span></td>
+          </tr>
+          <!-- ── 交易质量 ── -->
+          <tr class="cat-row"><td colspan="6" style="color:var(--warn)">交易质量</td></tr>
+          <tr>
+            <td>胜率</td>
+            <td class="is-best text-pos">62.3%</td><td>58.1%</td><td>45.2%</td><td>55.8%</td>
+            <td><span class="rank r1">1</span></td>
+          </tr>
+          <tr>
+            <td>盈亏比</td>
+            <td>1.85</td><td>2.12</td><td class="is-best text-pos">2.85</td><td>1.65</td>
+            <td><span class="rank r3">3</span></td>
+          </tr>
+          <tr>
+            <td>日均信号数</td>
+            <td>14.3</td><td>10.4</td><td>5.2</td><td>20.8</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="tip" style="padding:6px 12px">
+      avg_rate_N 来自 <code>cn_stock_backtest</code> 日聚合表；胜率/盈亏比来自策略明细表 rate_5 正负统计。
+    </div>
+  </div>
+
+  <!-- 综合评分 + 迷你雷达 -->
+  <div class="card">
+    <div class="card-h"><h3>综合评分</h3><span class="sub">加权: 夏普40% 收益30% 回撤20% 胜率10%</span></div>
+    <div class="card-b">
+      <!-- 迷你雷达 (缩略, 不独占半屏) -->
+      <div class="chart" style="height:160px;margin-bottom:14px">
+        <div class="ic">🕸</div>
+        <div>ECharts radar (radius:70, 4 策略叠加)</div>
+        <span class="data-src">前端计算归一化</span>
+      </div>
+      <!-- 排名 -->
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--risk-good-bg);border-radius:var(--r)">
+          <span class="rank r1" style="width:26px;height:26px;line-height:26px;font-size:12px">1</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">突破确认 <span class="tag t-pat">形态</span></div>
+            <div style="font-size:11px;color:var(--text3)">夏普2.68 · 回撤-8.2%</div>
+          </div>
+          <div style="font-size:20px;font-weight:700;color:var(--risk-good)">88.5</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--risk-bad-bg);border-radius:var(--r)">
+          <span class="rank r2" style="width:26px;height:26px;line-height:26px;font-size:12px">2</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">均线多头 <span class="tag t-tech">技术</span></div>
+            <div style="font-size:11px;color:var(--text3)">夏普2.35 · 回撤-12.5%</div>
+          </div>
+          <div style="font-size:20px;font-weight:700;color:var(--text2)">82.1</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--risk-bad-bg);border-radius:var(--r)">
+          <span class="rank r3" style="width:26px;height:26px;line-height:26px;font-size:12px">3</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">趋势回调 <span class="tag t-tech">技术</span></div>
+            <div style="font-size:11px;color:var(--text3)">夏普1.88 · 回撤-10.8%</div>
+          </div>
+          <div style="font-size:20px;font-weight:700;color:var(--text2)">72.4</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#f5f5f5;border-radius:var(--r)">
+          <span class="rank rn" style="width:26px;height:26px;line-height:26px;font-size:12px">4</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:13px">海龟交易 <span class="tag t-vol">量价</span></div>
+            <div style="font-size:11px;color:var(--text3)">夏普1.52 · 回撤-18.6%</div>
+          </div>
+          <div style="font-size:20px;font-weight:700;color:var(--text3)">58.8</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ——— 累计收益走势 ——— -->
+<div class="card">
+  <div class="card-h">
+    <h3>累计收益走势 & 回撤</h3>
+    <div class="radio-group"><div class="radio-g a">累计收益</div><div class="radio-g">日收益分布</div></div>
+  </div>
+  <div class="card-b">
+    <div class="chart" style="height:360px">
+      <div class="ic">📈</div>
+      <div style="font-weight:500">双面板: 累计收益率 + 水下回撤曲线</div>
+      <div class="spec">
+        上: 4 策略 line + 沪深300 基准虚线 | 阴影标注最大回撤区间<br>
+        下: drawdown % (负值越深=正在回撤) | 标注恢复天数<br>
+        tooltip: 同日所有策略收益 + 排名 + 超额收益
+      </div>
+      <span class="data-src">cn_stock_backtest_portfolio.result_json.nav[]</span>
+    </div>
+  </div>
+</div>
+
+<!-- ——— 信号衰减 + 市场环境 ——— -->
+<div class="g g2">
+  <div class="card">
+    <div class="card-h"><h3>信号衰减分析</h3><span class="sub">检测策略 Alpha 是否随时间衰减</span></div>
+    <div class="card-b">
+      <div class="chart" style="height:240px">
+        <div class="ic">📉</div>
+        <div>月度趋势: 胜率(line) + 收益(line) + 信号数(bar)</div>
+        <div class="spec">
+          X=月份 | 左Y=胜率/收益率(折线) | 右Y=信号数(柱状)<br>
+          线性回归趋势线: 斜率为负 → Alpha 衰减警告
+        </div>
+        <span class="data-src">cn_stock_backtest 按月 GROUP BY</span>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-h"><h3>市场环境适应性</h3><span class="sub">牛/熊/震荡市中的表现</span></div>
+    <div class="card-b" style="padding:0;overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>环境</th><th>天数</th><th>均线多头</th><th>突破确认</th><th>海龟</th><th>趋势回调</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>🟢 上涨</td><td>32</td>
+            <td class="is-best text-pos">+5.85%<br><span style="font-size:10px;color:var(--text3)">夏普3.52</span></td>
+            <td>+4.22%<br><span style="font-size:10px;color:var(--text3)">夏普3.05</span></td>
+            <td>+6.55%<br><span style="font-size:10px;color:var(--text3)">夏普2.12</span></td>
+            <td>+3.85%<br><span style="font-size:10px;color:var(--text3)">夏普2.55</span></td>
+          </tr>
+          <tr>
+            <td>🔴 下跌</td><td>18</td>
+            <td class="text-neg">-1.25%</td>
+            <td class="text-neg">-0.52%</td>
+            <td class="text-neg">-3.85%</td>
+            <td class="is-best text-pos">+0.85%</td>
+          </tr>
+          <tr>
+            <td>🟡 震荡</td><td>15</td>
+            <td>+1.52%</td>
+            <td class="is-best text-pos">+2.15%<br><span style="font-size:10px;color:var(--text3)">夏普2.85</span></td>
+            <td class="text-neg">-0.85%</td>
+            <td>+1.85%</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="tip" style="padding:4px 12px">
+        分类: MA20/MA60 交叉 + ATR 中位数 | 数据: load_benchmark_data() 日线计算
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /pg0 -->
+
+<!-- ══════════════════════════════════════════════ -->
+<!--  PAGE 1: 买卖点优化                           -->
+<!-- ══════════════════════════════════════════════ -->
+<div class="panel" id="pg1">
+
+<!-- 工具栏 -->
+<div class="toolbar">
+  <div class="fg">
+    <span class="fl">分析策略</span>
+    <select class="fi" style="width:160px"><option>均线多头 (keep_increasing)</option><option>突破确认 (breakout_confirm)</option><option>海龟交易 (turtle_trade)</option></select>
+  </div>
+  <div class="fg">
+    <span class="fl">统计周期</span>
+    <div class="radio-group"><div class="radio-g">近1月</div><div class="radio-g a">近3月</div><div class="radio-g">近6月</div></div>
+  </div>
+  <div class="fg"><button class="btn btn-p">分析</button></div>
+</div>
+
+<!-- Sub-Tabs -->
+<div class="sub-tabs">
+  <div class="sub-tab active" onclick="swSub(this,0)">持仓优化</div>
+  <div class="sub-tab" onclick="swSub(this,1)">信号诊断</div>
+  <div class="sub-tab" onclick="swSub(this,2)">止盈止损</div>
+  <div class="sub-tab" onclick="swSub(this,3)">风险控制</div>
+  <div class="sub-tab" onclick="swSub(this,4)">样本外验证</div>
+</div>
+
+<!-- ═══ Sub 0: 持仓优化 ═══ -->
+<div class="subpanel active" id="sub0">
+<div class="card">
+  <div class="card-h"><h3>不同持仓天数的风险收益特征</h3><span class="sub">共 856 个买入信号 · 策略: 均线多头</span></div>
+  <div class="card-b" style="padding:0;overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>持仓</th><th>平均收益</th><th>中位数</th><th>胜率</th><th>波动率 σ</th><th style="background:#e8f4fd">夏普 ▼</th><th>索提诺</th><th>盈亏比</th><th>分布 <span style="font-weight:400;font-size:10px">(P10/P25/P50/P75/P90)</span></th><th>结论</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>1日</b></td><td class="text-pos">+0.42%</td><td>+0.18%</td><td>56.8%</td><td>1.85%</td>
+          <td style="background:#f0f7ff">1.42</td><td>1.88</td><td>1.15</td>
+          <td>
+            <div class="boxplot" title="P10=-2.1 P25=-0.5 P50=0.2 P75=1.2 P90=2.8">
+              <div class="whisker" style="width:15px"></div>
+              <div class="box" style="width:28px"><div class="median" style="left:12px"></div></div>
+              <div class="whisker" style="width:20px"></div>
+            </div>
+          </td>
+          <td><span class="badge b-flat">收益过低</span></td>
+        </tr>
+        <tr>
+          <td><b>3日</b></td><td class="text-pos">+1.85%</td><td>+1.22%</td><td>60.2%</td><td>2.92%</td>
+          <td style="background:#f0f7ff">2.05</td><td>2.62</td><td>1.52</td>
+          <td>
+            <div class="boxplot" title="P10=-3.5 P25=-0.2 P50=1.2 P75=3.5 P90=6.2">
+              <div class="whisker" style="width:12px"></div>
+              <div class="box" style="width:32px"><div class="median" style="left:11px"></div></div>
+              <div class="whisker" style="width:22px"></div>
+            </div>
+          </td>
+          <td><span class="badge b-pos">高效区</span></td>
+        </tr>
+        <tr style="background:var(--risk-good-bg)">
+          <td><b>5日</b></td><td class="text-pos" style="font-weight:700">+3.52%</td><td>+2.85%</td><td style="font-weight:700">62.3%</td><td>3.55%</td>
+          <td style="background:#d6eaff;font-weight:700;font-size:14px;color:var(--risk-good)">2.35 ⭐</td><td>3.12</td><td>1.85</td>
+          <td>
+            <div class="boxplot" title="P10=-3.2 P25=0.5 P50=2.9 P75=5.8 P90=10.5">
+              <div class="whisker" style="width:10px"></div>
+              <div class="box" style="width:36px"><div class="median" style="left:14px"></div></div>
+              <div class="whisker" style="width:25px"></div>
+            </div>
+          </td>
+          <td><span class="badge b-best">⭐ 最优持仓期</span></td>
+        </tr>
+        <tr>
+          <td><b>10日</b></td><td class="text-pos">+5.12%</td><td>+3.88%</td><td>58.5%</td><td>5.20%</td>
+          <td style="background:#f0f7ff">2.12</td><td>2.55</td><td>1.68</td>
+          <td>
+            <div class="boxplot" title="P10=-6.5 P25=-0.8 P50=3.9 P75=9.2 P90=15.8">
+              <div class="whisker" style="width:8px"></div>
+              <div class="box" style="width:40px"><div class="median" style="left:16px"></div></div>
+              <div class="whisker" style="width:30px"></div>
+            </div>
+          </td>
+          <td><span class="badge b-flat">回撤增大</span></td>
+        </tr>
+        <tr>
+          <td><b>20日</b></td><td class="text-pos">+8.25%</td><td>+5.52%</td><td>55.2%</td><td>7.85%</td>
+          <td style="background:#f0f7ff">1.88</td><td>2.15</td><td>1.92</td>
+          <td>
+            <div class="boxplot" title="P10=-12.5 P25=-2.1 P50=5.5 P75=15.2 P90=22.8">
+              <div class="whisker" style="width:6px"></div>
+              <div class="box" style="width:44px"><div class="median" style="left:18px"></div></div>
+              <div class="whisker" style="width:35px"></div>
+            </div>
+          </td>
+          <td><span class="badge b-neg">夏普↓</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="tip" style="padding:4px 12px">
+    数据: cn_stock_strategy_keep_increasing 表 rate_N 列 | 夏普 = (avg - rf) / σ × √(252/N), rf=1.5%年化 | 箱线图 hover 查看百分位
+  </div>
+</div>
+
+<div class="g g2" style="margin-top:16px">
+  <div class="card">
+    <div class="card-h"><h3>持仓天数 vs 夏普比率</h3></div>
+    <div class="card-b">
+      <div class="chart" style="height:240px">
+        <div class="ic">📈</div>
+        <div>ECharts line: X=持仓天数(1-60) Y=夏普</div>
+        <div class="spec">markPoint 标注峰值(5日=2.35) | 灰色 areaStyle = 95% CI<br>markLine 标注当前默认持仓期</div>
+        <span class="data-src">rate_1..100 统计计算</span>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-h"><h3>持仓天数 vs 最大单笔亏损</h3></div>
+    <div class="card-b">
+      <div class="chart" style="height:240px">
+        <div class="ic">📊</div>
+        <div>ECharts bar+scatter: X=持仓天数 Y=回撤%</div>
+        <div class="spec">bar = P10(最差10%的亏损均值) | scatter = 各笔交易个别回撤<br>红色虚线 = -10% 可接受回撤阈值</div>
+        <span class="data-src">rate_N percentile_10</span>
+      </div>
+    </div>
+  </div>
+</div>
+</div><!-- /sub0 -->
+
+<!-- ═══ Sub 1: 信号诊断 ═══ -->
+<div class="subpanel" id="sub1">
+<div class="card">
+  <div class="card-h">
+    <h3>买入信号质量诊断</h3>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="fl">诊断指标:</span>
+      <select class="fi" style="width:140px" id="diagIndicator">
+        <option value="rsi_6">RSI(6)</option>
+        <option value="vol_ratio">成交量比</option>
+        <option value="macd">MACD</option>
+        <option value="cci">CCI</option>
+        <option value="wr_6">WR(6)</option>
+        <option value="atr">ATR</option>
+      </select>
+      <span class="fl">评估持仓:</span>
+      <select class="fi" style="width:80px"><option>5日</option><option>10日</option><option>20日</option></select>
+    </div>
+  </div>
+  <div class="card-b" style="padding:0;overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>RSI(6) 区间</th><th>信号数</th><th>占比</th><th>5日收益</th><th>胜率</th><th>夏普</th><th>P10 亏损</th><th>结论</th></tr>
+      </thead>
+      <tbody>
+        <tr style="background:var(--rate-neg-bg)">
+          <td>RSI &lt; 30 <span style="font-size:10px;color:var(--risk-good)">(超卖区)</span></td>
+          <td>125</td><td>14.6%</td>
+          <td class="is-best text-pos">+5.82%</td><td class="is-best text-pos">72.8%</td>
+          <td class="is-best text-pos">3.15</td><td>-3.2%</td>
+          <td><span class="badge b-best">⭐ 黄金区间</span></td>
+        </tr>
+        <tr>
+          <td>RSI 30-50</td>
+          <td>285</td><td>33.3%</td>
+          <td class="text-pos">+3.85%</td><td>63.5%</td><td>2.42</td><td>-5.5%</td>
+          <td><span class="badge b-pos">良好</span></td>
+        </tr>
+        <tr>
+          <td>RSI 50-70</td>
+          <td>312</td><td>36.4%</td>
+          <td class="text-pos">+2.85%</td><td>58.2%</td><td>1.88</td><td>-8.2%</td>
+          <td><span class="badge b-flat">一般</span></td>
+        </tr>
+        <tr style="background:var(--warn-bg)">
+          <td>RSI &gt; 70 <span style="font-size:10px;color:var(--rate-pos)">(超买区)</span></td>
+          <td>134</td><td>15.7%</td>
+          <td class="text-neg">-0.52%</td><td class="text-neg">38.1%</td>
+          <td style="color:var(--rate-neg)">-0.25</td><td>-15.8%</td>
+          <td><span class="badge b-neg">⚠ 建议过滤</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="tip" style="padding:4px 12px">
+    数据: JOIN cn_stock_strategy_keep_increasing (rate_5) × cn_stock_indicators (rsi_6) ON date+code
+  </div>
+</div>
+
+<div class="g g2" style="margin-top:16px">
+  <div class="card">
+    <div class="card-h"><h3>RSI(6) vs 5日收益 散点</h3></div>
+    <div class="card-b">
+      <div class="chart" style="height:250px">
+        <div class="ic">⊙</div>
+        <div>ECharts scatter: X=RSI(6) Y=rate_5</div>
+        <div class="spec">红点=盈利 绿点=亏损 | 回归线(虚线)<br>标注"过滤线 RSI=70" + 过滤后预期胜率</div>
+        <span class="data-src">JOIN indicators × strategy</span>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-h"><h3>各区间信号数 & 胜率</h3></div>
+    <div class="card-b">
+      <div class="chart" style="height:250px">
+        <div class="ic">📊</div>
+        <div>ECharts bar+line: X=区间 bar=信号数 line=胜率</div>
+        <div class="spec">左Y=信号数(bar) 右Y=胜率%(折线)<br>柱子颜色=该区间平均收益正负</div>
+        <span class="data-src">分桶聚合</span>
+      </div>
+    </div>
+  </div>
+</div>
+</div><!-- /sub1 -->
+
+<!-- ═══ Sub 2: 止盈止损 ═══ -->
+<div class="subpanel" id="sub2">
+<div class="card">
+  <div class="card-h"><h3>止损 × 止盈 二维扫描</h3><span class="sub">色阶=夏普比率 | 找出风险收益最优组合</span></div>
+  <div class="card-b">
+    <div class="chart" style="height:380px">
+      <div class="ic">🔥</div>
+      <div style="font-weight:500">ECharts heatmap — 发散色阶</div>
+      <div class="spec">
+        X=止盈%(3/5/8/10/15/不止盈) | Y=止损%(-2/-3/-5/-8/-10/不止损)<br>
+        色值=夏普比率 | 色阶: <span style="color:#3060cf">■</span>蓝(低) → <span style="color:#999">■</span>白(中) → <span style="color:#cf1322">■</span>红(高)<br>
+        ⭐标注最优组合 | 点击单元格 → el-dialog 弹窗展示:<br>
+        该组合的收益分布直方图 / 胜率 / 回撤 / 盈亏比 / 触发SL/TP/到期笔数
+      </div>
+      <span class="data-src">rate_1..20 逐日模拟 SL/TP 触发</span>
+    </div>
+    <div class="tip">
+      计算逻辑: 遍历每笔交易的 rate_1..rate_max_hold，第一个触达 SL/TP 的日期锁定收益。NumPy 向量化 ~1000 笔 × 36 组合 &lt; 0.5s。
+    </div>
+  </div>
+</div>
+</div><!-- /sub2 -->
+
+<!-- ═══ Sub 3: 风险控制 ═══ -->
+<div class="subpanel" id="sub3">
+<div class="g g2">
+  <div class="card">
+    <div class="card-h"><h3>回撤深度分析</h3></div>
+    <div class="card-b">
+      <div class="chart" style="height:260px">
+        <div class="ic">📉</div>
+        <div>水下曲线 (drawdown underwater plot)</div>
+        <div class="spec">Y=回撤%(负) X=日期 | 红色渐变 areaStyle<br>markArea 标注 Top-3 回撤区间(起止+深度+恢复天数)<br>红色虚线=-10%预警 -20%危险</div>
+        <span class="data-src">nav_series 计算</span>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-h"><h3>交易成本敏感性</h3></div>
+    <div class="card-b" style="padding:0;overflow-x:auto">
+      <table>
+        <thead><tr><th>往返成本</th><th>5日收益</th><th>胜率</th><th>夏普</th><th>影响</th></tr></thead>
+        <tbody>
+          <tr><td>0.10%</td><td class="text-pos">+3.62%</td><td>63.1%</td><td>2.42</td><td><span class="badge b-pos">+3.0%</span></td></tr>
+          <tr style="background:var(--risk-good-bg)"><td><b>0.20% (当前)</b></td><td class="text-pos">+3.52%</td><td>62.3%</td><td>2.35</td><td><span class="badge b-flat">基准</span></td></tr>
+          <tr><td>0.30%</td><td class="text-pos">+3.42%</td><td>61.5%</td><td>2.28</td><td><span class="badge b-neg">-3.0%</span></td></tr>
+          <tr><td>0.50%</td><td class="text-pos">+3.22%</td><td>59.8%</td><td>2.12</td><td><span class="badge b-neg">-9.8%</span></td></tr>
+        </tbody>
+      </table>
+      <div class="tip" style="padding:4px 12px">净收益 = rate_N - 往返成本 | 当前系统默认 ROUND_TRIP_COST_PCT=0.20%</div>
+    </div>
+  </div>
+</div>
+</div><!-- /sub3 -->
+
+<!-- ═══ Sub 4: 样本外验证 ═══ -->
+<div class="subpanel" id="sub4">
+<div class="card">
+  <div class="card-h"><h3>样本外验证 (防止过拟合)</h3><span class="sub">数据拆分: 前 70% 训练集 / 后 30% 测试集</span></div>
+  <div class="card-b" style="padding:0;overflow-x:auto">
+    <table>
+      <thead><tr><th>指标</th><th>训练集 (70%)<br><span style="font-weight:400;font-size:10px">2025-01 ~ 2025-09</span></th><th>测试集 (30%)<br><span style="font-weight:400;font-size:10px">2025-10 ~ 2025-12</span></th><th>衰减幅度</th><th>评估</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>5日平均收益</td><td class="text-pos">+3.85%</td><td class="text-pos">+2.92%</td>
+          <td>-24.2%</td><td><span class="badge b-neg">⚠ 中度衰减</span></td>
+        </tr>
+        <tr>
+          <td>胜率</td><td>64.5%</td><td>58.8%</td>
+          <td>-8.8%</td><td><span class="badge b-flat">轻度衰减</span></td>
+        </tr>
+        <tr style="background:var(--risk-good-bg)">
+          <td style="font-weight:600">夏普比率</td><td style="font-weight:700">2.52</td><td style="font-weight:700">2.05</td>
+          <td>-18.7%</td><td><span class="badge b-pos">✅ 可接受 (&lt;30%)</span></td>
+        </tr>
+        <tr>
+          <td>盈亏比</td><td>1.92</td><td>1.72</td>
+          <td>-10.4%</td><td><span class="badge b-flat">轻度衰减</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="padding:12px 18px;border-top:1px solid var(--border-l);font-size:12px;color:var(--text2)">
+    <b>判定规则:</b> 夏普衰减 &lt; 30% → ✅ 可接受 | 30%-50% → ⚠ 中度过拟合 | &gt; 50% → 🔴 严重过拟合<br>
+    <b>当前结论:</b> 夏普衰减 18.7% < 30%，策略在样本外依然有效，可进入实盘验证阶段。
+  </div>
+</div>
+</div><!-- /sub4 -->
+
+<!-- ── AI 优化建议 (固定底部, 不随 sub-tab 切换) ── -->
+<div class="sec-title" style="margin-top:24px">AI 优化建议</div>
+<div class="g g3">
+  <div class="card" style="border-left:3px solid var(--risk-good)">
+    <div class="card-b">
+      <div style="font-weight:600;margin-bottom:8px">🎯 买入过滤建议</div>
+      <div style="font-size:12px;line-height:2">
+        增加: <code style="background:#f5f5f5;padding:1px 6px;border-radius:2px">RSI(6) &lt; 70</code><br>
+        增加: <code style="background:#f5f5f5;padding:1px 6px;border-radius:2px">vol_ratio ≥ 1.0</code><br>
+        <span class="badge b-pos">胜率 62.3% → 68.2%</span>
+        <span class="badge b-best">夏普 2.35 → 2.88</span>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="border-left:3px solid var(--warn)">
+    <div class="card-b">
+      <div style="font-weight:600;margin-bottom:8px">🛡️ 止盈止损建议</div>
+      <div style="font-size:12px;line-height:2">
+        止损: <code style="background:#f5f5f5;padding:1px 6px;border-radius:2px">-5%</code> (基于回撤P90)<br>
+        止盈: <code style="background:#f5f5f5;padding:1px 6px;border-radius:2px">+5%</code> (矩阵最优)<br>
+        <span class="badge b-best">Calmar 3.40 → 5.15</span>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="border-left:3px solid var(--brand)">
+    <div class="card-b">
+      <div style="font-weight:600;margin-bottom:8px">⏱ 持仓周期建议</div>
+      <div style="font-size:12px;line-height:2">
+        最优: <code style="background:#f5f5f5;padding:1px 6px;border-radius:2px">5 个交易日</code><br>
+        高效区间: <code style="background:#f5f5f5;padding:1px 6px;border-radius:2px">3-7 日</code><br>
+        <span class="badge b-best">夏普 2.35 (已在峰值)</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /pg1 -->
+
+<!-- ══════════════════════════════════════════════ -->
+<!--  PAGE 2: 策略融合                             -->
+<!-- ══════════════════════════════════════════════ -->
+<div class="panel" id="pg2">
+
+<div class="card">
+  <div class="card-h"><h3>策略融合配置器</h3></div>
+  <div class="card-b">
+    <div class="g g3">
+      <!-- 模式 -->
+      <div style="background:#fafbfc;border-radius:var(--r);padding:14px">
+        <div style="font-weight:600;margin-bottom:8px">融合模式</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <label style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--risk-good-bg);border-radius:var(--r);border:1px solid #91d5ff;cursor:pointer">
+            <input type="radio" name="fmode" checked> <b>信号交集</b> <span style="font-size:10px;color:var(--text3)">多策略同时触发</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;padding:8px;background:#fff;border-radius:var(--r);border:1px solid var(--border);cursor:pointer">
+            <input type="radio" name="fmode"> <b>投票制</b> <span style="font-size:10px;color:var(--text3)">≥N个触发</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;padding:8px;background:#fff;border-radius:var(--r);border:1px solid var(--border);cursor:pointer">
+            <input type="radio" name="fmode"> <b>环境轮动</b> <span style="font-size:10px;color:var(--text3)">按牛/熊/震荡切换</span>
+          </label>
+        </div>
+      </div>
+      <!-- 策略 -->
+      <div style="background:#fafbfc;border-radius:var(--r);padding:14px">
+        <div style="font-weight:600;margin-bottom:8px">参与策略</div>
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:12px">
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" checked> 均线多头</label>
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" checked> 突破确认</label>
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" checked> 趋势回调</label>
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox"> 海龟交易</label>
+        </div>
+      </div>
+      <!-- 过滤 -->
+      <div style="background:#fafbfc;border-radius:var(--r);padding:14px">
+        <div style="font-weight:600;margin-bottom:8px">辅助过滤</div>
+        <div style="display:flex;flex-direction:column;gap:6px;font-size:12px">
+          <label><input type="checkbox" checked> RSI(6) &lt; 70</label>
+          <label><input type="checkbox" checked> vol_ratio ≥ 1.0</label>
+          <label><input type="checkbox"> 止损-5% / 止盈+5%</label>
+        </div>
+        <button class="btn btn-p" style="margin-top:14px;width:100%">运行融合回测</button>
+        <div class="tip">
+          数据: 各策略表 date+code 取交集/并集<br>
+          指标过滤: JOIN cn_stock_indicators
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- KPI -->
+<div class="g" style="grid-template-columns:repeat(5,1fr)">
+  <div class="stat" style="border-color:#91d5ff;background:var(--risk-good-bg)">
+    <div class="lb">融合策略</div><div class="vl" style="color:var(--risk-good)">3.25</div><div class="lb">夏普比率</div>
+  </div>
+  <div class="stat"><div class="lb">均线多头</div><div class="vl">2.35</div><div class="lb">夏普比率</div></div>
+  <div class="stat"><div class="lb">突破确认</div><div class="vl">2.68</div><div class="lb">夏普比率</div></div>
+  <div class="stat"><div class="lb">趋势回调</div><div class="vl">1.88</div><div class="lb">夏普比率</div></div>
+  <div class="stat"><div class="lb">提升幅度</div><div class="vl text-pos">+21.3%</div><div class="delta">vs 最优单策略</div></div>
+</div>
+
+<!-- 对比表 -->
+<div class="card">
+  <div class="card-b" style="padding:0;overflow-x:auto">
+    <table>
+      <thead>
+        <tr><th>指标</th><th style="background:var(--risk-good-bg);border-top:3px solid var(--risk-good)">🧬 融合</th><th>均线多头</th><th>突破确认</th><th>趋势回调</th><th>提升</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>5日收益</td><td style="background:#f0f7ff" class="is-best text-pos">+4.85%</td><td>+3.52%</td><td>+2.88%</td><td>+1.85%</td><td><span class="badge b-pos">+37.8%</span></td></tr>
+        <tr><td>胜率</td><td style="background:#f0f7ff" class="is-best text-pos">71.2%</td><td>62.3%</td><td>58.1%</td><td>55.8%</td><td><span class="badge b-pos">+14.3%</span></td></tr>
+        <tr><td>夏普</td><td style="background:#f0f7ff;font-size:14px" class="is-best text-pos">3.25</td><td>2.35</td><td>2.68</td><td>1.88</td><td><span class="badge b-pos">+21.3%</span></td></tr>
+        <tr><td>最大回撤</td><td style="background:#f0f7ff" class="is-best text-good">-5.8%</td><td>-12.5%</td><td>-8.2%</td><td>-10.8%</td><td><span class="badge b-best">-29.3%</span></td></tr>
+        <tr><td>Calmar</td><td style="background:#f0f7ff" class="is-best text-pos">6.85</td><td>3.40</td><td>4.29</td><td>2.65</td><td><span class="badge b-pos">+59.7%</span></td></tr>
+        <tr><td>日均信号</td><td style="background:#f0f7ff">6.2</td><td>14.3</td><td>10.4</td><td>20.8</td><td><span class="badge b-flat">信号更精</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 收益走势 -->
+<div class="card">
+  <div class="card-h"><h3>融合策略 vs 单策略收益走势</h3></div>
+  <div class="card-b">
+    <div class="chart" style="height:320px">
+      <div class="ic">📈</div>
+      <div style="font-weight:500">累计收益曲线 + 95% 置信区间</div>
+      <div class="spec">
+        融合策略=3px粗线 + 半透明CI区间(Bootstrap重抽样)<br>
+        各策略=1px细线 | 基准=灰色虚线<br>
+        标注: "信号交集在此处过滤了假信号"
+      </div>
+      <span class="data-src">融合后 rate_5 重新聚合</span>
+    </div>
+  </div>
+</div>
+
+</div><!-- /pg2 -->
+
+</main>
+</div>
+</div>
+
+<script>
+function swMain(el,idx){
+  document.querySelectorAll('.el-tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.panel').forEach((p,i)=>{p.classList.toggle('active',i===idx)});
+}
+function swSub(el,idx){
+  document.querySelectorAll('.sub-tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  var pg=document.getElementById('pg1');
+  pg.querySelectorAll('.subpanel').forEach((p,i)=>{p.classList.toggle('active',i===idx)});
+}
+</script>
+</body>
+</html>

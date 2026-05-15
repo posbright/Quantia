@@ -1,0 +1,30 @@
+#!/bin/bash
+# 月度缓存清理 — 智能清理退市/除权缓存，释放磁盘空间
+# 默认模式：智能清理（退市+除权+损坏）
+# --all 模式：删除所有缓存（下次运行将全量重新拉取）
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/monthly.log
+
+if [ "$1" = "--all" ]; then
+    log_info "开始全量清除缓存"
+    rm -rf "$PROJECT_ROOT/quantia/cache/hist"/*
+    log_info "已全量清除所有历史K线缓存"
+else
+    log_info "开始智能清理缓存"
+    python3 -c "
+import sys; sys.path.insert(0, '$PROJECT_ROOT')
+from quantia.core.stockfetch import clean_expired_cache
+clean_expired_cache()
+" >> "$LOG_FILE" 2>&1
+    log_info "缓存清理完成"
+fi
+
+# ── 月度财务数据更新 ──
+log_info "开始月度财务数据增量更新"
+cd "$PROJECT_ROOT"
+python3 -m quantia.job.stock_financial_data --incremental >> "$LOG_FILE" 2>&1
+log_info "月度财务数据更新完成"

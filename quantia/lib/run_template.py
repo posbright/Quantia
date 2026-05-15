@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+
+import logging
+import datetime
+import concurrent.futures
+import os
+import sys
+import time
+import quantia.lib.trade_time as trd
+import quantia.lib.envconfig as _cfg
+import quantia.lib.database as mdb
+
+__author__ = 'Quantia'
+__date__ = '2026/02/14'
+
+_BATCH_DATE_WORKERS = _cfg.get_int('QUANTIA_BATCH_DATE_WORKERS', 3)
+
+
+# 通用函数，获得日期参数，支持批量作业。
+def run_with_args(run_fun, *args):
+    # 单独执行时自动初始化日志（通过父脚本调用时已有handler，不会重复）
+    if not logging.getLogger().handlers:
+        try:
+            from quantia.lib.log_config import setup_logging
+            # 从调用脚本文件名推导日志名: strategy_data_daily_job → strategy
+            import inspect
+            caller = inspect.stack()
+            caller_file = caller[-1].filename if len(caller) > 1 else ''
+            base = os.path.basename(caller_file).replace('.py', '')
+            log_name = base.replace('_daily_job', '').replace('_data', '').replace('_job', '') or 'job'
+            setup_logging(log_name)
+        except Exception:
+            logging.basicConfig(
+                format='%(asctime)s [%(levelname)s] %(message)s',
+                level=logging.INFO,
+            )
+
+    if len(sys.argv) == 3:
+        # 区间作业 python xxx.py 2023-03-01 2023-03-21
+        tmp_year, tmp_month, tmp_day = sys.argv[1].split("-")
+        start_date = datetime.datetime(int(tmp_year), int(tmp_month), int(tmp_day)).date()
+        tmp_year, tmp_month, tmp_day = sys.argv[2].split("-")
+        end_date = datetime.datetime(int(tmp_year), int(tmp_month), int(tmp_day)).date()
+        run_date = start_date
+        try:
+            futures = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_BATCH_DATE_WORKERS) as executor:
+                while run_date <= end_date:
+                    if trd.is_trade_date(run_date):
+                        if run_fun.__name__.startswith('save_nph'):
+                            futures.append(executor.submit(run_fun, run_date, False, *args))
+                        else:
+                            futures.append(executor.submit(run_fun, run_date, *args))
+                        time.sleep(2)
+                    run_date += datetime.timedelta(days=1)
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logging.error(f"run_template批量任务异常：{run_fun}", exc_info=True)
+            # 线程池退出后清理残留 DB 连接，防止 MySQL Too many connections
+            mdb.close_thread_connection()
+        except Exception as e:
+            logging.error(f"run_template.run_with_args处理异常：{run_fun}{sys.argv}", exc_info=True)
+            sys.exit(1)
+    elif len(sys.argv) == 2:
+        # N个时间作业 python xxx.py 2023-03-01,2023-03-02
+        dates = sys.argv[1].split(',')
+        try:
+            futures = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_BATCH_DATE_WORKERS) as executor:
+                for date in dates:
+                    tmp_year, tmp_month, tmp_day = date.split("-")
+                    run_date = datetime.datetime(int(tmp_year), int(tmp_month), int(tmp_day)).date()
+                    if trd.is_trade_date(run_date):
+                        if run_fun.__name__.startswith('save_nph'):
+                            futures.append(executor.submit(run_fun, run_date, False, *args))
+                        else:
+                            futures.append(executor.submit(run_fun, run_date, *args))
+                        time.sleep(2)
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logging.error(f"run_template批量任务异常：{run_fun}", exc_info=True)
+            # 线程池退出后清理残留 DB 连接
+            mdb.close_thread_connection()
+        except Exception as e:
+            logging.error(f"run_template.run_with_args处理异常：{run_fun}{sys.argv}", exc_info=True)
+            sys.exit(1)
+    else:
+        # 当前时间作业 python xxx.py
+        try:
+            run_date, run_date_nph = trd.get_trade_date_last()
+            if run_fun.__name__.startswith('save_nph'):
+                run_fun(run_date_nph, False)
+            elif run_fun.__name__.startswith('save_after_close'):
+                run_fun(run_date, *args)
+            else:
+                run_fun(run_date_nph, *args)
+        except Exception as e:
+            logging.error(f"run_template.run_with_args处理异常：{run_fun}{sys.argv}", exc_info=True)
+            sys.exit(1)

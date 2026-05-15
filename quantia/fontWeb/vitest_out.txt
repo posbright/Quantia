@@ -1,0 +1,133 @@
+
+[7m[1m[36m RUN [39m[22m[27m [36mv1.6.1[39m [90mQ:/tools/Quantia/quantia/fontWeb[39m
+
+stderr | tests/router/index.test.ts > Router Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò > σ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░τ╗╝σÉêΘÇëΦéíΘí╡Θ¥ó
+[Vue Router warn]: Record with path "/selection/all" is either missing a "component(s)" or "children" property.
+
+stderr | tests/router/index.test.ts > Router Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò > σ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░ΦéíτÑ¿µò░µì«Θí╡Θ¥ó
+[Vue Router warn]: Record with path "/selection/all" is either missing a "component(s)" or "children" property.
+[Vue Router warn]: Record with path "/basic/spot" is either missing a "component(s)" or "children" property.
+
+stderr | tests/router/index.test.ts > Router Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò > σ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░µîçµáçΦ»ªµâàΘí╡Θ¥óσ╣╢Σ╝áΘÇÆσÅéµò░
+[Vue Router warn]: Record with path "/basic/spot" is either missing a "component(s)" or "children" property.
+[Vue Router warn]: Record with path "/indicator/detail" is either missing a "component(s)" or "children" property.
+
+stderr | tests/router/index.test.ts > Router Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò > σ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░τ¡ûτòÑΘÇëΦéíΘí╡Θ¥ó
+[Vue Router warn]: Record with path "/indicator/detail" is either missing a "component(s)" or "children" property.
+[Vue Router warn]: Record with path "/strategy/enter" is either missing a "component(s)" or "children" property.
+
+stderr | tests/router/index.test.ts > Router Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò > ΘÜÉΦùÅΦ╖»τö▒σ║öΦ»Ñµ£ë hidden µáçΦ«░
+[Vue Router warn]: Record with path "/strategy/enter" is either missing a "component(s)" or "children" property.
+[Vue Router warn]: Record with path "/indicator/detail" is either missing a "component(s)" or "children" property.
+
+ [32mΓ£ô[39m tests/router/index.test.ts[2m > [22mRouter Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò[2m > [22mσ║öΦ»Ñµ¡úτí«Θàìτ╜«ΘªûΘí╡Φ╖»τö▒
+ [32mΓ£ô[39m tests/router/index.test.ts[2m > [22mRouter Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò[2m > [22mσ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░τ╗╝σÉêΘÇëΦéíΘí╡Θ¥ó
+ [32mΓ£ô[39m tests/router/index.test.ts[2m > [22mRouter Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò[2m > [22mσ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░ΦéíτÑ¿µò░µì«Θí╡Θ¥ó
+ [32mΓ£ô[39m tests/router/index.test.ts[2m > [22mRouter Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò[2m > [22mσ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░µîçµáçΦ»ªµâàΘí╡Θ¥óσ╣╢Σ╝áΘÇÆσÅéµò░
+ [32mΓ£ô[39m tests/router/index.test.ts[2m > [22mRouter Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò[2m > [22mσ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░τ¡ûτòÑΘÇëΦéíΘí╡Θ¥ó
+ [32mΓ£ô[39m tests/router/index.test.ts[2m > [22mRouter Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò[2m > [22mΘÜÉΦùÅΦ╖»τö▒σ║öΦ»Ñµ£ë hidden µáçΦ«░
+ [32mΓ£ô[39m tests/mock/mockData.test.ts[2m > [22mMock Data µ╡ïΦ»òµò░µì«Θ¬îΦ»ü[2m > [22mmockStockSpotData ΦéíτÑ¿Φíîµâàµò░µì«[2m > [22mσ║öΦ»ÑσîàσÉ½σ┐àΦªüτÜäσ¡ùµ«╡
+ [32mΓ£ô[39m tests/mock/mockData.test.ts[2m > [22mMock Data µ╡ïΦ»òµò░µì«Θ¬îΦ»ü[2m > [22mmockStockSpotData ΦéíτÑ¿Φíîµâàµò░µì«[2m > [22mσ║öΦ»Ñµ£ëΦ╢│σñƒτÜäµ╡ïΦ»òµò░µì«
+ [32mΓ£ô[39m tests/mock/mockData.test.ts[2m > [22mMock Data µ╡ïΦ»òµò░µì«Θ¬îΦ»ü[2m > [22mmockStockSpotData ΦéíτÑ¿Φíîµâàµò░µì«[2m > [22mΦéíτÑ¿Σ╗úτáüµá╝σ╝Åσ║öΦ»Ñµ¡úτí«
+ [32mΓ£ô[39m tests/mock/mockData.test.ts[2m > [22mMock Data µ╡ïΦ»òµò░µì«Θ¬îΦ»ü[2m > [22mmockStockSpotData ΦéíτÑ¿Φíîµâàµò░µì«[2m > [22mµ╢¿Φ╖îσ╣àσ║öΦ»Ñσ£¿σÉêτÉåΦîâσ¢┤σåà
+ [32mΓ£ô[39m tests/mock/mockData.test.ts[2m > [22mMock Data µ╡ïΦ»òµò░µì«Θ¬îΦ»ü[2m > [22mmockStockSpotData ΦéíτÑ¿Φíîµâàµò░µì«[2m > [22mσ║öΦ»ÑσîàσÉ½σ╖▓σà│µ│¿σÆîµ£¬σà│µ│¿τÜäΦéíτÑ¿
+ [32mΓ£ô[39m tests/mock/mockData.test.ts[2m > [22mMock Data µ╡ïΦ»òµò░µì«Θ¬îΦ»ü[2m > [22mmockIndicatorsData µîçµáçµò░µì«[2m > [22mσ║öΦ»ÑσîàσÉ½µèÇµ£»µîçµáçσ¡ùµ«╡
+ [32mΓ£ô[39m tests/mock/mockData.test.ts[2m > [22mMock Data µ╡ïΦ»òµò░µì«Θ¬îΦ»ü[2m > [22mmockIndicatorsData µîçµáçµò░µì«[2m > [22mKDJ σÇ╝σ║öΦ»Ñσ£¿ 0-100 Φîâσ¢┤σåà∩╝êJσÇ╝σÅ»Φ╢àσç║∩╝ë
+ [32mΓ£ô[39m tests/mock/mockData.test.ts[2m > [22mMock Data µ╡ïΦ»òµò░µì«Θ¬îΦ»ü[2m > [22mmockIndicatorsData µîçµáçµò░µì«[2m > [22mRSI σÇ╝σ║öΦ»Ñσ£¿ 0-100 Φîâσ¢┤σåà
+ [32mΓ£ô[39m tests/mock/mockData.test.ts[2m > [22mMock Data µ╡ïΦ»òµò░µì«Θ¬îΦ»ü[2m > [22mmockKlinePatternData Kτ║┐σ╜óµÇüµò░µì«[2m > [22mσ║öΦ»ÑσîàσÉ½Kτ║┐σ╜óµÇüσ¡ùµ«╡
+ [32mΓ£ô[39m tests/mock/mockData.test.ts[2m > [22mMock Data µ╡ïΦ»òµò░µì«Θ¬îΦ»ü[2m > [22mmockKlinePatternData Kτ║┐σ╜óµÇüµò░µì«[2m > [22mσ╜óµÇüσÇ╝σ║öΦ»Ñµÿ» -100πÇü0 µêû 100
+DEPRECATION WARNING [legacy-js-api]: The legacy JS API is deprecated and will be removed in Dart Sass 2.0.0.
+
+More info: https://sass-lang.com/d/legacy-js-api
+
+ [32mΓ£ô[39m tests/stores/stock.test.ts[2m > [22mStock Store τè╢µÇüτ«íτÉå[2m > [22mσà│µ│¿σèƒΦâ╜[2m > [22mσ║öΦ»ÑΦâ╜µ╖╗σèáΦéíτÑ¿σê░σà│µ│¿σêùΦí¿
+ [32mΓ£ô[39m tests/stores/stock.test.ts[2m > [22mStock Store τè╢µÇüτ«íτÉå[2m > [22mσà│µ│¿σèƒΦâ╜[2m > [22mΣ╕ìσ║öΦ»ÑΘçìσñìµ╖╗σèáτ¢╕σÉîΦéíτÑ¿
+ [32mΓ£ô[39m tests/stores/stock.test.ts[2m > [22mStock Store τè╢µÇüτ«íτÉå[2m > [22mσà│µ│¿σèƒΦâ╜[2m > [22mσ║öΦ»ÑΦâ╜σÅûµ╢êσà│µ│¿ΦéíτÑ¿
+ [32mΓ£ô[39m tests/stores/stock.test.ts[2m > [22mStock Store τè╢µÇüτ«íτÉå[2m > [22mσà│µ│¿σèƒΦâ╜[2m > [22mσ║öΦ»Ñµ¡úτí«σêñµû¡ΦéíτÑ¿µÿ»σÉªσ╖▓σà│µ│¿
+ [32mΓ£ô[39m tests/stores/stock.test.ts[2m > [22mStock Store τè╢µÇüτ«íτÉå[2m > [22mµ£ÇΦ┐æµƒÑτ£ïσèƒΦâ╜[2m > [22mσ║öΦ»ÑΦâ╜µ╖╗σèáσê░µ£ÇΦ┐æµƒÑτ£ïσêùΦí¿
+ [32mΓ£ô[39m tests/stores/stock.test.ts[2m > [22mStock Store τè╢µÇüτ«íτÉå[2m > [22mµ£ÇΦ┐æµƒÑτ£ïσèƒΦâ╜[2m > [22mΘçìσñìµƒÑτ£ïσ║öΦ»Ñτº╗σè¿σê░σêùΦí¿Θí╢Θâ¿
+ [32mΓ£ô[39m tests/stores/stock.test.ts[2m > [22mStock Store τè╢µÇüτ«íτÉå[2m > [22mµ£ÇΦ┐æµƒÑτ£ïσèƒΦâ╜[2m > [22mµ£ÇΦ┐æµƒÑτ£ïσêùΦí¿σ║öΦ»ÑΘÖÉσê╢Σ╕║20µ¥í
+ [32mΓ£ô[39m tests/stores/stock.test.ts[2m > [22mStock Store τè╢µÇüτ«íτÉå[2m > [22mσ╜ôσëìµùÑµ£ƒ[2m > [22mσ║öΦ»ÑΦâ╜Φ«╛τ╜«σ╜ôσëìµùÑµ£ƒ
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatDate µùÑµ£ƒµá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝ÅσîûµùÑµ£ƒσ¡ùτ¼ªΣ╕▓
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatDate µùÑµ£ƒµá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝Åσîû Date σ»╣Φ▒í
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatNumber µò░σ¡ùµá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝Åσîûµò░σ¡ù
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatNumber µò░σ¡ùµá╝σ╝Åσîû[2m > [22mσ║öΦ»ÑσñäτÉå null σÆî undefined
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatPercent τÖ╛σêåµ»öµá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝Åσîûµ¡úµò░τÖ╛σêåµ»ö
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatPercent τÖ╛σêåµ»öµá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝ÅσîûΦ┤ƒµò░τÖ╛σêåµ»ö
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatPercent τÖ╛σêåµ»öµá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝ÅσîûΘ¢╢
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatPercent τÖ╛σêåµ»öµá╝σ╝Åσîû[2m > [22mσ║öΦ»ÑσñäτÉåµùáµòêσÇ╝
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatAmount ΘçæΘó¥µá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝ÅσîûΣ║┐τ║ºΘçæΘó¥
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatAmount ΘçæΘó¥µá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝ÅσîûΣ╕çτ║ºΘçæΘó¥
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatAmount ΘçæΘó¥µá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝Åσîûσ░ÅΘó¥
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatAmount ΘçæΘó¥µá╝σ╝Åσîû[2m > [22mσ║öΦ»ÑσñäτÉåµùáµòêσÇ╝
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatVolume µêÉΣ║ñΘçÅµá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝ÅσîûΣ║┐τ║ºµêÉΣ║ñΘçÅ
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatVolume µêÉΣ║ñΘçÅµá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝ÅσîûΣ╕çτ║ºµêÉΣ║ñΘçÅ
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mformatVolume µêÉΣ║ñΘçÅµá╝σ╝Åσîû[2m > [22mσ║öΦ»Ñµ¡úτí«µá╝σ╝Åσîûσ░ÅΘó¥µêÉΣ║ñΘçÅ
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mgetChangeClass µ╢¿Φ╖îµá╖σ╝Å[2m > [22mσ║öΦ»ÑΦ┐öσ¢₧µ¡úτí«τÜäµ╢¿Φ╖îτ▒╗σÉì
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22misTradeDay Σ║ñµÿôµùÑσêñµû¡[2m > [22mσ║öΦ»Ñµ¡úτí«σêñµû¡σ╖ÑΣ╜£µùÑ
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22misTradeDay Σ║ñµÿôµùÑσêñµû¡[2m > [22mσ║öΦ»Ñµ¡úτí«σêñµû¡σæ¿µ£½
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mgetLastTradeDay ΦÄ╖σÅûΣ╕èΣ╕ÇΣ║ñµÿôµùÑ[2m > [22mσ║öΦ»ÑΦ┐öσ¢₧Σ╕èΣ╕ÇΣ╕¬Σ║ñµÿôµùÑ
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mgetLastTradeDay ΦÄ╖σÅûΣ╕èΣ╕ÇΣ║ñµÿôµùÑ[2m > [22mσæ¿Σ╕Çσ║öΦ»ÑΦ┐öσ¢₧Σ╕èσæ¿Σ║ö
+DEPRECATION WARNING [legacy-js-api]: The legacy JS API is deprecated and will be removed in Dart Sass 2.0.0.
+
+More info: https://sass-lang.com/d/legacy-js-api
+
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mdebounce Θÿ▓µèûσç╜µò░[2m > [22mσ║öΦ»Ñσ£¿σ╗╢Φ┐ƒσÉÄµëºΦíî
+ [32mΓ£ô[39m tests/views/HomeView.test.ts[2m > [22mHomeView ΘªûΘí╡τ╗äΣ╗╢[2m > [22mσ║öΦ»Ñµ¡úτí«µ╕▓µƒôΘªûΘí╡µáçΘóÿ
+ [32mΓ£ô[39m tests/views/HomeView.test.ts[2m > [22mHomeView ΘªûΘí╡τ╗äΣ╗╢[2m > [22mσ║öΦ»Ñµÿ╛τñ║σèƒΦâ╜Σ╗ïτ╗ìσìíτëç
+ [32mΓ£ô[39m tests/views/HomeView.test.ts[2m > [22mHomeView ΘªûΘí╡τ╗äΣ╗╢[2m > [22mσ║öΦ»Ñµÿ╛τñ║τ╗ƒΦ«íµò░µì«
+ [32mΓ£ô[39m tests/views/HomeView.test.ts[2m > [22mHomeView ΘªûΘí╡τ╗äΣ╗╢[2m > [22mσ║öΦ»ÑσîàσÉ½σ┐½ΘÇƒσàÑσÅúµîëΘÆ«
+ [32mΓ£ô[39m tests/views/HomeView.test.ts[2m > [22mHomeView ΘªûΘí╡τ╗äΣ╗╢[2m > [22mσ┐½ΘÇƒσàÑσÅúσìíτëçσ║öΦ»Ñσ¡ÿσ£¿
+stderr | tests/views/BacktestCompare.test.ts > BacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó > σ║öΦ»Ñµ¡úτí«µ╕▓µƒôΘí╡Θ¥óµáçΘóÿ
+[Vue warn]: Plugin has already been applied to target app.
+
+stderr | tests/views/BacktestCompare.test.ts > BacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó > σ║öΦ»Ñµÿ╛τñ║σ»╣µ»öτ¡ûτòÑµò░ΘçÅ
+[Vue warn]: Plugin has already been applied to target app.
+
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó[2m > [22mσ║öΦ»Ñµ¡úτí«µ╕▓µƒôΘí╡Θ¥óµáçΘóÿ
+ [32mΓ£ô[39m tests/utils/index.test.ts[2m > [22mUtils σ╖Ñσà╖σç╜µò░µ╡ïΦ»ò[2m > [22mthrottle Φèéµ╡üσç╜µò░[2m > [22mσ║öΦ»ÑΘÖÉσê╢µëºΦíîΘóæτÄç
+stderr | tests/views/BacktestCompare.test.ts > BacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó > σ║öΦ»Ñµ╕▓µƒô tabs Θ¥óµ¥┐
+[Vue warn]: Plugin has already been applied to target app.
+
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó[2m > [22mσ║öΦ»Ñµÿ╛τñ║σ»╣µ»öτ¡ûτòÑµò░ΘçÅ
+stderr | tests/views/BacktestCompare.test.ts > BacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó > σ║öΦ»ÑΦ░âτö¿ getBacktestCompare API
+[Vue warn]: Plugin has already been applied to target app.
+
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó[2m > [22mσ║öΦ»Ñµ╕▓µƒô tabs Θ¥óµ¥┐
+stderr | tests/views/BacktestCompare.test.ts > BacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó > σ║öΦ»ÑσîàσÉ½σ¢╛Φí¿σ«╣σÖ¿
+[Vue warn]: Plugin has already been applied to target app.
+
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó[2m > [22mσ║öΦ»ÑΦ░âτö¿ getBacktestCompare API
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó[2m > [22mσ║öΦ»ÑσîàσÉ½σ¢╛Φí¿σ«╣σÖ¿
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare µîçµáçσ»╣µ»öΘÇ╗Φ╛æ[2m > [22mσ║öΦ»Ñµ¡úτí«Φºúµ₧Éσ»╣µ»öµò░µì«Σ╕¡τÜäµîçµáçσ¡ùµ«╡
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare µîçµáçσ»╣µ»öΘÇ╗Φ╛æ[2m > [22mσ║öΦ»Ñµ¡úτí«τ╗ƒΦ«íΣ╣░σàÑσÆîσìûσç║µ¼íµò░
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare µîçµáçσ»╣µ»öΘÇ╗Φ╛æ[2m > [22mΣ╕ñΣ╕¬τ¡ûτòÑτÜä NAV µò░µì«σ║öΦ»Ñσ»╣Θ╜ÉσÉêσ╣╢µùÑµ£ƒ
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare µîçµáçσ»╣µ»öΘÇ╗Φ╛æ[2m > [22mσ║öΦ»ÑΦ»åσê½µ£ÇΣ╝ÿµîçµáçσÇ╝
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare Σ╗úτáüσ»╣µ»ö[2m > [22mµ»ÅΣ╕¬τ¡ûτòÑσ║öΦ»Ñµ£ëτ¡ûτòÑΣ╗úτáü
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare Σ╗úτáüσ»╣µ»ö[2m > [22mτ¡ûτòÑΣ╗úτáüσ║öΦ»ÑσÅ»Σ╗ÑΣ┐«µö╣σÉÄΘçìµû░Φ┐ÉΦíî
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare Φ╖»τö▒Θàìτ╜«[2m > [22mµ»öΦ╛âΦ╖»τö▒σ║öΦ»Ñµ¡úτí«Θàìτ╜«
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts[2m > [22mBacktestCompare Φ╖»τö▒Θàìτ╜«[2m > [22mσ║öΦ»Ñµ¡úτí«Φºúµ₧ÉσñÜΣ╕¬IDµƒÑΦ»óσÅéµò░
+ [32mΓ£ô[39m tests/api/handlers.test.ts[2m > [22mAPI Mock Handlers µ╡ïΦ»ò[2m > [22mGET /quantia/api_data[2m > [22mσ║öΦ»ÑΦ┐öσ¢₧ΦéíτÑ¿µò░µì«
+ [32mΓ£ô[39m tests/api/handlers.test.ts[2m > [22mAPI Mock Handlers µ╡ïΦ»ò[2m > [22mGET /quantia/api_data[2m > [22mσ║öΦ»ÑΦ┐öσ¢₧µîçµáçµò░µì«
+ [32mΓ£ô[39m tests/api/handlers.test.ts[2m > [22mAPI Mock Handlers µ╡ïΦ»ò[2m > [22mGET /quantia/api_data[2m > [22mσ║öΦ»ÑΦ┐öσ¢₧ Kτ║┐σ╜óµÇüµò░µì«
+ [32mΓ£ô[39m tests/api/handlers.test.ts[2m > [22mAPI Mock Handlers µ╡ïΦ»ò[2m > [22mGET /quantia/api_data[2m > [22mσ║öΦ»Ñµö»µîüµùÑµ£ƒΦ┐çµ╗ñ
+ [32mΓ£ô[39m tests/api/handlers.test.ts[2m > [22mAPI Mock Handlers µ╡ïΦ»ò[2m > [22mGET /quantia/control/attention[2m > [22mσ║öΦ»Ñµö»µîüµ╖╗σèáσà│µ│¿
+ [32mΓ£ô[39m tests/api/handlers.test.ts[2m > [22mAPI Mock Handlers µ╡ïΦ»ò[2m > [22mGET /quantia/control/attention[2m > [22mσ║öΦ»Ñµö»µîüσÅûµ╢êσà│µ│¿
+[90mstdout[2m | tests/api/handlers.test.ts[2m > [22m[2mAPI Mock Handlers µ╡ïΦ»ò[2m > [22m[2mGET /quantia/control/attention[2m > [22m[2mσ║öΦ»Ñµö»µîüµ╖╗σèáσà│µ│¿[22m[39m
+[Mock] µ╖╗σèáσà│µ│¿: 000001
+[Mock] µ╖╗σèáσà│µ│¿: 000001
+
+[90mstdout[2m | tests/api/handlers.test.ts[2m > [22m[2mAPI Mock Handlers µ╡ïΦ»ò[2m > [22m[2mGET /quantia/control/attention[2m > [22m[2mσ║öΦ»Ñµö»µîüσÅûµ╢êσà│µ│¿[22m[39m
+[Mock] σÅûµ╢êσà│µ│¿: 000001
+[Mock] σÅûµ╢êσà│µ│¿: 000001
+
+ [32mΓ£ô[39m tests/views/StockData.test.ts[2m > [22mStockData ΦéíτÑ¿µò░µì«τ╗äΣ╗╢[2m > [22mσ║öΦ»Ñµ¡úτí«µ╕▓µƒôτ╗äΣ╗╢τ╗ôµ₧ä[33m 535[2mms[22m[39m
+ [32mΓ£ô[39m tests/views/StockData.test.ts[2m > [22mStockData ΦéíτÑ¿µò░µì«τ╗äΣ╗╢[2m > [22mσ║öΦ»Ñµÿ╛τñ║µùÑµ£ƒΘÇëµï⌐σÖ¿
+ [32mΓ£ô[39m tests/views/StockData.test.ts[2m > [22mStockData ΦéíτÑ¿µò░µì«τ╗äΣ╗╢[2m > [22mσ║öΦ»Ñµÿ╛τñ║µÉ£τ┤óΦ╛ôσàÑµíå
+ [32mΓ£ô[39m tests/views/StockData.test.ts[2m > [22mStockData ΦéíτÑ¿µò░µì«τ╗äΣ╗╢[2m > [22mσ║öΦ»Ñµÿ╛τñ║σê╖µû░σÆîσ»╝σç║µîëΘÆ«
+ [32mΓ£ô[39m tests/views/StockData.test.ts[2m > [22mStockData ΦéíτÑ¿µò░µì«τ╗äΣ╗╢[2m > [22mσ║öΦ»Ñµ¡úτí«µÿ╛τñ║σêåΘí╡τ╗äΣ╗╢
+
+[2m Test Files [22m [1m[32m8 passed[39m[22m[90m (8)[39m
+[2m      Tests [22m [1m[32m75 passed[39m[22m[90m (75)[39m
+[2m   Start at [22m 17:13:55
+[2m   Duration [22m 6.87s[2m (transform 1.33s, setup 23.21s, collect 2.90s, tests 2.51s, environment 10.77s, prepare 1.98s)[22m

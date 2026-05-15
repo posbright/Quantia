@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>因子实验室 — v5 动态因子调优</title>
+<style>
+:root {
+  --bg:#f5f7fa;--card:#fff;--border:#e4e7ed;--border-l:#ebeef5;
+  --text:#303133;--text2:#606266;--text3:#909399;--ph:#c0c4cc;
+  --brand:#409eff;--brand-l:#ecf5ff;--brand-d:#337ecc;
+  --rate-pos:#cf1322;--rate-pos-bg:#fff1f0;
+  --rate-neg:#389e0d;--rate-neg-bg:#f6ffed;
+  --risk-good:#1890ff;--risk-good-bg:#e6f7ff;
+  --warn:#e6a23c;--warn-bg:#fdf6ec;
+  --r:4px;--sh:0 2px 12px rgba(0,0,0,.06);
+  --sidebar-bg:#304156;--sidebar-logo:#263445;
+  --dim-tech:#1890ff;--dim-fund:#722ed1;--dim-flow:#13c2c2;--dim-sent:#eb2f96;--dim-custom:#fa8c16;
+  --ai:#6554c0;--ai-bg:#f3f0ff;--ai-border:#d3adf7;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);font-size:13px;line-height:1.6}
+a{color:var(--brand);text-decoration:none}
+code{font-family:'Consolas','Source Code Pro',monospace;font-size:12px;background:#f5f5f5;padding:1px 6px;border-radius:2px}
+
+/* ═══ Layout ═══ */
+.layout{display:flex;height:100vh;overflow:hidden}
+.sidebar{width:220px;background:var(--sidebar-bg);color:#bfcbd9;flex-shrink:0;display:flex;flex-direction:column;overflow:hidden}
+.sidebar-logo{height:50px;display:flex;align-items:center;justify-content:center;background:var(--sidebar-logo);gap:8px}
+.sidebar-logo .icon{color:var(--brand);font-size:20px}
+.sidebar-logo .title{color:#fff;font-size:16px;font-weight:600}
+.sidebar-menu{flex:1;overflow-y:auto;padding:6px 0}
+.menu-group{padding:8px 20px 4px;font-size:10px;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:1px}
+.menu-item{display:flex;align-items:center;gap:8px;padding:10px 20px;font-size:13px;color:#bfcbd9;cursor:pointer;transition:.2s;border-left:3px solid transparent}
+.menu-item:hover{background:rgba(255,255,255,.05);color:#fff}
+.menu-item.active{color:var(--brand);border-left-color:var(--brand);background:rgba(64,158,255,.08)}
+.menu-sub{padding-left:28px}
+.main-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.header{height:50px;background:#fff;border-bottom:1px solid #e6e6e6;display:flex;align-items:center;padding:0 20px;box-shadow:0 1px 4px rgba(0,21,41,.08);font-size:14px;color:var(--text2);gap:8px}
+.content{flex:1;overflow-y:auto;padding:16px}
+
+/* ═══ 三栏布局: 因子面板 | 配置区 | 结果区 ═══ */
+.lab-grid{display:grid;grid-template-columns:260px 1fr 340px;gap:12px;height:100%;min-height:0}
+.lab-col{display:flex;flex-direction:column;gap:12px;min-height:0;overflow-y:auto}
+.lab-col::-webkit-scrollbar{width:4px}
+.lab-col::-webkit-scrollbar-thumb{background:#ddd;border-radius:4px}
+
+/* ═══ Cards ═══ */
+.card{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);border:1px solid var(--border-l);flex-shrink:0}
+.card-h{padding:10px 14px;border-bottom:1px solid var(--border-l);display:flex;align-items:center;justify-content:space-between;gap:6px}
+.card-h h3{font-size:13px;font-weight:600}
+.card-h .sub{font-size:10px;color:var(--text3)}
+.card-b{padding:12px 14px}
+
+/* ═══ 因子面板 (左栏) ═══ */
+.factor-palette .search{width:100%;padding:7px 10px 7px 28px;border:1px solid #dcdfe6;border-radius:var(--r);font-size:12px;outline:none;background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24'%3E%3Cpath d='M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z' fill='%23c0c4cc'/%3E%3C/svg%3E") 8px center no-repeat}
+.factor-palette .search:focus{border-color:var(--brand)}
+.cat-label{font-size:10px;font-weight:600;color:var(--text3);padding:8px 0 4px;display:flex;align-items:center;gap:4px;text-transform:uppercase;letter-spacing:.5px}
+.cat-label .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.factor-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r);cursor:grab;transition:.15s;border:1px solid transparent;font-size:12px}
+.factor-item:hover{background:var(--brand-l);border-color:var(--brand)}
+.factor-item .f-icon{width:20px;height:20px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;flex-shrink:0}
+.factor-item .f-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.factor-item .f-add{width:20px;height:20px;border-radius:50%;background:#f0f0f0;display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--text3);cursor:pointer;flex-shrink:0;opacity:0;transition:.15s}
+.factor-item:hover .f-add{opacity:1}
+.factor-item.added{opacity:.45;pointer-events:none}
+.factor-item.added .f-add{display:none}
+
+/* ═══ 配置区 (中栏) ═══ */
+.active-factors{flex:1;min-height:0;overflow-y:auto}
+.af-empty{text-align:center;padding:40px 20px;color:var(--ph)}
+.af-empty .af-icon{font-size:48px;opacity:.3;margin-bottom:12px}
+
+.factor-card{background:#fff;border:1px solid var(--border-l);border-radius:var(--r);margin-bottom:10px;transition:.2s}
+.factor-card:hover{box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.factor-card.disabled{opacity:.5}
+.fc-head{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;user-select:none}
+.fc-head .fc-grip{color:var(--ph);cursor:grab;font-size:14px}
+.fc-head .fc-icon{width:22px;height:22px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;flex-shrink:0}
+.fc-head .fc-name{flex:1;font-weight:600;font-size:12px}
+.fc-head .fc-impact{font-size:11px;font-weight:600;margin-right:4px}
+.fc-toggle{width:32px;height:18px;border-radius:9px;background:#dcdfe6;position:relative;transition:.2s;cursor:pointer;flex-shrink:0}
+.fc-toggle::after{content:'';width:14px;height:14px;border-radius:50%;background:#fff;position:absolute;top:2px;left:2px;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.fc-toggle.on{background:var(--brand)}
+.fc-toggle.on::after{left:16px}
+.fc-remove{color:var(--ph);cursor:pointer;font-size:14px;padding:2px 4px;border-radius:var(--r)}
+.fc-remove:hover{color:var(--rate-pos);background:var(--rate-pos-bg)}
+.fc-body{padding:0 12px 12px;display:none}
+.fc-body.open{display:block}
+
+/* 因子参数编辑器 */
+.param-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.param-row .p-label{width:72px;font-size:11px;color:var(--text3);text-align:right;flex-shrink:0}
+.param-row .p-op{width:60px;padding:5px 6px;border:1px solid #dcdfe6;border-radius:var(--r);font-size:11px;background:#fff;outline:none}
+.param-row .p-val{width:80px;padding:5px 8px;border:1px solid #dcdfe6;border-radius:var(--r);font-size:12px;text-align:center;outline:none;font-weight:600}
+.param-row .p-val:focus{border-color:var(--brand);box-shadow:0 0 0 2px rgba(64,158,255,.12)}
+.param-row .p-unit{font-size:10px;color:var(--ph)}
+.param-row .p-slider{flex:1;accent-color:var(--brand)}
+.param-row .p-hint{font-size:10px;color:var(--ph);flex:1}
+
+/* 权重滑块 */
+.weight-row{display:flex;align-items:center;gap:8px;padding:4px 0}
+.weight-row .w-bar{flex:1;height:6px;background:#f0f0f0;border-radius:3px;position:relative;overflow:hidden}
+.weight-row .w-fill{height:100%;border-radius:3px;transition:width .2s}
+.weight-row .w-val{width:40px;font-size:12px;font-weight:600;text-align:right}
+
+/* ═══ 结果区 (右栏) ═══ */
+.result-kpi{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.kpi{background:#fff;border:1px solid var(--border-l);border-radius:var(--r);padding:10px;text-align:center}
+.kpi .k-label{font-size:10px;color:var(--text3)}
+.kpi .k-value{font-size:20px;font-weight:700;margin:2px 0}
+.kpi .k-delta{font-size:10px;font-weight:600}
+.kpi.highlight{border-color:#91d5ff;background:var(--risk-good-bg)}
+
+.result-mini-chart{background:#fafbfc;border:1px dashed var(--border);border-radius:var(--r);height:140px;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:11px;flex-direction:column;gap:4px;margin-bottom:12px}
+.result-mini-chart .rmc-icon{font-size:24px;opacity:.3}
+
+/* 变更日志 */
+.change-log{max-height:200px;overflow-y:auto}
+.cl-item{display:flex;align-items:flex-start;gap:6px;padding:6px 0;border-bottom:1px solid #f5f5f5;font-size:11px}
+.cl-item .cl-time{color:var(--ph);font-size:10px;white-space:nowrap;flex-shrink:0;width:42px}
+.cl-item .cl-badge{padding:1px 5px;border-radius:8px;font-size:9px;font-weight:600;flex-shrink:0}
+.cl-add{background:var(--risk-good-bg);color:var(--risk-good)}
+.cl-del{background:var(--rate-pos-bg);color:var(--rate-pos)}
+.cl-mod{background:var(--warn-bg);color:var(--warn)}
+.cl-ai{background:var(--ai-bg);color:var(--ai)}
+
+/* ═══ AI 面板 ═══ */
+.ai-panel{border:2px solid var(--ai-border);border-radius:var(--r);background:var(--ai-bg);flex-shrink:0}
+.ai-panel .card-h{background:linear-gradient(135deg,#f3f0ff,#e8e0ff);border-bottom-color:var(--ai-border)}
+.ai-panel .card-h h3{color:var(--ai)}
+.ai-msg{padding:10px 12px;font-size:12px;line-height:1.7;color:var(--text2)}
+.ai-msg b{color:var(--ai)}
+.ai-msg code{background:#fff;border:1px solid var(--ai-border);color:var(--ai)}
+.ai-actions{display:flex;gap:6px;padding:0 12px 10px;flex-wrap:wrap}
+.ai-btn{padding:5px 12px;border-radius:14px;font-size:11px;cursor:pointer;border:1px solid var(--ai-border);background:#fff;color:var(--ai);transition:.15s;font-weight:500}
+.ai-btn:hover{background:var(--ai);color:#fff;border-color:var(--ai)}
+.ai-btn.primary{background:var(--ai);color:#fff;border-color:var(--ai)}
+.ai-btn.primary:hover{background:#4c3db0}
+.ai-input-row{display:flex;gap:6px;padding:6px 12px 10px;align-items:center}
+.ai-input{flex:1;padding:6px 10px;border:1px solid var(--ai-border);border-radius:14px;font-size:12px;outline:none;background:#fff}
+.ai-input:focus{border-color:var(--ai);box-shadow:0 0 0 2px rgba(101,84,192,.12)}
+.ai-send{width:28px;height:28px;border-radius:50%;background:var(--ai);color:#fff;border:none;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center}
+
+/* ═══ 运行按钮 ═══ */
+.run-bar{background:#fff;border:1px solid var(--border-l);border-radius:var(--r);padding:10px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.run-btn{padding:8px 24px;border-radius:var(--r);font-size:13px;cursor:pointer;font-weight:600;border:none;transition:.2s;display:flex;align-items:center;gap:6px}
+.run-btn-primary{background:var(--brand);color:#fff}
+.run-btn-primary:hover{background:var(--brand-d)}
+.run-btn-ai{background:var(--ai);color:#fff}
+.run-btn-ai:hover{background:#4c3db0}
+.run-btn-outline{background:#fff;color:var(--text2);border:1px solid #dcdfe6}
+.run-btn-outline:hover{border-color:var(--brand);color:var(--brand)}
+
+/* ═══ Tags & Badges ═══ */
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:500}
+.t-tech{background:#e6f7ff;color:#096dd9}.t-fund{background:#f9f0ff;color:#722ed1}
+.t-flow{background:#e6fffb;color:#13c2c2}.t-sent{background:#fff0f6;color:#eb2f96}
+.t-custom{background:#fff7e6;color:#fa8c16}
+.badge{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600}
+.b-pos{background:var(--rate-neg-bg);color:var(--rate-neg)}
+.b-neg{background:var(--warn-bg);color:var(--warn)}
+.b-best{background:var(--risk-good-bg);color:var(--risk-good)}
+.b-flat{background:#f5f5f5;color:#8c8c8c}
+.text-pos{color:var(--rate-pos)}.text-neg{color:var(--rate-neg)}.text-good{color:var(--risk-good)}
+.tip{font-size:10px;color:var(--ph);margin-top:6px}
+
+/* ═══ 对比表 (小型) ═══ */
+table.sm{width:100%;border-collapse:collapse;font-size:11px}
+table.sm th{background:#fafafa;font-weight:600;padding:6px 8px;border-bottom:1px solid var(--border);text-align:left;color:var(--text3);font-size:10px}
+table.sm td{padding:5px 8px;border-bottom:1px solid #f5f5f5}
+table.sm tr:hover td{background:var(--brand-l)}
+table.sm .best{font-weight:700;color:var(--rate-pos)}
+
+/* ═══ 预设模板 ═══ */
+.preset-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.preset-chip{padding:5px 12px;border-radius:14px;font-size:11px;cursor:pointer;border:1px solid var(--border);background:#fff;color:var(--text2);transition:.15s}
+.preset-chip:hover{border-color:var(--brand);color:var(--brand);background:var(--brand-l)}
+.preset-chip.active{border-color:var(--brand);color:#fff;background:var(--brand)}
+.preset-chip .pc-tag{font-size:9px;padding:0 4px;border-radius:2px;margin-left:2px}
+
+/* ═══ 因子分类折叠 ═══ */
+.cat-section .cat-items{max-height:0;overflow:hidden;transition:max-height .3s ease}
+.cat-section.expanded .cat-items{max-height:2000px}
+.cat-label{cursor:pointer;user-select:none}
+.cat-label::before{content:'▸';display:inline-block;width:12px;transition:transform .2s;font-size:10px;color:var(--ph)}
+.cat-section.expanded .cat-label::before{transform:rotate(90deg)}
+
+/* ═══ 权重超限警告 ═══ */
+.weight-warn{background:var(--warn-bg);color:var(--warn);padding:6px 12px;border-radius:var(--r);font-size:11px;margin-bottom:8px;display:flex;align-items:center;gap:6px;border:1px solid #ffd666}
+.weight-warn .ww-icon{font-size:14px}
+.weight-warn .ww-btn{padding:2px 8px;border-radius:10px;font-size:10px;cursor:pointer;border:1px solid var(--warn);background:#fff;color:var(--warn);margin-left:auto;white-space:nowrap}
+.weight-warn .ww-btn:hover{background:var(--warn);color:#fff}
+
+/* ═══ 信号稀疏警告 ═══ */
+.signal-warn{background:var(--rate-pos-bg);color:var(--rate-pos);padding:6px 12px;border-radius:var(--r);font-size:11px;margin-bottom:8px;display:flex;align-items:center;gap:6px;border:1px solid #ffa39e}
+.signal-warn .sw-icon{font-size:14px}
+
+/* ═══ 运行中状态 ═══ */
+.run-btn.running{pointer-events:none;opacity:.7;position:relative}
+.run-btn.running::after{content:'';width:14px;height:14px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;display:inline-block;margin-left:4px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ═══ 首次运行空状态 ═══ */
+.result-empty{text-align:center;padding:48px 20px;color:var(--ph)}
+.result-empty .re-icon{font-size:56px;opacity:.25;margin-bottom:12px}
+.result-empty .re-text{font-size:13px;margin-bottom:6px}
+.result-empty .re-hint{font-size:11px}
+
+/* ═══ Responsive ═══ */
+@media(max-width:1400px){.lab-grid{grid-template-columns:220px 1fr 300px}}
+@media(max-width:1200px){.sidebar{width:64px}.sidebar .title,.menu-group,.menu-item span:not(.icon){display:none}.menu-item{justify-content:center;padding:12px}.lab-grid{grid-template-columns:200px 1fr 280px}}
+@media(max-width:960px){.lab-grid{grid-template-columns:1fr;height:auto}.lab-col{max-height:none;overflow:visible}.factor-palette{order:2}.lab-col:nth-child(2){order:1}.lab-col:nth-child(3){order:3}}
+@media(max-width:768px){.sidebar{display:none}.header{padding:0 12px}.content{padding:10px}.run-bar{flex-wrap:wrap}.run-bar .run-btn{font-size:11px;padding:6px 14px}}
+</style>
+</head>
+<body>
+<div class="layout">
+<!-- ═══ 侧边栏 ═══ -->
+<aside class="sidebar">
+  <div class="sidebar-logo"><span class="icon">📈</span><span class="title">Quantia</span></div>
+  <div class="sidebar-menu">
+    <div class="menu-group">数据中心</div>
+    <div class="menu-item"><span>📊</span> <span>大盘走势</span></div>
+    <div class="menu-item"><span>📋</span> <span>股票数据</span></div>
+    <div class="menu-group">分析工具</div>
+    <div class="menu-item"><span>📈</span> <span>技术指标</span></div>
+    <div class="menu-item"><span>🔺</span> <span>K线形态</span></div>
+    <div class="menu-group">选股验证</div>
+    <div class="menu-item"><span>⚖️</span> <span>策略对比</span></div>
+    <div class="menu-item"><span>🎯</span> <span>买卖点优化</span></div>
+    <div class="menu-item active"><span>🧬</span> <span>因子实验室</span></div>
+    <div class="menu-group">回测交易</div>
+    <div class="menu-item"><span>📉</span> <span>回测看板</span></div>
+    <div class="menu-item"><span>📝</span> <span>策略管理</span></div>
+    <div class="menu-item"><span>💰</span> <span>模拟交易</span></div>
+    <div class="menu-group">智能助手</div>
+    <div class="menu-item"><span>🤖</span> <span>AI 助手</span></div>
+  </div>
+</aside>
+
+<div class="main-wrap">
+<header class="header">
+  <span style="cursor:pointer;font-size:16px">☰</span>
+  <span style="color:var(--ph)">选股验证</span><span style="color:var(--ph)">/</span>
+  <span style="font-weight:500">因子实验室</span>
+  <span style="flex:1"></span>
+  <div style="display:flex;align-items:center;gap:8px">
+    <span style="font-size:11px;color:var(--text3)">评估持仓:</span>
+    <select style="padding:4px 8px;border:1px solid #dcdfe6;border-radius:var(--r);font-size:12px;outline:none;background:#fff"><option>5日</option><option selected>10日</option><option>20日</option></select>
+    <span style="font-size:11px;color:var(--text3)">统计周期:</span>
+    <select style="padding:4px 8px;border:1px solid #dcdfe6;border-radius:var(--r);font-size:12px;outline:none;background:#fff"><option>近1月</option><option selected>近3月</option><option>近6月</option><option>近1年</option></select>
+  </div>
+</header>
+
+<div class="content">
+
+<!-- 预设模板快捷入口 -->
+<div style="margin-bottom:12px;display:flex;align-items:center;gap:10px">
+  <span style="font-size:12px;font-weight:600;color:var(--text2)">快速预设:</span>
+  <div class="preset-chips">
+    <span class="preset-chip">空白 <span class="pc-tag" style="background:#f5f5f5;color:#999">从零开始</span></span>
+    <span class="preset-chip active">技术+基本面 <span class="pc-tag" style="background:var(--risk-good-bg);color:var(--risk-good)">推荐</span></span>
+    <span class="preset-chip">纯技术多因子</span>
+    <span class="preset-chip">价值投资 <span class="pc-tag" style="background:#f9f0ff;color:#722ed1">基本面</span></span>
+    <span class="preset-chip">资金驱动</span>
+    <span class="preset-chip">全维度融合 <span class="pc-tag" style="background:var(--warn-bg);color:var(--warn)">高精选</span></span>
+    <span class="preset-chip" style="border-style:dashed;color:var(--ph)">+ 我的模板</span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════ -->
+<!--  三栏主布局                             -->
+<!-- ═══════════════════════════════════════ -->
+<div class="lab-grid" style="height:calc(100vh - 160px)">
+
+<!-- ╔══════════════╗ -->
+<!-- ║  左栏: 因子面板 ║ -->
+<!-- ╚══════════════╝ -->
+<div class="lab-col factor-palette">
+  <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0">
+    <div class="card-h">
+      <h3>因子面板</h3>
+      <span class="sub" style="font-size:10px">拖拽或点 + 添加</span>
+    </div>
+    <div style="padding:8px 10px 0">
+      <input class="search" type="text" placeholder="搜索因子 (如 RSI, PE, 资金...)">
+    </div>
+    <div class="card-b" style="flex:1;overflow-y:auto;padding:4px 10px 10px">
+
+      <!-- ── 技术策略信号 ── -->
+      <div class="cat-section expanded">
+      <div class="cat-label" onclick="this.parentElement.classList.toggle('expanded')"><span class="dot" style="background:var(--dim-tech)"></span> 技术策略信号 (13)</div>
+      <div class="cat-items">
+      <div class="factor-item added"><div class="f-icon" style="background:var(--dim-tech)">均</div><div class="f-name">均线多头</div><div class="f-add">+</div></div>
+      <div class="factor-item added"><div class="f-icon" style="background:var(--dim-tech)">突</div><div class="f-name">突破确认</div><div class="f-add">+</div></div>
+      <div class="factor-item added"><div class="f-icon" style="background:var(--dim-tech)">趋</div><div class="f-name">趋势回调</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-tech)">海</div><div class="f-name">海龟交易</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-tech)">超</div><div class="f-name">超跌反弹</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-tech)">放</div><div class="f-name">放量上涨</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-tech)">停</div><div class="f-name">停机坪</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-tech)">年</div><div class="f-name">回踩年线</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-tech)">低</div><div class="f-name">低ATR成长</div><div class="f-add">+</div></div>
+      </div></div>
+
+      <!-- ── 技术指标 ── -->
+      <div class="cat-section">
+      <div class="cat-label" onclick="this.parentElement.classList.toggle('expanded')"><span class="dot" style="background:var(--dim-tech)"></span> 技术指标 (80+) <span style="font-size:9px;color:var(--ph);font-weight:400">点击展开</span></div>
+      <div class="cat-items">
+      <div class="factor-item added"><div class="f-icon" style="background:#40a9ff">R</div><div class="f-name">RSI(6)</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:#40a9ff">M</div><div class="f-name">MACD 柱状</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:#40a9ff">K</div><div class="f-name">KDJ-K</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:#40a9ff">B</div><div class="f-name">BOLL %B</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:#40a9ff">C</div><div class="f-name">CCI</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:#40a9ff">A</div><div class="f-name">ATR</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:#40a9ff">V</div><div class="f-name">成交量比 vol_ratio</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:#40a9ff">S</div><div class="f-name">SuperTrend</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:#40a9ff">W</div><div class="f-name">WR(14)</div><div class="f-add">+</div></div>
+      </div></div>
+
+      <!-- ── 基本面 ── -->
+      <div class="cat-section expanded">
+      <div class="cat-label" onclick="this.parentElement.classList.toggle('expanded')"><span class="dot" style="background:var(--dim-fund)"></span> 基本面 (35+)</div>
+      <div class="cat-items">
+      <div class="factor-item added"><div class="f-icon" style="background:var(--dim-fund)">P</div><div class="f-name">市盈率TTM (PE)</div><div class="f-add">+</div></div>
+      <div class="factor-item added"><div class="f-icon" style="background:var(--dim-fund)">R</div><div class="f-name">ROE加权</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-fund)">B</div><div class="f-name">市净率 (PB)</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-fund)">毛</div><div class="f-name">毛利率</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-fund)">净</div><div class="f-name">净利率</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-fund)">债</div><div class="f-name">资产负债率</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-fund)">增</div><div class="f-name">净利润3Y增长率</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-fund)">G</div><div class="f-name">预测PEG</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-fund)">息</div><div class="f-name">最新股息率</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-fund)">现</div><div class="f-name">每股自由现金流</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-fund)">市</div><div class="f-name">总市值</div><div class="f-add">+</div></div>
+      </div></div>
+
+      <!-- ── 资金流 ── -->
+      <div class="cat-section expanded">
+      <div class="cat-label" onclick="this.parentElement.classList.toggle('expanded')"><span class="dot" style="background:var(--dim-flow)"></span> 资金流向 (12)</div>
+      <div class="cat-items">
+      <div class="factor-item added"><div class="f-icon" style="background:var(--dim-flow)">主</div><div class="f-name">当日主力净流入</div><div class="f-add">+</div></div>
+      <div class="factor-item added"><div class="f-icon" style="background:var(--dim-flow)">3</div><div class="f-name">3日主力净流入</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-flow)">5</div><div class="f-name">5日主力净流入</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-flow)">D</div><div class="f-name">DDX 大单动向</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-flow)">沪</div><div class="f-name">沪深股通净买入</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-flow)">超</div><div class="f-name">超大单净流入</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-flow)">行</div><div class="f-name">行业资金净流入</div><div class="f-add">+</div></div>
+      </div></div>
+
+      <!-- ── 市场情绪 ── -->
+      <div class="cat-section">
+      <div class="cat-label" onclick="this.parentElement.classList.toggle('expanded')"><span class="dot" style="background:var(--dim-sent)"></span> 市场情绪 & 事件 (10+) <span style="font-size:9px;color:var(--ph);font-weight:400">点击展开</span></div>
+      <div class="cat-items">
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-sent)">机</div><div class="f-name">机构持股比例</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-sent)">基</div><div class="f-name">基金持股家数</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-sent)">东</div><div class="f-name">股东户数增长率</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-sent)">管</div><div class="f-name">高管增减持</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-sent)">调</div><div class="f-name">机构调研次数</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-sent)">龙</div><div class="f-name">龙虎榜净买入</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-sent)">宗</div><div class="f-name">大宗交易溢价率</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-sent)">质</div><div class="f-name">股权质押比例</div><div class="f-add">+</div></div>
+      </div></div>
+
+      <!-- ── 自定义 ── -->
+      <div class="cat-section expanded">
+      <div class="cat-label" onclick="this.parentElement.classList.toggle('expanded')"><span class="dot" style="background:var(--dim-custom)"></span> 自定义 & 复合</div>
+      <div class="cat-items">
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-custom)">G</div><div class="f-name">GPT综合选股分</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-custom)">我</div><div class="f-name">我的动量策略</div><div class="f-add">+</div></div>
+      <div class="factor-item"><div class="f-icon" style="background:var(--dim-custom)">超</div><div class="f-name">超级趋势+RSI复合</div><div class="f-add">+</div></div>
+      <div class="factor-item" style="border-style:dashed;border-color:var(--ph)"><div class="f-icon" style="background:#ccc">+</div><div class="f-name" style="color:var(--ph)">从策略管理导入...</div><div class="f-add">+</div></div>
+      </div></div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ╔══════════════╗ -->
+<!-- ║ 中栏: 活跃因子 ║ -->
+<!-- ╚══════════════╝ -->
+<div class="lab-col" style="gap:0">
+
+<!-- 运行控制条 -->
+<div class="run-bar">
+  <button class="run-btn run-btn-primary">▶ 运行回测</button>
+  <button class="run-btn run-btn-ai">🤖 AI 优化</button>
+  <button class="run-btn run-btn-outline" style="font-size:11px">💾 保存方案</button>
+  <button class="run-btn run-btn-outline" style="font-size:11px">📤 导出策略代码</button>
+  <span style="flex:1"></span>
+  <span style="font-size:11px;color:var(--text3)">融合规则:</span>
+  <select style="padding:4px 8px;border:1px solid #dcdfe6;border-radius:var(--r);font-size:11px;outline:none;background:#fff">
+    <option selected>全部满足 (AND)</option>
+    <option>满足N项 (投票)</option>
+    <option>加权评分 (Score)</option>
+    <option>条件树 (Pipeline)</option>
+  </select>
+</div>
+
+<!-- 权重超限警告 (当权重之和 ≠ 100% 时显示) -->
+<div class="weight-warn">
+  <span class="ww-icon">⚠</span>
+  <span>当前权重合计 <b>135%</b>，建议归一化到 100% 以保证评分可比性</span>
+  <span class="ww-btn">一键归一化</span>
+</div>
+
+<!-- 活跃因子列表 -->
+<div class="active-factors" style="padding:10px 0">
+
+  <!-- ── 因子 1: 均线多头 (策略信号, 无参数调整) ── -->
+  <div class="factor-card">
+    <div class="fc-head" onclick="this.nextElementSibling.classList.toggle('open')">
+      <span class="fc-grip">⠿</span>
+      <span class="fc-icon" style="background:var(--dim-tech)">均</span>
+      <span class="fc-name">均线多头 <span class="tag t-tech">策略信号</span></span>
+      <span class="fc-impact text-pos">夏普+0.00</span>
+      <div class="weight-row" style="width:80px;margin:0"><div class="w-bar"><div class="w-fill" style="width:30%;background:var(--dim-tech)"></div></div><div class="w-val" style="color:var(--dim-tech)">30%</div></div>
+      <span class="fc-toggle on"></span>
+      <span class="fc-remove">✕</span>
+    </div>
+    <div class="fc-body">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:6px">数据: cn_stock_strategy_keep_increasing | 规则: 当日被选入 = 信号触发</div>
+      <div class="param-row">
+        <span class="p-label">权重</span>
+        <input class="p-slider" type="range" min="0" max="100" value="30">
+        <input class="p-val" type="number" value="30" min="0" max="100">
+        <span class="p-unit">%</span>
+      </div>
+      <div class="tip">此策略为信号类因子，仅有"是/否"状态，无连续值可调。调整权重改变其在融合评分中的占比。</div>
+    </div>
+  </div>
+
+  <!-- ── 因子 2: 突破确认 ── -->
+  <div class="factor-card">
+    <div class="fc-head" onclick="this.nextElementSibling.classList.toggle('open')">
+      <span class="fc-grip">⠿</span>
+      <span class="fc-icon" style="background:var(--dim-tech)">突</span>
+      <span class="fc-name">突破确认 <span class="tag t-tech">策略信号</span></span>
+      <span class="fc-impact text-pos">夏普+0.00</span>
+      <div class="weight-row" style="width:80px;margin:0"><div class="w-bar"><div class="w-fill" style="width:25%;background:var(--dim-tech)"></div></div><div class="w-val" style="color:var(--dim-tech)">25%</div></div>
+      <span class="fc-toggle on"></span>
+      <span class="fc-remove">✕</span>
+    </div>
+    <div class="fc-body">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:6px">数据: cn_stock_strategy_breakout_confirm</div>
+      <div class="param-row">
+        <span class="p-label">权重</span>
+        <input class="p-slider" type="range" min="0" max="100" value="25">
+        <input class="p-val" type="number" value="25" min="0" max="100">
+        <span class="p-unit">%</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 因子 3: 趋势回调 ── -->
+  <div class="factor-card">
+    <div class="fc-head" onclick="this.nextElementSibling.classList.toggle('open')">
+      <span class="fc-grip">⠿</span>
+      <span class="fc-icon" style="background:var(--dim-tech)">趋</span>
+      <span class="fc-name">趋势回调 <span class="tag t-tech">策略信号</span></span>
+      <span class="fc-impact text-pos">夏普+0.00</span>
+      <div class="weight-row" style="width:80px;margin:0"><div class="w-bar"><div class="w-fill" style="width:20%;background:var(--dim-tech)"></div></div><div class="w-val" style="color:var(--dim-tech)">20%</div></div>
+      <span class="fc-toggle on"></span>
+      <span class="fc-remove">✕</span>
+    </div>
+    <div class="fc-body">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:6px">数据: cn_stock_strategy_trend_pullback</div>
+      <div class="param-row">
+        <span class="p-label">权重</span>
+        <input class="p-slider" type="range" min="0" max="100" value="20">
+        <input class="p-val" type="number" value="20" min="0" max="100">
+        <span class="p-unit">%</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 因子 4: RSI(6) (连续指标, 有阈值+方向) ── -->
+  <div class="factor-card">
+    <div class="fc-head" onclick="this.nextElementSibling.classList.toggle('open')">
+      <span class="fc-grip">⠿</span>
+      <span class="fc-icon" style="background:#40a9ff">R</span>
+      <span class="fc-name">RSI(6) <span class="tag t-tech">技术指标</span></span>
+      <span class="fc-impact text-pos">夏普+0.18</span>
+      <span style="font-size:11px;color:var(--text2);background:#f5f5f5;padding:1px 6px;border-radius:2px">< 70</span>
+      <span class="fc-toggle on"></span>
+      <span class="fc-remove">✕</span>
+    </div>
+    <div class="fc-body open">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px">数据: cn_stock_indicators.rsi_6 | 连续值 0~100</div>
+      <div class="param-row">
+        <span class="p-label">条件</span>
+        <select class="p-op"><option>&lt;</option><option>≤</option><option selected>&gt;</option><option>≥</option><option>介于</option></select>
+        <input class="p-val" type="number" value="70" step="5" style="border-color:var(--brand)">
+        <span class="p-unit"></span>
+        <span class="p-hint">建议区间: 过滤超买区 RSI&gt;70 → 胜率+5.9pp</span>
+      </div>
+      <div class="param-row">
+        <span class="p-label">权重</span>
+        <input class="p-slider" type="range" min="0" max="100" value="15">
+        <input class="p-val" type="number" value="15" min="0" max="100">
+        <span class="p-unit">%</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <span style="font-size:10px;color:var(--text3)">快捷:</span>
+        <span class="preset-chip" style="padding:2px 8px;font-size:10px">&lt; 30 超卖</span>
+        <span class="preset-chip" style="padding:2px 8px;font-size:10px">&lt; 50 中性偏低</span>
+        <span class="preset-chip active" style="padding:2px 8px;font-size:10px">&lt; 70 过滤超买</span>
+        <span class="preset-chip" style="padding:2px 8px;font-size:10px">30~70 中性</span>
+      </div>
+      <div class="tip">
+        分桶统计: RSI&lt;30 胜率72.8% | RSI 30-50 胜率63.5% | RSI 50-70 胜率58.2% | RSI&gt;70 胜率38.1%
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 因子 5: PE (基本面, 有阈值) ── -->
+  <div class="factor-card">
+    <div class="fc-head" onclick="this.nextElementSibling.classList.toggle('open')">
+      <span class="fc-grip">⠿</span>
+      <span class="fc-icon" style="background:var(--dim-fund)">P</span>
+      <span class="fc-name">市盈率TTM <span class="tag t-fund">基本面</span></span>
+      <span class="fc-impact text-pos">夏普+0.35</span>
+      <span style="font-size:11px;color:var(--text2);background:#f5f5f5;padding:1px 6px;border-radius:2px">0 < PE ≤ 30</span>
+      <span class="fc-toggle on"></span>
+      <span class="fc-remove">✕</span>
+    </div>
+    <div class="fc-body open">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px">数据: cn_stock_selection.pe9 | 连续值 (亏损股PE&lt;0)</div>
+      <div class="param-row">
+        <span class="p-label">条件</span>
+        <select class="p-op"><option>介于</option></select>
+        <input class="p-val" type="number" value="0" style="width:60px"> <span style="font-size:11px;color:var(--text3)">~</span>
+        <input class="p-val" type="number" value="30" style="width:60px;border-color:var(--dim-fund)">
+        <span class="p-hint">排除亏损(PE&lt;0) + 高估值(PE&gt;30)</span>
+      </div>
+      <div class="param-row">
+        <span class="p-label">权重</span>
+        <input class="p-slider" type="range" min="0" max="100" value="12">
+        <input class="p-val" type="number" value="12" min="0" max="100">
+        <span class="p-unit">%</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <span style="font-size:10px;color:var(--text3)">快捷:</span>
+        <span class="preset-chip" style="padding:2px 8px;font-size:10px">0~15 深度价值</span>
+        <span class="preset-chip active" style="padding:2px 8px;font-size:10px">0~30 合理估值</span>
+        <span class="preset-chip" style="padding:2px 8px;font-size:10px">0~50 宽松</span>
+      </div>
+      <div class="tip">
+        分桶: PE&lt;15 胜率78.8% | PE 15-30 胜率72.3% | PE 30-60 胜率62.5% | PE&gt;60 胜率48.8%
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 因子 6: ROE (基本面) ── -->
+  <div class="factor-card">
+    <div class="fc-head" onclick="this.nextElementSibling.classList.toggle('open')">
+      <span class="fc-grip">⠿</span>
+      <span class="fc-icon" style="background:var(--dim-fund)">R</span>
+      <span class="fc-name">ROE加权 <span class="tag t-fund">基本面</span></span>
+      <span class="fc-impact text-pos">夏普+0.42</span>
+      <span style="font-size:11px;color:var(--text2);background:#f5f5f5;padding:1px 6px;border-radius:2px">≥ 10%</span>
+      <span class="fc-toggle on"></span>
+      <span class="fc-remove">✕</span>
+    </div>
+    <div class="fc-body">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px">数据: cn_stock_selection.roe_weight</div>
+      <div class="param-row">
+        <span class="p-label">条件</span>
+        <select class="p-op"><option>≥</option></select>
+        <input class="p-val" type="number" value="10" step="1">
+        <span class="p-unit">%</span>
+        <span class="p-hint">ROE≥10% 单因子夏普+0.42 (贡献最大)</span>
+      </div>
+      <div class="param-row">
+        <span class="p-label">权重</span>
+        <input class="p-slider" type="range" min="0" max="100" value="15">
+        <input class="p-val" type="number" value="15" min="0" max="100">
+        <span class="p-unit">%</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 因子 7: 当日主力净流入 ── -->
+  <div class="factor-card">
+    <div class="fc-head" onclick="this.nextElementSibling.classList.toggle('open')">
+      <span class="fc-grip">⠿</span>
+      <span class="fc-icon" style="background:var(--dim-flow)">主</span>
+      <span class="fc-name">当日主力净流入 <span class="tag t-flow">资金流</span></span>
+      <span class="fc-impact text-pos">夏普+0.22</span>
+      <span style="font-size:11px;color:var(--text2);background:#f5f5f5;padding:1px 6px;border-radius:2px">> 0</span>
+      <span class="fc-toggle on"></span>
+      <span class="fc-remove">✕</span>
+    </div>
+    <div class="fc-body">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px">数据: cn_stock_fund_flow.fund_amount (按 date+code JOIN)</div>
+      <div class="param-row">
+        <span class="p-label">条件</span>
+        <select class="p-op"><option>></option></select>
+        <input class="p-val" type="number" value="0">
+        <span class="p-unit">元</span>
+        <span class="p-hint">0 = 净流入为正即可; 可设更高阈值如 5000万</span>
+      </div>
+      <div class="param-row">
+        <span class="p-label">权重</span>
+        <input class="p-slider" type="range" min="0" max="100" value="10">
+        <input class="p-val" type="number" value="10" min="0" max="100">
+        <span class="p-unit">%</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 因子 8: 3日主力净流入 ── -->
+  <div class="factor-card">
+    <div class="fc-head" onclick="this.nextElementSibling.classList.toggle('open')">
+      <span class="fc-grip">⠿</span>
+      <span class="fc-icon" style="background:var(--dim-flow)">3</span>
+      <span class="fc-name">3日主力净流入 <span class="tag t-flow">资金流</span></span>
+      <span class="fc-impact text-pos">夏普+0.32</span>
+      <span style="font-size:11px;color:var(--text2);background:#f5f5f5;padding:1px 6px;border-radius:2px">> 0</span>
+      <span class="fc-toggle on"></span>
+      <span class="fc-remove">✕</span>
+    </div>
+    <div class="fc-body">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px">数据: cn_stock_selection.netinflow_3days 或 cn_stock_fund_flow.fund_amount_3</div>
+      <div class="param-row">
+        <span class="p-label">条件</span>
+        <select class="p-op"><option>></option></select>
+        <input class="p-val" type="number" value="0">
+        <span class="p-unit">元</span>
+      </div>
+      <div class="param-row">
+        <span class="p-label">权重</span>
+        <input class="p-slider" type="range" min="0" max="100" value="8">
+        <input class="p-val" type="number" value="8" min="0" max="100">
+        <span class="p-unit">%</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 信号稀疏警告 (信号数 < 3/日时显示) -->
+  <div class="signal-warn">
+    <span class="sw-icon">⚠</span>
+    <span>日均信号数仅 <b>4.2</b>，接近稀疏阈值(3)。继续添加过滤因子可能导致无信号日过多，影响回测可靠性。</span>
+  </div>
+
+  <!-- 添加更多提示 -->
+  <div style="text-align:center;padding:16px;color:var(--ph);font-size:12px;border:1px dashed var(--border);border-radius:var(--r)">
+    ← 从左侧因子面板拖拽或点击 + 添加更多因子 <br>
+    <span style="font-size:10px;margin-top:4px;display:inline-block">已添加 8 个因子 · 建议不超过 15 个以避免过拟合</span>
+  </div>
+
+</div><!-- /active-factors -->
+</div>
+
+<!-- ╔══════════════╗ -->
+<!-- ║ 右栏: 结果面板 ║ -->
+<!-- ╚══════════════╝ -->
+<div class="lab-col">
+
+<!-- KPI 卡片 -->
+<div class="result-kpi">
+  <div class="kpi highlight">
+    <div class="k-label">当前方案 夏普</div>
+    <div class="k-value text-good">3.52</div>
+    <div class="k-delta text-pos">vs 纯技术 +49.8%</div>
+  </div>
+  <div class="kpi">
+    <div class="k-label">胜率</div>
+    <div class="k-value">74.5%</div>
+    <div class="k-delta text-pos">+12.2pp</div>
+  </div>
+  <div class="kpi">
+    <div class="k-label">10日平均收益</div>
+    <div class="k-value text-pos">+9.52%</div>
+    <div class="k-delta text-pos">+85.9%</div>
+  </div>
+  <div class="kpi">
+    <div class="k-label">最大回撤</div>
+    <div class="k-value text-good">-6.5%</div>
+    <div class="k-delta text-good">-48.0%</div>
+  </div>
+  <div class="kpi">
+    <div class="k-label">日均信号数</div>
+    <div class="k-value">4.2</div>
+    <div class="k-delta" style="color:var(--text3)">筛选率 29.4%</div>
+  </div>
+  <div class="kpi">
+    <div class="k-label">Calmar 比率</div>
+    <div class="k-value">5.85</div>
+    <div class="k-delta text-pos">+72.1%</div>
+  </div>
+</div>
+
+<!-- 迷你收益曲线 -->
+<div class="result-mini-chart">
+  <div class="rmc-icon">📈</div>
+  <div>当前方案(蓝) vs 纯技术(灰) 累计收益曲线</div>
+  <div style="font-size:9px;color:var(--ph)">ECharts mini line | 悬浮显示当日收益差</div>
+</div>
+
+<!-- 因子贡献排名 -->
+<div class="card">
+  <div class="card-h"><h3>因子贡献排名</h3><span class="sub">对夏普的边际贡献</span></div>
+  <div class="card-b" style="padding:8px 12px">
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+      <span class="fc-icon" style="background:var(--dim-fund);width:16px;height:16px;font-size:9px">R</span>
+      <span style="font-size:11px;flex:1">ROE ≥ 10%</span>
+      <div style="width:80px;height:5px;background:#f0f0f0;border-radius:3px;overflow:hidden"><div style="width:85%;height:100%;background:var(--dim-fund);border-radius:3px"></div></div>
+      <span style="font-size:11px;font-weight:600;color:var(--rate-pos);width:40px;text-align:right">+0.42</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+      <span class="fc-icon" style="background:var(--dim-fund);width:16px;height:16px;font-size:9px">P</span>
+      <span style="font-size:11px;flex:1">PE 0~30</span>
+      <div style="width:80px;height:5px;background:#f0f0f0;border-radius:3px;overflow:hidden"><div style="width:72%;height:100%;background:var(--dim-fund);border-radius:3px"></div></div>
+      <span style="font-size:11px;font-weight:600;color:var(--rate-pos);width:40px;text-align:right">+0.35</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+      <span class="fc-icon" style="background:var(--dim-flow);width:16px;height:16px;font-size:9px">3</span>
+      <span style="font-size:11px;flex:1">3日主力净流入</span>
+      <div style="width:80px;height:5px;background:#f0f0f0;border-radius:3px;overflow:hidden"><div style="width:65%;height:100%;background:var(--dim-flow);border-radius:3px"></div></div>
+      <span style="font-size:11px;font-weight:600;color:var(--rate-pos);width:40px;text-align:right">+0.32</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+      <span class="fc-icon" style="background:var(--dim-flow);width:16px;height:16px;font-size:9px">主</span>
+      <span style="font-size:11px;flex:1">当日主力净流入</span>
+      <div style="width:80px;height:5px;background:#f0f0f0;border-radius:3px;overflow:hidden"><div style="width:45%;height:100%;background:var(--dim-flow);border-radius:3px"></div></div>
+      <span style="font-size:11px;font-weight:600;color:var(--rate-pos);width:40px;text-align:right">+0.22</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+      <span class="fc-icon" style="background:#40a9ff;width:16px;height:16px;font-size:9px">R</span>
+      <span style="font-size:11px;flex:1">RSI(6) &lt; 70</span>
+      <div style="width:80px;height:5px;background:#f0f0f0;border-radius:3px;overflow:hidden"><div style="width:36%;height:100%;background:#40a9ff;border-radius:3px"></div></div>
+      <span style="font-size:11px;font-weight:600;color:var(--rate-pos);width:40px;text-align:right">+0.18</span>
+    </div>
+  </div>
+</div>
+
+<!-- 方案对比迷你表 -->
+<div class="card">
+  <div class="card-h"><h3>与基线对比</h3><span class="sub">实时更新</span></div>
+  <div class="card-b" style="padding:0;overflow-x:auto">
+    <table class="sm">
+      <thead><tr><th>指标</th><th>纯技术</th><th style="background:var(--risk-good-bg)">当前方案</th><th>变化</th></tr></thead>
+      <tbody>
+        <tr><td>10日收益</td><td>+5.12%</td><td class="best">+9.52%</td><td><span class="badge b-pos">+85.9%</span></td></tr>
+        <tr><td>胜率</td><td>62.3%</td><td class="best">74.5%</td><td><span class="badge b-pos">+12.2pp</span></td></tr>
+        <tr><td>夏普</td><td>2.35</td><td class="best">3.52</td><td><span class="badge b-pos">+49.8%</span></td></tr>
+        <tr><td>最大回撤</td><td>-12.5%</td><td class="best" style="color:var(--risk-good)">-6.5%</td><td><span class="badge b-best">-48.0%</span></td></tr>
+        <tr><td>Calmar</td><td>3.40</td><td class="best">5.85</td><td><span class="badge b-pos">+72.1%</span></td></tr>
+        <tr><td>日均信号</td><td>14.3</td><td>4.2</td><td><span class="badge b-flat">-70.6%</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 操作日志 -->
+<div class="card">
+  <div class="card-h"><h3>操作日志</h3></div>
+  <div class="card-b change-log" style="padding:6px 12px">
+    <div class="cl-item"><span class="cl-time">14:32</span><span class="cl-badge cl-ai">AI</span><span>建议添加 ROE≥10% — 预计夏普+0.42</span></div>
+    <div class="cl-item"><span class="cl-time">14:31</span><span class="cl-badge cl-add">添加</span><span>3日主力净流入 > 0</span></div>
+    <div class="cl-item"><span class="cl-time">14:30</span><span class="cl-badge cl-mod">改值</span><span>RSI(6) 阈值: 80 → 70 (胜率+3.2pp)</span></div>
+    <div class="cl-item"><span class="cl-time">14:28</span><span class="cl-badge cl-add">添加</span><span>市盈率TTM: 0 ~ 30</span></div>
+    <div class="cl-item"><span class="cl-time">14:25</span><span class="cl-badge cl-add">添加</span><span>当日主力净流入 > 0</span></div>
+    <div class="cl-item"><span class="cl-time">14:22</span><span class="cl-badge cl-mod">预设</span><span>加载模板: 技术+基本面</span></div>
+  </div>
+</div>
+
+<!-- ═══ AI 分析面板 ═══ -->
+<div class="card ai-panel">
+  <div class="card-h">
+    <h3>🤖 AI 优化助手</h3>
+    <div style="display:flex;gap:4px;align-items:center">
+      <span style="font-size:10px;color:var(--ai)">Kimi</span>
+      <select style="padding:2px 4px;font-size:10px;border:1px solid var(--ai-border);border-radius:2px;outline:none;color:var(--ai);background:#fff"><option>kimi-1.5</option><option>deepseek-v3</option><option>gpt-4o</option></select>
+    </div>
+  </div>
+  <div class="ai-msg">
+    基于当前 <b>8 个因子</b>的回测结果分析：<br><br>
+    1. <b>ROE</b> 和 <b>PE</b> 是贡献最大的基本面因子（合计夏普+0.77），建议保留<br>
+    2. 资金流因子中 <b>3日主力净流入</b> 效果优于当日净流入（+0.32 vs +0.22），可考虑<code>移除当日</code>仅保留3日<br>
+    3. 建议<b>追加</b>：<code>机构持股 ≥ 5%</code>（预计夏普+0.25）和 <code>负债率 &lt; 60%</code>（+0.18）<br>
+    4. RSI 阈值70较宽松，尝试<code>RSI &lt; 60</code>可能将胜率从74.5%提升至76%+<br>
+    5. <span style="color:var(--warn)">⚠ 注意:</span> 信号数已降至4.2/日，继续添加过滤因子可能导致信号过于稀疏
+  </div>
+  <div class="ai-actions">
+    <span class="ai-btn primary">✅ 应用全部建议</span>
+    <span class="ai-btn">移除当日净流入</span>
+    <span class="ai-btn">追加机构持股</span>
+    <span class="ai-btn">追加负债率</span>
+    <span class="ai-btn">RSI→60</span>
+  </div>
+  <div style="border-top:1px solid var(--ai-border);margin:0 12px"></div>
+  <div class="ai-input-row">
+    <input class="ai-input" type="text" placeholder="问 AI: 如何提升胜率? / 帮我找最优PE阈值 / 为什么回撤增大了?">
+    <button class="ai-send">➤</button>
+  </div>
+</div>
+
+</div><!-- /右栏 -->
+
+</div><!-- /lab-grid -->
+
+</div><!-- /content -->
+</div>
+</div>
+
+<script>
+// 因子卡片展开/折叠由 onclick 在 HTML 中控制
+// 搜索过滤 — 搜索时自动展开匹配的分类
+document.querySelector('.search').addEventListener('input', function(e){
+  var q = e.target.value.toLowerCase();
+  document.querySelectorAll('.cat-section').forEach(function(sec){
+    var items = sec.querySelectorAll('.factor-item');
+    var hasVisible = false;
+    items.forEach(function(el){
+      var match = !q || el.textContent.toLowerCase().includes(q);
+      el.style.display = match ? '' : 'none';
+      if (match) hasVisible = true;
+    });
+    sec.style.display = hasVisible ? '' : 'none';
+    if (q && hasVisible) sec.classList.add('expanded');
+  });
+  // 清空搜索时恢复原折叠状态
+  if (!q) {
+    document.querySelectorAll('.cat-section').forEach(function(sec){ sec.style.display = ''; });
+  }
+});
+</script>
+</body>
+</html>

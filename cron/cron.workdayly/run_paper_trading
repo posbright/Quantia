@@ -1,0 +1,12 @@
+#!/bin/bash
+# 模拟交易每日任务 — 执行所有运行中的模拟盘
+# 依赖数据获取和K线缓存，应在 run_kline_cache 之后执行
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/workdayly.log
+
+check_trade_day "模拟交易"
+run_job "模拟交易 (paper_trading_daily_job)" "quantia/job/paper_trading_daily_job.py"

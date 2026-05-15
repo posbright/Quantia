@@ -1,0 +1,7 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        ".venv\\Scripts\\python.exe": true,
+        "npm run build": true,
+        "Test-Path": true
+    }
+}

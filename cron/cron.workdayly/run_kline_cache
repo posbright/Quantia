@@ -1,0 +1,13 @@
+#!/bin/bash
+# K线缓存增量更新 — 批量更新 ~5000 只股票的历史K线缓存
+# 前置条件：run_fetch 当日已成功完成（通过 cn_job_status 检查）
+# 内存密集型任务，独立运行避免 OOM 影响其他任务
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/workdayly.log
+
+check_trade_day "K线缓存更新"
+run_job "K线缓存增量更新 (kline_cache_daily_job)" "quantia/job/kline_cache_daily_job.py"

@@ -1,0 +1,44 @@
+﻿# Quantia Python 依赖
+# 使用 >= 约束提高兼容性，避免过于严格的版本锁定
+
+# 核心数据处理
+numpy>=1.24.0
+pandas>=2.0.0
+TA_Lib>=0.6.5  # 0.6.5+ 预编译wheel自带C库，无需单独安装系统级ta-lib
+
+# Web框架
+tornado>=6.3.0
+bokeh>=3.0.0
+
+# 数据库
+PyMySQL>=1.1.0
+SQLAlchemy>=2.0.0
+
+# 网络请求
+requests>=2.28.0
+
+# 环境变量
+python-dotenv>=1.0.0
+
+# 工具库
+arrow>=1.2.0
+tqdm>=4.65.0
+python_dateutil>=2.8.0
+Logbook>=1.5.0
+
+# 数据解析
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# JavaScript引擎（用于筹码计算）
+py_mini_racer>=0.6.0
+mini-racer>=0.12.0
+
+# 加密
+pycryptodome>=3.18.0
+
+# 交易（可选）
+easytrader>=0.23.0
+
+# 回测框架
+backtrader>=1.9.76

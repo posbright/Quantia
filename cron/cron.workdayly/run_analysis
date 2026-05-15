@@ -1,0 +1,13 @@
+#!/bin/bash
+# 数据分析任务 — 本地计算：GPT选股 + 基本面选股 + 指标/形态/策略 + 回测
+# 零 API 调用，所有数据来自数据库 + 磁盘缓存
+# 内置跳过检查：分析数据已由其他节点完成时自动跳过
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/workdayly.log
+
+check_trade_day "数据分析"
+run_job "数据分析 (analysis_daily_job)" "quantia/job/analysis_daily_job.py"

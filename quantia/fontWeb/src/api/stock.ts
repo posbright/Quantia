@@ -1,0 +1,392 @@
+import request from './request'
+
+export interface StockDataParams {
+  name: string
+  date?: string
+  page?: number
+  page_size?: number
+  keyword?: string
+}
+
+export interface StockIndicatorParams {
+  code: string
+  date: string
+  name?: string
+}
+
+export interface AttentionParams {
+  code: string
+  otype: '0' | '1'  // 0: 添加关注, 1: 取消关注
+}
+
+/**
+ * 获取股票数据列表
+ * @param params 
+ */
+export function getStockData(params: StockDataParams) {
+  return request({
+    url: '/api_data',
+    method: 'get',
+    params
+  })
+}
+
+/**
+ * 获取股票指标详情（备用：通过后端 HTML 接口获取指标数据）
+ * 注意：当前前端使用 getKlineData + indicator/index.vue 渲染指标详情，
+ * 此函数保留以兼容未来可能的 JSON 格式指标 API。
+ * @param params 
+ */
+export function getStockIndicators(params: StockIndicatorParams) {
+  return request({
+    url: '/data/indicators',
+    method: 'get',
+    params
+  })
+}
+
+/**
+ * 添加/取消关注股票
+ * @param params 
+ */
+export function toggleAttention(params: AttentionParams) {
+  return request({
+    url: '/control/attention',
+    method: 'get',
+    params
+  })
+}
+
+/**
+ * 获取最近交易日期
+ * 返回 { run_date: 'YYYY-MM-DD', run_date_nph: 'YYYY-MM-DD' }
+ * run_date: 最近已收盘的交易日
+ * run_date_nph: 当前交易日（含未收盘）
+ */
+export function getTradeDate() {
+  return request({
+    url: '/api/trade_date',
+    method: 'get'
+  })
+}
+
+// ============= 回测相关 API =============
+
+export interface BacktestParams {
+  code?: string
+  strategy?: string
+  period?: string
+  start_date?: string
+  end_date?: string
+  /** 回测输出点（逗号分隔，如 1,3,5,10,20） */
+  checkpoints?: string
+}
+
+export interface BatchBacktestParams {
+  strategy: string
+  period?: string
+  limit?: number
+  /** 批量汇总使用的持有天数列表（逗号分隔，如 1,3,5,10,20） */
+  horizons?: string
+  /** 成功定义使用的持有天数（对应 rate_N > 0） */
+  success_days?: number
+}
+
+/** 获取回测配置（可选周期、策略列表） */
+export function getBacktestConfig() {
+  return request({ url: '/api/backtest/config', method: 'get' })
+}
+
+/** 执行单只股票回测 */
+export function runBacktest(params: BacktestParams) {
+  return request({ url: '/api/backtest/run', method: 'get', params })
+}
+
+/** 批量回测（策略历史验证） */
+export function runBatchBacktest(params: BatchBacktestParams) {
+  return request({ url: '/api/backtest/batch', method: 'get', params })
+}
+
+// ============= 回测看板 API =============
+
+export interface DashboardOverviewParams {
+  days?: number
+  metric?: number
+  start_date?: string
+  end_date?: string
+}
+
+export function getBacktestDashboardOverview(params: DashboardOverviewParams) {
+  return request({ url: '/api/backtest/dashboard/overview', method: 'get', params })
+}
+
+export interface DashboardTimelineParams {
+  strategies?: string
+  days?: number
+  horizon?: number
+  start_date?: string
+  end_date?: string
+}
+
+export function getBacktestDashboardTimeline(params: DashboardTimelineParams) {
+  return request({ url: '/api/backtest/dashboard/timeline', method: 'get', params })
+}
+
+export interface DashboardStrategyDetailParams {
+  strategy: string
+  days?: number
+  horizons?: string
+  page?: number
+  page_size?: number
+  start_date?: string
+  end_date?: string
+}
+
+export function getBacktestDashboardStrategyDetail(params: DashboardStrategyDetailParams) {
+  return request({ url: '/api/backtest/dashboard/strategy_detail', method: 'get', params })
+}
+
+export interface DashboardDistributionParams {
+  strategy: string
+  days?: number
+  horizon?: number
+  start_date?: string
+  end_date?: string
+}
+
+export function getBacktestDashboardDistribution(params: DashboardDistributionParams) {
+  return request({ url: '/api/backtest/dashboard/distribution', method: 'get', params })
+}
+
+export interface DashboardTradePairsParams {
+  strategy: string
+  days?: number
+  page?: number
+  page_size?: number
+  max_hold?: number
+  start_date?: string
+  end_date?: string
+}
+
+export function getBacktestDashboardTradePairs(params: DashboardTradePairsParams) {
+  return request({ url: '/api/backtest/dashboard/trade_pairs', method: 'get', params })
+}
+
+// ============= K线数据 API =============
+
+export interface KlineParams {
+  code: string
+  date?: string
+  start_date?: string
+  end_date?: string
+  period?: string   // daily / weekly / monthly / quarterly / yearly
+  days?: number
+  warmup_days?: number
+  name?: string
+  type?: string     // 'index' | 'stock' — 指定数据源类型，避免同代码股票/指数混淆
+}
+
+/** 获取K线数据（含技术指标：MA/BOLL/RSI/MACD） */
+export function getKlineData(params: KlineParams) {
+  return request({ url: '/api/kline', method: 'get', params })
+}
+
+// ============= 组合回测 & 策略管理 API =============
+
+/** 获取内置策略模板 */
+export function getStrategyTemplates() {
+  return request({ url: '/api/strategy/templates', method: 'get' })
+}
+
+/** 同步内置策略模板到策略库（同名策略会更新代码） */
+export function syncStrategyTemplates() {
+  return request({ url: '/api/strategy/sync_templates', method: 'post' })
+}
+
+/** 获取策略列表（含文件夹） */
+export function getStrategyCodeList(params?: { folder_id?: number }) {
+  return request({ url: '/api/strategy/code/list', method: 'get', params })
+}
+
+/** 获取策略详情 */
+export function getStrategyCodeDetail(id: number) {
+  return request({ url: '/api/strategy/code/detail', method: 'get', params: { id } })
+}
+
+/** 保存策略代码 */
+export function saveStrategyCode(data: {
+  id?: number
+  name: string
+  code: string
+  description?: string
+  category?: string
+  folder_id?: number
+  initial_cash?: number
+  benchmark?: string
+  commission_rate?: number
+  stamp_tax_rate?: number
+  slippage?: number
+  // M2 §3.1：AI 来源元数据
+  source?: 'manual' | 'template' | 'ai'
+  ai_prompt?: string
+  ai_model?: string
+  ai_agent?: string
+  ai_repair_count?: number
+}) {
+  return request({ url: '/api/strategy/code', method: 'post', data })
+}
+
+/** 删除策略 */
+export function deleteStrategyCode(id: number) {
+  return request({ url: '/api/strategy/code/delete', method: 'post', data: { id } })
+}
+
+/** 重命名策略 */
+export function renameStrategy(id: number, name: string) {
+  return request({ url: '/api/strategy/rename', method: 'post', data: { id, name } })
+}
+
+/** 移动策略到文件夹 */
+export function moveStrategy(ids: number[], folder_id: number) {
+  return request({ url: '/api/strategy/move', method: 'post', data: { ids, folder_id } })
+}
+
+/** 批量删除策略 */
+export function batchDeleteStrategy(ids: number[]) {
+  return request({ url: '/api/strategy/batch_delete', method: 'post', data: { ids } })
+}
+
+/** 创建文件夹 */
+export function createFolder(name: string) {
+  return request({ url: '/api/strategy/folder/create', method: 'post', data: { name } })
+}
+
+/** 重命名文件夹 */
+export function renameFolder(id: number, name: string) {
+  return request({ url: '/api/strategy/folder/rename', method: 'post', data: { id, name } })
+}
+
+/** 删除文件夹 */
+export function deleteFolder(id: number) {
+  return request({ url: '/api/strategy/folder/delete', method: 'post', data: { id } })
+}
+
+/** 运行组合回测 */
+export function runPortfolioBacktest(data: {
+  code: string
+  strategy_id?: number
+  strategy_name?: string
+  start_date: string
+  end_date: string
+  initial_cash?: number
+  benchmark?: string
+  commission_rate?: number
+  stamp_tax_rate?: number
+  slippage?: number
+}) {
+  return request({ url: '/api/backtest/portfolio/run', method: 'post', data })
+}
+
+/** 异步启动回测（立即返回 task_id） */
+export function startPortfolioBacktest(data: {
+  code: string
+  strategy_id?: number
+  strategy_name?: string
+  start_date: string
+  end_date: string
+  initial_cash?: number
+  benchmark?: string
+  commission_rate?: number
+  stamp_tax_rate?: number
+  slippage?: number
+}) {
+  return request({ url: '/api/backtest/portfolio/start', method: 'post', data })
+}
+
+/** 获取回测任务完整结果 */
+export function getBacktestTaskResult(taskId: string) {
+  return request({ url: '/api/backtest/portfolio/task_result', method: 'get', params: { task_id: taskId } })
+}
+
+/** 获取回测历史列表 */
+export function getPortfolioBacktestList(params?: { strategy_id?: number }) {
+  return request({ url: '/api/backtest/portfolio/list', method: 'get', params })
+}
+
+/** 获取回测详情 */
+export function getPortfolioBacktestDetail(id: number) {
+  return request({ url: '/api/backtest/portfolio/detail', method: 'get', params: { id } })
+}
+
+/** 获取回测对比数据（多个ID） */
+export function getBacktestCompare(ids: number[]) {
+  return request({ url: '/api/backtest/portfolio/compare', method: 'get', params: { ids: ids.join(',') } })
+}
+
+/** 批量删除回测记录 */
+export function deleteBacktests(ids: number[]) {
+  return request({ url: '/api/backtest/portfolio/delete', method: 'post', data: { ids } })
+}
+
+/** 获取回测历史列表（分页） */
+export function getPortfolioBacktestListPage(params?: { strategy_id?: number; page?: number; page_size?: number }) {
+  return request({ url: '/api/backtest/portfolio/list_page', method: 'get', params })
+}
+
+// ============= 模拟交易 API =============
+
+/** 创建模拟盘 */
+export function createPaperTrading(data: {
+  strategy_id: number
+  backtest_id?: number | null
+  name?: string
+  initial_cash?: number
+  run_frequency?: 'daily' | 'hourly' | '15m'
+  start_at?: string
+}) {
+  return request({ url: '/api/paper/create', method: 'post', data })
+}
+
+/** 更新模拟盘设置 */
+export function updatePaperTrading(data: {
+  id: number
+  name?: string
+  initial_cash?: number
+  run_frequency?: 'daily' | 'hourly' | '15m'
+  start_at?: string
+}) {
+  return request({ url: '/api/paper/update', method: 'post', data })
+}
+
+/** 模拟盘操作（暂停/恢复/停止） */
+export function paperTradingAction(data: { id: number; action: 'pause' | 'resume' | 'stop' }) {
+  return request({ url: '/api/paper/action', method: 'post', data })
+}
+
+/** 获取模拟盘列表 */
+export function getPaperTradingList() {
+  return request({ url: '/api/paper/list', method: 'get' })
+}
+
+/** 获取模拟盘详情 */
+export function getPaperTradingDetail(id: number, posDate?: string, benchmarkStartMode?: 'paper_start' | 'first_trade') {
+  const params: any = { id }
+  if (posDate) params.pos_date = posDate
+  if (benchmarkStartMode) params.benchmark_start_mode = benchmarkStartMode
+  return request({ url: '/api/paper/detail', method: 'get', params })
+}
+
+/** 手动触发模拟盘执行 */
+export function runPaperTrading(id: number) {
+  return request({ url: '/api/paper/run', method: 'post', data: { id } })
+}
+
+/** 模拟盘多策略对比 */
+export function getPaperCompare(ids: number[]) {
+  return request({ url: '/api/paper/compare', method: 'get', params: { ids: ids.join(',') } })
+}
+
+/** 删除模拟盘 */
+export function deletePaperTrading(id: number) {
+  return request({ url: '/api/paper/delete', method: 'post', data: { id } })
+}

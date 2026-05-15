@@ -1,0 +1,19 @@
+#!/bin/bash
+# Phase 9 — 工作日 08:30 刷新综合指标股票池缓存
+# 写入 quantia/cache/composite/_universe_today.pkl
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/refresh_composite_universe.log
+
+check_trade_day "刷新综合指标股票池"
+
+cd "$PROJECT_ROOT"
+echo "[$(date +'%F %T')] 开始刷新综合指标股票池..." | tee -a "$LOG_FILE"
+"$PYTHON_BIN" -m quantia.core.composite.dynamic_universe --refresh --top-n 500 \
+    >>"$LOG_FILE" 2>&1
+RC=$?
+echo "[$(date +'%F %T')] 完成 (rc=$RC)" | tee -a "$LOG_FILE"
+exit $RC

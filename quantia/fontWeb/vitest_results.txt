@@ -1,0 +1,66 @@
+
+[7m[1m[36m RUN [39m[22m[27m [36mv1.6.1[39m [90mQ:/tools/Quantia/quantia/fontWeb[39m
+
+ [32mΓ£ô[39m tests/mock/mockData.test.ts [2m ([22m[2m10 tests[22m[2m)[22m[90m 14[2mms[22m[39m
+ [32mΓ£ô[39m tests/stores/stock.test.ts [2m ([22m[2m8 tests[22m[2m)[22m[90m 19[2mms[22m[39m
+stderr | tests/router/index.test.ts > Router Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò > σ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░τ╗╝σÉêΘÇëΦéíΘí╡Θ¥ó
+[Vue Router warn]: Record with path "/selection/all" is either missing a "component(s)" or "children" property.
+
+stderr | tests/router/index.test.ts > Router Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò > σ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░ΦéíτÑ¿µò░µì«Θí╡Θ¥ó
+[Vue Router warn]: Record with path "/selection/all" is either missing a "component(s)" or "children" property.
+[Vue Router warn]: Record with path "/basic/spot" is either missing a "component(s)" or "children" property.
+
+stderr | tests/router/index.test.ts > Router Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò > σ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░µîçµáçΦ»ªµâàΘí╡Θ¥óσ╣╢Σ╝áΘÇÆσÅéµò░
+[Vue Router warn]: Record with path "/basic/spot" is either missing a "component(s)" or "children" property.
+[Vue Router warn]: Record with path "/indicator/detail" is either missing a "component(s)" or "children" property.
+
+stderr | tests/router/index.test.ts > Router Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò > σ║öΦ»Ñµ¡úτí«σ»╝Φê¬σê░τ¡ûτòÑΘÇëΦéíΘí╡Θ¥ó
+[Vue Router warn]: Record with path "/indicator/detail" is either missing a "component(s)" or "children" property.
+[Vue Router warn]: Record with path "/strategy/enter" is either missing a "component(s)" or "children" property.
+
+stderr | tests/router/index.test.ts > Router Φ╖»τö▒Θàìτ╜«µ╡ïΦ»ò > ΘÜÉΦùÅΦ╖»τö▒σ║öΦ»Ñµ£ë hidden µáçΦ«░
+[Vue Router warn]: Record with path "/strategy/enter" is either missing a "component(s)" or "children" property.
+[Vue Router warn]: Record with path "/indicator/detail" is either missing a "component(s)" or "children" property.
+
+ [32mΓ£ô[39m tests/router/index.test.ts [2m ([22m[2m6 tests[22m[2m)[22m[90m 23[2mms[22m[39m
+DEPRECATION WARNING [legacy-js-api]: The legacy JS API is deprecated and will be removed in Dart Sass 2.0.0.
+
+More info: https://sass-lang.com/d/legacy-js-api
+
+ [32mΓ£ô[39m tests/utils/index.test.ts [2m ([22m[2m22 tests[22m[2m)[22m[33m 357[2mms[22m[39m
+DEPRECATION WARNING [legacy-js-api]: The legacy JS API is deprecated and will be removed in Dart Sass 2.0.0.
+
+More info: https://sass-lang.com/d/legacy-js-api
+
+ [32mΓ£ô[39m tests/views/HomeView.test.ts [2m ([22m[2m5 tests[22m[2m)[22m[90m 232[2mms[22m[39m
+stderr | tests/views/BacktestCompare.test.ts > BacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó > σ║öΦ»Ñµ¡úτí«µ╕▓µƒôΘí╡Θ¥óµáçΘóÿ
+[Vue warn]: Plugin has already been applied to target app.
+
+stderr | tests/views/BacktestCompare.test.ts > BacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó > σ║öΦ»Ñµÿ╛τñ║σ»╣µ»öτ¡ûτòÑµò░ΘçÅ
+[Vue warn]: Plugin has already been applied to target app.
+
+stderr | tests/views/BacktestCompare.test.ts > BacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó > σ║öΦ»Ñµ╕▓µƒô tabs Θ¥óµ¥┐
+[Vue warn]: Plugin has already been applied to target app.
+
+stderr | tests/views/BacktestCompare.test.ts > BacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó > σ║öΦ»ÑΦ░âτö¿ getBacktestCompare API
+[Vue warn]: Plugin has already been applied to target app.
+
+ [32mΓ£ô[39m tests/api/handlers.test.ts [2m ([22m[2m6 tests[22m[2m)[22m[90m 132[2mms[22m[39m
+[90mstdout[2m | tests/api/handlers.test.ts[2m > [22m[2mAPI Mock Handlers µ╡ïΦ»ò[2m > [22m[2mGET /quantia/control/attention[2m > [22m[2mσ║öΦ»Ñµö»µîüµ╖╗σèáσà│µ│¿[22m[39m
+[Mock] µ╖╗σèáσà│µ│¿: 000001
+[Mock] µ╖╗σèáσà│µ│¿: 000001
+
+[90mstdout[2m | tests/api/handlers.test.ts[2m > [22m[2mAPI Mock Handlers µ╡ïΦ»ò[2m > [22m[2mGET /quantia/control/attention[2m > [22m[2mσ║öΦ»Ñµö»µîüσÅûµ╢êσà│µ│¿[22m[39m
+[Mock] σÅûµ╢êσà│µ│¿: 000001
+[Mock] σÅûµ╢êσà│µ│¿: 000001
+
+stderr | tests/views/BacktestCompare.test.ts > BacktestCompare σ¢₧µ╡ïσ»╣µ»öΘí╡Θ¥ó > σ║öΦ»ÑσîàσÉ½σ¢╛Φí¿σ«╣σÖ¿
+[Vue warn]: Plugin has already been applied to target app.
+
+ [32mΓ£ô[39m tests/views/BacktestCompare.test.ts [2m ([22m[2m13 tests[22m[2m)[22m[33m 404[2mms[22m[39m
+ [32mΓ£ô[39m tests/views/StockData.test.ts [2m ([22m[2m5 tests[22m[2m)[22m[33m 1094[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m8 passed[39m[22m[90m (8)[39m
+[2m      Tests [22m [1m[32m75 passed[39m[22m[90m (75)[39m
+[2m   Start at [22m 17:13:47
+[2m   Duration [22m 6.68s[2m (transform 1.57s, setup 23.35s, collect 3.51s, tests 2.27s, environment 10.36s, prepare 1.94s)[22m

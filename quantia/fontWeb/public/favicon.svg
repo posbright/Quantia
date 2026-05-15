@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Quantia">
+  <defs>
+    <linearGradient id="bg" x1="18" y1="12" x2="110" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#102a43"/>
+      <stop offset="0.55" stop-color="#0f3b4f"/>
+      <stop offset="1" stop-color="#14532d"/>
+    </linearGradient>
+    <linearGradient id="line" x1="24" y1="91" x2="105" y2="33" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22c55e"/>
+      <stop offset="0.6" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#020617" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="24" fill="url(#bg)"/>
+  <rect x="16" y="16" width="96" height="96" rx="18" fill="none" stroke="#ffffff" stroke-opacity="0.12"/>
+
+  <g opacity="0.32" stroke="#dbeafe" stroke-width="1">
+    <path d="M28 36H100"/>
+    <path d="M28 58H100"/>
+    <path d="M28 80H100"/>
+    <path d="M40 28V92"/>
+    <path d="M64 28V92"/>
+    <path d="M88 28V92"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <g stroke-linecap="round" stroke-width="4">
+      <path d="M42 72V91" stroke="#22c55e"/>
+      <rect x="36" y="61" width="12" height="22" rx="3" fill="#22c55e"/>
+      <path d="M62 48V78" stroke="#ef4444"/>
+      <rect x="56" y="54" width="12" height="17" rx="3" fill="#ef4444"/>
+      <path d="M82 42V74" stroke="#22c55e"/>
+      <rect x="76" y="49" width="12" height="17" rx="3" fill="#22c55e"/>
+    </g>
+    <path d="M27 87L44 68L59 74L78 51L100 39" fill="none" stroke="url(#line)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M27 87L44 68L59 74L78 51L100 39" fill="none" stroke="#f8fafc" stroke-opacity="0.72" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="100" cy="39" r="6" fill="#f59e0b" stroke="#fff7ed" stroke-width="2"/>
+  </g>
+
+  <text x="64" y="106" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="800" fill="#f8fafc">IS</text>
+</svg>

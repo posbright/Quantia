@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>选股验证 — 设计总览</title>
+<style>
+:root {
+  --bg: #f5f7fa; --card: #fff; --border: #e4e7ed; --text: #303133;
+  --text2: #606266; --text3: #909399; --brand: #409eff; --brand-light: #ecf5ff;
+  --up: #f56c6c; --down: #67c23a; --warn: #e6a23c; --radius: 8px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+.container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+h1 { font-size: 24px; margin-bottom: 8px; }
+h2 { font-size: 18px; margin-bottom: 16px; color: var(--text); padding-bottom: 8px; border-bottom: 2px solid var(--brand); display: inline-block; }
+h3 { font-size: 15px; margin: 16px 0 8px; color: var(--text2); }
+p, li { font-size: 14px; color: var(--text2); }
+.subtitle { color: var(--text3); font-size: 14px; margin-bottom: 32px; }
+.section { margin-bottom: 48px; }
+.card { background: var(--card); border-radius: var(--radius); border: 1px solid var(--border); padding: 24px; margin-bottom: 16px; }
+.card-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { background: #fafafa; font-weight: 600; text-align: left; padding: 10px 12px; border-bottom: 2px solid var(--border); }
+td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+tr:hover { background: var(--brand-light); }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+.tag-blue { background: #ecf5ff; color: #409eff; }
+.tag-green { background: #f0f9eb; color: #67c23a; }
+.tag-red { background: #fef0f0; color: #f56c6c; }
+.tag-yellow { background: #fdf6ec; color: #e6a23c; }
+.page-flow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.page-node { background: var(--brand); color: #fff; padding: 8px 16px; border-radius: var(--radius); font-size: 13px; font-weight: 500; white-space: nowrap; }
+.page-node.secondary { background: #67c23a; }
+.page-node.tertiary { background: #e6a23c; }
+.arrow { color: var(--text3); font-size: 18px; }
+.highlight-box { background: var(--brand-light); border-left: 4px solid var(--brand); padding: 12px 16px; border-radius: 0 var(--radius) var(--radius) 0; margin: 12px 0; font-size: 13px; }
+.comparison { display: grid; grid-template-columns: 1fr 40px 1fr; gap: 0; align-items: start; }
+.comparison .vs { display: flex; align-items: center; justify-content: center; font-weight: bold; color: var(--brand); padding-top: 40px; }
+.old-design, .new-design { border-radius: var(--radius); padding: 16px; }
+.old-design { background: #fef0f0; border: 1px solid #fbc4c4; }
+.new-design { background: #f0f9eb; border: 1px solid #b3e19d; }
+.old-design h4 { color: #f56c6c; }
+.new-design h4 { color: #67c23a; }
+ul { padding-left: 20px; }
+li { margin-bottom: 4px; }
+a { color: var(--brand); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.toc { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-bottom: 32px; }
+.toc a { display: block; background: var(--card); border: 1px solid var(--border); padding: 12px 16px; border-radius: var(--radius); transition: box-shadow .2s; }
+.toc a:hover { box-shadow: 0 2px 12px rgba(64,158,255,.2); text-decoration: none; }
+.toc .num { color: var(--brand); font-weight: 700; margin-right: 8px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Quantia 选股验证 — 重新设计方案</h1>
+<p class="subtitle">设计目标：将分散的"自定义回测""回测看板""策略验证"三个功能整合为统一的<b>选股验证中心</b>，流程更清晰、数据可视化更直观、交互更符合量化分析师的验证习惯。</p>
+
+<!-- 目录 -->
+<div class="toc">
+  <a href="#overview"><span class="num">01</span>设计总览 & 页面流</a>
+  <a href="#page1"><span class="num">02</span>验证中心 — 入口页</a>
+  <a href="#page2"><span class="num">03</span>单股验证 — 结果页</a>
+  <a href="#page3"><span class="num">04</span>策略总览 — 看板页</a>
+  <a href="#page4"><span class="num">05</span>策略详情 — 深度分析</a>
+  <a href="#page5"><span class="num">06</span>策略对比 — 多策略PK</a>
+  <a href="#compare"><span class="num">07</span>新旧设计对比</a>
+  <a href="#api"><span class="num">08</span>后端API对照表</a>
+</div>
+
+<!-- ========================================= -->
+<div class="section" id="overview">
+<h2>01 设计总览 & 页面流</h2>
+
+<div class="card">
+  <div class="card-title">页面架构</div>
+  <div class="page-flow">
+    <div class="page-node">验证中心<br><small>/backtest/verify</small></div>
+    <span class="arrow">→</span>
+    <div class="page-node secondary">单股验证结果<br><small>/backtest/verify/stock</small></div>
+    <span class="arrow">→</span>
+    <div class="page-node tertiary">K线指标详情<br><small>/indicator/detail</small></div>
+  </div>
+  <br>
+  <div class="page-flow">
+    <div class="page-node">验证中心<br><small>/backtest/verify</small></div>
+    <span class="arrow">→</span>
+    <div class="page-node secondary">策略总览看板<br><small>/backtest/verify/overview</small></div>
+    <span class="arrow">→</span>
+    <div class="page-node tertiary">策略深度分析<br><small>/backtest/verify/strategy/:name</small></div>
+    <span class="arrow">→</span>
+    <div class="page-node">策略对比<br><small>/backtest/verify/compare</small></div>
+  </div>
+</div>
+
+<div class="highlight-box">
+  <b>核心改变：</b>
+  ① 入口统一为"验证中心"，同页面支持单股/策略两种模式，不再分散多个入口；
+  ② 策略看板与验证结果深度联动，看板卡片点击直达策略深度分析；
+  ③ 新增"策略对比"页，支持任意2-5个策略同屏PK核心指标+收益曲线；
+  ④ 每个页面都有明确的"下一步"导航，形成完整验证闭环。
+</div>
+</div>
+
+<!-- ========================================= -->
+<div class="section" id="page1">
+<h2>02 验证中心 — 入口页</h2>
+<p>路由：<code>/backtest/verify</code> | 定位：用户进行选股验证的唯一入口</p>
+
+<div class="card">
+  <div class="card-title">📋 页面布局</div>
+
+  <h3>区域 A — 顶部导航栏</h3>
+  <table>
+    <tr><th width="200">元素</th><th>说明</th></tr>
+    <tr><td>页面标题</td><td><b>选股验证中心</b>，左上角固定</td></tr>
+    <tr><td>快速入口标签组</td><td>3 个 Tab：<span class="tag tag-blue">单股验证</span> <span class="tag tag-green">策略验证</span> <span class="tag tag-yellow">策略看板</span>，切换时下方内容区无刷新过渡</td></tr>
+    <tr><td>帮助按钮</td><td>右上角 (?) 图标，Tooltip 展示本页功能说明</td></tr>
+  </table>
+
+  <h3>区域 B — 单股验证表单（Tab 1）</h3>
+  <table>
+    <tr><th width="200">字段</th><th>类型</th><th>说明</th></tr>
+    <tr><td>股票代码</td><td>Input + 模糊搜索下拉</td><td>输入代码或名称模糊匹配，支持按拼音首字母搜索（如输入 "PA" 匹配 "平安银行"）</td></tr>
+    <tr><td>验证策略</td><td>Select 下拉 + 分组</td><td>策略分3组：技术指标 / 形态识别 / 量价策略 / AI策略，可选"不限（全策略对比）"</td></tr>
+    <tr><td>回测周期</td><td>ButtonGroup</td><td>1周 / 2周 / 1月 / 3月 / 6月 / 1年，默认 1月</td></tr>
+    <tr><td>买入日期</td><td>DatePicker</td><td>默认留空表示最近交易日</td></tr>
+    <tr><td>观察天数</td><td>多选标签</td><td>预设 [1, 3, 5, 10, 20]，可自定义添加，最多30个</td></tr>
+    <tr><td>执行验证</td><td>Button</td><td>主按钮，触发请求</td></tr>
+  </table>
+
+  <h3>区域 C — 策略验证表单（Tab 2）</h3>
+  <table>
+    <tr><th width="200">字段</th><th>类型</th><th>说明</th></tr>
+    <tr><td>选择策略</td><td>Select（必选）</td><td>同上，但必须选择一个策略</td></tr>
+    <tr><td>回测周期</td><td>ButtonGroup</td><td>同上</td></tr>
+    <tr><td>回测天数</td><td>Slider + InputNumber</td><td>最近 N 个交易日，范围 5-120，默认 30</td></tr>
+    <tr><td>观察天数</td><td>多选标签</td><td>同上</td></tr>
+    <tr><td>成功判定</td><td>Select</td><td>"N 日收益 > 0%"，N 从观察天数中选，可自定义阈值（如 >2%、>5%）</td></tr>
+    <tr><td>执行验证</td><td>Button</td><td>主按钮</td></tr>
+  </table>
+
+  <h3>区域 D — 策略看板（Tab 3）</h3>
+  <p>直接嵌入策略总览的简化版（最近30日概览），卡片点击跳转策略详情页。</p>
+</div>
+
+<div class="card">
+  <div class="card-title">🎨 视觉参考 — 单股验证表单区域</div>
+  <div style="background:#f0f2f5;border-radius:8px;padding:24px;border:2px dashed #dcdfe6;">
+    <div style="display:flex;gap:12px;margin-bottom:20px;">
+      <div style="background:#409eff;color:#fff;padding:8px 20px;border-radius:20px;font-size:14px;">单股验证</div>
+      <div style="background:#fff;color:#606266;padding:8px 20px;border-radius:20px;font-size:14px;border:1px solid #dcdfe6;">策略验证</div>
+      <div style="background:#fff;color:#606266;padding:8px 20px;border-radius:20px;font-size:14px;border:1px solid #dcdfe6;">策略看板</div>
+    </div>
+    <div style="display:grid;grid-template-columns: 200px 240px auto 160px auto 1fr;gap:12px;align-items:end;">
+      <div>
+        <div style="font-size:12px;color:#909399;margin-bottom:4px;">股票代码</div>
+        <div style="background:#fff;border:1px solid #dcdfe6;border-radius:4px;padding:8px 12px;font-size:14px;color:#c0c4cc;">输入代码或名称</div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#909399;margin-bottom:4px;">验证策略</div>
+        <div style="background:#fff;border:1px solid #dcdfe6;border-radius:4px;padding:8px 12px;font-size:14px;color:#c0c4cc;">选择策略（可选）▾</div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#909399;margin-bottom:4px;">回测周期</div>
+        <div style="display:flex;gap:0;">
+          <span style="padding:8px 12px;border:1px solid #dcdfe6;font-size:12px;border-radius:4px 0 0 4px;background:#fff;">1周</span>
+          <span style="padding:8px 12px;border:1px solid #dcdfe6;font-size:12px;background:#fff;border-left:0;">2周</span>
+          <span style="padding:8px 12px;border:1px solid #409eff;font-size:12px;background:#ecf5ff;color:#409eff;border-left:0;">1月</span>
+          <span style="padding:8px 12px;border:1px solid #dcdfe6;font-size:12px;background:#fff;border-left:0;">3月</span>
+          <span style="padding:8px 12px;border:1px solid #dcdfe6;font-size:12px;background:#fff;border-left:0;">6月</span>
+          <span style="padding:8px 12px;border:1px solid #dcdfe6;font-size:12px;background:#fff;border-radius:0 4px 4px 0;border-left:0;">1年</span>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#909399;margin-bottom:4px;">买入日期</div>
+        <div style="background:#fff;border:1px solid #dcdfe6;border-radius:4px;padding:8px 12px;font-size:14px;color:#c0c4cc;">默认最新 📅</div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#909399;margin-bottom:4px;">观察天数</div>
+        <div style="display:flex;gap:4px;">
+          <span style="background:#ecf5ff;color:#409eff;padding:4px 10px;border-radius:12px;font-size:12px;">1日</span>
+          <span style="background:#ecf5ff;color:#409eff;padding:4px 10px;border-radius:12px;font-size:12px;">3日</span>
+          <span style="background:#ecf5ff;color:#409eff;padding:4px 10px;border-radius:12px;font-size:12px;">5日</span>
+          <span style="background:#ecf5ff;color:#409eff;padding:4px 10px;border-radius:12px;font-size:12px;">10日</span>
+          <span style="background:#ecf5ff;color:#409eff;padding:4px 10px;border-radius:12px;font-size:12px;">20日</span>
+          <span style="background:#fff;color:#c0c4cc;padding:4px 10px;border-radius:12px;font-size:12px;border:1px dashed #dcdfe6;">+ 自定义</span>
+        </div>
+      </div>
+      <div>
+        <div style="background:#409eff;color:#fff;padding:8px 24px;border-radius:4px;font-size:14px;text-align:center;cursor:pointer;">🔍 执行验证</div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ========================================= -->
+<div class="section" id="page2">
+<h2>03 单股验证 — 结果页</h2>
+<p>路由：<code>/backtest/verify/stock?code=000001&strategy=...</code> | 定位：单只股票的选股策略验证结果展示</p>
+
+<div class="card">
+  <div class="card-title">📊 页面布局（从上到下）</div>
+
+  <h3>区域 A — 股票概况头部</h3>
+  <div style="background:#f0f2f5;border-radius:8px;padding:20px;margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+      <div>
+        <div style="font-size:22px;font-weight:700;">平安银行 <span style="color:#909399;font-size:14px;font-weight:400;">000001.SZ</span></div>
+        <div style="font-size:13px;color:#909399;margin-top:4px;">买入日期: 2026-05-14 | 买入价: ¥15.25 | 回测周期: 1个月 | 数据天数: 22个交易日</div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <div style="background:#fff;border:1px solid #dcdfe6;border-radius:4px;padding:6px 12px;font-size:12px;cursor:pointer;">📈 K线指标</div>
+        <div style="background:#fff;border:1px solid #dcdfe6;border-radius:4px;padding:6px 12px;font-size:12px;cursor:pointer;">🔄 重新验证</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:12px;">
+      <span style="background:#f0f9eb;color:#67c23a;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:500;">✅ 放量上涨 命中</span>
+      <span style="background:#f0f9eb;color:#67c23a;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:500;">✅ 突破平台 命中</span>
+      <span style="background:#fef0f0;color:#f56c6c;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:500;">✗ 海龟交易 未触发</span>
+    </div>
+  </div>
+
+  <h3>区域 B — 核心指标卡片（4列）</h3>
+  <div class="grid-4" style="margin-bottom:16px;">
+    <div style="background:#f0f9eb;border-radius:8px;padding:16px;text-align:center;">
+      <div style="font-size:12px;color:#67c23a;">区间最大涨幅</div>
+      <div style="font-size:28px;font-weight:700;color:#f56c6c;margin:4px 0;">+8.52%</div>
+      <div style="font-size:11px;color:#909399;">出现在第 12 个交易日</div>
+    </div>
+    <div style="background:#fef0f0;border-radius:8px;padding:16px;text-align:center;">
+      <div style="font-size:12px;color:#f56c6c;">区间最大回撤</div>
+      <div style="font-size:28px;font-weight:700;color:#67c23a;">-3.21%</div>
+      <div style="font-size:11px;color:#909399;">出现在第 5 个交易日</div>
+    </div>
+    <div style="background:#f5f7fa;border-radius:8px;padding:16px;text-align:center;">
+      <div style="font-size:12px;color:#409eff;">5日收益率</div>
+      <div style="font-size:28px;font-weight:700;color:#f56c6c;">+2.15%</div>
+      <div style="font-size:11px;color:#909399;">扣除手续费后</div>
+    </div>
+    <div style="background:#f5f7fa;border-radius:8px;padding:16px;text-align:center;">
+      <div style="font-size:12px;color:#409eff;">20日收益率</div>
+      <div style="font-size:28px;font-weight:700;color:#f56c6c;">+5.68%</div>
+      <div style="font-size:11px;color:#909399;">扣除手续费后</div>
+    </div>
+  </div>
+
+  <h3>区域 C — 收益率走势图（新增核心可视化）</h3>
+  <div style="background:#f5f7fa;border-radius:8px;padding:20px;margin-bottom:16px;">
+    <div style="font-size:14px;font-weight:600;margin-bottom:12px;">📈 持有收益率走势</div>
+    <div style="background:#fff;border-radius:8px;height:280px;display:flex;align-items:center;justify-content:center;border:1px dashed #dcdfe6;">
+      <div style="text-align:center;">
+        <div style="font-size:14px;color:#909399;">ECharts 面积图</div>
+        <div style="font-size:12px;color:#c0c4cc;margin-top:4px;">
+          X 轴: 持有天数 (1-22)<br>
+          Y 轴: 累计收益率 %<br>
+          蓝色实线: 持有收益率曲线<br>
+          红色虚线: 买入价格基准线 (0%)<br>
+          绿色区域: 正收益区域<br>
+          红色区域: 负收益区域<br>
+          关键节点标注: 1日, 3日, 5日, 10日, 20日 收益率值
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>区域 D — 各观察期收益表（改进版）</h3>
+  <table>
+    <thead>
+      <tr><th width="80">持有天数</th><th width="110">卖出日期</th><th width="100">卖出价格</th><th width="100">原始收益</th><th width="100">净收益</th><th width="120">收益率等级</th><th>走势缩略</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><b>1日</b></td><td>2026-05-15</td><td>¥15.38</td>
+        <td style="color:#f56c6c;">+1.05%</td>
+        <td style="color:#f56c6c;">+0.85%</td>
+        <td><span class="tag tag-green">小幅盈利</span></td>
+        <td><div style="background:linear-gradient(90deg,#67c23a 60%,transparent 60%);height:4px;border-radius:2px;width:100px;"></div></td>
+      </tr>
+      <tr>
+        <td><b>3日</b></td><td>2026-05-17</td><td>¥15.57</td>
+        <td style="color:#f56c6c;">+2.35%</td>
+        <td style="color:#f56c6c;">+2.15%</td>
+        <td><span class="tag tag-green">盈利</span></td>
+        <td><div style="background:linear-gradient(90deg,#67c23a 75%,transparent 75%);height:4px;border-radius:2px;width:100px;"></div></td>
+      </tr>
+      <tr>
+        <td><b>5日</b></td><td>2026-05-21</td><td>¥15.42</td>
+        <td style="color:#f56c6c;">+1.50%</td>
+        <td style="color:#f56c6c;">+1.30%</td>
+        <td><span class="tag tag-green">盈利</span></td>
+        <td><div style="background:linear-gradient(90deg,#67c23a 65%,transparent 65%);height:4px;border-radius:2px;width:100px;"></div></td>
+      </tr>
+      <tr>
+        <td><b>10日</b></td><td>2026-05-28</td><td>¥14.85</td>
+        <td style="color:#67c23a;">-2.62%</td>
+        <td style="color:#67c23a;">-2.82%</td>
+        <td><span class="tag tag-red">亏损</span></td>
+        <td><div style="background:linear-gradient(90deg,#f56c6c 40%,transparent 40%);height:4px;border-radius:2px;width:100px;"></div></td>
+      </tr>
+      <tr>
+        <td><b>20日</b></td><td>2026-06-12</td><td>¥16.12</td>
+        <td style="color:#f56c6c;">+5.88%</td>
+        <td style="color:#f56c6c;">+5.68%</td>
+        <td><span class="tag tag-blue">优质</span></td>
+        <td><div style="background:linear-gradient(90deg,#409eff 85%,transparent 85%);height:4px;border-radius:2px;width:100px;"></div></td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="font-size:11px;color:#c0c4cc;margin-top:4px;">* 净收益 = 原始收益 - 交易成本（佣金 + 印花税，约 0.2%）| 收益率等级: 亏损 &lt;0% / 小幅盈利 0~2% / 盈利 2~5% / 优质 &gt;5%</p>
+
+  <h3>区域 E — 买入日技术指标仪表盘（新增可视化）</h3>
+  <div style="background:#f5f7fa;border-radius:8px;padding:20px;margin-bottom:16px;">
+    <div style="font-size:14px;font-weight:600;margin-bottom:12px;">🔬 买入日关键指标</div>
+    <div class="grid-3">
+      <div style="background:#fff;border-radius:8px;padding:12px;text-align:center;">
+        <div style="font-size:11px;color:#909399;">RSI(6)</div>
+        <div style="font-size:24px;font-weight:700;color:#e6a23c;">65.5</div>
+        <div style="height:4px;background:#ebeef5;border-radius:2px;margin-top:8px;">
+          <div style="height:4px;background:#e6a23c;border-radius:2px;width:65.5%;"></div>
+        </div>
+        <div style="font-size:11px;color:#909399;margin-top:4px;">偏强</div>
+      </div>
+      <div style="background:#fff;border-radius:8px;padding:12px;text-align:center;">
+        <div style="font-size:11px;color:#909399;">KDJ-K</div>
+        <div style="font-size:24px;font-weight:700;color:#f56c6c;">75.3</div>
+        <div style="height:4px;background:#ebeef5;border-radius:2px;margin-top:8px;">
+          <div style="height:4px;background:#f56c6c;border-radius:2px;width:75.3%;"></div>
+        </div>
+        <div style="font-size:11px;color:#909399;margin-top:4px;">超买区</div>
+      </div>
+      <div style="background:#fff;border-radius:8px;padding:12px;text-align:center;">
+        <div style="font-size:11px;color:#909399;">MACD</div>
+        <div style="font-size:24px;font-weight:700;color:#67c23a;">0.025</div>
+        <div style="height:4px;background:#ebeef5;border-radius:2px;margin-top:8px;">
+          <div style="height:4px;background:#67c23a;border-radius:2px;width:55%;"></div>
+        </div>
+        <div style="font-size:11px;color:#909399;margin-top:4px;">金叉上方</div>
+      </div>
+      <div style="background:#fff;border-radius:8px;padding:12px;text-align:center;">
+        <div style="font-size:11px;color:#909399;">CCI</div>
+        <div style="font-size:24px;font-weight:700;color:#409eff;">45.8</div>
+        <div style="height:4px;background:#ebeef5;border-radius:2px;margin-top:8px;">
+          <div style="height:4px;background:#409eff;border-radius:2px;width:60%;"></div>
+        </div>
+        <div style="font-size:11px;color:#909399;margin-top:4px;">正常区间</div>
+      </div>
+      <div style="background:#fff;border-radius:8px;padding:12px;text-align:center;">
+        <div style="font-size:11px;color:#909399;">WR(6)</div>
+        <div style="font-size:24px;font-weight:700;color:#e6a23c;">-25.3</div>
+        <div style="height:4px;background:#ebeef5;border-radius:2px;margin-top:8px;">
+          <div style="height:4px;background:#e6a23c;border-radius:2px;width:74.7%;"></div>
+        </div>
+        <div style="font-size:11px;color:#909399;margin-top:4px;">偏强</div>
+      </div>
+      <div style="background:#fff;border-radius:8px;padding:12px;text-align:center;">
+        <div style="font-size:11px;color:#909399;">ATR</div>
+        <div style="font-size:24px;font-weight:700;color:#909399;">0.35</div>
+        <div style="height:4px;background:#ebeef5;border-radius:2px;margin-top:8px;">
+          <div style="height:4px;background:#909399;border-radius:2px;width:35%;"></div>
+        </div>
+        <div style="font-size:11px;color:#909399;margin-top:4px;">低波动</div>
+      </div>
+    </div>
+    <p style="font-size:11px;color:#c0c4cc;margin-top:8px;">指标仪表盘展示买入日的关键技术指标值和对应的强弱信号判读，帮助验证策略买入信号的合理性。</p>
+  </div>
+</div>
+</div>
+
+<!-- ========================================= -->
+<div class="section" id="page3">
+<h2>04 策略总览 — 看板页</h2>
+<p>路由：<code>/backtest/verify/overview</code> | 定位：所有策略的宏观表现对比看板</p>
+
+<div class="card">
+  <div class="card-title">📊 页面布局</div>
+
+  <h3>区域 A — 控制栏</h3>
+  <div style="background:#f0f2f5;border-radius:8px;padding:16px;margin-bottom:16px;display:flex;gap:16px;align-items:center;">
+    <div>
+      <span style="font-size:12px;color:#909399;">统计周期:</span>
+      <span style="margin-left:4px;display:inline-flex;gap:0;">
+        <span style="padding:6px 12px;border:1px solid #dcdfe6;font-size:12px;border-radius:4px 0 0 4px;background:#fff;">近1月</span>
+        <span style="padding:6px 12px;border:1px solid #409eff;font-size:12px;background:#ecf5ff;color:#409eff;border-left:0;">近3月</span>
+        <span style="padding:6px 12px;border:1px solid #dcdfe6;font-size:12px;background:#fff;border-left:0;border-radius:0 4px 4px 0;">近6月</span>
+      </span>
+    </div>
+    <div>
+      <span style="font-size:12px;color:#909399;">排名指标:</span>
+      <span style="margin-left:4px;background:#fff;border:1px solid #dcdfe6;border-radius:4px;padding:6px 12px;font-size:12px;">5日收益率 ▾</span>
+    </div>
+    <div>
+      <span style="font-size:12px;color:#909399;">策略类别:</span>
+      <span style="margin-left:4px;display:inline-flex;gap:4px;">
+        <span style="padding:4px 10px;border-radius:12px;font-size:12px;background:#ecf5ff;color:#409eff;">全部</span>
+        <span style="padding:4px 10px;border-radius:12px;font-size:12px;background:#fff;color:#606266;border:1px solid #dcdfe6;">技术指标</span>
+        <span style="padding:4px 10px;border-radius:12px;font-size:12px;background:#fff;color:#606266;border:1px solid #dcdfe6;">形态识别</span>
+        <span style="padding:4px 10px;border-radius:12px;font-size:12px;background:#fff;color:#606266;border:1px solid #dcdfe6;">量价策略</span>
+      </span>
+    </div>
+    <div style="flex:1;"></div>
+    <div style="background:#409eff;color:#fff;padding:6px 16px;border-radius:4px;font-size:12px;cursor:pointer;">📊 策略对比</div>
+  </div>
+
+  <h3>区域 B — 策略排名卡片（排名热力图）</h3>
+  <div style="margin-bottom:16px;">
+    <table>
+      <thead>
+        <tr>
+          <th width="40">#</th><th width="140">策略名称</th><th width="80">类别</th>
+          <th width="80">信号数</th><th width="90">成功率</th>
+          <th width="80">1日</th><th width="80">3日</th><th width="80" style="background:#e8f4fd;">5日 ▼</th><th width="80">10日</th><th width="80">20日</th>
+          <th>收益趋势</th><th width="60">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span style="background:#f56c6c;color:#fff;padding:2px 6px;border-radius:4px;font-size:11px;">1</span></td>
+          <td style="font-weight:600;">均线多头</td>
+          <td><span class="tag tag-blue">技术指标</span></td>
+          <td>856</td>
+          <td><b style="color:#f56c6c;">62.3%</b></td>
+          <td style="color:#f56c6c;">+0.42%</td>
+          <td style="color:#f56c6c;">+1.85%</td>
+          <td style="background:#e8f4fd;color:#f56c6c;font-weight:600;">+3.52%</td>
+          <td style="color:#f56c6c;">+5.12%</td>
+          <td style="color:#f56c6c;">+8.25%</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:2px;height:20px;">
+              <div style="width:8px;height:8px;background:#f56c6c;border-radius:50%;"></div>
+              <div style="width:8px;height:12px;background:#f56c6c;border-radius:50%;"></div>
+              <div style="width:8px;height:16px;background:#f56c6c;border-radius:50%;"></div>
+              <div style="width:8px;height:14px;background:#f56c6c;border-radius:50%;"></div>
+              <div style="width:8px;height:20px;background:#f56c6c;border-radius:50%;"></div>
+            </div>
+          </td>
+          <td><a href="#" style="font-size:12px;">详情 →</a></td>
+        </tr>
+        <tr>
+          <td><span style="background:#e6a23c;color:#fff;padding:2px 6px;border-radius:4px;font-size:11px;">2</span></td>
+          <td style="font-weight:600;">突破确认</td>
+          <td><span class="tag tag-yellow">形态识别</span></td>
+          <td>623</td>
+          <td><b style="color:#f56c6c;">58.1%</b></td>
+          <td style="color:#f56c6c;">+0.38%</td>
+          <td style="color:#f56c6c;">+1.52%</td>
+          <td style="background:#e8f4fd;color:#f56c6c;font-weight:600;">+2.88%</td>
+          <td style="color:#f56c6c;">+4.35%</td>
+          <td style="color:#f56c6c;">+6.78%</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:2px;height:20px;">
+              <div style="width:8px;height:6px;background:#f56c6c;border-radius:50%;"></div>
+              <div style="width:8px;height:10px;background:#f56c6c;border-radius:50%;"></div>
+              <div style="width:8px;height:14px;background:#f56c6c;border-radius:50%;"></div>
+              <div style="width:8px;height:12px;background:#f56c6c;border-radius:50%;"></div>
+              <div style="width:8px;height:18px;background:#f56c6c;border-radius:50%;"></div>
+            </div>
+          </td>
+          <td><a href="#" style="font-size:12px;">详情 →</a></td>
+        </tr>
+        <tr style="background:#fef0f0;">
+          <td><span style="background:#909399;color:#fff;padding:2px 6px;border-radius:4px;font-size:11px;">14</span></td>
+          <td style="font-weight:600;">放量跌停</td>
+          <td><span class="tag tag-red">反转策略</span></td>
+          <td>125</td>
+          <td><b style="color:#67c23a;">28.0%</b></td>
+          <td style="color:#67c23a;">-0.85%</td>
+          <td style="color:#67c23a;">-1.22%</td>
+          <td style="background:#fef0f0;color:#67c23a;font-weight:600;">-0.58%</td>
+          <td style="color:#f56c6c;">+0.52%</td>
+          <td style="color:#f56c6c;">+1.85%</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:2px;height:20px;">
+              <div style="width:8px;height:14px;background:#67c23a;border-radius:50%;"></div>
+              <div style="width:8px;height:12px;background:#67c23a;border-radius:50%;"></div>
+              <div style="width:8px;height:6px;background:#67c23a;border-radius:50%;"></div>
+              <div style="width:8px;height:8px;background:#f56c6c;border-radius:50%;"></div>
+              <div style="width:8px;height:10px;background:#f56c6c;border-radius:50%;"></div>
+            </div>
+          </td>
+          <td><a href="#" style="font-size:12px;">详情 →</a></td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size:11px;color:#c0c4cc;margin-top:4px;">表头带 ▼ 标记排序列 | 红色背景行表示低于均值 | 收益趋势为 1/3/5/10/20 日收益气泡图 | 点击行可勾选进入"策略对比"</p>
+  </div>
+
+  <h3>区域 C — 策略收益时间轴（趋势折线图）</h3>
+  <div style="background:#f5f7fa;border-radius:8px;padding:20px;">
+    <div style="font-size:14px;font-weight:600;margin-bottom:12px;">📈 各策略5日收益走势（近3月）</div>
+    <div style="background:#fff;border-radius:8px;height:300px;display:flex;align-items:center;justify-content:center;border:1px dashed #dcdfe6;">
+      <div style="text-align:center;">
+        <div style="font-size:14px;color:#909399;">ECharts 多系列折线图</div>
+        <div style="font-size:12px;color:#c0c4cc;margin-top:4px;">
+          X 轴: 日期序列<br>
+          Y 轴: 平均 N 日收益率 %<br>
+          每条线 = 一个策略<br>
+          支持 legend 点击筛选<br>
+          鼠标悬停显示该日期所有策略收益排名<br>
+          零线用虚线标注
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ========================================= -->
+<div class="section" id="page4">
+<h2>05 策略详情 — 深度分析</h2>
+<p>路由：<code>/backtest/verify/strategy/:name</code> | 定位：单个策略的深度验证分析</p>
+
+<div class="card">
+  <div class="card-title">📋 页面布局</div>
+
+  <h3>区域 A — 策略概况头部</h3>
+  <div style="background:#f0f2f5;border-radius:8px;padding:20px;margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <div style="font-size:20px;font-weight:700;">放量上涨 <span class="tag tag-blue" style="vertical-align:middle;">量价策略</span></div>
+        <div style="font-size:13px;color:#909399;margin-top:4px;">近 60 个交易日 | 共选出 1,250 只 | 成功率 28.5%</div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <div style="background:#fff;border:1px solid #dcdfe6;border-radius:4px;padding:6px 12px;font-size:12px;">⚖️ 加入对比</div>
+        <div style="background:#409eff;color:#fff;border-radius:4px;padding:6px 12px;font-size:12px;">🔄 刷新数据</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>区域 B — 核心指标卡片（5列）</h3>
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px;">
+    <div style="background:#fff;border:1px solid #ebeef5;border-radius:8px;padding:14px;text-align:center;">
+      <div style="font-size:11px;color:#909399;">总成功率</div>
+      <div style="font-size:24px;font-weight:700;color:#f56c6c;">28.5%</div>
+      <div style="font-size:11px;color:#909399;">5日判定</div>
+    </div>
+    <div style="background:#fff;border:1px solid #ebeef5;border-radius:8px;padding:14px;text-align:center;">
+      <div style="font-size:11px;color:#909399;">平均5日收益</div>
+      <div style="font-size:24px;font-weight:700;color:#f56c6c;">+1.25%</div>
+      <div style="font-size:11px;color:#909399;">扣费后</div>
+    </div>
+    <div style="background:#fff;border:1px solid #ebeef5;border-radius:8px;padding:14px;text-align:center;">
+      <div style="font-size:11px;color:#909399;">日均选股数</div>
+      <div style="font-size:24px;font-weight:700;color:#409eff;">20.8</div>
+      <div style="font-size:11px;color:#909399;">只/天</div>
+    </div>
+    <div style="background:#fff;border:1px solid #ebeef5;border-radius:8px;padding:14px;text-align:center;">
+      <div style="font-size:11px;color:#909399;">最佳日</div>
+      <div style="font-size:24px;font-weight:700;color:#67c23a;">04-15</div>
+      <div style="font-size:11px;color:#f56c6c;">+5.8%</div>
+    </div>
+    <div style="background:#fff;border:1px solid #ebeef5;border-radius:8px;padding:14px;text-align:center;">
+      <div style="font-size:11px;color:#909399;">最差日</div>
+      <div style="font-size:24px;font-weight:700;color:#f56c6c;">03-20</div>
+      <div style="font-size:11px;color:#67c23a;">-3.2%</div>
+    </div>
+  </div>
+
+  <h3>区域 C — 四象限分析面板（2×2网格）</h3>
+
+  <div class="grid-2" style="margin-bottom:16px;">
+    <!-- 左上: 日度成功率走势 -->
+    <div style="background:#f5f7fa;border-radius:8px;padding:16px;">
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📈 每日成功率走势</div>
+      <div style="background:#fff;border-radius:8px;height:200px;display:flex;align-items:center;justify-content:center;border:1px dashed #dcdfe6;">
+        <div style="text-align:center;font-size:12px;color:#909399;">
+          双Y轴图: 柱状(选股数) + 折线(成功率%)<br>
+          X 轴: 日期 | 左Y: 选股数 | 右Y: 成功率%<br>
+          50%基准线标注
+        </div>
+      </div>
+    </div>
+    <!-- 右上: 收益分布直方图 -->
+    <div style="background:#f5f7fa;border-radius:8px;padding:16px;">
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📊 收益分布直方图</div>
+      <div style="background:#fff;border-radius:8px;height:200px;display:flex;align-items:center;justify-content:center;border:1px dashed #dcdfe6;">
+        <div style="text-align:center;font-size:12px;color:#909399;">
+          柱状图: &lt;-10% / -10~-5% / -5~0% / 0~5% / 5~10% / &gt;10%<br>
+          正收益绿色 / 负收益红色<br>
+          中位数 & 均值标注
+        </div>
+      </div>
+    </div>
+    <!-- 左下: 各观察期收益对比 -->
+    <div style="background:#f5f7fa;border-radius:8px;padding:16px;">
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📉 各观察期平均收益</div>
+      <div style="background:#fff;border-radius:8px;height:200px;display:flex;align-items:center;justify-content:center;border:1px dashed #dcdfe6;">
+        <div style="text-align:center;font-size:12px;color:#909399;">
+          柱状图: X=1d/3d/5d/10d/20d/30d<br>
+          Y=平均收益率%<br>
+          正收益绿柱 / 负收益红柱<br>
+          每柱上方标注具体数值
+        </div>
+      </div>
+    </div>
+    <!-- 右下: 收益热力图 -->
+    <div style="background:#f5f7fa;border-radius:8px;padding:16px;">
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px;">🔥 日度×观察期收益热力图</div>
+      <div style="background:#fff;border-radius:8px;height:200px;display:flex;align-items:center;justify-content:center;border:1px dashed #dcdfe6;">
+        <div style="text-align:center;font-size:12px;color:#909399;">
+          ECharts heatmap<br>
+          X 轴: 日期 | Y 轴: 1d/3d/5d/10d/20d<br>
+          色阶: 深红(高收益) → 白(零) → 深绿(亏损)<br>
+          鼠标悬停显示: 日期 + 观察期 + 具体收益值
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>区域 D — 每日选股明细表</h3>
+  <table>
+    <thead>
+      <tr><th width="100">日期</th><th width="70">选股数</th><th width="70">成功数</th><th width="80">成功率</th><th width="80">1日</th><th width="80">3日</th><th width="80">5日</th><th width="80">10日</th><th width="80">20日</th><th>信号强度</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><b>05-13</b></td><td>45</td><td>15</td>
+        <td><b style="color:#67c23a;">33.3%</b></td>
+        <td style="color:#f56c6c;">+0.12%</td>
+        <td style="color:#f56c6c;">+0.88%</td>
+        <td style="color:#f56c6c;">+1.32%</td>
+        <td style="color:#f56c6c;">+2.45%</td>
+        <td style="color:#f56c6c;">+3.85%</td>
+        <td>
+          <div style="background:#f0f9eb;border-radius:4px;height:6px;width:100%;position:relative;">
+            <div style="background:#67c23a;border-radius:4px;height:100%;width:33.3%;"></div>
+          </div>
+        </td>
+      </tr>
+      <tr>
+        <td><b>05-12</b></td><td>42</td><td>12</td>
+        <td><b style="color:#67c23a;">28.6%</b></td>
+        <td style="color:#f56c6c;">+0.18%</td>
+        <td style="color:#f56c6c;">+0.82%</td>
+        <td style="color:#f56c6c;">+1.18%</td>
+        <td style="color:#f56c6c;">+2.25%</td>
+        <td style="color:#f56c6c;">+3.65%</td>
+        <td>
+          <div style="background:#fef0f0;border-radius:4px;height:6px;width:100%;position:relative;">
+            <div style="background:#e6a23c;border-radius:4px;height:100%;width:28.6%;"></div>
+          </div>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="font-size:11px;color:#c0c4cc;margin-top:4px;">* 点击日期行展开当日选出的所有个股 + 各自收益详情（可折叠明细）</p>
+
+  <h3>区域 E — 个股明细（点击日期行展开）</h3>
+  <div style="background:#fafafa;border:1px solid #ebeef5;border-radius:8px;padding:16px;margin-top:8px;">
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:#409eff;">📋 2026-05-13 选出的 45 只个股</div>
+    <table>
+      <thead>
+        <tr><th width="80">代码</th><th width="100">名称</th><th width="70">1日</th><th width="70">3日</th><th width="70">5日</th><th width="70">10日</th><th width="70">20日</th><th>结果</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>000001</td><td>平安银行</td>
+          <td style="color:#f56c6c;">+1.2%</td><td style="color:#f56c6c;">+3.5%</td><td style="color:#f56c6c;">+5.2%</td><td style="color:#f56c6c;">+8.1%</td><td style="color:#f56c6c;">+12.3%</td>
+          <td><span class="tag tag-green">成功</span></td>
+        </tr>
+        <tr>
+          <td>600036</td><td>招商银行</td>
+          <td style="color:#67c23a;">-0.5%</td><td style="color:#67c23a;">-1.2%</td><td style="color:#67c23a;">-2.1%</td><td style="color:#f56c6c;">+0.8%</td><td style="color:#f56c6c;">+3.2%</td>
+          <td><span class="tag tag-red">失败</span></td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size:11px;color:#c0c4cc;margin-top:4px;">点击个股代码可跳转到"单股验证"页查看完整分析</p>
+  </div>
+</div>
+</div>
+
+<!-- ========================================= -->
+<div class="section" id="page5">
+<h2>06 策略对比 — 多策略PK</h2>
+<p>路由：<code>/backtest/verify/compare?strategies=s1,s2,s3</code> | 定位：2-5个策略的同屏对比分析</p>
+
+<div class="card">
+  <div class="card-title">📊 页面布局</div>
+
+  <h3>区域 A — 策略选择器</h3>
+  <div style="background:#f0f2f5;border-radius:8px;padding:16px;margin-bottom:16px;">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <span style="font-size:13px;font-weight:500;">对比策略:</span>
+      <span style="background:#409eff;color:#fff;padding:4px 12px;border-radius:16px;font-size:12px;">均线多头 ✕</span>
+      <span style="background:#67c23a;color:#fff;padding:4px 12px;border-radius:16px;font-size:12px;">突破确认 ✕</span>
+      <span style="background:#e6a23c;color:#fff;padding:4px 12px;border-radius:16px;font-size:12px;">放量上涨 ✕</span>
+      <span style="background:#fff;color:#909399;padding:4px 12px;border-radius:16px;font-size:12px;border:1px dashed #dcdfe6;cursor:pointer;">+ 添加策略</span>
+      <div style="flex:1;"></div>
+      <span style="font-size:12px;color:#909399;">统计周期:</span>
+      <span style="background:#fff;border:1px solid #dcdfe6;border-radius:4px;padding:4px 12px;font-size:12px;">近 60 日 ▾</span>
+    </div>
+  </div>
+
+  <h3>区域 B — 雷达图对比（新增核心可视化）</h3>
+  <div style="background:#f5f7fa;border-radius:8px;padding:20px;margin-bottom:16px;">
+    <div style="font-size:14px;font-weight:600;margin-bottom:12px;">🕸 多维指标雷达图</div>
+    <div style="background:#fff;border-radius:8px;height:350px;display:flex;align-items:center;justify-content:center;border:1px dashed #dcdfe6;">
+      <div style="text-align:center;">
+        <div style="font-size:14px;color:#909399;">ECharts 雷达图</div>
+        <div style="font-size:12px;color:#c0c4cc;margin-top:4px;">
+          6 个维度（归一化到 0-100）:<br>
+          • 成功率 (win_rate)<br>
+          • 5日收益 (avg_5d)<br>
+          • 10日收益 (avg_10d)<br>
+          • 信号频率 (daily_count)<br>
+          • 稳定性 (1 - std/mean)<br>
+          • 最佳日超额 (best_day_excess)<br>
+          <br>
+          每个策略一个颜色的多边形<br>
+          面积越大 = 综合表现越好
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>区域 C — 核心指标对比表</h3>
+  <table>
+    <thead>
+      <tr><th width="160">指标</th><th width="140">均线多头</th><th width="140">突破确认</th><th width="140">放量上涨</th><th width="80">最优</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>信号总数</td>
+        <td>856</td>
+        <td>623</td>
+        <td>1,250</td>
+        <td><span class="tag tag-blue">放量上涨</span></td>
+      </tr>
+      <tr>
+        <td>5日成功率</td>
+        <td style="font-weight:700;color:#f56c6c;">62.3%</td>
+        <td>58.1%</td>
+        <td>28.5%</td>
+        <td><span class="tag tag-green">均线多头</span></td>
+      </tr>
+      <tr>
+        <td>平均5日收益</td>
+        <td style="font-weight:700;color:#f56c6c;">+3.52%</td>
+        <td>+2.88%</td>
+        <td>+1.25%</td>
+        <td><span class="tag tag-green">均线多头</span></td>
+      </tr>
+      <tr>
+        <td>平均10日收益</td>
+        <td style="font-weight:700;color:#f56c6c;">+5.12%</td>
+        <td>+4.35%</td>
+        <td>+2.35%</td>
+        <td><span class="tag tag-green">均线多头</span></td>
+      </tr>
+      <tr>
+        <td>平均20日收益</td>
+        <td style="font-weight:700;color:#f56c6c;">+8.25%</td>
+        <td>+6.78%</td>
+        <td>+3.75%</td>
+        <td><span class="tag tag-green">均线多头</span></td>
+      </tr>
+      <tr>
+        <td>日均选股数</td>
+        <td>14.3</td>
+        <td>10.4</td>
+        <td style="font-weight:700;">20.8</td>
+        <td><span class="tag tag-blue">放量上涨</span></td>
+      </tr>
+      <tr>
+        <td>收益波动(标准差)</td>
+        <td>4.52%</td>
+        <td style="font-weight:700;color:#67c23a;">3.88%</td>
+        <td>6.15%</td>
+        <td><span class="tag tag-green">突破确认</span></td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="font-size:11px;color:#c0c4cc;margin-top:4px;">* 最优列高亮该指标表现最好的策略（收益类取最大、波动类取最小） | 绿色标签 = 高收益型最优 | 蓝色标签 = 高信号量最优</p>
+
+  <h3>区域 D — 收益走势叠加图</h3>
+  <div style="background:#f5f7fa;border-radius:8px;padding:20px;">
+    <div style="font-size:14px;font-weight:600;margin-bottom:12px;">📈 各策略5日收益走势叠加</div>
+    <div style="background:#fff;border-radius:8px;height:280px;display:flex;align-items:center;justify-content:center;border:1px dashed #dcdfe6;">
+      <div style="text-align:center;font-size:12px;color:#909399;">
+        ECharts 多系列折线图<br>
+        每条线 = 一个策略的日度平均5日收益率<br>
+        支持切换观察期（1d/3d/5d/10d/20d）<br>
+        零线虚线标注 | legend 可点击隐藏<br>
+        Area 填充展示收益波动区间(均值±1σ)
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ========================================= -->
+<div class="section" id="compare">
+<h2>07 新旧设计对比</h2>
+
+<div class="comparison">
+  <div class="old-design">
+    <h4>❌ 旧设计问题</h4>
+    <ul>
+      <li><b>入口分散</b> — "自定义回测"和"回测看板"是两个独立页面，路由不连贯</li>
+      <li><b>表单密集</b> — 所有选项平铺在一个 inline form 里，不分组不分级</li>
+      <li><b>结果无可视化</b> — 单股结果只有数字表格，没有收益走势图</li>
+      <li><b>指标数字堆砌</b> — 技术指标用 descriptions 平铺，无强弱信号判读</li>
+      <li><b>策略验证无个股展开</b> — 批量结果只到每日汇总，看不到具体个股明细</li>
+      <li><b>无策略对比</b> — 选股验证层面不支持多策略横向PK</li>
+      <li><b>看板无联动</b> — 看板和验证页割裂，看板点不到具体策略</li>
+      <li><b>收益率表无等级</b> — 正收益负收益只靠颜色区分，无文字标签</li>
+      <li><b>无收益热力图</b> — 日度×观察期的二维收益分布无法直观感受</li>
+    </ul>
+  </div>
+  <div class="vs">VS</div>
+  <div class="new-design">
+    <h4>✅ 新设计优化</h4>
+    <ul>
+      <li><b>统一入口</b> — 验证中心一页三 Tab，单股/策略/看板无缝切换</li>
+      <li><b>表单分级</b> — 按模式分组，ButtonGroup 替代 Radio 让回测周期一目了然</li>
+      <li><b>收益走势图</b> — 面积图展示持有期间每日收益变化，关键节点标注</li>
+      <li><b>指标仪表盘</b> — 进度条 + 强弱标签，一眼看出 RSI/KDJ/MACD 信号状态</li>
+      <li><b>个股可展开</b> — 日度行点击展开当日全部选出个股及各自收益</li>
+      <li><b>多策略对比</b> — 雷达图 + 指标矩阵 + 走势叠加，2-5 个策略同屏 PK</li>
+      <li><b>全链路联动</b> — 看板→策略详情→个股→单股验证 全程可穿透</li>
+      <li><b>收益率等级</b> — 亏损/小幅盈利/盈利/优质 四级标签 + 进度条</li>
+      <li><b>热力图</b> — 日期×观察期的二维热力可视化，识别高收益聚集期</li>
+    </ul>
+  </div>
+</div>
+</div>
+
+<!-- ========================================= -->
+<div class="section" id="api">
+<h2>08 后端API对照表</h2>
+<p>标注每个页面需要的 API —— ✅ 现有可复用 | 🔧 需微调 | 🆕 需新增</p>
+
+<div class="card">
+<table>
+  <thead>
+    <tr><th width="200">页面 / 功能</th><th width="300">API 端点</th><th width="60">状态</th><th>说明</th></tr>
+  </thead>
+  <tbody>
+    <tr><td rowspan="2"><b>验证中心 — 单股</b></td><td>GET /api/backtest/config</td><td>✅</td><td>获取策略列表 + 回测周期</td></tr>
+    <tr><td>GET /api/backtest/run</td><td>✅</td><td>执行单股回测</td></tr>
+
+    <tr><td rowspan="2"><b>验证中心 — 策略</b></td><td>GET /api/backtest/batch</td><td>✅</td><td>批量策略验证</td></tr>
+    <tr><td>GET /api/backtest/batch (增加 threshold 参数)</td><td>🔧</td><td>支持自定义成功阈值（如 >2%，不只是 >0%）</td></tr>
+
+    <tr><td rowspan="4"><b>策略看板</b></td><td>GET /api/backtest/dashboard/overview</td><td>✅</td><td>策略排名总览</td></tr>
+    <tr><td>GET /api/backtest/dashboard/timeline</td><td>✅</td><td>收益时间轴折线</td></tr>
+    <tr><td>GET /api/backtest/dashboard/distribution</td><td>✅</td><td>收益分布直方图</td></tr>
+    <tr><td>GET /api/backtest/dashboard/strategy_detail</td><td>✅</td><td>策略深度分析数据</td></tr>
+
+    <tr><td rowspan="3"><b>策略详情</b></td><td>GET /api/backtest/dashboard/strategy_detail</td><td>✅</td><td>复用现有端点</td></tr>
+    <tr><td>GET /api/backtest/dashboard/distribution</td><td>✅</td><td>收益分布（本策略）</td></tr>
+    <tr><td>GET /api/backtest/dashboard/strategy_heatmap</td><td>🆕</td><td>日期×观察期 二维热力数据</td></tr>
+
+    <tr><td rowspan="2"><b>策略对比</b></td><td>GET /api/backtest/dashboard/overview</td><td>🔧</td><td>增加 strategies 参数过滤</td></tr>
+    <tr><td>GET /api/backtest/dashboard/compare_radar</td><td>🆕</td><td>雷达图多维归一化数据（成功率/收益/频率/稳定性/超额）</td></tr>
+
+    <tr><td><b>股票搜索</b></td><td>GET /api/stock/search?q=xxx</td><td>🔧</td><td>模糊搜索（代码/名称/拼音首字母），现有 /api/stock 需增加搜索参数</td></tr>
+  </tbody>
+</table>
+<p style="font-size:11px;color:#c0c4cc;margin-top:8px;">共需 <b>2 个新增 API</b>（热力图 + 雷达图），<b>3 个微调</b>（批量阈值 + overview 过滤 + 股票搜索），其余 <b>6 个现有 API 可直接复用</b>。</p>
+</div>
+</div>
+
+</div>
+</body>
+</html>

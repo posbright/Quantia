@@ -1,0 +1,12 @@
+#!/bin/bash
+# 每小时任务 — 采集实时股票/ETF行情数据
+# 适用场景：收盘后更新当日行情，或盘中获取快照
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/hourly.log
+
+check_trade_day "hourly 任务"
+run_job "实时行情采集 (basic_data_daily_job)" "quantia/job/basic_data_daily_job.py"
