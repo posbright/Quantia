@@ -383,6 +383,33 @@ const routes: RouteRecordRaw[] = [
       }
     ]
   },
+  // Phase 10: 选股验证中心
+  {
+    path: '/verify',
+    component: Layout,
+    redirect: '/verify/compare',
+    meta: { title: '选股验证', icon: 'Compass' },
+    children: [
+      {
+        path: 'compare',
+        name: 'VerifyCompare',
+        component: () => import('@/views/verify/compare.vue'),
+        meta: { title: '策略对比' }
+      },
+      {
+        path: 'optimize',
+        name: 'VerifyOptimize',
+        component: () => import('@/views/verify/optimize.vue'),
+        meta: { title: '买卖点优化' }
+      },
+      {
+        path: 'fusion',
+        name: 'VerifyFusion',
+        component: () => import('@/views/verify/fusion.vue'),
+        meta: { title: '策略融合' }
+      }
+    ]
+  },
   // Phase 5：通知 / AI 研判配置（仅引用环境变量名，不持久化密钥明文）
   {
     path: '/settings',
