@@ -8,6 +8,8 @@ export interface StrategyItem {
   table?: string
   description?: string
   custom_id?: number
+  type?: 'signal' | 'backtest'
+  backtest_count?: number
 }
 export interface StrategyGroup {
   label: string
@@ -16,6 +18,16 @@ export interface StrategyGroup {
 }
 export function getVerifyStrategyList(): Promise<{ groups: StrategyGroup[] }> {
   return request({ url: '/api/verify/strategy_list', method: 'get' }) as any
+}
+
+// ── 自定义策略对比 ────────────────────────────────────────────────────
+
+export function getCustomCompare(params: { strategy: string }) {
+  return request({ url: '/api/verify/custom_compare', method: 'get', params }) as any
+}
+
+export function getCustomReturnSeries(params: { strategy: string }) {
+  return request({ url: '/api/verify/custom_return_series', method: 'get', params }) as any
 }
 
 // ── 持仓天数扫描 ──────────────────────────────────────────────────────

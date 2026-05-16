@@ -66,8 +66,8 @@ def _get_strategy_map():
 class VerifyStrategyListHandler(webBase.BaseHandler):
     """GET /quantia/api/verify/strategy_list
 
-    返回所有可用于验证分析的策略列表（内置 + 用户自定义 Backtrader 策略）。
-    用户自定义策略仅返回元数据，实际验证时需要其对应的信号表存在。
+    返回所有可用于验证分析的策略列表（内置信号策略 + 有回测结果的用户自定义策略）。
+    内置策略走 rate_* 信号表分析; 自定义策略走 cn_stock_backtest_portfolio 回测结果。
     """
 
     def get(self):
@@ -79,7 +79,7 @@ class VerifyStrategyListHandler(webBase.BaseHandler):
             value_items = []
             for s in tbs.TABLE_CN_STOCK_STRATEGIES:
                 short_key = s['name'].replace('cn_stock_strategy_', '')
-                item = {'value': short_key, 'label': s['cn'], 'table': s['name']}
+                item = {'value': short_key, 'label': s['cn'], 'table': s['name'], 'type': 'signal'}
                 # 按策略功能分组
                 if short_key in ('enter', 'keep_increasing', 'parking_apron', 'backtrace_ma250',
                                  'breakthrough_platform', 'low_atr'):
@@ -98,15 +98,21 @@ class VerifyStrategyListHandler(webBase.BaseHandler):
             groups.append({
                 'label': '基本面',
                 'category': 'fund',
-                'items': [{'value': gpt_short, 'label': gpt['cn'], 'table': gpt['name']}],
+                'items': [{'value': gpt_short, 'label': gpt['cn'], 'table': gpt['name'], 'type': 'signal'}],
             })
 
-            # 2) 用户自定义策略（从 cn_stock_strategy_code 表）
+            # 2) 用户自定义策略（仅显示有已完成回测结果的）
             custom_items = []
             try:
                 rows = mdb.executeSqlFetch(
-                    "SELECT id, name, description FROM cn_stock_strategy_code "
-                    "WHERE status != 'archived' ORDER BY updated_at DESC LIMIT 50"
+                    "SELECT sc.id, sc.name, sc.description, COUNT(bp.id) AS bt_count "
+                    "FROM cn_stock_strategy_code sc "
+                    "LEFT JOIN cn_stock_backtest_portfolio bp "
+                    "  ON bp.strategy_id = sc.id AND bp.status = 'completed' "
+                    "WHERE sc.status != 'archived' "
+                    "GROUP BY sc.id, sc.name, sc.description "
+                    "HAVING bt_count > 0 "
+                    "ORDER BY sc.updated_at DESC LIMIT 50"
                 )
                 if rows:
                     for r in rows:
@@ -115,6 +121,8 @@ class VerifyStrategyListHandler(webBase.BaseHandler):
                             'label': r[1],
                             'description': r[2] or '',
                             'custom_id': r[0],
+                            'type': 'backtest',
+                            'backtest_count': r[3],
                         })
             except Exception:
                 logging.debug("读取自定义策略列表失败（表可能不存在）", exc_info=True)
@@ -385,6 +393,223 @@ class HoldingPeriodAnalysisHandler(webBase.BaseHandler):
             'analysis': analysis,
             'best_holding_days': best_holding_days,
             'best_sharpe': _safe_float(best_sharpe),
+        })
+
+
+class CustomStrategyCompareHandler(webBase.BaseHandler):
+    """GET /quantia/api/verify/custom_compare
+
+    从 cn_stock_backtest_portfolio 读取自定义策略的最新回测结果，
+    映射成与 HoldingPeriodAnalysisHandler 兼容的对比格式。
+
+    参数: strategy=custom_<id>&start_date=...&end_date=...
+    """
+
+    def get(self):
+        try:
+            self._handle()
+        except Exception:
+            logging.error("自定义策略对比异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        strategy_key = self.get_argument('strategy', default='', strip=True)
+        if not strategy_key.startswith('custom_'):
+            _write_error(self, '此接口仅支持自定义策略 (custom_*)')
+            return
+
+        try:
+            strategy_id = int(strategy_key.replace('custom_', ''))
+        except ValueError:
+            _write_error(self, '无效的策略ID')
+            return
+
+        # 获取策略名
+        name_rows = mdb.executeSqlFetch(
+            "SELECT name FROM cn_stock_strategy_code WHERE id = %s", (strategy_id,))
+        strategy_name = name_rows[0][0] if name_rows else f'策略#{strategy_id}'
+
+        # 获取最新完成的回测结果
+        rows = mdb.executeSqlFetch(
+            "SELECT id, total_return, annual_return, max_drawdown, sharpe_ratio, "
+            "win_rate, trade_count, result_json, start_date, end_date "
+            "FROM cn_stock_backtest_portfolio "
+            "WHERE strategy_id = %s AND status = 'completed' "
+            "ORDER BY completed_at DESC LIMIT 1",
+            (strategy_id,)
+        )
+        if not rows:
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': strategy_name,
+                'total_signals': 0,
+                'analysis': [],
+                'message': '该策略尚无完成的回测结果，请先在"策略回测"页运行回测',
+            })
+            return
+
+        r = rows[0]
+        bt_id, total_return, annual_return, max_drawdown = r[0], r[1], r[2], r[3]
+        sharpe_ratio, win_rate, trade_count = r[4], r[5], r[6]
+        result_json_raw, bt_start, bt_end = r[7], r[8], r[9]
+
+        # 解析 result_json 获取交易记录和 NAV
+        trades = []
+        nav_series = []
+        sortino_val = None
+        calmar_val = None
+        return_std = None
+        profit_loss_ratio = None
+        daily_signal_count = None
+
+        if result_json_raw:
+            try:
+                rj = json.loads(result_json_raw) if isinstance(result_json_raw, str) else result_json_raw
+                trades = rj.get('trades', [])
+                nav_series = rj.get('nav', [])
+                metrics = rj.get('metrics', {})
+
+                # 从交易记录计算盈亏比
+                sell_trades = [t for t in trades if t.get('direction') == 'sell']
+                if sell_trades:
+                    gains = [t['return_rate'] for t in sell_trades if t.get('return_rate', 0) > 0]
+                    losses = [t['return_rate'] for t in sell_trades if t.get('return_rate', 0) < 0]
+                    if gains and losses:
+                        profit_loss_ratio = round(
+                            sum(gains) / len(gains) / abs(sum(losses) / len(losses)), 2)
+                    elif gains:
+                        profit_loss_ratio = 999.0  # 全胜
+                    else:
+                        profit_loss_ratio = 0.0
+
+                # 从 NAV 计算日收益率序列的统计量
+                if nav_series and len(nav_series) >= 2:
+                    daily_returns = []
+                    for i in range(1, len(nav_series)):
+                        dr = nav_series[i].get('daily_return', 0)
+                        if dr is not None:
+                            daily_returns.append(float(dr))
+                    if daily_returns:
+                        dr_arr = np.array(daily_returns)
+                        return_std = round(float(dr_arr.std(ddof=1)), 4) if len(dr_arr) > 1 else 0.0
+                        # Sortino
+                        downside = dr_arr[dr_arr < 0]
+                        if len(downside) > 0:
+                            ds_std = float(downside.std(ddof=1))
+                            if ds_std > 0:
+                                avg_daily = float(dr_arr.mean())
+                                sortino_val = round(avg_daily / ds_std * math.sqrt(252), 4)
+                    # 日均信号数 = 交易总数 / 交易日数
+                    trading_days = len(nav_series)
+                    if trading_days > 0 and trade_count:
+                        daily_signal_count = round(float(trade_count) / trading_days, 1)
+
+                # Calmar = 年化收益 / |最大回撤|
+                if annual_return and max_drawdown and float(max_drawdown) != 0:
+                    calmar_val = round(float(annual_return) / abs(float(max_drawdown)), 4)
+
+            except Exception as e:
+                logging.debug(f"解析回测 result_json 异常: bt_id={bt_id} - {e}")
+
+        # 构造与 HoldingPeriodAnalysisHandler 兼容的响应格式
+        # 自定义策略没有多周期(5/10/20日)概念，用回测整体指标填充
+        analysis = []
+        for holding_days in [5, 10, 20]:
+            analysis.append({
+                'holding_days': holding_days,
+                'avg_return': _safe_float(total_return),
+                'median_return': _safe_float(total_return),
+                'win_rate': _safe_float(win_rate),
+                'return_std': _safe_float(return_std),
+                'sharpe_approx': _safe_float(sharpe_ratio),
+                'sortino_approx': _safe_float(sortino_val),
+                'max_single_loss': _safe_float(max_drawdown),
+                'max_single_gain': _safe_float(total_return),
+                'percentile_10': None,
+                'percentile_25': None,
+                'percentile_75': None,
+                'percentile_90': None,
+                'signal_count': trade_count or 0,
+                'profit_loss_ratio': _safe_float(profit_loss_ratio),
+                'calmar_ratio': _safe_float(calmar_val),
+                'daily_signal_count': _safe_float(daily_signal_count),
+            })
+
+        _write_json(self, {
+            'strategy': strategy_key,
+            'strategy_cn': strategy_name,
+            'period': f'{bt_start} ~ {bt_end}',
+            'total_signals': trade_count or 0,
+            'analysis': analysis,
+            'best_holding_days': 10,
+            'best_sharpe': _safe_float(sharpe_ratio),
+            'data_source': 'backtest_portfolio',
+        })
+
+
+class CustomStrategyReturnSeriesHandler(webBase.BaseHandler):
+    """GET /quantia/api/verify/custom_return_series
+
+    从 cn_stock_backtest_portfolio.result_json 提取自定义策略的 NAV 序列，
+    映射成与 SignalReturnSeriesHandler 兼容的对比格式。
+    """
+
+    def get(self):
+        try:
+            self._handle()
+        except Exception:
+            logging.error("自定义策略收益曲线异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        strategy_key = self.get_argument('strategy', default='', strip=True)
+        if not strategy_key.startswith('custom_'):
+            _write_error(self, '此接口仅支持自定义策略 (custom_*)')
+            return
+
+        try:
+            strategy_id = int(strategy_key.replace('custom_', ''))
+        except ValueError:
+            _write_error(self, '无效的策略ID')
+            return
+
+        name_rows = mdb.executeSqlFetch(
+            "SELECT name FROM cn_stock_strategy_code WHERE id = %s", (strategy_id,))
+        strategy_name = name_rows[0][0] if name_rows else f'策略#{strategy_id}'
+
+        rows = mdb.executeSqlFetch(
+            "SELECT result_json FROM cn_stock_backtest_portfolio "
+            "WHERE strategy_id = %s AND status = 'completed' "
+            "ORDER BY completed_at DESC LIMIT 1",
+            (strategy_id,)
+        )
+        if not rows or not rows[0][0]:
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': strategy_name,
+                'series': [],
+            })
+            return
+
+        try:
+            rj = json.loads(rows[0][0]) if isinstance(rows[0][0], str) else rows[0][0]
+            nav_data = rj.get('nav', [])
+        except Exception:
+            nav_data = []
+
+        # NAV → cumulative return (以 100 为基准，与信号策略一致)
+        series = []
+        for item in nav_data:
+            nav_val = item.get('nav', 1.0)
+            series.append({
+                'date': item.get('date', ''),
+                'cumulative': round(float(nav_val) * 100, 4) if nav_val else 100,
+            })
+
+        _write_json(self, {
+            'strategy': strategy_key,
+            'strategy_cn': strategy_name,
+            'series': series,
         })
 
 

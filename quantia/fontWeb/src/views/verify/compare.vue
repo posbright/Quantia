@@ -211,7 +211,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
-import { getHoldingPeriod, getReturnSeries, getVerifyStrategyList } from '@/api/verify'
+import { getHoldingPeriod, getReturnSeries, getVerifyStrategyList, getCustomCompare, getCustomReturnSeries } from '@/api/verify'
 import type { StrategyGroup } from '@/api/verify'
 import UsageGuide from '@/components/verify/UsageGuide.vue'
 import dayjs from 'dayjs'
@@ -464,6 +464,21 @@ const insights = computed(() => {
   return result
 })
 
+// ── 辅助: 判断策略类型 ──────────────────────────────────
+function isCustomStrategy(key: string): boolean {
+  return key.startsWith('custom_')
+}
+
+function getStrategyType(key: string): 'signal' | 'backtest' {
+  if (isCustomStrategy(key)) return 'backtest'
+  // 从 API 返回的策略列表中查找 type 字段
+  for (const g of strategyGroups.value) {
+    const item = g.items.find(i => i.value === key)
+    if (item?.type === 'backtest') return 'backtest'
+  }
+  return 'signal'
+}
+
 // ── 主请求 ──────────────────────────────────────────────
 async function runCompare() {
   if (selectedStrategies.value.length < 2) {
@@ -484,10 +499,13 @@ async function runCompare() {
   const [startDate, endDate] = dateRange.value
 
   try {
-    // 1) 并行请求各策略的 5/10/20 日数据
-    const promises = selectedStrategies.value.map(s =>
-      getHoldingPeriod({ strategy: s, start_date: startDate, end_date: endDate, holding_days: '5,10,20' })
-    )
+    // 1) 并行请求各策略的 5/10/20 日数据（按类型走不同 API）
+    const promises = selectedStrategies.value.map(s => {
+      if (getStrategyType(s) === 'backtest') {
+        return getCustomCompare({ strategy: s })
+      }
+      return getHoldingPeriod({ strategy: s, start_date: startDate, end_date: endDate, holding_days: '5,10,20' })
+    })
     const results = await Promise.all(promises)
 
     const mpd: Record<string, Record<number, any>> = {}
@@ -512,9 +530,12 @@ async function runCompare() {
     renderRadarChart()
 
     // 2) 各策略累计收益走势 (10日)
-    const seriesPromises = selectedStrategies.value.map(s =>
-      getReturnSeries({ strategy: s, start_date: startDate, end_date: endDate, holding_days: 10 })
-    )
+    const seriesPromises = selectedStrategies.value.map(s => {
+      if (getStrategyType(s) === 'backtest') {
+        return getCustomReturnSeries({ strategy: s })
+      }
+      return getReturnSeries({ strategy: s, start_date: startDate, end_date: endDate, holding_days: 10 })
+    })
     const seriesResults = await Promise.all(seriesPromises)
     seriesData.value = seriesResults.map((r: any) => ({
       strategy: r.strategy,

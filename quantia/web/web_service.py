@@ -200,6 +200,8 @@ class Application(tornado.web.Application):
             # Phase 10: 选股验证中心 — 优化分析（只读）
             (r"/quantia/api/verify/strategy_list", verifyOptimizeHandler.VerifyStrategyListHandler),
             (r"/quantia/api/verify/holding_period", verifyOptimizeHandler.HoldingPeriodAnalysisHandler),
+            (r"/quantia/api/verify/custom_compare", verifyOptimizeHandler.CustomStrategyCompareHandler),
+            (r"/quantia/api/verify/custom_return_series", verifyOptimizeHandler.CustomStrategyReturnSeriesHandler),
             (r"/quantia/api/verify/signal_quality", verifyOptimizeHandler.SignalQualityHandler),
             (r"/quantia/api/verify/sl_tp_matrix", verifyOptimizeHandler.StopLossTakeProfitMatrixHandler),
             (r"/quantia/api/verify/market_regime", verifyOptimizeHandler.MarketRegimeHandler),
