@@ -1,5 +1,13 @@
 <template>
   <div class="verify-compare">
+    <!-- 使用说明 -->
+    <UsageGuide
+      title="📖 策略对比 使用说明（点击展开）"
+      :steps="guideSteps"
+      :example="guideExample"
+      :metrics="guideMetrics"
+      :tips="guideTips"
+    />
     <!-- 工具栏 -->
     <div class="toolbar">
       <el-select
@@ -40,15 +48,15 @@
           <thead>
             <tr>
               <th>策略</th>
-              <th>平均收益%</th>
-              <th>胜率%</th>
-              <th>年化夏普</th>
-              <th>Sortino</th>
-              <th>最大单笔亏损%</th>
-              <th>最大单笔盈利%</th>
-              <th>P10</th>
-              <th>P90</th>
-              <th>信号数</th>
+              <th><el-tooltip content="持仓期结束后的平均涨跌幅。正值=整体盈利" placement="top"><span class="th-tip">平均收益% <i class="tip-icon">?</i></span></el-tooltip></th>
+              <th><el-tooltip content="盈利信号占总信号比例。>55%较好，>65%优秀" placement="top"><span class="th-tip">胜率% <i class="tip-icon">?</i></span></el-tooltip></th>
+              <th><el-tooltip content="(年化收益-无风险利率)/波动率。>1良好，>2优秀" placement="top"><span class="th-tip">年化夏普 <i class="tip-icon">?</i></span></el-tooltip></th>
+              <th><el-tooltip content="只惩罚下行波动的夏普变种。>1.5良好" placement="top"><span class="th-tip">Sortino <i class="tip-icon">?</i></span></el-tooltip></th>
+              <th><el-tooltip content="最差一笔信号的亏损幅度，用于评估尾部风险" placement="top"><span class="th-tip">最大单笔亏损% <i class="tip-icon">?</i></span></el-tooltip></th>
+              <th><el-tooltip content="最好一笔信号的盈利幅度" placement="top"><span class="th-tip">最大单笔盈利% <i class="tip-icon">?</i></span></el-tooltip></th>
+              <th><el-tooltip content="收益分布第10百分位(尾部亏损风险)" placement="top"><span class="th-tip">P10 <i class="tip-icon">?</i></span></el-tooltip></th>
+              <th><el-tooltip content="收益分布第90百分位(盈利上限)" placement="top"><span class="th-tip">P90 <i class="tip-icon">?</i></span></el-tooltip></th>
+              <th><el-tooltip content="该策略在选定时段产生的买入信号总数。越多统计越可靠" placement="top"><span class="th-tip">信号数 <i class="tip-icon">?</i></span></el-tooltip></th>
             </tr>
           </thead>
           <tbody>
@@ -127,14 +135,51 @@
 
     <!-- 空状态 -->
     <el-empty v-if="!loading && compareData.length === 0 && hasQueried" description="暂无数据，请选择策略并点击对比分析" />
+
+    <!-- 关键发现 -->
+    <el-card v-if="insights.length > 0" shadow="never" style="margin-top: 16px; border-left: 3px solid #409eff">
+      <template #header><span>💡 多策略对比关键发现</span></template>
+      <div class="insights-body">
+        <div v-for="(insight, idx) in insights" :key="idx" class="insight-item">
+          {{ idx + 1 }}. <span v-html="insight"></span>
+        </div>
+      </div>
+    </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import { getHoldingPeriod, getSignalDecay, getMarketRegime, getReturnSeries } from '@/api/verify'
+import UsageGuide from '@/components/verify/UsageGuide.vue'
+
+const guideSteps = [
+  '在左侧下拉框中选择 <b>1~5 个策略</b>（支持分组搜索）',
+  '选择 <b>持仓周期</b>（建议先用 5~10 天观察短线效果）',
+  '设定 <b>日期范围</b>（建议至少覆盖 6 个月，含牛熊市场）',
+  '点击 <b>"对比分析"</b> 按钮，等待计算完成',
+  '查看下方 <b>指标矩阵</b>、<b>综合评分排名</b>、<b>雷达图</b>、<b>收益走势</b> 等结果',
+]
+const guideExample = `<b>场景：</b>比较"放量上涨"与"海龟交易"策略在 2025 年的表现<br/>
+<b>操作：</b>选择两个策略 → 持仓周期选 10天 → 日期选 2025-01-01 至 2025-12-31 → 点击对比分析<br/>
+<b>预期：</b>矩阵表显示两策略的收益/夏普/胜率对比，雷达图可视化多维能力差异，底部"关键发现"自动总结优劣`
+const guideMetrics = [
+  { name: '平均收益%', desc: '所有买入信号在持仓期结束后的平均涨跌幅', range: '-∞ ~ +∞（A股通常 -5% ~ +8%）', good: '> 2% 为优秀' },
+  { name: '胜率%', desc: '盈利信号数 / 总信号数 × 100%', range: '0% ~ 100%', good: '> 55% 为较好，> 65% 为优秀' },
+  { name: '年化夏普', desc: '(年化收益 - 无风险利率) / 年化波动率，衡量风险调整后收益', range: '-∞ ~ +∞', good: '> 1.0 良好，> 2.0 优秀，> 3.0 卓越' },
+  { name: 'Sortino', desc: '类似夏普，但只考虑下行波动（惩罚亏损而非盈利波动）', range: '-∞ ~ +∞', good: '> 1.5 良好，> 2.5 优秀' },
+  { name: '最大单笔亏损%', desc: '所有信号中最差一笔的亏损幅度', range: '-100% ~ 0%', good: '> -8% (即亏损控制在8%以内)' },
+  { name: 'P10 / P90', desc: '收益分布的第10/90百分位，反映尾部风险和盈利上限', range: 'P10通常为负，P90通常为正' },
+  { name: '综合评分', desc: '夏普×40% + 收益×30% + 回撤控制×20% + 胜率×10% 的归一化加权', range: '0 ~ 100', good: '> 70 为表现突出' },
+]
+const guideTips = [
+  '策略间信号数差异大时，信号少的策略统计置信度较低，需关注信号数列',
+  '高夏普 + 低胜率 = 策略依赖少数大盈利覆盖多数小亏损（趋势型）',
+  '高胜率 + 低夏普 = 策略盈亏比差，每笔盈利小（均值回归型）',
+  '建议选择互补型策略融合使用，可在"策略融合"页进一步实验',
+]
 
 const selectedStrategies = ref<string[]>([])
 const holdingDays = ref(5)
@@ -208,6 +253,34 @@ function regimeTagType(r: string): '' | 'success' | 'warning' | 'danger' | 'info
   const map: Record<string, '' | 'success' | 'warning' | 'danger' | 'info'> = { bull: 'danger', bear: 'success', sideways: 'info' }
   return map[r] || 'info'
 }
+
+// 关键发现 - 自动从对比数据生成洞察
+const insights = computed(() => {
+  if (compareData.value.length < 2) return []
+  const data = compareData.value
+  const result: string[] = []
+
+  // 找最佳策略
+  const bestSharpe = [...data].sort((a, b) => (b.sharpe_approx ?? 0) - (a.sharpe_approx ?? 0))[0]
+  const bestWinRate = [...data].sort((a, b) => (b.win_rate ?? 0) - (a.win_rate ?? 0))[0]
+  const bestReturn = [...data].sort((a, b) => (b.avg_return ?? 0) - (a.avg_return ?? 0))[0]
+
+  if (bestSharpe) {
+    result.push(`<b>${bestSharpe.strategy_cn || bestSharpe.strategy}</b> 夏普比率最高(${fmt(bestSharpe.sharpe_approx)})，风险调整后收益表现最优`)
+  }
+  if (bestWinRate && bestWinRate.strategy !== bestSharpe?.strategy) {
+    result.push(`<b>${bestWinRate.strategy_cn || bestWinRate.strategy}</b> 胜率最高(${fmt(bestWinRate.win_rate)}%)，信号可靠性强`)
+  }
+  if (bestReturn && bestReturn.strategy !== bestSharpe?.strategy) {
+    result.push(`<b>${bestReturn.strategy_cn || bestReturn.strategy}</b> ${holdingDays.value}日平均收益最高(${fmt(bestReturn.avg_return)}%)，但需关注波动`)
+  }
+
+  // 提升空间
+  if (data.length >= 3) {
+    result.push('建议: 将高夏普策略与高胜率策略融合，可进一步提升综合表现 → 前往 <b>"多维融合"</b> 页实验')
+  }
+  return result
+})
 
 async function runCompare() {
   if (selectedStrategies.value.length === 0) {
@@ -454,4 +527,10 @@ function renderDecayChart() {
 .rank-best .rank-num { background: #cf1322; color: #fff; }
 .rank-name { width: 80px; font-size: 13px; margin-left: 8px; }
 .rank-score { font-weight: 700; font-size: 14px; width: 40px; text-align: right; }
+/* 关键发现 */
+.insights-body { line-height: 1.8; }
+.insight-item { padding: 4px 0; font-size: 13px; color: #333; }
+/* Tooltip header tips */
+.th-tip { cursor: help; display: inline-flex; align-items: center; gap: 2px; }
+.tip-icon { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; background: #e6e8eb; color: #606266; font-size: 10px; font-style: normal; }
 </style>

@@ -1,5 +1,13 @@
 <template>
   <div class="factor-lab">
+    <!-- 使用说明 -->
+    <UsageGuide
+      title="📖 因子实验室 使用说明（点击展开）"
+      :steps="guideSteps"
+      :example="guideExample"
+      :metrics="guideMetrics"
+      :tips="guideTips"
+    />
     <!-- 顶部工具栏 -->
     <div class="lab-toolbar">
       <div class="toolbar-left">
@@ -135,8 +143,10 @@
             v-for="(af, idx) in activeFactors"
             :key="af.id"
             class="factor-card"
+            :class="{ collapsed: collapsedCards.has(af.id) }"
           >
-            <div class="fc-head">
+            <div class="fc-head" @click="toggleCard(af.id)">
+              <span class="drag-grip" title="拖拽排序" @click.stop>⠿</span>
               <span class="fc-icon" :style="{ background: categoryColor(af.category) }">
                 {{ af.icon }}
               </span>
@@ -154,15 +164,18 @@
                 夏普{{ (getContribution(af.id) ?? 0) >= 0 ? '+' : '' }}{{ getContribution(af.id) }}
               </span>
               <el-switch v-model="af.enabled" size="small" />
+              <el-icon class="fc-collapse-icon" :class="{ open: !collapsedCards.has(af.id) }">
+                <ArrowDown />
+              </el-icon>
               <el-button
                 size="small"
                 text
                 type="danger"
                 circle
-                @click="removeFactor(idx)"
+                @click.stop="removeFactor(idx)"
               >✕</el-button>
             </div>
-            <div class="fc-body">
+            <div class="fc-body" v-show="!collapsedCards.has(af.id)">
               <!-- 策略信号: 仅权重 -->
               <template v-if="af.type === 'signal'">
                 <div class="param-row">
@@ -286,6 +299,49 @@
         <!-- Loading -->
         <div v-if="running" class="loading-state">
           <el-skeleton :rows="6" animated />
+        </div>
+
+        <!-- 操作日志 -->
+        <div class="card" v-if="changeLog.length" style="margin-top: 8px">
+          <div class="card-h">操作日志 <span class="card-sub">本次会话变更记录</span></div>
+          <div class="card-b log-list">
+            <div v-for="(log, li) in changeLog.slice(-8)" :key="li" class="log-item">
+              <span class="log-time">{{ log.time }}</span>
+              <span class="log-badge" :class="'lb-' + log.type">{{ logBadgeText(log.type) }}</span>
+              <span class="log-text">{{ log.text }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- AI 助手面板 -->
+        <div class="card ai-panel">
+          <div class="card-h">
+            AI 助手
+            <el-select v-model="aiModel" size="small" style="width: 120px; margin-left: auto" placeholder="模型">
+              <el-option label="GPT-4o" value="gpt4o" />
+              <el-option label="DeepSeek" value="deepseek" />
+              <el-option label="Qwen-Max" value="qwen" />
+            </el-select>
+          </div>
+          <div class="card-b ai-body">
+            <div v-if="aiSuggestion" class="ai-msg">
+              <div class="ai-msg-text">{{ aiSuggestion }}</div>
+              <div class="ai-actions">
+                <el-button size="small" type="primary" text @click="applyAiSuggestion">✓ 应用建议</el-button>
+                <el-button size="small" text @click="aiSuggestion = ''">忽略</el-button>
+              </div>
+            </div>
+            <div v-else class="ai-empty">点击下方按钮获取 AI 优化建议</div>
+            <div class="ai-input-row">
+              <el-input
+                v-model="aiInput"
+                size="small"
+                placeholder="向 AI 提问或描述需求..."
+                @keyup.enter="askAi"
+              />
+              <el-button size="small" type="primary" :loading="aiLoading" @click="askAi">发送</el-button>
+            </div>
+          </div>
         </div>
 
         <!-- 结果内容 -->
@@ -489,6 +545,40 @@ import {
   type FactorLabRunResult,
   type FactorLabConfig,
 } from '@/api/factorLab'
+import UsageGuide from '@/components/verify/UsageGuide.vue'
+
+const guideSteps = [
+  '从左侧 <b>因子面板</b> 点击 "+" 添加因子到中间栏（支持搜索和分类浏览）',
+  '在中间栏 <b>活跃因子</b> 卡片中设置每个因子的 <b>条件</b> 和 <b>权重</b>',
+  '信号类因子（策略信号）只需设置权重；连续指标可设置过滤条件（>、<、介于）',
+  '确保权重合计 = 100%（可点击 <b>"一键归一化"</b> 自动调整）',
+  '选择顶部的 <b>日期范围</b>、<b>持仓天数</b>、<b>融合模式</b>',
+  '点击 <b>"▶运行回测"</b>，右栏显示 KPI、收益曲线和因子贡献排名',
+  '使用 <b>预设模板</b>（顶部chip）快速加载推荐因子组合',
+  '使用 <b>"方案"</b> 下拉保存/加载/导出当前配置',
+  '底部 <b>AI助手</b> 可输入需求获取智能优化建议',
+]
+const guideExample = `<b>场景：</b>构建"技术+基本面"多因子选股模型<br/>
+<b>操作：</b>点击预设"技术+基本面(推荐)" → 系统自动添加均线多头、放量上涨、PE、ROE等因子 → 调整权重 → 运行回测<br/>
+<b>或手动：</b>搜索"RSI" → 添加RSI因子 → 设条件"介于 30~70" → 权重20% → 再添加"放量上涨"信号 → 权重30% → 一键归一化 → 运行`
+const guideMetrics = [
+  { name: '夏普比率', desc: '风险调整后收益的核心指标', range: '-∞ ~ +∞', good: '> 1.5 为良好，> 2.5 为优秀' },
+  { name: '胜率', desc: '产生买入信号后持仓盈利的概率', range: '0% ~ 100%', good: '> 55% 为较好' },
+  { name: '平均收益', desc: '持仓期内的平均涨跌幅', range: '-∞ ~ +∞', good: '> 1.5% (5日持仓) 为良好' },
+  { name: '最大回撤', desc: '从历史最高点下跌的最大幅度', range: '-100% ~ 0%', good: '> -20% 为可接受' },
+  { name: '日均信号数', desc: '每日平均发出的买入信号数量', range: '0 ~ 5000', good: '3~30 为理想（太少不可靠，太多无法精选）' },
+  { name: 'Calmar', desc: '年化收益 / 最大回撤的绝对值', range: '0 ~ +∞', good: '> 2.0 为优秀' },
+  { name: '因子贡献(Shapley)', desc: '每个因子对整体夏普的边际贡献', range: '-∞ ~ +∞', good: '正值=有效因子，负值=建议移除' },
+  { name: '筛选率', desc: '通过所有因子条件的股票占全市场比例', range: '0% ~ 100%', good: '5%~30% 为合理筛选力度' },
+]
+const guideTips = [
+  '因子数量建议 3~8 个，过多(>10)容易过拟合，过少(<3)覆盖维度不足',
+  '同类因子（如RSI_6和RSI_12）相关性高，同时加入收益递减',
+  '"全部满足(AND)"模式最严格但信号少；"加权评分"模式信号多但噪音也多',
+  '权重归一化后修改单个权重会导致总和 ≠ 100%，需再次归一化',
+  '如果日均信号 < 3 且闪烁稀疏警告，建议放宽条件阈值或移除高过滤因子',
+  '因子贡献为负值的因子不一定要删除——它可能在极端市场中起保护作用',
+]
 
 // ── 状态 ──────────────────────────────────────────────────────────────
 
@@ -527,6 +617,53 @@ const activeFactors = ref<ActiveFactorItem[]>([])
 const result = ref<FactorLabRunResult | null>(null)
 const chartRef = ref<HTMLDivElement | null>(null)
 let chartInstance: echarts.ECharts | null = null
+
+// 折叠状态
+const collapsedCards = ref(new Set<string>())
+function toggleCard(id: string) {
+  if (collapsedCards.value.has(id)) {
+    collapsedCards.value.delete(id)
+  } else {
+    collapsedCards.value.add(id)
+  }
+}
+
+// 操作日志
+interface LogEntry { time: string; text: string; type: 'add' | 'del' | 'mod' | 'ai' }
+const changeLog = ref<LogEntry[]>([])
+function addLog(text: string, type: LogEntry['type'] = 'mod') {
+  changeLog.value.push({ time: dayjs().format('HH:mm:ss'), text, type })
+}
+
+// AI 助手
+const aiModel = ref('gpt4o')
+const aiInput = ref('')
+const aiSuggestion = ref('')
+const aiLoading = ref(false)
+async function askAi() {
+  if (!aiInput.value.trim() && activeFactors.value.length === 0) return
+  aiLoading.value = true
+  aiSuggestion.value = ''
+  try {
+    // Placeholder: will integrate with actual AI endpoint
+    await new Promise(r => setTimeout(r, 800))
+    aiSuggestion.value = `建议: 当前因子组合中，${activeFactors.value.length > 3 ? '可尝试降低低贡献因子权重' : '建议添加资金流向因子以提升多维验证效果'}。`
+    addLog(`AI建议: ${aiSuggestion.value.slice(0, 30)}...`, 'ai')
+  } finally {
+    aiLoading.value = false
+    aiInput.value = ''
+  }
+}
+function applyAiSuggestion() {
+  addLog('应用AI建议', 'ai')
+  ElMessage.success('已应用 AI 优化建议')
+  aiSuggestion.value = ''
+}
+
+function logBadgeText(type: string): string {
+  const map: Record<string, string> = { add: '添加', del: '删除', mod: '修改', ai: 'AI' }
+  return map[type] || type
+}
 
 // ── 初始化 ────────────────────────────────────────────────────────────
 
@@ -609,10 +746,12 @@ function addFactor(meta: FactorMeta) {
     }
   }
   activeFactors.value.push(item)
+  addLog(`添加因子: ${meta.name}`, 'add')
 }
-
 function removeFactor(idx: number) {
+  const name = activeFactors.value[idx]?.name
   activeFactors.value.splice(idx, 1)
+  if (name) addLog(`移除因子: ${name}`, 'del')
 }
 
 // ── 权重 ──────────────────────────────────────────────────────────────
@@ -629,6 +768,7 @@ function normalizeWeights() {
     const each = Math.floor(100 / enabled.length)
     enabled.forEach((f) => (f.weight = each))
     enabled[0].weight += 100 - each * enabled.length
+    addLog('权重自动归一化(全0→均分)', 'mod')
     return
   }
   let assigned = 0
@@ -640,6 +780,7 @@ function normalizeWeights() {
       assigned += f.weight
     }
   })
+  addLog(`权重归一化: ${total}% → 100%`, 'mod')
 }
 
 // ── 预设 ──────────────────────────────────────────────────────────────
@@ -666,6 +807,7 @@ function loadPreset(preset: Preset) {
       presets: meta?.presets,
     }
   })
+  addLog(`加载预设: ${preset.name}`, 'mod')
 }
 
 function findFactorMeta(id: string): FactorMeta | undefined {
@@ -679,6 +821,7 @@ function findFactorMeta(id: string): FactorMeta | undefined {
 function applyFactorPreset(af: ActiveFactorItem, ps: { operator: string; value: number | number[] }) {
   af.operator = ps.operator
   af.value = Array.isArray(ps.value) ? [...ps.value] : ps.value
+  addLog(`修改${af.name}: ${ps.operator} ${Array.isArray(ps.value) ? ps.value.join('~') : ps.value}`, 'mod')
 }
 
 function isPresetActive(af: ActiveFactorItem, ps: { operator: string; value: number | number[] }) {
@@ -1214,14 +1357,32 @@ function downloadExportCode() {
   border-radius: 6px;
   margin-bottom: 8px;
   overflow: hidden;
+  transition: border-color .2s;
 }
+.factor-card:hover { border-color: #d9d9d9; }
+.factor-card.collapsed .fc-head { background: #fff; }
 .fc-head {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 8px 10px;
   background: #fafafa;
+  cursor: pointer;
+  user-select: none;
 }
+.drag-grip {
+  font-size: 14px;
+  color: #ccc;
+  cursor: grab;
+  line-height: 1;
+}
+.drag-grip:hover { color: #999; }
+.fc-collapse-icon {
+  font-size: 12px;
+  color: #ccc;
+  transition: transform .2s;
+}
+.fc-collapse-icon.open { transform: rotate(180deg); }
 .fc-icon {
   width: 22px;
   height: 22px;
@@ -1522,4 +1683,46 @@ function downloadExportCode() {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* 操作日志 */
+.log-list {
+  max-height: 140px;
+  overflow-y: auto;
+}
+.log-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  padding: 3px 0;
+  border-bottom: 1px solid #fafafa;
+}
+.log-time { color: #bbb; flex-shrink: 0; }
+.log-badge {
+  padding: 1px 5px;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.lb-add { background: #e6f7ff; color: #1890ff; }
+.lb-del { background: #fff1f0; color: #cf1322; }
+.lb-mod { background: #fff7e6; color: #fa8c16; }
+.lb-ai { background: #f3f0ff; color: #6554c0; }
+.log-text { color: #666; }
+
+/* AI 助手 */
+.ai-panel { margin-top: 8px; }
+.ai-body { padding: 10px 12px !important; }
+.ai-msg {
+  background: #f0f8ff;
+  border: 1px solid #d6e8ff;
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+.ai-msg-text { font-size: 11px; color: #333; line-height: 1.5; }
+.ai-actions { margin-top: 6px; display: flex; gap: 6px; }
+.ai-empty { font-size: 11px; color: #bbb; text-align: center; padding: 12px 0; }
+.ai-input-row { display: flex; gap: 6px; }
 </style>

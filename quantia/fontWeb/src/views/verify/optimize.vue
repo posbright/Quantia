@@ -1,5 +1,13 @@
 <template>
   <div class="verify-optimize">
+    <!-- 使用说明 -->
+    <UsageGuide
+      title="📖 买卖点优化 使用说明（点击展开）"
+      :steps="guideSteps"
+      :example="guideExample"
+      :metrics="guideMetrics"
+      :tips="guideTips"
+    />
     <!-- 工具栏 -->
     <div class="toolbar">
       <el-select v-model="strategy" placeholder="选择策略" style="width: 200px">
@@ -30,13 +38,13 @@
               <thead>
                 <tr>
                   <th>持仓天数</th>
-                  <th>平均收益%</th>
-                  <th>中位数%</th>
-                  <th>胜率%</th>
-                  <th>夏普</th>
-                  <th>Sortino</th>
-                  <th>波动率%</th>
-                  <th>分布</th>
+                  <th><el-tooltip content="该持仓周期下所有信号的平均涨跌幅" placement="top"><span class="th-tip">平均收益% <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th><el-tooltip content="收益排序后的中间值，比均值更抗极端值干扰" placement="top"><span class="th-tip">中位数% <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th><el-tooltip content="盈利信号数/总信号数×100%" placement="top"><span class="th-tip">胜率% <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th><el-tooltip content="(收益-无风险利率)/波动率。越高越好，>1良好" placement="top"><span class="th-tip">夏普 <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th><el-tooltip content="只计算下行波动的风险调整指标，对亏损更敏感" placement="top"><span class="th-tip">Sortino <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th><el-tooltip content="收益的标准差。<15%为低波动策略" placement="top"><span class="th-tip">波动率% <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th><el-tooltip content="箱线图: 红线=中位数, 蓝框=P25~P75, 须线=P10~P90, 虚线=零轴" placement="top"><span class="th-tip">分布 <i class="tip-icon">?</i></span></el-tooltip></th>
                 </tr>
               </thead>
               <tbody>
@@ -222,6 +230,39 @@ import { ref, nextTick, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import { getHoldingPeriod, getSignalQuality, getSlTpMatrix, getCostSensitivity, getOptimizeSuggest, getExitCompare } from '@/api/verify'
+import UsageGuide from '@/components/verify/UsageGuide.vue'
+
+const guideSteps = [
+  '选择 <b>一个策略</b>（每次分析针对单个策略进行深度优化）',
+  '设定 <b>日期范围</b>（建议 ≥ 6个月，覆盖不同市况）',
+  '点击 <b>"开始分析"</b>，系统将并行计算 5 个维度的优化数据',
+  '<b>持仓优化</b>：比较 1~60 天不同持仓周期的表现，找到最优卖出天数',
+  '<b>信号诊断</b>：选择技术指标，分析不同指标区间的信号质量',
+  '<b>止盈止损</b>：热力图搜索最优止盈/止损组合（点击格子查看详情）',
+  '<b>风险控制</b>：查看交易成本敏感性 & 不同卖出方式效果',
+  '<b>样本外验证</b>：70/30 时间拆分检验策略稳健性，检测过拟合',
+]
+const guideExample = `<b>场景：</b>优化"放量上涨"策略的卖出时机<br/>
+<b>操作：</b>选择放量上涨 → 日期选 2024-06 至 2025-06 → 点击开始分析<br/>
+<b>结果解读：</b><br/>
+① 持仓优化表中，10天持仓夏普最高 → 建议持仓10天卖出<br/>
+② 止盈止损热图中，止损-5%/止盈+8% 组合夏普最高 → 设置此止盈止损<br/>
+③ 样本外验证：训练集夏普1.8，测试集1.5 → 衰减17%，可接受（<30%）`
+const guideMetrics = [
+  { name: '夏普比率', desc: '(收益-无风险利率)/波动率，越高说明单位风险回报越好', range: '-∞ ~ +∞', good: '> 1.0 良好，> 2.0 优秀' },
+  { name: 'Sortino', desc: '仅计算下行波动的夏普变种，对亏损更敏感', range: '-∞ ~ +∞', good: '> 1.5 为良好' },
+  { name: '波动率%', desc: '收益的标准差，反映策略收益的不确定性', range: '0% ~ +∞', good: '< 15% 为低波动' },
+  { name: '中位数收益%', desc: '所有信号按收益排序后的中间值，比均值更抗极端值', range: '-∞ ~ +∞', good: '> 0% 说明一半以上信号盈利' },
+  { name: '信号质量(桶)', desc: '基于指标区间分桶后的信号表现等级', range: '黄金 > 良好 > 中性 > 过滤', good: '黄金区间对应该指标最佳入场范围' },
+  { name: '交易成本%', desc: '买卖手续费+印花税+滑点的总成本', range: '0.1% ~ 1.0%', good: 'A股默认约 0.15%（单边）' },
+  { name: '过拟合衰减', desc: '训练集夏普 vs 测试集夏普的下降比例', range: '0% ~ 100%', good: '< 30% 可接受，> 50% 严重过拟合' },
+]
+const guideTips = [
+  '持仓天数越长波动越大，短线(1-5天)适合高频信号策略，中线(10-20天)适合趋势策略',
+  '止盈止损热图中，对角线附近(盈亏比≈1)通常不理想，寻找盈亏比 ≥ 2:1 的组合',
+  '样本外验证的训练/测试集夏普差异 > 30% 提示过拟合，应减少参数或扩大样本',
+  '信号诊断的"黄金区间"可作为入场条件补充过滤，提升策略精准度',
+]
 
 const strategy = ref('')
 const dateRange = ref<[string, string]>(['2025-01-01', '2025-12-31'])
@@ -533,4 +574,7 @@ function computeOOS() {
 .suggest-icon { font-size: 24px; margin-bottom: 8px; }
 .suggest-title { font-weight: 600; margin-bottom: 6px; }
 .suggest-content { font-size: 13px; color: #595959; }
+/* Tooltip header tips */
+.th-tip { cursor: help; display: inline-flex; align-items: center; gap: 2px; }
+.tip-icon { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; background: #e6e8eb; color: #606266; font-size: 10px; font-style: normal; }
 </style>
