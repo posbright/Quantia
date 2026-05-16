@@ -1,0 +1,912 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""选股验证中心 — 优化分析 API Handler
+
+提供持仓天数扫描、信号质量诊断、止盈止损矩阵、市场环境分类、
+信号衰减分析、交易成本敏感性等只读分析接口。
+
+数据来源: MySQL + cache/hist/（遵守 Fetch/Analysis/Web 分离原则）
+"""
+
+import datetime
+import json
+import logging
+import math
+from abc import ABC
+
+import numpy as np
+import pandas as pd
+
+import quantia.core.tablestructure as tbs
+import quantia.lib.database as mdb
+import quantia.web.base as webBase
+from quantia.core.backtest.rate_stats import ROUND_TRIP_COST_PCT
+from quantia.web.utils import parse_int_list as _parse_int_list, json_default as _json_default
+
+__author__ = 'Quantia'
+__date__ = '2026/05/15'
+
+# ── 常量 ──────────────────────────────────────────────────────────────
+
+RATE_FIELDS_COUNT = tbs.RATE_FIELDS_COUNT  # 100
+_BACKTEST_DATA_TABLE = tbs.TABLE_CN_STOCK_BACKTEST_DATA['name']
+_BACKTEST_SUMMARY_TABLE = tbs.TABLE_CN_STOCK_BACKTEST['name']
+
+# 策略白名单（表名 → 中文名映射）
+_STRATEGY_MAP = None
+
+
+def _get_strategy_map():
+    """strategy_key -> {table, cn}，复用 backtestDashboardHandler 逻辑。"""
+    global _STRATEGY_MAP
+    if _STRATEGY_MAP is not None:
+        return _STRATEGY_MAP
+    mapping = {}
+    for s in tbs.TABLE_CN_STOCK_STRATEGIES:
+        entry = {'table': s['name'], 'cn': s['cn']}
+        mapping[s['name']] = entry
+        if s['cn'] and s['cn'] != s['name']:
+            mapping[s['cn']] = entry
+        # 短名映射: cn_stock_strategy_keep_increasing → keep_increasing
+        short = s['name'].replace('cn_stock_strategy_', '')
+        if short != s['name']:
+            mapping[short] = entry
+    # GPT 策略
+    gpt = tbs.TABLE_CN_STOCK_STRATEGY_GPT_VALUE
+    mapping[gpt['name']] = {'table': gpt['name'], 'cn': gpt['cn']}
+    if gpt['cn'] != gpt['name']:
+        mapping[gpt['cn']] = {'table': gpt['name'], 'cn': gpt['cn']}
+    _STRATEGY_MAP = mapping
+    return mapping
+
+
+def _resolve_strategy(key: str):
+    """查找策略元数据，返回 (meta, error_msg)。"""
+    if not key or not key.strip():
+        return None, '缺少 strategy 参数'
+    key = key.strip()
+    smap = _get_strategy_map()
+    meta = smap.get(key)
+    if meta:
+        return meta, None
+    available = sorted(set(v['table'] for v in smap.values()))
+    return None, f"未知 strategy: '{key}'，可用: {', '.join(available)}"
+
+
+def _parse_date(s):
+    """解析 YYYY-MM-DD 或 YYYYMMDD 格式日期字符串。"""
+    if not s:
+        return None
+    s = str(s).strip().replace('/', '-')
+    for fmt in ('%Y-%m-%d', '%Y%m%d'):
+        try:
+            return datetime.datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _safe_float(v, digits=4):
+    """安全转 float，NaN/Inf 返回 None。"""
+    if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+        return None
+    try:
+        return round(float(v), digits)
+    except (TypeError, ValueError):
+        return None
+
+
+def _calc_annualized_sharpe(rates, holding_days, rf_annual=0.015):
+    """计算年化夏普比率。
+
+    rates: 1-D array of return percentages (e.g. 3.5 means 3.5%)
+    holding_days: 持仓天数
+    rf_annual: 年化无风险利率 (默认 1.5%)
+    """
+    rates = np.asarray(rates, dtype=float)
+    rates = rates[np.isfinite(rates)]
+    if len(rates) < 2:
+        return None
+    avg = rates.mean()
+    std = rates.std(ddof=1)
+    if std == 0:
+        return 0.0
+    rf_period = rf_annual * holding_days / 252 * 100  # 转为百分比单位
+    annualization = math.sqrt(252 / holding_days)
+    return round(float((avg - rf_period) / std * annualization), 4)
+
+
+def _calc_sortino(rates, holding_days, rf_annual=0.015):
+    """计算年化 Sortino 比率。"""
+    rates = np.asarray(rates, dtype=float)
+    rates = rates[np.isfinite(rates)]
+    if len(rates) < 2:
+        return None
+    avg = rates.mean()
+    rf_period = rf_annual * holding_days / 252 * 100
+    downside = rates[rates < 0]
+    if len(downside) < 1:
+        return None
+    downside_std = downside.std(ddof=1)
+    if downside_std == 0:
+        return 0.0
+    annualization = math.sqrt(252 / holding_days)
+    return round(float((avg - rf_period) / downside_std * annualization), 4)
+
+
+def _load_backtest_data(strategy_table, start_date, end_date, rate_cols=None):
+    """从策略表加载回测数据。
+
+    Returns: DataFrame with date, code, name + rate columns, or None.
+    """
+    if not mdb.checkTableIsExist(strategy_table):
+        return None
+    if rate_cols is None:
+        rate_cols = [f'rate_{i}' for i in range(1, RATE_FIELDS_COUNT + 1)]
+    base_cols = ['date', 'code', 'name']
+    all_cols = base_cols + rate_cols
+    cols_sql = ', '.join(f'`{c}`' for c in all_cols)
+    sql = f"SELECT {cols_sql} FROM `{strategy_table}` WHERE `date` >= %s AND `date` <= %s"
+    try:
+        df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+    except Exception as e:
+        logging.error(f"读取 {strategy_table} 失败: {e}", exc_info=True)
+        return None
+    return df if df is not None and len(df) > 0 else None
+
+
+def _write_json(handler, data):
+    """统一 JSON 响应写入。"""
+    handler.set_header('Content-Type', 'application/json;charset=UTF-8')
+    handler.write(json.dumps(data, ensure_ascii=False, default=_json_default))
+
+
+def _write_error(handler, msg, code=400):
+    """统一错误响应。"""
+    handler.set_status(code)
+    _write_json(handler, {'error': msg})
+
+
+def _parse_common_args(handler):
+    """解析通用参数 strategy / start_date / end_date。
+
+    Returns: (strategy_meta, start_date, end_date, error_msg)
+    """
+    strategy_key = handler.get_argument('strategy', default='', strip=True)
+    meta, err = _resolve_strategy(strategy_key)
+    if err:
+        return None, None, None, err
+
+    start_s = handler.get_argument('start_date', default='', strip=True)
+    end_s = handler.get_argument('end_date', default='', strip=True)
+
+    start_date = _parse_date(start_s)
+    end_date = _parse_date(end_s)
+
+    if not start_date or not end_date:
+        return None, None, None, 'start_date 和 end_date 必填，格式 YYYY-MM-DD'
+
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    if (end_date - start_date).days > 366:
+        return None, None, None, '日期区间过大，请控制在 366 天以内'
+
+    return meta, start_date, end_date, None
+
+
+# ── API 1: 持仓天数扫描 ──────────────────────────────────────────────
+
+class HoldingPeriodAnalysisHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/verify/holding_period
+
+    对选定策略的每个持仓天数统计: 平均收益、胜率、夏普、Sortino、分位数等。
+    """
+
+    def get(self):
+        try:
+            self._handle()
+        except Exception:
+            logging.error("持仓天数扫描异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        meta, start_date, end_date, err = _parse_common_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        # 可选参数: 指定持仓天数列表
+        days_arg = self.get_argument('holding_days', default='', strip=True)
+        if days_arg:
+            holding_days_list = _parse_int_list(days_arg, min_value=1, max_value=RATE_FIELDS_COUNT, max_items=30)
+        else:
+            holding_days_list = [1, 2, 3, 5, 7, 10, 15, 20, 30, 60]
+
+        if not holding_days_list:
+            _write_error(self, 'holding_days 参数无效')
+            return
+
+        rate_cols = [f'rate_{d}' for d in holding_days_list]
+        df = _load_backtest_data(meta['table'], start_date, end_date, rate_cols)
+        if df is None:
+            _write_json(self, {
+                'strategy': meta['table'],
+                'strategy_cn': meta['cn'],
+                'period': f'{start_date} ~ {end_date}',
+                'total_signals': 0,
+                'analysis': [],
+                'message': '该时间范围内无策略信号',
+            })
+            return
+
+        total_signals = len(df)
+        analysis = []
+        best_sharpe = None
+        best_holding_days = None
+
+        for d in holding_days_list:
+            col = f'rate_{d}'
+            if col not in df.columns:
+                continue
+            rates = df[col].dropna().values
+            if len(rates) == 0:
+                continue
+
+            avg_ret = float(rates.mean())
+            std_ret = float(rates.std(ddof=1)) if len(rates) > 1 else 0.0
+            sharpe = _calc_annualized_sharpe(rates, d)
+            sortino = _calc_sortino(rates, d)
+            win_rate = float((rates > 0).mean() * 100)
+
+            item = {
+                'holding_days': d,
+                'avg_return': _safe_float(avg_ret),
+                'median_return': _safe_float(float(np.median(rates))),
+                'win_rate': _safe_float(win_rate),
+                'return_std': _safe_float(std_ret),
+                'sharpe_approx': _safe_float(sharpe),
+                'sortino_approx': _safe_float(sortino),
+                'max_single_loss': _safe_float(float(rates.min())),
+                'max_single_gain': _safe_float(float(rates.max())),
+                'percentile_10': _safe_float(float(np.percentile(rates, 10))),
+                'percentile_25': _safe_float(float(np.percentile(rates, 25))),
+                'percentile_75': _safe_float(float(np.percentile(rates, 75))),
+                'percentile_90': _safe_float(float(np.percentile(rates, 90))),
+                'signal_count': len(rates),
+            }
+            analysis.append(item)
+
+            if sharpe is not None and (best_sharpe is None or sharpe > best_sharpe):
+                best_sharpe = sharpe
+                best_holding_days = d
+
+        _write_json(self, {
+            'strategy': meta['table'],
+            'strategy_cn': meta['cn'],
+            'period': f'{start_date} ~ {end_date}',
+            'total_signals': total_signals,
+            'analysis': analysis,
+            'best_holding_days': best_holding_days,
+            'best_sharpe': _safe_float(best_sharpe),
+        })
+
+
+# ── API 2: 信号质量诊断 ──────────────────────────────────────────────
+
+# 可用于诊断的指标白名单
+_SIGNAL_QUALITY_INDICATORS = {
+    'rsi_6', 'rsi_12', 'kdjk', 'kdjd', 'kdjj',
+    'macd', 'macds', 'macdh',
+    'cr', 'cci', 'atr',
+    'close', 'volume', 'turnover',
+}
+
+class SignalQualityHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/verify/signal_quality
+
+    按指定指标分桶，统计各区间的信号质量（平均收益、胜率、夏普）。
+    """
+
+    def get(self):
+        try:
+            self._handle()
+        except Exception:
+            logging.error("信号质量诊断异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        meta, start_date, end_date, err = _parse_common_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        indicator = self.get_argument('indicator', default='rsi_6', strip=True).strip()
+        if indicator not in _SIGNAL_QUALITY_INDICATORS:
+            _write_error(self, f"不支持的指标: '{indicator}'，可用: {', '.join(sorted(_SIGNAL_QUALITY_INDICATORS))}")
+            return
+
+        holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        try:
+            holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            holding_days = 5
+
+        # 自定义分桶 (可选)
+        buckets_arg = self.get_argument('buckets', default='', strip=True)
+
+        # 加载策略回测数据 (仅需 rate_N)
+        rate_col = f'rate_{holding_days}'
+        strategy_table = meta['table']
+        if not mdb.checkTableIsExist(strategy_table):
+            _write_error(self, f"策略表 {strategy_table} 不存在")
+            return
+
+        indicators_table = tbs.TABLE_CN_STOCK_INDICATORS['name']
+        if not mdb.checkTableIsExist(indicators_table):
+            _write_error(self, f"指标表 {indicators_table} 不存在")
+            return
+
+        # JOIN 策略表和指标表获取信号时刻的指标值
+        sql = f"""
+            SELECT s.`date`, s.`code`, s.`{rate_col}` AS rate,
+                   i.`{indicator}` AS ind_val
+            FROM `{strategy_table}` s
+            INNER JOIN `{indicators_table}` i
+                ON s.`date` = i.`date` AND s.`code` = i.`code`
+            WHERE s.`date` >= %s AND s.`date` <= %s
+              AND s.`{rate_col}` IS NOT NULL
+              AND i.`{indicator}` IS NOT NULL
+        """
+        try:
+            df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+        except Exception as e:
+            logging.error(f"信号质量查询失败: {e}", exc_info=True)
+            _write_error(self, '查询失败', 500)
+            return
+
+        if df is None or len(df) == 0:
+            _write_json(self, {
+                'strategy': meta['table'],
+                'indicator': indicator,
+                'holding_days': holding_days,
+                'buckets': [],
+                'message': '该时间范围内无匹配数据',
+            })
+            return
+
+        # 分桶逻辑
+        if buckets_arg:
+            # 自定义分桶: "0-30,30-50,50-70,70-100"
+            bucket_ranges = []
+            for part in buckets_arg.split(','):
+                parts = part.strip().split('-')
+                if len(parts) == 2:
+                    try:
+                        lo, hi = float(parts[0]), float(parts[1])
+                        bucket_ranges.append((lo, hi))
+                    except ValueError:
+                        continue
+        else:
+            # 自动四分位分桶
+            q = df['ind_val'].quantile([0, 0.25, 0.5, 0.75, 1.0]).values
+            bucket_ranges = [(q[0], q[1]), (q[1], q[2]), (q[2], q[3]), (q[3], q[4])]
+
+        buckets_result = []
+        for lo, hi in bucket_ranges:
+            mask = (df['ind_val'] >= lo) & (df['ind_val'] < hi)
+            # 最后一个桶包含上界
+            if (lo, hi) == bucket_ranges[-1]:
+                mask = (df['ind_val'] >= lo) & (df['ind_val'] <= hi)
+            subset = df.loc[mask, 'rate'].values
+
+            if len(subset) == 0:
+                continue
+
+            avg_ret = float(subset.mean())
+            win_rate = float((subset > 0).mean() * 100)
+            sharpe = _calc_annualized_sharpe(subset, holding_days)
+
+            # 质量评级
+            if sharpe is not None and sharpe >= 2.5 and win_rate >= 65:
+                quality = 'golden'
+            elif sharpe is not None and sharpe >= 1.5 and win_rate >= 55:
+                quality = 'good'
+            elif sharpe is not None and sharpe >= 0:
+                quality = 'neutral'
+            else:
+                quality = 'filter'
+
+            buckets_result.append({
+                'range': f'{lo:.1f}-{hi:.1f}',
+                'range_lo': _safe_float(lo),
+                'range_hi': _safe_float(hi),
+                'signal_count': int(len(subset)),
+                'pct': _safe_float(len(subset) / len(df) * 100),
+                'avg_return': _safe_float(avg_ret),
+                'win_rate': _safe_float(win_rate),
+                'sharpe': _safe_float(sharpe),
+                'quality': quality,
+            })
+
+        # 生成过滤建议: 标记 quality=filter 的区间
+        filter_ranges = [b['range'] for b in buckets_result if b['quality'] == 'filter']
+        golden_ranges = [b['range'] for b in buckets_result if b['quality'] == 'golden']
+
+        _write_json(self, {
+            'strategy': meta['table'],
+            'strategy_cn': meta['cn'],
+            'indicator': indicator,
+            'holding_days': holding_days,
+            'total_signals': len(df),
+            'buckets': buckets_result,
+            'recommendation': {
+                'filter_ranges': filter_ranges,
+                'golden_ranges': golden_ranges,
+            },
+        })
+
+
+# ── API 3: 止盈止损矩阵 ──────────────────────────────────────────────
+
+class StopLossTakeProfitMatrixHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/verify/sl_tp_matrix
+
+    对 (SL, TP) 网格的每个组合，模拟止盈止损并统计夏普/胜率/回撤。
+    """
+
+    def get(self):
+        try:
+            self._handle()
+        except Exception:
+            logging.error("止盈止损矩阵异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        meta, start_date, end_date, err = _parse_common_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        # 止损水平 (负值百分比)
+        sl_arg = self.get_argument('sl_range', default='-2,-3,-5,-8,-10', strip=True)
+        tp_arg = self.get_argument('tp_range', default='3,5,8,10,15', strip=True)
+        max_hold_arg = self.get_argument('max_hold_days', default='20', strip=True)
+
+        try:
+            sl_levels = sorted(set(float(x.strip()) for x in sl_arg.split(',') if x.strip()), reverse=True)
+        except ValueError:
+            sl_levels = [-2, -3, -5, -8, -10]
+
+        try:
+            tp_levels = sorted(set(float(x.strip()) for x in tp_arg.split(',') if x.strip()))
+        except ValueError:
+            tp_levels = [3, 5, 8, 10, 15]
+
+        try:
+            max_hold = max(1, min(int(max_hold_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            max_hold = 20
+
+        # 加载逐日收益
+        rate_cols = [f'rate_{d}' for d in range(1, max_hold + 1)]
+        df = _load_backtest_data(meta['table'], start_date, end_date, rate_cols)
+        if df is None:
+            _write_json(self, {
+                'strategy': meta['table'],
+                'max_hold_days': max_hold,
+                'matrix': [],
+                'message': '该时间范围内无策略信号',
+            })
+            return
+
+        # 构造 rates_matrix: shape (N_trades, max_hold)
+        rate_df = df[rate_cols].copy()
+        rates_matrix = rate_df.values  # (N, max_hold)
+
+        matrix = []
+        best_sharpe = None
+        best_combo = None
+
+        for sl in sl_levels:
+            for tp in tp_levels:
+                final_rates = self._simulate_sl_tp(rates_matrix, sl, tp, max_hold)
+                valid = final_rates[np.isfinite(final_rates)]
+                if len(valid) == 0:
+                    continue
+
+                avg_ret = float(valid.mean())
+                std_ret = float(valid.std(ddof=1)) if len(valid) > 1 else 0.0
+                win_rate = float((valid > 0).mean() * 100)
+                sharpe = _calc_annualized_sharpe(valid, max_hold)
+
+                # 统计命中分布
+                sl_hit, tp_hit, expired = self._count_exits(rates_matrix, sl, tp, max_hold)
+
+                item = {
+                    'stop_loss': sl,
+                    'take_profit': tp,
+                    'sharpe': _safe_float(sharpe),
+                    'avg_return': _safe_float(avg_ret),
+                    'win_rate': _safe_float(win_rate),
+                    'return_std': _safe_float(std_ret),
+                    'avg_hold_days': _safe_float(self._avg_hold_days(rates_matrix, sl, tp, max_hold)),
+                    'trades_hit_sl': int(sl_hit),
+                    'trades_hit_tp': int(tp_hit),
+                    'trades_expired': int(expired),
+                    'total_trades': int(len(valid)),
+                }
+                matrix.append(item)
+
+                if sharpe is not None and (best_sharpe is None or sharpe > best_sharpe):
+                    best_sharpe = sharpe
+                    best_combo = {'stop_loss': sl, 'take_profit': tp, 'sharpe': _safe_float(sharpe)}
+
+        _write_json(self, {
+            'strategy': meta['table'],
+            'strategy_cn': meta['cn'],
+            'period': f'{start_date} ~ {end_date}',
+            'max_hold_days': max_hold,
+            'total_signals': len(df),
+            'matrix': matrix,
+            'best_combo': best_combo,
+        })
+
+    @staticmethod
+    def _simulate_sl_tp(rates_matrix, sl, tp, max_hold):
+        """向量化模拟止盈止损。
+
+        rates_matrix: (N, max_hold), 每列为 rate_1..rate_max_hold
+        返回: 1-D array (N,) 每笔交易的最终收益。
+        """
+        n_trades = rates_matrix.shape[0]
+        final_rates = np.full(n_trades, np.nan)
+
+        for i in range(n_trades):
+            row = rates_matrix[i]
+            locked = False
+            for d in range(max_hold):
+                r = row[d]
+                if np.isnan(r):
+                    break
+                if r <= sl:
+                    final_rates[i] = sl
+                    locked = True
+                    break
+                if r >= tp:
+                    final_rates[i] = tp
+                    locked = True
+                    break
+            if not locked and not np.isnan(row[max_hold - 1]):
+                final_rates[i] = row[max_hold - 1]
+
+        return final_rates
+
+    @staticmethod
+    def _count_exits(rates_matrix, sl, tp, max_hold):
+        """统计各退出原因的笔数。"""
+        sl_hit = 0
+        tp_hit = 0
+        expired = 0
+        for i in range(rates_matrix.shape[0]):
+            row = rates_matrix[i]
+            exited = False
+            for d in range(max_hold):
+                r = row[d]
+                if np.isnan(r):
+                    break
+                if r <= sl:
+                    sl_hit += 1
+                    exited = True
+                    break
+                if r >= tp:
+                    tp_hit += 1
+                    exited = True
+                    break
+            if not exited and not np.isnan(row[max_hold - 1]):
+                expired += 1
+        return sl_hit, tp_hit, expired
+
+    @staticmethod
+    def _avg_hold_days(rates_matrix, sl, tp, max_hold):
+        """计算平均持仓天数。"""
+        days_list = []
+        for i in range(rates_matrix.shape[0]):
+            row = rates_matrix[i]
+            for d in range(max_hold):
+                r = row[d]
+                if np.isnan(r):
+                    break
+                if r <= sl or r >= tp:
+                    days_list.append(d + 1)
+                    break
+            else:
+                if not np.isnan(row[max_hold - 1]):
+                    days_list.append(max_hold)
+        return float(np.mean(days_list)) if days_list else 0.0
+
+
+# ── API 4: 市场环境分类 ──────────────────────────────────────────────
+
+class MarketRegimeHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/verify/market_regime
+
+    用 MA20/MA60 交叉 + ATR 中位数对市场环境分类，
+    然后分环境统计策略表现。
+    """
+
+    def get(self):
+        try:
+            self._handle()
+        except Exception:
+            logging.error("市场环境分类异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        meta, start_date, end_date, err = _parse_common_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        benchmark = self.get_argument('benchmark', default='000300', strip=True).strip()
+        holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        try:
+            holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            holding_days = 5
+
+        # 加载基准指数数据 (从缓存/DB，不调用外部 API)
+        from quantia.core.backtest.data_feed import load_benchmark_data
+        # 需要额外前置 60 日用于 MA60 计算
+        extended_start = start_date - datetime.timedelta(days=90)
+        bench_df = load_benchmark_data(benchmark, str(extended_start), str(end_date))
+        if bench_df is None or len(bench_df) == 0:
+            _write_error(self, f"无法加载基准 {benchmark} 数据")
+            return
+
+        # 确保日期排序
+        bench_df = bench_df.sort_values('date').reset_index(drop=True)
+        bench_df['date'] = pd.to_datetime(bench_df['date'])
+
+        # 计算 MA 和 ATR
+        bench_df['ma20'] = bench_df['close'].rolling(20, min_periods=20).mean()
+        bench_df['ma60'] = bench_df['close'].rolling(60, min_periods=60).mean()
+
+        if 'high' in bench_df.columns and 'low' in bench_df.columns:
+            bench_df['tr'] = np.maximum(
+                bench_df['high'] - bench_df['low'],
+                np.maximum(
+                    abs(bench_df['high'] - bench_df['close'].shift(1)),
+                    abs(bench_df['low'] - bench_df['close'].shift(1))
+                )
+            )
+            bench_df['atr20'] = bench_df['tr'].rolling(20, min_periods=20).mean()
+        else:
+            # 无高低价时用收益率波动替代
+            bench_df['atr20'] = bench_df['close'].pct_change().rolling(20).std()
+
+        atr_median = bench_df['atr20'].median()
+
+        # 分类
+        bench_df['regime'] = 'sideways'
+        mask_bull = (bench_df['ma20'] > bench_df['ma60']) & (bench_df['atr20'] > atr_median)
+        mask_bear = (bench_df['ma20'] < bench_df['ma60']) & (bench_df['atr20'] > atr_median)
+        bench_df.loc[mask_bull, 'regime'] = 'bull'
+        bench_df.loc[mask_bear, 'regime'] = 'bear'
+
+        # 裁剪到请求日期范围
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        bench_range = bench_df[(bench_df['date'] >= start_ts) & (bench_df['date'] <= end_ts)].copy()
+
+        if len(bench_range) == 0:
+            _write_error(self, '指定范围内无基准数据')
+            return
+
+        # 生成 regime 序列
+        regime_series = bench_range[['date', 'regime']].copy()
+        regime_series['date'] = regime_series['date'].dt.strftime('%Y-%m-%d')
+
+        # 合并成连续段
+        regimes = []
+        if len(regime_series) > 0:
+            rows = regime_series.to_dict('records')
+            cur = {'start': rows[0]['date'], 'end': rows[0]['date'], 'type': rows[0]['regime'], 'days': 1}
+            for r in rows[1:]:
+                if r['regime'] == cur['type']:
+                    cur['end'] = r['date']
+                    cur['days'] += 1
+                else:
+                    regimes.append(cur)
+                    cur = {'start': r['date'], 'end': r['date'], 'type': r['regime'], 'days': 1}
+            regimes.append(cur)
+
+        # 加载策略数据并按环境统计
+        rate_col = f'rate_{holding_days}'
+        df = _load_backtest_data(meta['table'], start_date, end_date, [rate_col])
+        strategy_by_regime = {}
+
+        if df is not None and len(df) > 0:
+            df['date'] = pd.to_datetime(df['date'])
+            # 合并环境标签
+            regime_lookup = bench_range[['date', 'regime']].set_index('date')['regime']
+            df['regime'] = df['date'].map(regime_lookup)
+
+            for regime_type in ['bull', 'bear', 'sideways']:
+                subset = df[df['regime'] == regime_type]
+                rates = subset[rate_col].dropna().values
+                if len(rates) == 0:
+                    strategy_by_regime[regime_type] = {
+                        'avg_return': None, 'sharpe': None, 'win_rate': None, 'signal_count': 0,
+                    }
+                    continue
+
+                strategy_by_regime[regime_type] = {
+                    'avg_return': _safe_float(float(rates.mean())),
+                    'sharpe': _safe_float(_calc_annualized_sharpe(rates, holding_days)),
+                    'win_rate': _safe_float(float((rates > 0).mean() * 100)),
+                    'signal_count': int(len(rates)),
+                }
+
+        _write_json(self, {
+            'strategy': meta['table'],
+            'strategy_cn': meta['cn'],
+            'benchmark': benchmark,
+            'holding_days': holding_days,
+            'period': f'{start_date} ~ {end_date}',
+            'regimes': regimes,
+            'strategy_by_regime': strategy_by_regime,
+            'classification_method': 'MA20/MA60 crossover + ATR median',
+        })
+
+
+# ── API 5: 信号衰减分析 ──────────────────────────────────────────────
+
+class SignalDecayHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/verify/signal_decay
+
+    按月分组统计策略的胜率/收益率/夏普变化趋势。
+    """
+
+    def get(self):
+        try:
+            self._handle()
+        except Exception:
+            logging.error("信号衰减分析异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        meta, start_date, end_date, err = _parse_common_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        try:
+            holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            holding_days = 5
+
+        rate_col = f'rate_{holding_days}'
+        df = _load_backtest_data(meta['table'], start_date, end_date, [rate_col])
+        if df is None:
+            _write_json(self, {
+                'strategy': meta['table'],
+                'holding_days': holding_days,
+                'monthly': [],
+                'message': '该时间范围内无策略信号',
+            })
+            return
+
+        df['date'] = pd.to_datetime(df['date'])
+        df['month'] = df['date'].dt.to_period('M')
+
+        monthly = []
+        for period, group in df.groupby('month'):
+            rates = group[rate_col].dropna().values
+            if len(rates) == 0:
+                continue
+            monthly.append({
+                'month': str(period),
+                'signal_count': int(len(rates)),
+                'avg_return': _safe_float(float(rates.mean())),
+                'win_rate': _safe_float(float((rates > 0).mean() * 100)),
+                'sharpe': _safe_float(_calc_annualized_sharpe(rates, holding_days)),
+                'return_std': _safe_float(float(rates.std(ddof=1))) if len(rates) > 1 else None,
+            })
+
+        # 衰减检测: 前半段 vs 后半段夏普对比
+        decay_warning = None
+        if len(monthly) >= 4:
+            half = len(monthly) // 2
+            first_sharpes = [m['sharpe'] for m in monthly[:half] if m['sharpe'] is not None]
+            second_sharpes = [m['sharpe'] for m in monthly[half:] if m['sharpe'] is not None]
+            if first_sharpes and second_sharpes:
+                first_avg = np.mean(first_sharpes)
+                second_avg = np.mean(second_sharpes)
+                if first_avg > 0 and second_avg < first_avg * 0.7:
+                    decay_warning = f"夏普从前半段 {first_avg:.2f} 下降到后半段 {second_avg:.2f}，Alpha 可能在衰减"
+
+        _write_json(self, {
+            'strategy': meta['table'],
+            'strategy_cn': meta['cn'],
+            'holding_days': holding_days,
+            'period': f'{start_date} ~ {end_date}',
+            'monthly': monthly,
+            'decay_warning': decay_warning,
+        })
+
+
+# ── API 7: 交易成本敏感性 ────────────────────────────────────────────
+
+class CostSensitivityHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/verify/cost_sensitivity
+
+    展示不同交易成本假设下的策略表现变化。
+    """
+
+    def get(self):
+        try:
+            self._handle()
+        except Exception:
+            logging.error("成本敏感性分析异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        meta, start_date, end_date, err = _parse_common_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        try:
+            holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            holding_days = 5
+
+        rate_col = f'rate_{holding_days}'
+        df = _load_backtest_data(meta['table'], start_date, end_date, [rate_col])
+        if df is None:
+            _write_json(self, {
+                'strategy': meta['table'],
+                'scenarios': [],
+                'message': '该时间范围内无策略信号',
+            })
+            return
+
+        rates = df[rate_col].dropna().values
+        if len(rates) == 0:
+            _write_json(self, {'strategy': meta['table'], 'scenarios': [], 'message': '无有效收益数据'})
+            return
+
+        # 当前 rate 已包含 ROUND_TRIP_COST_PCT (0.20%) 的交易成本
+        # 模拟不同成本: 先还原到毛收益，再减去不同成本
+        current_cost = ROUND_TRIP_COST_PCT  # 0.20
+        gross_rates = rates + current_cost  # 毛收益
+
+        cost_levels = [0.0, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50]
+        scenarios = []
+
+        for cost in cost_levels:
+            net_rates = gross_rates - cost
+            avg_ret = float(net_rates.mean())
+            win_rate = float((net_rates > 0).mean() * 100)
+            sharpe = _calc_annualized_sharpe(net_rates, holding_days)
+
+            scenarios.append({
+                'cost_pct': cost,
+                'avg_return': _safe_float(avg_ret),
+                'win_rate': _safe_float(win_rate),
+                'sharpe': _safe_float(sharpe),
+                'is_current': abs(cost - current_cost) < 0.001,
+            })
+
+        _write_json(self, {
+            'strategy': meta['table'],
+            'strategy_cn': meta['cn'],
+            'holding_days': holding_days,
+            'period': f'{start_date} ~ {end_date}',
+            'total_signals': int(len(rates)),
+            'current_cost_pct': current_cost,
+            'scenarios': scenarios,
+        })

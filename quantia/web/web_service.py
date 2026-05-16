@@ -50,6 +50,8 @@ import quantia.web.imCommandHandler as imCommandHandler
 import quantia.web.liveTradingHandler as liveTradingHandler
 import quantia.web.customIndicatorHandler as customIndicatorHandler
 import quantia.web.authHandler as authHandler
+import quantia.web.verifyOptimizeHandler as verifyOptimizeHandler
+import quantia.web.verifyFusionHandler as verifyFusionHandler
 import quantia.web.base as webBase
 
 __author__ = 'Quantia'
@@ -194,6 +196,15 @@ class Application(tornado.web.Application):
             (r"/quantia/api/custom_indicator/backtest", customIndicatorHandler.BacktestCustomIndicatorHandler),
             (r"/quantia/api/custom_indicator/watchlist", customIndicatorHandler.WatchlistTodayHandler),
             (r"/quantia/api/custom_indicator/series", customIndicatorHandler.IndicatorSeriesHandler),
+            # Phase 10: 选股验证中心 — 优化分析（只读）
+            (r"/quantia/api/verify/holding_period", verifyOptimizeHandler.HoldingPeriodAnalysisHandler),
+            (r"/quantia/api/verify/signal_quality", verifyOptimizeHandler.SignalQualityHandler),
+            (r"/quantia/api/verify/sl_tp_matrix", verifyOptimizeHandler.StopLossTakeProfitMatrixHandler),
+            (r"/quantia/api/verify/market_regime", verifyOptimizeHandler.MarketRegimeHandler),
+            (r"/quantia/api/verify/signal_decay", verifyOptimizeHandler.SignalDecayHandler),
+            (r"/quantia/api/verify/cost_sensitivity", verifyOptimizeHandler.CostSensitivityHandler),
+            (r"/quantia/api/verify/fusion", verifyFusionHandler.StrategyFusionHandler),
+            (r"/quantia/api/verify/optimize_suggest", verifyFusionHandler.OptimizeSuggestHandler),
             # ── Vue SPA 路由 ──
             # 静态资源（assets/）
             (r"/assets/(.*)", tornado.web.StaticFileHandler, {"path": os.path.join(static_path, "assets")}),
