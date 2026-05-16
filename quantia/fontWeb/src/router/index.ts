@@ -407,6 +407,12 @@ const routes: RouteRecordRaw[] = [
         name: 'VerifyFusion',
         component: () => import('@/views/verify/fusion.vue'),
         meta: { title: '策略融合' }
+      },
+      {
+        path: 'factor-lab',
+        name: 'VerifyFactorLab',
+        component: () => import('@/views/verify/factorLab.vue'),
+        meta: { title: '因子实验室' }
       }
     ]
   },
