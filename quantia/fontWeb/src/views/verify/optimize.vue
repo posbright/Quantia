@@ -120,6 +120,60 @@
             </table>
           </div>
         </el-card>
+        <el-card shadow="never" style="margin-top: 16px">
+          <template #header>卖出方式对比</template>
+          <div v-if="exitData.length > 0" class="table-wrapper">
+            <table class="cmp-table">
+              <thead>
+                <tr><th>卖出策略</th><th>平均收益%</th><th>胜率%</th><th>夏普</th><th>Sortino</th><th>最大亏损%</th><th>信号数</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="e in exitData" :key="e.exit_type + (e.trailing_days || '')" :class="{ 'best-row': e.exit_type === bestExitStrategy }">
+                  <td><strong>{{ e.label }}</strong></td>
+                  <td :class="rateClass(e.avg_return)">{{ fmt(e.avg_return) }}</td>
+                  <td>{{ fmt(e.win_rate) }}</td>
+                  <td :class="sharpeClass(e.sharpe)">{{ fmt(e.sharpe) }}</td>
+                  <td>{{ fmt(e.sortino) }}</td>
+                  <td class="text-green">{{ fmt(e.max_single_loss) }}</td>
+                  <td>{{ e.signal_count }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </el-card>
+      </el-tab-pane>
+
+      <!-- 样本外验证 -->
+      <el-tab-pane label="样本外验证" name="oos">
+        <el-alert v-if="oosWarning" :title="oosWarning" type="warning" show-icon :closable="false" style="margin-bottom: 12px" />
+        <div v-if="oosData.train && oosData.test" class="table-wrapper">
+          <table class="cmp-table">
+            <thead>
+              <tr><th>数据集</th><th>信号数</th><th>平均收益%</th><th>胜率%</th><th>夏普</th><th>Sortino</th><th>日期范围</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><el-tag type="info" size="small">训练集 70%</el-tag></td>
+                <td>{{ oosData.train.signal_count }}</td>
+                <td :class="rateClass(oosData.train.avg_return)">{{ fmt(oosData.train.avg_return) }}</td>
+                <td>{{ fmt(oosData.train.win_rate) }}</td>
+                <td>{{ fmt(oosData.train.sharpe) }}</td>
+                <td>{{ fmt(oosData.train.sortino) }}</td>
+                <td>{{ oosData.train.period }}</td>
+              </tr>
+              <tr>
+                <td><el-tag type="success" size="small">测试集 30%</el-tag></td>
+                <td>{{ oosData.test.signal_count }}</td>
+                <td :class="rateClass(oosData.test.avg_return)">{{ fmt(oosData.test.avg_return) }}</td>
+                <td>{{ fmt(oosData.test.win_rate) }}</td>
+                <td>{{ fmt(oosData.test.sharpe) }}</td>
+                <td>{{ fmt(oosData.test.sortino) }}</td>
+                <td>{{ oosData.test.period }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <el-empty v-else-if="!loading && hasQueried" description="无数据" />
       </el-tab-pane>
     </el-tabs>
 
@@ -143,7 +197,7 @@
 import { ref, nextTick, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
-import { getHoldingPeriod, getSignalQuality, getSlTpMatrix, getCostSensitivity, getOptimizeSuggest } from '@/api/verify'
+import { getHoldingPeriod, getSignalQuality, getSlTpMatrix, getCostSensitivity, getOptimizeSuggest, getExitCompare } from '@/api/verify'
 
 const strategy = ref('')
 const dateRange = ref<[string, string]>(['2025-01-01', '2025-12-31'])
@@ -168,6 +222,14 @@ const sltpBest = ref<any>(null)
 
 // 成本敏感性
 const costData = ref<any[]>([])
+
+// 卖出方式对比
+const exitData = ref<any[]>([])
+const bestExitStrategy = ref('')
+
+// 样本外验证
+const oosData = ref<{ train: any; test: any }>({ train: null, test: null })
+const oosWarning = ref('')
 
 // 优化建议
 const suggestions = ref<any[]>([])
@@ -219,11 +281,12 @@ async function runAnalysis() {
 
   try {
     // 并行请求
-    const [holdingRes, sltpRes, costRes, suggestRes] = await Promise.all([
+    const [holdingRes, sltpRes, costRes, suggestRes, exitRes] = await Promise.all([
       getHoldingPeriod({ ...params, holding_days: '1,3,5,7,10,15,20,30,60' }),
       getSlTpMatrix({ ...params, max_hold_days: 20 }),
       getCostSensitivity({ ...params, holding_days: 5 }),
       getOptimizeSuggest(params),
+      getExitCompare({ ...params, holding_days: 5 }),
     ]) as any[]
 
     // 持仓优化
@@ -238,11 +301,16 @@ async function runAnalysis() {
     await nextTick()
     renderSltpChart(sltpRes.matrix || [])
 
-    // 成本
+    // 成本 + 卖出方式
     costData.value = costRes.scenarios || []
+    exitData.value = exitRes.exit_strategies || []
+    bestExitStrategy.value = exitRes.best_strategy || ''
 
     // 建议
     suggestions.value = suggestRes.suggestions || []
+
+    // 样本外验证
+    computeOOS()
 
     // 信号诊断
     await loadSignalQuality()
@@ -306,6 +374,50 @@ function renderSltpChart(matrix: any[]) {
     visualMap: { min: -1, max: 4, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#3060cf', '#ffffff', '#cf1322'] } },
     series: [{ type: 'heatmap', data, label: { show: true, formatter: (p: any) => p.data[2]?.toFixed(1) } }],
   })
+}
+
+function computeOOS() {
+  // 前端样本外验证: 基于日期拆分 70/30
+  oosData.value = { train: null, test: null }
+  oosWarning.value = ''
+
+  if (!dateRange.value?.[0]) return
+  const [startDate, endDate] = dateRange.value
+  const start = new Date(startDate)
+  const end = new Date(endDate)
+  const totalDays = (end.getTime() - start.getTime()) / (1000 * 86400)
+  if (totalDays < 60) {
+    oosWarning.value = '日期范围过短（<60天），无法进行样本外验证'
+    return
+  }
+
+  // 70% 分割点
+  const splitDate = new Date(start.getTime() + totalDays * 0.7 * 86400 * 1000)
+  const splitStr = splitDate.toISOString().slice(0, 10)
+
+  // 用两次 API 请求获取训练集和测试集数据
+  const params = { strategy: strategy.value, holding_days: '5' }
+  Promise.all([
+    getHoldingPeriod({ ...params, start_date: startDate, end_date: splitStr }),
+    getHoldingPeriod({ ...params, start_date: splitStr, end_date: endDate }),
+  ]).then(([trainRes, testRes]: any[]) => {
+    const trainAnalysis = trainRes.analysis?.[0] || {}
+    const testAnalysis = testRes.analysis?.[0] || {}
+    oosData.value = {
+      train: { ...trainAnalysis, period: `${startDate} ~ ${splitStr}`, signal_count: trainRes.total_signals || 0 },
+      test: { ...testAnalysis, period: `${splitStr} ~ ${endDate}`, signal_count: testRes.total_signals || 0 },
+    }
+
+    // 过拟合检测: 夏普衰减 >30%
+    const trainSharpe = trainAnalysis.sharpe_approx
+    const testSharpe = testAnalysis.sharpe_approx
+    if (trainSharpe && testSharpe && trainSharpe > 0) {
+      const decay = (trainSharpe - testSharpe) / trainSharpe * 100
+      if (decay > 30) {
+        oosWarning.value = `⚠️ 过拟合风险: 夏普从训练集 ${trainSharpe.toFixed(2)} 降至测试集 ${testSharpe.toFixed(2)}（衰减 ${decay.toFixed(0)}%）`
+      }
+    }
+  }).catch(() => { /* ignore */ })
 }
 </script>
 

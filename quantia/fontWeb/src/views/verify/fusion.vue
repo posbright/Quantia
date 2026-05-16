@@ -10,6 +10,7 @@
             <el-radio value="intersection">信号交集</el-radio>
             <el-radio value="union">信号并集</el-radio>
             <el-radio value="vote">投票制</el-radio>
+            <el-radio value="rotation">环境轮动</el-radio>
           </el-radio-group>
           <el-input-number
             v-if="fusionMode === 'vote'"

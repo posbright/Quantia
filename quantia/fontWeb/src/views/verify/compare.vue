@@ -69,6 +69,29 @@
       </div>
     </el-card>
 
+    <!-- 综合评分 + 雷达图 -->
+    <el-row v-if="compareData.length > 1" :gutter="16" style="margin-top: 16px">
+      <el-col :span="16">
+        <el-card shadow="never">
+          <template #header><span>综合评分排名</span></template>
+          <div class="rank-list">
+            <div v-for="(item, idx) in rankedData" :key="item.strategy" class="rank-item" :class="{ 'rank-best': idx === 0 }">
+              <span class="rank-num">{{ idx + 1 }}</span>
+              <span class="rank-name">{{ item.strategy_cn || item.strategy }}</span>
+              <el-progress :percentage="item._score" :stroke-width="12" :color="idx === 0 ? '#cf1322' : idx === rankedData.length - 1 ? '#bfbfbf' : '#1890ff'" style="flex: 1; margin: 0 12px" />
+              <span class="rank-score">{{ item._score.toFixed(1) }}</span>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+      <el-col :span="8">
+        <el-card shadow="never">
+          <template #header><span>能力雷达</span></template>
+          <div ref="radarChartRef" style="height: 220px" />
+        </el-card>
+      </el-col>
+    </el-row>
+
     <!-- 信号衰减月度趋势 -->
     <el-card v-if="decayData.length > 0" shadow="never" style="margin-top: 16px">
       <template #header><span>信号衰减趋势（月度）</span></template>
@@ -116,6 +139,8 @@ const compareData = ref<any[]>([])
 const decayData = ref<any[]>([])
 const regimeData = ref<Record<string, any>>({})
 const decayChartRef = ref<HTMLElement>()
+const radarChartRef = ref<HTMLElement>()
+const rankedData = ref<any[]>([])
 
 const dayOptions = [1, 3, 5, 7, 10, 15, 20, 30, 60]
 
@@ -206,6 +231,11 @@ async function runCompare() {
       return { strategy: res.strategy, strategy_cn: res.strategy_cn, ...analysis }
     })
 
+    // 综合评分 + 雷达图
+    computeRanking()
+    await nextTick()
+    renderRadarChart()
+
     // 第一个策略的信号衰减
     if (selectedStrategies.value.length > 0) {
       const decayRes: any = await getSignalDecay({ strategy: selectedStrategies.value[0], start_date: startDate, end_date: endDate, holding_days: holdingDays.value })
@@ -227,10 +257,87 @@ async function runCompare() {
 }
 
 onUnmounted(() => {
-  if (decayChartRef.value) {
-    echarts.dispose(decayChartRef.value)
-  }
+  if (decayChartRef.value) echarts.dispose(decayChartRef.value)
+  if (radarChartRef.value) echarts.dispose(radarChartRef.value)
 })
+
+function computeRanking() {
+  // 综合评分: 夏普40% + 收益30% + 回撤控制20% + 胜率10%
+  const data = compareData.value
+  if (data.length === 0) { rankedData.value = []; return }
+
+  // 归一化各维度到 0-100
+  const sharpes = data.map(d => d.sharpe_approx ?? 0)
+  const returns = data.map(d => d.avg_return ?? 0)
+  const winRates = data.map(d => d.win_rate ?? 0)
+  const maxLoss = data.map(d => -(d.max_single_loss ?? 0)) // 负越少越好，取反
+
+  function normalize(arr: number[]): number[] {
+    const min = Math.min(...arr)
+    const max = Math.max(...arr)
+    if (max === min) return arr.map(() => 50)
+    return arr.map(v => ((v - min) / (max - min)) * 100)
+  }
+
+  const nSharpe = normalize(sharpes)
+  const nReturn = normalize(returns)
+  const nWin = normalize(winRates)
+  const nDrawdown = normalize(maxLoss)
+
+  const scored = data.map((d, i) => ({
+    ...d,
+    _score: nSharpe[i] * 0.4 + nReturn[i] * 0.3 + nDrawdown[i] * 0.2 + nWin[i] * 0.1,
+  }))
+  scored.sort((a, b) => b._score - a._score)
+  rankedData.value = scored
+}
+
+function renderRadarChart() {
+  if (!radarChartRef.value || compareData.value.length === 0) return
+  const existing = echarts.getInstanceByDom(radarChartRef.value)
+  if (existing) existing.dispose()
+  const chart = echarts.init(radarChartRef.value)
+
+  // 维度: 收益率 / 夏普 / 胜率 / 盈亏比 / 回撤控制 / 稳定性
+  const indicators = [
+    { name: '收益率', max: 100 },
+    { name: '夏普', max: 100 },
+    { name: '胜率', max: 100 },
+    { name: '回撤控制', max: 100 },
+    { name: '稳定性', max: 100 },
+  ]
+
+  // 归一化各维度
+  const data = compareData.value
+  const vals = {
+    ret: data.map(d => d.avg_return ?? 0),
+    sharpe: data.map(d => d.sharpe_approx ?? 0),
+    win: data.map(d => d.win_rate ?? 0),
+    dd: data.map(d => -(d.max_single_loss ?? 0)),
+    stable: data.map(d => 100 - (d.return_std ?? 0)),
+  }
+
+  function norm(arr: number[]): number[] {
+    const min = Math.min(...arr)
+    const max = Math.max(...arr)
+    if (max === min) return arr.map(() => 50)
+    return arr.map(v => ((v - min) / (max - min)) * 100)
+  }
+
+  const nR = norm(vals.ret), nS = norm(vals.sharpe), nW = norm(vals.win), nD = norm(vals.dd), nSt = norm(vals.stable)
+
+  const series = data.map((d, i) => ({
+    name: d.strategy_cn || d.strategy,
+    value: [nR[i], nS[i], nW[i], nD[i], nSt[i]],
+  }))
+
+  chart.setOption({
+    tooltip: {},
+    legend: { bottom: 0, data: series.map(s => s.name) },
+    radar: { indicator: indicators, radius: 70, center: ['50%', '45%'] },
+    series: [{ type: 'radar', data: series.map(s => ({ name: s.name, value: s.value, areaStyle: { opacity: 0.15 } })) }],
+  })
+}
 
 function renderDecayChart() {
   if (!decayChartRef.value || decayData.value.length === 0) return
@@ -266,4 +373,11 @@ function renderDecayChart() {
 .text-red { color: #cf1322; }
 .text-green { color: #389e0d; }
 .font-bold { font-weight: 700; }
+.rank-list { display: flex; flex-direction: column; gap: 10px; }
+.rank-item { display: flex; align-items: center; padding: 6px 8px; border-radius: 4px; }
+.rank-item.rank-best { background: #fff7e6; }
+.rank-num { width: 24px; height: 24px; border-radius: 50%; background: #f0f0f0; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; }
+.rank-best .rank-num { background: #cf1322; color: #fff; }
+.rank-name { width: 80px; font-size: 13px; margin-left: 8px; }
+.rank-score { font-weight: 700; font-size: 14px; width: 40px; text-align: right; }
 </style>
