@@ -195,6 +195,9 @@ def _parse_common_args(handler):
     if (end_date - start_date).days > 366:
         return None, None, None, '日期区间过大，请控制在 366 天以内'
 
+    if (end_date - start_date).days < 7:
+        return None, None, None, '日期区间过短，请至少选择 7 天以上的范围以获得有意义的统计结果'
+
     return meta, start_date, end_date, None
 
 
@@ -737,7 +740,14 @@ class MarketRegimeHandler(webBase.BaseHandler):
         bench_range = bench_df[(bench_df['date'] >= start_ts) & (bench_df['date'] <= end_ts)].copy()
 
         if len(bench_range) == 0:
-            _write_error(self, '指定范围内无基准数据')
+            # 日期可能落在周末/节假日，尝试向前扩展到最近交易日
+            last_trade_date = bench_df[bench_df['date'] <= end_ts]['date'].max()
+            first_trade_date = bench_df[bench_df['date'] >= start_ts]['date'].min()
+            hint_parts = []
+            if pd.notna(last_trade_date):
+                hint_parts.append(f"最近交易日为 {last_trade_date.strftime('%Y-%m-%d')}")
+            hint_parts.append('请扩大日期范围（建议至少30天）以覆盖足够的交易日')
+            _write_error(self, f'指定范围内({start_date}~{end_date})无交易数据，' + '，'.join(hint_parts))
             return
 
         # 生成 regime 序列

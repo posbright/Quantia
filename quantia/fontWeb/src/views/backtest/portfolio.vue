@@ -69,7 +69,7 @@
           </div>
           <!-- 参数配置 -->
           <div class="params-row">
-            <el-date-picker v-model="dateRange" type="daterange" range-separator="至"
+            <el-date-picker v-model="dateRange" type="daterange" unlink-panels range-separator="至"
                             start-placeholder="开始日期" end-placeholder="结束日期"
                             value-format="YYYY-MM-DD" size="small" style="width: 260px;" />
             <el-input-number v-model="initialCash" :min="10000" :step="100000"

@@ -14,6 +14,7 @@
         <el-date-picker
           v-model="dateRange"
           type="daterange"
+          unlink-panels
           range-separator="~"
           start-placeholder="开始日期"
           end-placeholder="结束日期"
