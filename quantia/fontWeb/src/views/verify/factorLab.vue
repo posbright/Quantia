@@ -34,6 +34,18 @@
         />
       </div>
       <div class="toolbar-right">
+        <el-dropdown trigger="click" @command="handleConfigCommand" style="margin-right: 8px">
+          <el-button size="small">
+            方案 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="save">💾 保存当前方案</el-dropdown-item>
+              <el-dropdown-item command="load" divided>📂 加载方案</el-dropdown-item>
+              <el-dropdown-item command="export">📄 导出 Python 代码</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <el-button type="primary" :loading="running" size="small" @click="runBacktest">
           ▶ 运行回测
         </el-button>
@@ -402,6 +414,58 @@
         </template>
       </div>
     </div>
+
+    <!-- 保存方案弹窗 -->
+    <el-dialog v-model="saveDialogVisible" title="保存因子方案" width="420px" destroy-on-close>
+      <el-form :model="saveForm" label-width="80px" size="small">
+        <el-form-item label="方案名称">
+          <el-input v-model="saveForm.name" placeholder="例如：技术+价值多因子" maxlength="200" show-word-limit />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="saveForm.description" type="textarea" :rows="2"
+            placeholder="可选，简要描述该方案的用途" maxlength="500" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button size="small" @click="saveDialogVisible = false">取消</el-button>
+        <el-button type="primary" size="small" :loading="saving" @click="doSaveConfig">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 加载方案抽屉 -->
+    <el-drawer v-model="loadDrawerVisible" title="我的方案" size="400px" destroy-on-close>
+      <div v-if="myConfigs.length === 0" style="text-align: center; padding: 32px; color: #999">
+        暂无保存的方案
+      </div>
+      <div v-for="cfg in myConfigs" :key="cfg.id" class="config-card">
+        <div class="cfg-head">
+          <span class="cfg-name">{{ cfg.name }}</span>
+          <span class="cfg-time">{{ cfg.updated_at }}</span>
+        </div>
+        <div class="cfg-meta">
+          {{ cfg.factors.length }} 个因子 · {{ cfg.fusion_mode }}
+          · {{ cfg.holding_days }}日持仓
+        </div>
+        <div v-if="cfg.description" class="cfg-desc">{{ cfg.description }}</div>
+        <div class="cfg-actions">
+          <el-button size="small" type="primary" text @click="loadConfig(cfg)">加载</el-button>
+          <el-button size="small" type="danger" text @click="doDeleteConfig(cfg.id)">删除</el-button>
+        </div>
+      </div>
+    </el-drawer>
+
+    <!-- 导出代码弹窗 -->
+    <el-dialog v-model="exportDialogVisible" title="导出 Python 策略代码" width="680px" destroy-on-close>
+      <div v-if="exportCode" class="export-code-wrapper">
+        <div class="export-toolbar">
+          <span class="export-filename">{{ exportFilename }}</span>
+          <el-button size="small" type="primary" text @click="copyExportCode">复制代码</el-button>
+          <el-button size="small" text @click="downloadExportCode">下载 .py 文件</el-button>
+        </div>
+        <pre class="export-code"><code>{{ exportCode }}</code></pre>
+      </div>
+      <div v-else style="text-align: center; padding: 24px; color: #999">正在生成代码...</div>
+    </el-dialog>
   </div>
 </template>
 
@@ -415,10 +479,15 @@ import {
   getFactorCatalog,
   getFactorPresets,
   runFactorLab,
+  saveFactorConfig,
+  getMyConfigs,
+  deleteFactorConfig,
+  exportFactorCode,
   type FactorMeta,
   type FactorCategory,
   type Preset,
   type FactorLabRunResult,
+  type FactorLabConfig,
 } from '@/api/factorLab'
 
 // ── 状态 ──────────────────────────────────────────────────────────────
@@ -467,8 +536,8 @@ onMounted(async () => {
       getFactorCatalog(),
       getFactorPresets(),
     ])
-    categories.value = catRes.categories
-    presets.value = presetRes.presets
+    categories.value = (catRes as any).categories
+    presets.value = (presetRes as any).presets
   } catch {
     ElMessage.error('加载因子目录失败')
   }
@@ -778,6 +847,161 @@ function fmtDeltaPP(curr: number | null, base: number | null) {
   if (curr == null || base == null) return '-'
   const pp = (curr - base).toFixed(1)
   return (Number(pp) > 0 ? '+' : '') + pp + 'pp'
+}
+
+// ── 保存/加载/导出 ────────────────────────────────────────────────────
+
+const saveDialogVisible = ref(false)
+const loadDrawerVisible = ref(false)
+const exportDialogVisible = ref(false)
+const saving = ref(false)
+const saveForm = ref({ name: '', description: '' })
+const myConfigs = ref<FactorLabConfig[]>([])
+const exportCode = ref('')
+const exportFilename = ref('')
+const currentConfigId = ref<number | undefined>(undefined)
+
+function handleConfigCommand(cmd: string) {
+  if (cmd === 'save') {
+    if (activeFactors.value.length === 0) {
+      ElMessage.warning('请先添加因子再保存')
+      return
+    }
+    saveDialogVisible.value = true
+  } else if (cmd === 'load') {
+    loadConfigs()
+    loadDrawerVisible.value = true
+  } else if (cmd === 'export') {
+    doExportCode()
+  }
+}
+
+async function doSaveConfig() {
+  if (!saveForm.value.name.trim()) {
+    ElMessage.warning('请输入方案名称')
+    return
+  }
+  saving.value = true
+  try {
+    const res = await saveFactorConfig({
+      id: currentConfigId.value,
+      name: saveForm.value.name.trim(),
+      description: saveForm.value.description.trim(),
+      factors: activeFactors.value.map((f) => ({
+        id: f.id,
+        weight: f.weight,
+        enabled: f.enabled,
+        operator: f.operator,
+        value: f.value,
+      })),
+      fusion_mode: fusionMode.value,
+      vote_threshold: voteThreshold.value,
+      holding_days: holdingDays.value,
+    })
+    currentConfigId.value = (res as any).id
+    ElMessage.success((res as any).message || '保存成功')
+    saveDialogVisible.value = false
+    saveForm.value = { name: '', description: '' }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function loadConfigs() {
+  try {
+    const res = await getMyConfigs()
+    myConfigs.value = (res as any).configs || []
+  } catch {
+    ElMessage.error('加载方案列表失败')
+  }
+}
+
+function loadConfig(cfg: FactorLabConfig) {
+  currentConfigId.value = cfg.id
+  fusionMode.value = (cfg.fusion_mode || 'and') as 'and' | 'vote' | 'score'
+  if (cfg.vote_threshold) voteThreshold.value = cfg.vote_threshold
+  if (cfg.holding_days) holdingDays.value = cfg.holding_days
+
+  activeFactors.value = cfg.factors.map((pf) => {
+    const meta = findFactorMeta(pf.id)
+    return {
+      id: pf.id,
+      name: meta?.name || pf.id,
+      category: meta?.category || 'tech_signal',
+      type: meta?.type || 'signal',
+      icon: meta?.icon || '?',
+      weight: pf.weight,
+      enabled: pf.enabled,
+      operator: pf.operator || meta?.default_operator,
+      value: pf.value != null
+        ? (Array.isArray(pf.value) ? [...pf.value] : pf.value)
+        : meta?.default_value,
+      presets: meta?.presets,
+    }
+  })
+  loadDrawerVisible.value = false
+  ElMessage.success(`已加载方案: ${cfg.name}`)
+}
+
+async function doDeleteConfig(id: number) {
+  try {
+    await deleteFactorConfig(id)
+    myConfigs.value = myConfigs.value.filter((c) => c.id !== id)
+    if (currentConfigId.value === id) currentConfigId.value = undefined
+    ElMessage.success('已删除')
+  } catch {
+    ElMessage.error('删除失败')
+  }
+}
+
+async function doExportCode() {
+  const enabled = activeFactors.value.filter((f) => f.enabled)
+  if (enabled.length === 0) {
+    ElMessage.warning('请先添加因子')
+    return
+  }
+  exportCode.value = ''
+  exportFilename.value = ''
+  exportDialogVisible.value = true
+  try {
+    const res = await exportFactorCode({
+      factors: enabled.map((f) => ({
+        id: f.id,
+        weight: f.weight,
+        enabled: true,
+        operator: f.operator,
+        value: f.value,
+      })),
+      fusion_mode: fusionMode.value,
+      vote_threshold: voteThreshold.value,
+      holding_days: holdingDays.value,
+    })
+    exportCode.value = (res as any).code || ''
+    exportFilename.value = (res as any).filename || 'strategy.py'
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || '代码生成失败')
+    exportDialogVisible.value = false
+  }
+}
+
+function copyExportCode() {
+  navigator.clipboard.writeText(exportCode.value).then(() => {
+    ElMessage.success('已复制到剪贴板')
+  }).catch(() => {
+    ElMessage.warning('复制失败，请手动选择')
+  })
+}
+
+function downloadExportCode() {
+  const blob = new Blob([exportCode.value], { type: 'text/x-python;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = exportFilename.value || 'strategy.py'
+  a.click()
+  URL.revokeObjectURL(url)
 }
 </script>
 
@@ -1226,5 +1450,76 @@ function fmtDeltaPP(curr: number | null, base: number | null) {
   .lab-col {
     max-height: 400px;
   }
+}
+
+/* 方案卡片（加载抽屉） */
+.config-card {
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.config-card:hover {
+  border-color: #1890ff;
+}
+.cfg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.cfg-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.cfg-time {
+  font-size: 11px;
+  color: #bbb;
+}
+.cfg-meta {
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 4px;
+}
+.cfg-desc {
+  font-size: 11px;
+  color: #999;
+  margin-bottom: 6px;
+}
+.cfg-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 导出代码 */
+.export-code-wrapper {
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.export-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f0;
+}
+.export-filename {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+}
+.export-code {
+  margin: 0;
+  padding: 12px 16px;
+  max-height: 400px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.6;
+  background: #f9f9f9;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

@@ -121,3 +121,71 @@ export function getFactorPresets() {
     method: 'get',
   })
 }
+
+// ── 保存/加载/删除因子配置 ────────────────────────────────────────────
+
+export interface FactorLabConfig {
+  id: number
+  name: string
+  description: string
+  factors: ActiveFactor[]
+  fusion_mode: string
+  vote_threshold: number
+  holding_days: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SaveConfigParams {
+  id?: number
+  name: string
+  description?: string
+  factors: ActiveFactor[]
+  fusion_mode: string
+  vote_threshold?: number
+  holding_days?: number
+}
+
+export function saveFactorConfig(data: SaveConfigParams) {
+  return request<{ id: number; message: string }>({
+    url: '/api/factor_lab/save',
+    method: 'post',
+    data,
+  })
+}
+
+export function getMyConfigs() {
+  return request<{ configs: FactorLabConfig[] }>({
+    url: '/api/factor_lab/my_configs',
+    method: 'get',
+  })
+}
+
+export function deleteFactorConfig(id: number) {
+  return request<{ message: string; id: number }>({
+    url: `/api/factor_lab/configs/${id}`,
+    method: 'delete',
+  })
+}
+
+// ── 导出代码 ──────────────────────────────────────────────────────────
+
+export interface ExportCodeParams {
+  factors: ActiveFactor[]
+  fusion_mode: string
+  vote_threshold?: number
+  holding_days?: number
+}
+
+export interface ExportCodeResult {
+  code: string
+  filename: string
+}
+
+export function exportFactorCode(data: ExportCodeParams) {
+  return request<ExportCodeResult>({
+    url: '/api/factor_lab/export_code',
+    method: 'post',
+    data,
+  })
+}

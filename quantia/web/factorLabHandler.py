@@ -783,3 +783,383 @@ class FactorPresetsHandler(webBase.BaseHandler):
         except Exception:
             logger.error("预设模板异常", exc_info=True)
             _write_error(self, '服务器内部错误', 500)
+
+
+# ── Phase 7.1: 保存/加载因子配置 ──────────────────────────────────────
+
+_config_table_ready = False
+
+
+def _ensure_factor_config_table():
+    """确保 cn_stock_factor_lab_config 表存在。"""
+    global _config_table_ready
+    if _config_table_ready:
+        return
+    if not mdb.checkTableIsExist("cn_stock_factor_lab_config"):
+        mdb.executeSql("""
+            CREATE TABLE IF NOT EXISTS `cn_stock_factor_lab_config` (
+              `id` INT AUTO_INCREMENT PRIMARY KEY,
+              `name` VARCHAR(200) NOT NULL COMMENT '配置名称',
+              `description` VARCHAR(500) DEFAULT '' COMMENT '简要描述',
+              `factors` JSON NOT NULL COMMENT '因子配置列表',
+              `fusion_mode` VARCHAR(20) NOT NULL DEFAULT 'and',
+              `vote_threshold` INT DEFAULT 2,
+              `holding_days` INT DEFAULT 10,
+              `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+              `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              INDEX `idx_name` (`name`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        logger.info("[factor_lab] 已创建表 cn_stock_factor_lab_config")
+    _config_table_ready = True
+
+
+class FactorLabSaveHandler(webBase.BaseHandler):
+    """POST /quantia/api/factor_lab/save
+
+    保存因子配置方案到数据库。
+    Body: { name, description?, factors, fusion_mode, vote_threshold?, holding_days?, id? }
+    如果传入 id，则更新；否则新建。
+    """
+
+    def post(self):
+        try:
+            self._handle()
+        except Exception:
+            logger.error("因子配置保存异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        try:
+            body = json.loads(self.request.body)
+        except (json.JSONDecodeError, TypeError):
+            _write_error(self, '请求体必须为 JSON')
+            return
+
+        name = str(body.get('name', '')).strip()
+        if not name or len(name) > 200:
+            _write_error(self, '名称不能为空且不超过 200 字符')
+            return
+
+        factors = body.get('factors', [])
+        if not isinstance(factors, list) or len(factors) == 0:
+            _write_error(self, '至少需要 1 个因子')
+            return
+        if len(factors) > 15:
+            _write_error(self, '最多支持 15 个因子')
+            return
+
+        fusion_mode = body.get('fusion_mode', 'and')
+        if fusion_mode not in ('and', 'vote', 'score'):
+            _write_error(self, "fusion_mode 必须为 and / vote / score")
+            return
+
+        description = str(body.get('description', '')).strip()[:500]
+        vote_threshold = max(2, min(int(body.get('vote_threshold', 2)), 15))
+        holding_days = max(1, min(int(body.get('holding_days', 10)), RATE_FIELDS_COUNT))
+        config_id = body.get('id')
+
+        _ensure_factor_config_table()
+
+        factors_json = json.dumps(factors, ensure_ascii=False)
+
+        if config_id:
+            # 更新
+            config_id = int(config_id)
+            mdb.executeSql("""
+                UPDATE `cn_stock_factor_lab_config`
+                SET `name` = %s, `description` = %s, `factors` = %s,
+                    `fusion_mode` = %s, `vote_threshold` = %s, `holding_days` = %s
+                WHERE `id` = %s
+            """, (name, description, factors_json,
+                  fusion_mode, vote_threshold, holding_days, config_id))
+            _write_json(self, {'id': config_id, 'message': '已更新'})
+        else:
+            # 新建
+            mdb.executeSql("""
+                INSERT INTO `cn_stock_factor_lab_config`
+                    (`name`, `description`, `factors`, `fusion_mode`, `vote_threshold`, `holding_days`)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (name, description, factors_json,
+                  fusion_mode, vote_threshold, holding_days))
+            # 获取新 ID
+            rows = mdb.executeSqlFetch("SELECT LAST_INSERT_ID()")
+            new_id = int(rows[0][0]) if rows else None
+            _write_json(self, {'id': new_id, 'message': '已保存'})
+
+
+class FactorLabConfigsHandler(webBase.BaseHandler):
+    """GET /quantia/api/factor_lab/my_configs
+
+    返回用户保存的因子配置列表。
+    """
+
+    def get(self):
+        try:
+            _ensure_factor_config_table()
+            rows = mdb.executeSqlFetch("""
+                SELECT `id`, `name`, `description`, `factors`, `fusion_mode`,
+                       `vote_threshold`, `holding_days`, `created_at`, `updated_at`
+                FROM `cn_stock_factor_lab_config`
+                ORDER BY `updated_at` DESC
+                LIMIT 50
+            """)
+            configs = []
+            for row in (rows or []):
+                factors_data = row[3]
+                if isinstance(factors_data, str):
+                    factors_data = json.loads(factors_data)
+                configs.append({
+                    'id': row[0],
+                    'name': row[1],
+                    'description': row[2] or '',
+                    'factors': factors_data,
+                    'fusion_mode': row[4],
+                    'vote_threshold': row[5],
+                    'holding_days': row[6],
+                    'created_at': row[7].strftime('%Y-%m-%d %H:%M') if row[7] else '',
+                    'updated_at': row[8].strftime('%Y-%m-%d %H:%M') if row[8] else '',
+                })
+            _write_json(self, {'configs': configs})
+        except Exception:
+            logger.error("加载因子配置列表异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+
+class FactorLabDeleteConfigHandler(webBase.BaseHandler):
+    r"""DELETE /quantia/api/factor_lab/configs/(\d+)
+
+    删除指定 ID 的因子配置。
+    """
+
+    def delete(self, config_id):
+        try:
+            config_id = int(config_id)
+            _ensure_factor_config_table()
+            mdb.executeSql(
+                "DELETE FROM `cn_stock_factor_lab_config` WHERE `id` = %s",
+                (config_id,))
+            _write_json(self, {'message': '已删除', 'id': config_id})
+        except Exception:
+            logger.error("删除因子配置异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+
+# ── Phase 7.2: 导出 Python 策略代码 ──────────────────────────────────
+
+class FactorLabExportCodeHandler(webBase.BaseHandler):
+    """POST /quantia/api/factor_lab/export_code
+
+    将因子组合导出为可运行的 Backtrader 策略代码。
+    Body: { factors, fusion_mode, vote_threshold?, holding_days? }
+    """
+
+    def post(self):
+        try:
+            self._handle()
+        except Exception:
+            logger.error("因子代码导出异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        try:
+            body = json.loads(self.request.body)
+        except (json.JSONDecodeError, TypeError):
+            _write_error(self, '请求体必须为 JSON')
+            return
+
+        factors_raw = body.get('factors', [])
+        if not isinstance(factors_raw, list) or len(factors_raw) == 0:
+            _write_error(self, '至少需要 1 个因子')
+            return
+
+        fusion_mode = body.get('fusion_mode', 'and')
+        holding_days = max(1, min(int(body.get('holding_days', 10)), RATE_FIELDS_COUNT))
+        vote_threshold = int(body.get('vote_threshold', 2))
+
+        # 构建因子描述
+        factor_lines = []
+        signal_ids = []
+        filter_conditions = []
+
+        for fc in factors_raw:
+            if not fc.get('enabled', True):
+                continue
+            fid = fc.get('id', '')
+            meta = _FACTOR_MAP.get(fid)
+            if not meta:
+                continue
+
+            if meta['type'] == 'signal':
+                signal_ids.append(fid)
+                factor_lines.append(f"    # 策略信号: {meta['name']} (权重 {fc.get('weight', 10)}%)")
+            else:
+                op = fc.get('operator', meta.get('default_operator', '>'))
+                val = fc.get('value', meta.get('default_value', 0))
+                col = meta.get('column', fid)
+                if op == 'between' and isinstance(val, (list, tuple)):
+                    cond = f"{col} BETWEEN {val[0]} AND {val[1]}"
+                else:
+                    cond = f"{col} {op} {val}"
+                filter_conditions.append((meta['name'], col, op, val))
+                factor_lines.append(f"    # 过滤因子: {meta['name']} → {cond} (权重 {fc.get('weight', 10)}%)")
+
+        # 生成 Python 代码
+        code = self._generate_code(
+            signal_ids, filter_conditions, fusion_mode,
+            vote_threshold, holding_days, factor_lines)
+
+        _write_json(self, {
+            'code': code,
+            'filename': f'factor_lab_{fusion_mode}_{holding_days}d.py',
+        })
+
+    @staticmethod
+    def _generate_code(signal_ids, filter_conditions, fusion_mode,
+                       vote_threshold, holding_days, factor_lines):
+        """生成 Backtrader 策略 Python 代码模板。"""
+        signals_str = ', '.join(f"'{s}'" for s in signal_ids)
+        fusion_desc = {'and': '全部满足(AND)', 'vote': f'投票(≥{vote_threshold})',
+                       'score': '加权评分(Score)'}
+
+        # 过滤条件代码
+        filter_code_lines = []
+        for name, col, op, val in filter_conditions:
+            if op == 'between' and isinstance(val, (list, tuple)):
+                filter_code_lines.append(
+                    f"            ('{col}', 'between', [{val[0]}, {val[1]}]),  # {name}")
+            else:
+                filter_code_lines.append(
+                    f"            ('{col}', '{op}', {val}),  # {name}")
+
+        filters_str = '\n'.join(filter_code_lines) if filter_code_lines else \
+            "            # 无额外过滤条件"
+
+        code = f'''#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+因子实验室导出策略
+====================
+融合模式: {fusion_desc.get(fusion_mode, fusion_mode)}
+持仓天数: {holding_days}
+策略信号: {signals_str}
+生成时间: {{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}}
+
+因子配置:
+{chr(10).join(factor_lines)}
+"""
+
+import datetime
+import numpy as np
+import pandas as pd
+import backtrader as bt
+
+
+class FactorLabStrategy(bt.Strategy):
+    """因子实验室多因子选股策略"""
+
+    params = (
+        ('holding_days', {holding_days}),
+        ('fusion_mode', '{fusion_mode}'),
+        ('vote_threshold', {vote_threshold}),
+        ('signal_strategies', [{signals_str}]),
+        ('filter_conditions', [
+{filters_str}
+        ]),
+        ('max_positions', 10),
+        ('position_pct', 0.1),  # 每只股票仓位占比
+    )
+
+    def __init__(self):
+        self.holding_counter = {{}}  # code -> 持仓天数计数
+        self.order_dict = {{}}
+
+    def next(self):
+        today = self.datas[0].datetime.date(0)
+
+        # === 1. 获取策略信号 ===
+        signals = self._get_strategy_signals(today)
+
+        # === 2. 融合信号 ===
+        candidates = self._fuse_signals(signals)
+
+        # === 3. 应用过滤因子 ===
+        filtered = self._apply_filters(candidates, today)
+
+        # === 4. 持仓管理 ===
+        self._manage_positions(filtered, today)
+
+    def _get_strategy_signals(self, today):
+        """从策略表获取当日选中的股票代码。
+
+        TODO: 连接数据库或缓存读取策略选股结果
+        """
+        signals = {{}}  # strategy_id -> set(codes)
+        for strategy_id in self.p.signal_strategies:
+            # 实际使用时从 DB 或 cache 加载:
+            # sql = f"SELECT code FROM cn_stock_strategy_{{strategy_id}} WHERE date = %s"
+            signals[strategy_id] = set()
+        return signals
+
+    def _fuse_signals(self, signals):
+        """根据融合模式合并多策略信号。"""
+        if not signals:
+            return set()
+
+        all_codes = set()
+        code_counts = {{}}
+
+        for strategy_id, codes in signals.items():
+            all_codes.update(codes)
+            for code in codes:
+                code_counts[code] = code_counts.get(code, 0) + 1
+
+        if self.p.fusion_mode == 'and':
+            n = len(self.p.signal_strategies)
+            return {{c for c, cnt in code_counts.items() if cnt >= n}}
+        elif self.p.fusion_mode == 'vote':
+            return {{c for c, cnt in code_counts.items()
+                    if cnt >= self.p.vote_threshold}}
+        else:  # score
+            return all_codes
+
+    def _apply_filters(self, candidates, today):
+        """应用过滤条件筛选候选股票。
+
+        TODO: 从 indicators/selection/fund_flow 表读取数据
+        """
+        filtered = list(candidates)
+        for col, op, value in self.p.filter_conditions:
+            # 实际使用时查询对应表:
+            # df = pd.read_sql(sql, params=(today,))
+            # 应用条件过滤
+            pass
+        return filtered[:self.p.max_positions]
+
+    def _manage_positions(self, candidates, today):
+        """持仓管理: 到期平仓 + 新建仓位。"""
+        # 平仓: 持仓到期
+        for code in list(self.holding_counter.keys()):
+            self.holding_counter[code] += 1
+            if self.holding_counter[code] >= self.p.holding_days:
+                # self.close(data_for_code)
+                del self.holding_counter[code]
+
+        # 开仓: 买入新候选
+        available_slots = self.p.max_positions - len(self.holding_counter)
+        for code in candidates[:available_slots]:
+            if code not in self.holding_counter:
+                # self.buy(data_for_code, size=...)
+                self.holding_counter[code] = 0
+
+
+if __name__ == '__main__':
+    cerebro = bt.Cerebro()
+    cerebro.addstrategy(FactorLabStrategy)
+    cerebro.broker.setcash(1000000)
+    cerebro.broker.setcommission(commission=0.001)
+    # cerebro.adddata(...)  # 添加数据源
+    results = cerebro.run()
+    print(f"最终资产: {{cerebro.broker.getvalue():.2f}}")
+'''
+        return code

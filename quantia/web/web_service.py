@@ -213,6 +213,10 @@ class Application(tornado.web.Application):
             (r"/quantia/api/factor_lab/run", factorLabHandler.FactorLabRunHandler),
             (r"/quantia/api/factor_lab/factor_impact", factorLabHandler.FactorImpactHandler),
             (r"/quantia/api/factor_lab/presets", factorLabHandler.FactorPresetsHandler),
+            (r"/quantia/api/factor_lab/save", factorLabHandler.FactorLabSaveHandler),
+            (r"/quantia/api/factor_lab/my_configs", factorLabHandler.FactorLabConfigsHandler),
+            (r"/quantia/api/factor_lab/configs/(\d+)", factorLabHandler.FactorLabDeleteConfigHandler),
+            (r"/quantia/api/factor_lab/export_code", factorLabHandler.FactorLabExportCodeHandler),
             # ── Vue SPA 路由 ──
             # 静态资源（assets/）
             (r"/assets/(.*)", tornado.web.StaticFileHandler, {"path": os.path.join(static_path, "assets")}),

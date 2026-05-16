@@ -462,3 +462,237 @@ class TestUtilFunctions:
             for pf in preset.get('factors', []):
                 assert pf['id'] in flh._FACTOR_MAP, \
                     f"预设 {preset['id']} 引用了未知因子 {pf['id']}"
+
+
+# ── FactorLabSaveHandler 测试 ─────────────────────────────────────────
+
+def _make_app_v2():
+    """含 Phase 7 新路由的测试 Application。"""
+    return Application([
+        (r'/api/factor_lab/factors', flh.FactorCatalogHandler),
+        (r'/api/factor_lab/run', flh.FactorLabRunHandler),
+        (r'/api/factor_lab/factor_impact', flh.FactorImpactHandler),
+        (r'/api/factor_lab/presets', flh.FactorPresetsHandler),
+        (r'/api/factor_lab/save', flh.FactorLabSaveHandler),
+        (r'/api/factor_lab/my_configs', flh.FactorLabConfigsHandler),
+        (r'/api/factor_lab/configs/(\d+)', flh.FactorLabDeleteConfigHandler),
+        (r'/api/factor_lab/export_code', flh.FactorLabExportCodeHandler),
+    ])
+
+
+class TestFactorLabSaveHandler(AsyncHTTPTestCase):
+    def setUp(self):
+        super().setUp()
+        flh._config_table_ready = True  # 跳过建表
+
+    def get_app(self):
+        return _make_app_v2()
+
+    def _post(self, body):
+        return self.fetch('/api/factor_lab/save', method='POST',
+                          body=json.dumps(body),
+                          headers={'Content-Type': 'application/json'})
+
+    def test_save_empty_name_error(self):
+        resp = self._post({
+            'name': '',
+            'factors': [{'id': 'keep_increasing', 'weight': 100, 'enabled': True}],
+            'fusion_mode': 'and',
+        })
+        self.assertEqual(resp.code, 400)
+        self.assertIn('名称', json.loads(resp.body)['error'])
+
+    def test_save_empty_factors_error(self):
+        resp = self._post({
+            'name': '测试方案',
+            'factors': [],
+            'fusion_mode': 'and',
+        })
+        self.assertEqual(resp.code, 400)
+        self.assertIn('因子', json.loads(resp.body)['error'])
+
+    def test_save_invalid_fusion_mode(self):
+        resp = self._post({
+            'name': '测试方案',
+            'factors': [{'id': 'keep_increasing', 'weight': 100, 'enabled': True}],
+            'fusion_mode': 'invalid',
+        })
+        self.assertEqual(resp.code, 400)
+        self.assertIn('fusion_mode', json.loads(resp.body)['error'])
+
+    @mock.patch('quantia.lib.database.executeSqlFetch', return_value=[(42,)])
+    @mock.patch('quantia.lib.database.executeSql')
+    @mock.patch('quantia.lib.database.checkTableIsExist', return_value=True)
+    def test_save_new_config_success(self, mock_exists, mock_exec, mock_fetch):
+        resp = self._post({
+            'name': '我的策略方案',
+            'description': '测试描述',
+            'factors': [
+                {'id': 'keep_increasing', 'weight': 60, 'enabled': True},
+                {'id': 'rsi_6', 'weight': 40, 'enabled': True,
+                 'operator': '<', 'value': 70},
+            ],
+            'fusion_mode': 'score',
+            'holding_days': 10,
+        })
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        self.assertEqual(data['id'], 42)
+        self.assertIn('已保存', data['message'])
+
+    @mock.patch('quantia.lib.database.executeSql')
+    @mock.patch('quantia.lib.database.checkTableIsExist', return_value=True)
+    def test_save_update_existing(self, mock_exists, mock_exec):
+        resp = self._post({
+            'id': 7,
+            'name': '更新方案',
+            'factors': [{'id': 'keep_increasing', 'weight': 100, 'enabled': True}],
+            'fusion_mode': 'and',
+        })
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        self.assertEqual(data['id'], 7)
+        self.assertIn('已更新', data['message'])
+
+    def test_save_too_many_factors_error(self):
+        factors = [{'id': f'x_{i}', 'weight': 5, 'enabled': True} for i in range(16)]
+        resp = self._post({
+            'name': '大量因子',
+            'factors': factors,
+            'fusion_mode': 'and',
+        })
+        self.assertEqual(resp.code, 400)
+        self.assertIn('15', json.loads(resp.body)['error'])
+
+
+# ── FactorLabConfigsHandler 测试 ──────────────────────────────────────
+
+class TestFactorLabConfigsHandler(AsyncHTTPTestCase):
+    def setUp(self):
+        super().setUp()
+        flh._config_table_ready = True
+
+    def get_app(self):
+        return _make_app_v2()
+
+    @mock.patch('quantia.lib.database.executeSqlFetch')
+    @mock.patch('quantia.lib.database.checkTableIsExist', return_value=True)
+    def test_get_configs_list(self, mock_exists, mock_fetch):
+        from datetime import datetime
+        mock_fetch.return_value = [
+            (1, '方案A', '描述', json.dumps([{'id': 'keep_increasing', 'weight': 100, 'enabled': True}]),
+             'and', 2, 10, datetime(2025, 5, 1, 10, 0), datetime(2025, 5, 2, 12, 0)),
+        ]
+        resp = self.fetch('/api/factor_lab/my_configs')
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        configs = data['configs']
+        self.assertEqual(len(configs), 1)
+        self.assertEqual(configs[0]['name'], '方案A')
+        self.assertEqual(configs[0]['fusion_mode'], 'and')
+        self.assertIsInstance(configs[0]['factors'], list)
+
+    @mock.patch('quantia.lib.database.executeSqlFetch', return_value=[])
+    @mock.patch('quantia.lib.database.checkTableIsExist', return_value=True)
+    def test_get_configs_empty(self, mock_exists, mock_fetch):
+        resp = self.fetch('/api/factor_lab/my_configs')
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        self.assertEqual(data['configs'], [])
+
+
+# ── FactorLabDeleteConfigHandler 测试 ─────────────────────────────────
+
+class TestFactorLabDeleteConfigHandler(AsyncHTTPTestCase):
+    def setUp(self):
+        super().setUp()
+        flh._config_table_ready = True
+
+    def get_app(self):
+        return _make_app_v2()
+
+    @mock.patch('quantia.lib.database.executeSql')
+    @mock.patch('quantia.lib.database.checkTableIsExist', return_value=True)
+    def test_delete_config_success(self, mock_exists, mock_exec):
+        resp = self.fetch('/api/factor_lab/configs/5', method='DELETE')
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        self.assertEqual(data['id'], 5)
+        self.assertIn('已删除', data['message'])
+
+
+# ── FactorLabExportCodeHandler 测试 ───────────────────────────────────
+
+class TestFactorLabExportCodeHandler(AsyncHTTPTestCase):
+    def get_app(self):
+        return _make_app_v2()
+
+    def _post(self, body):
+        return self.fetch('/api/factor_lab/export_code', method='POST',
+                          body=json.dumps(body),
+                          headers={'Content-Type': 'application/json'})
+
+    def test_export_empty_factors_error(self):
+        resp = self._post({'factors': [], 'fusion_mode': 'and'})
+        self.assertEqual(resp.code, 400)
+        self.assertIn('因子', json.loads(resp.body)['error'])
+
+    def test_export_single_signal_factor(self):
+        resp = self._post({
+            'factors': [{'id': 'keep_increasing', 'weight': 100, 'enabled': True}],
+            'fusion_mode': 'and',
+            'holding_days': 10,
+        })
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        self.assertIn('code', data)
+        self.assertIn('filename', data)
+        self.assertIn('backtrader', data['code'].lower())
+        self.assertIn('FactorLabStrategy', data['code'])
+        self.assertIn('keep_increasing', data['code'])
+
+    def test_export_with_filters(self):
+        resp = self._post({
+            'factors': [
+                {'id': 'keep_increasing', 'weight': 50, 'enabled': True},
+                {'id': 'rsi_6', 'weight': 30, 'enabled': True, 'operator': '<', 'value': 70},
+                {'id': 'pe9', 'weight': 20, 'enabled': True, 'operator': 'between', 'value': [0, 30]},
+            ],
+            'fusion_mode': 'score',
+            'holding_days': 5,
+        })
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        code = data['code']
+        self.assertIn('rsi_6', code)
+        self.assertIn('pe9', code)
+        self.assertIn("'score'", code)
+        self.assertIn('5', code)
+
+    def test_export_vote_mode(self):
+        resp = self._post({
+            'factors': [
+                {'id': 'keep_increasing', 'weight': 50, 'enabled': True},
+                {'id': 'breakout_confirm', 'weight': 50, 'enabled': True},
+            ],
+            'fusion_mode': 'vote',
+            'vote_threshold': 2,
+            'holding_days': 7,
+        })
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        self.assertIn('vote', data['code'])
+        self.assertIn('factor_lab_vote_7d', data['filename'])
+
+    def test_export_disabled_factors_skipped(self):
+        resp = self._post({
+            'factors': [
+                {'id': 'keep_increasing', 'weight': 100, 'enabled': True},
+                {'id': 'rsi_6', 'weight': 50, 'enabled': False, 'operator': '<', 'value': 30},
+            ],
+            'fusion_mode': 'and',
+            'holding_days': 10,
+        })
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        self.assertNotIn('rsi_6', data['code'])
