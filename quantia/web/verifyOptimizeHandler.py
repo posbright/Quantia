@@ -265,6 +265,28 @@ class HoldingPeriodAnalysisHandler(webBase.BaseHandler):
             sortino = _calc_sortino(rates, d)
             win_rate = float((rates > 0).mean() * 100)
 
+            # 盈亏比 = avg_gain / abs(avg_loss)
+            gains = rates[rates > 0]
+            losses = rates[rates < 0]
+            if len(gains) > 0 and len(losses) > 0:
+                profit_loss_ratio = float(gains.mean() / abs(losses.mean()))
+            elif len(gains) > 0:
+                profit_loss_ratio = float('inf')
+            else:
+                profit_loss_ratio = 0.0
+
+            # Calmar = 年化收益 / |最大回撤|  (近似: 用max_single_loss代替回撤)
+            max_loss = float(rates.min())
+            annualized_ret = avg_ret * (252 / d) if d > 0 else 0.0
+            if max_loss < 0:
+                calmar_ratio = annualized_ret / abs(max_loss)
+            else:
+                calmar_ratio = float('inf') if annualized_ret > 0 else 0.0
+
+            # 日均信号数 = total_signals / trading_days
+            trading_days = len(df['date'].unique()) if 'date' in df.columns else 1
+            daily_signal_count = round(total_signals / max(trading_days, 1), 1)
+
             item = {
                 'holding_days': d,
                 'avg_return': _safe_float(avg_ret),
@@ -280,6 +302,9 @@ class HoldingPeriodAnalysisHandler(webBase.BaseHandler):
                 'percentile_75': _safe_float(float(np.percentile(rates, 75))),
                 'percentile_90': _safe_float(float(np.percentile(rates, 90))),
                 'signal_count': len(rates),
+                'profit_loss_ratio': _safe_float(round(profit_loss_ratio, 2)),
+                'calmar_ratio': _safe_float(round(calmar_ratio, 2)),
+                'daily_signal_count': _safe_float(daily_signal_count),
             }
             analysis.append(item)
 
