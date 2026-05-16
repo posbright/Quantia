@@ -52,6 +52,7 @@ import quantia.web.customIndicatorHandler as customIndicatorHandler
 import quantia.web.authHandler as authHandler
 import quantia.web.verifyOptimizeHandler as verifyOptimizeHandler
 import quantia.web.verifyFusionHandler as verifyFusionHandler
+import quantia.web.factorLabHandler as factorLabHandler
 import quantia.web.base as webBase
 
 __author__ = 'Quantia'
@@ -207,6 +208,11 @@ class Application(tornado.web.Application):
             (r"/quantia/api/verify/return_series", verifyOptimizeHandler.SignalReturnSeriesHandler),
             (r"/quantia/api/verify/fusion", verifyFusionHandler.StrategyFusionHandler),
             (r"/quantia/api/verify/optimize_suggest", verifyFusionHandler.OptimizeSuggestHandler),
+            # ── 因子实验室 ──
+            (r"/quantia/api/factor_lab/factors", factorLabHandler.FactorCatalogHandler),
+            (r"/quantia/api/factor_lab/run", factorLabHandler.FactorLabRunHandler),
+            (r"/quantia/api/factor_lab/factor_impact", factorLabHandler.FactorImpactHandler),
+            (r"/quantia/api/factor_lab/presets", factorLabHandler.FactorPresetsHandler),
             # ── Vue SPA 路由 ──
             # 静态资源（assets/）
             (r"/assets/(.*)", tornado.web.StaticFileHandler, {"path": os.path.join(static_path, "assets")}),
