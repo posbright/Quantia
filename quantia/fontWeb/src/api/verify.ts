@@ -83,15 +83,30 @@ export function getCostSensitivity(params: CostSensitivityParams) {
   return request({ url: '/api/verify/cost_sensitivity', method: 'get', params })
 }
 
+// ── 卖出方式对比 ──────────────────────────────────────────────────────
+
+export interface ExitCompareParams {
+  strategy: string
+  start_date: string
+  end_date: string
+  holding_days?: number
+  trailing_days?: string
+}
+
+export function getExitCompare(params: ExitCompareParams) {
+  return request({ url: '/api/verify/exit_compare', method: 'get', params })
+}
+
 // ── 策略融合 ──────────────────────────────────────────────────────────
 
 export interface FusionParams {
   strategy_names: string[]
-  mode: 'intersection' | 'union' | 'vote'
+  mode: 'intersection' | 'union' | 'vote' | 'rotation'
   vote_threshold?: number
   start_date: string
   end_date: string
   holding_days?: number
+  filters?: Record<string, number>
 }
 
 export function runFusion(data: FusionParams) {

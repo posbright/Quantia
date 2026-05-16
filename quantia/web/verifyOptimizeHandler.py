@@ -947,3 +947,241 @@ class CostSensitivityHandler(webBase.BaseHandler):
             'current_cost_pct': current_cost,
             'scenarios': scenarios,
         })
+
+
+# ── API 6: 卖出方式对比 ──────────────────────────────────────────────
+
+class ExitCompareHandler(webBase.BaseHandler):
+    """GET /quantia/api/verify/exit_compare
+
+    对比四种卖出策略: 固定持有 / 跟踪止损 / 止盈止损 / 指标反转
+    """
+
+    def get(self):
+        try:
+            self._handle()
+        except Exception:
+            logging.error("卖出方式对比异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        meta, start_date, end_date, err = _parse_common_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        try:
+            holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            holding_days = 5
+
+        # 跟踪止损回看天数
+        trailing_days_arg = self.get_argument('trailing_days', default='10,15,20', strip=True)
+        try:
+            trailing_days_list = sorted(set(
+                max(5, min(int(x.strip()), 60))
+                for x in trailing_days_arg.split(',') if x.strip()
+            ))
+        except ValueError:
+            trailing_days_list = [10, 15, 20]
+
+        # 加载完整逐日数据
+        max_hold = max(holding_days, max(trailing_days_list) + 10)
+        max_hold = min(max_hold, RATE_FIELDS_COUNT)
+        rate_cols = [f'rate_{d}' for d in range(1, max_hold + 1)]
+        df = _load_backtest_data(meta['table'], start_date, end_date, rate_cols)
+        if df is None:
+            _write_json(self, {
+                'strategy': meta['table'],
+                'exit_strategies': [],
+                'message': '该时间范围内无策略信号',
+            })
+            return
+
+        rates_matrix = df[rate_cols].values
+        total_signals = len(df)
+        exit_strategies = []
+
+        # 策略 1: 固定持有 N 天
+        fixed_rates = rates_matrix[:, holding_days - 1]  # rate_N (0-indexed col)
+        valid_fixed = fixed_rates[np.isfinite(fixed_rates)]
+        if len(valid_fixed) > 0:
+            exit_strategies.append({
+                'exit_type': 'fixed_holding',
+                'label': f'固定持有{holding_days}天',
+                'holding_days': holding_days,
+                'avg_return': _safe_float(float(valid_fixed.mean())),
+                'win_rate': _safe_float(float((valid_fixed > 0).mean() * 100)),
+                'sharpe': _safe_float(_calc_annualized_sharpe(valid_fixed, holding_days)),
+                'sortino': _safe_float(_calc_sortino(valid_fixed, holding_days)),
+                'max_single_loss': _safe_float(float(valid_fixed.min())),
+                'signal_count': int(len(valid_fixed)),
+            })
+
+        # 策略 2: 跟踪止损 (多个回看天数)
+        for trail_d in trailing_days_list:
+            trail_rates = self._simulate_trailing_stop(rates_matrix, trail_d, max_hold)
+            valid_trail = trail_rates[np.isfinite(trail_rates)]
+            if len(valid_trail) > 0:
+                avg_hold = self._trailing_avg_hold(rates_matrix, trail_d, max_hold)
+                exit_strategies.append({
+                    'exit_type': 'trailing_stop',
+                    'label': f'跟踪止损({trail_d}日低点)',
+                    'trailing_days': trail_d,
+                    'avg_return': _safe_float(float(valid_trail.mean())),
+                    'win_rate': _safe_float(float((valid_trail > 0).mean() * 100)),
+                    'sharpe': _safe_float(_calc_annualized_sharpe(valid_trail, holding_days)),
+                    'sortino': _safe_float(_calc_sortino(valid_trail, holding_days)),
+                    'max_single_loss': _safe_float(float(valid_trail.min())),
+                    'avg_hold_days': _safe_float(avg_hold),
+                    'signal_count': int(len(valid_trail)),
+                })
+
+        # 策略 3: 止盈止损（选用最优组合附近）
+        # 用 P75 作为 TP, P25 作为 SL
+        valid_fixed_for_pct = fixed_rates[np.isfinite(fixed_rates)]
+        if len(valid_fixed_for_pct) > 20:
+            tp = float(np.percentile(valid_fixed_for_pct, 75))
+            sl = float(np.percentile(valid_fixed_for_pct, 25))
+            if sl >= 0:
+                sl = -abs(tp) * 0.5  # 确保止损为负
+            tp = max(tp, 1.0)
+            sl = min(sl, -1.0)
+
+            sltp_rates = StopLossTakeProfitMatrixHandler._simulate_sl_tp(
+                rates_matrix, sl, tp, holding_days
+            )
+            valid_sltp = sltp_rates[np.isfinite(sltp_rates)]
+            if len(valid_sltp) > 0:
+                exit_strategies.append({
+                    'exit_type': 'sl_tp',
+                    'label': f'止盈{tp:.1f}%/止损{sl:.1f}%',
+                    'stop_loss': _safe_float(sl),
+                    'take_profit': _safe_float(tp),
+                    'avg_return': _safe_float(float(valid_sltp.mean())),
+                    'win_rate': _safe_float(float((valid_sltp > 0).mean() * 100)),
+                    'sharpe': _safe_float(_calc_annualized_sharpe(valid_sltp, holding_days)),
+                    'sortino': _safe_float(_calc_sortino(valid_sltp, holding_days)),
+                    'max_single_loss': _safe_float(float(valid_sltp.min())),
+                    'signal_count': int(len(valid_sltp)),
+                })
+
+        # 策略 4: 收益回撤止盈 (从最高收益回撤 X% 后退出)
+        for drawback_pct in [3.0, 5.0]:
+            dd_rates = self._simulate_drawback_exit(rates_matrix, drawback_pct, max_hold)
+            valid_dd = dd_rates[np.isfinite(dd_rates)]
+            if len(valid_dd) > 0:
+                exit_strategies.append({
+                    'exit_type': 'drawback_exit',
+                    'label': f'回撤{drawback_pct:.0f}%止盈',
+                    'drawback_pct': drawback_pct,
+                    'avg_return': _safe_float(float(valid_dd.mean())),
+                    'win_rate': _safe_float(float((valid_dd > 0).mean() * 100)),
+                    'sharpe': _safe_float(_calc_annualized_sharpe(valid_dd, holding_days)),
+                    'sortino': _safe_float(_calc_sortino(valid_dd, holding_days)),
+                    'max_single_loss': _safe_float(float(valid_dd.min())),
+                    'signal_count': int(len(valid_dd)),
+                })
+
+        # 找最优
+        best_strategy = None
+        best_sharpe_val = None
+        for es in exit_strategies:
+            if es['sharpe'] is not None and (best_sharpe_val is None or es['sharpe'] > best_sharpe_val):
+                best_sharpe_val = es['sharpe']
+                best_strategy = es['exit_type']
+
+        _write_json(self, {
+            'strategy': meta['table'],
+            'strategy_cn': meta['cn'],
+            'period': f'{start_date} ~ {end_date}',
+            'total_signals': total_signals,
+            'exit_strategies': exit_strategies,
+            'best_strategy': best_strategy,
+        })
+
+    @staticmethod
+    def _simulate_trailing_stop(rates_matrix, trailing_days, max_hold):
+        """模拟跟踪止损: 当日收益跌破最近 trailing_days 日内的最低收益时退出。"""
+        n_trades = rates_matrix.shape[0]
+        cols = min(max_hold, rates_matrix.shape[1])
+        mat = rates_matrix[:, :cols].copy()
+        valid_mask = np.cumprod(np.isfinite(mat), axis=1).astype(bool)
+        mat[~valid_mask] = np.nan
+
+        final_rates = np.full(n_trades, np.nan)
+        for i in range(n_trades):
+            row = mat[i]
+            exited = False
+            for d in range(cols):
+                if np.isnan(row[d]):
+                    break
+                # 从第 trailing_days 天开始检测
+                if d >= trailing_days:
+                    window_min = np.nanmin(row[max(0, d - trailing_days):d])
+                    if row[d] < window_min:
+                        final_rates[i] = row[d]
+                        exited = True
+                        break
+            if not exited:
+                # 找最后一个有效值
+                valid_cols = np.where(valid_mask[i])[0]
+                if len(valid_cols) > 0:
+                    final_rates[i] = mat[i, valid_cols[-1]]
+        return final_rates
+
+    @staticmethod
+    def _trailing_avg_hold(rates_matrix, trailing_days, max_hold):
+        """计算跟踪止损的平均持仓天数。"""
+        n_trades = rates_matrix.shape[0]
+        cols = min(max_hold, rates_matrix.shape[1])
+        mat = rates_matrix[:, :cols].copy()
+        valid_mask = np.cumprod(np.isfinite(mat), axis=1).astype(bool)
+        mat[~valid_mask] = np.nan
+
+        days_list = []
+        for i in range(n_trades):
+            row = mat[i]
+            hold = 0
+            for d in range(cols):
+                if np.isnan(row[d]):
+                    break
+                hold = d + 1
+                if d >= trailing_days:
+                    window_min = np.nanmin(row[max(0, d - trailing_days):d])
+                    if row[d] < window_min:
+                        break
+            if hold > 0:
+                days_list.append(hold)
+        return float(np.mean(days_list)) if days_list else 0.0
+
+    @staticmethod
+    def _simulate_drawback_exit(rates_matrix, drawback_pct, max_hold):
+        """模拟回撤止盈: 从持有期间最高收益回撤 drawback_pct 个百分点时退出。"""
+        n_trades = rates_matrix.shape[0]
+        cols = min(max_hold, rates_matrix.shape[1])
+        mat = rates_matrix[:, :cols].copy()
+        valid_mask = np.cumprod(np.isfinite(mat), axis=1).astype(bool)
+        mat[~valid_mask] = np.nan
+
+        final_rates = np.full(n_trades, np.nan)
+        for i in range(n_trades):
+            row = mat[i]
+            peak = -np.inf
+            exited = False
+            for d in range(cols):
+                if np.isnan(row[d]):
+                    break
+                if row[d] > peak:
+                    peak = row[d]
+                # 从峰值回撤超过阈值
+                if peak > 0 and (peak - row[d]) >= drawback_pct:
+                    final_rates[i] = row[d]
+                    exited = True
+                    break
+            if not exited:
+                valid_cols = np.where(valid_mask[i])[0]
+                if len(valid_cols) > 0:
+                    final_rates[i] = mat[i, valid_cols[-1]]
+        return final_rates

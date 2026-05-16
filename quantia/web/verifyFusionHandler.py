@@ -61,8 +61,8 @@ class StrategyFusionHandler(webBase.BaseHandler):
             return
 
         mode = body.get('mode', 'intersection')
-        if mode not in ('intersection', 'union', 'vote'):
-            _write_error(self, "mode 必须为 intersection / union / vote")
+        if mode not in ('intersection', 'union', 'vote', 'rotation'):
+            _write_error(self, "mode 必须为 intersection / union / vote / rotation")
             return
 
         vote_threshold = int(body.get('vote_threshold', 2))
@@ -84,6 +84,11 @@ class StrategyFusionHandler(webBase.BaseHandler):
 
         holding_days = max(1, min(int(body.get('holding_days', 5)), RATE_FIELDS_COUNT))
         rate_col = f'rate_{holding_days}'
+
+        # 解析过滤条件
+        filters = body.get('filters', {})
+        if not isinstance(filters, dict):
+            filters = {}
 
         # 解析各策略
         strategy_metas = []
@@ -124,7 +129,16 @@ class StrategyFusionHandler(webBase.BaseHandler):
 
             strategy_data[table] = df
 
-            # 计算各策略个体指标
+        # 应用指标过滤条件
+        if filters:
+            strategy_data = self._apply_filters(strategy_data, filters, start_date, end_date)
+
+        # 计算各策略个体指标（过滤后）
+        for meta in strategy_metas:
+            table = meta['table']
+            if table in individual_results:
+                continue
+            df = strategy_data.get(table, pd.DataFrame(columns=['date', 'code', 'rate']))
             rates = df['rate'].dropna().values
             if len(rates) > 0:
                 individual_results[table] = {
@@ -223,10 +237,101 @@ class StrategyFusionHandler(webBase.BaseHandler):
             result = combined.groupby(['date', 'code'])['rate'].mean().reset_index()
             result = valid.merge(result, on=['date', 'code'], how='inner')
 
+        elif mode == 'rotation':
+            # 环境轮动: 按市场环境切换策略
+            # 简化实现: 按月轮动，每月用该月表现最好的策略
+            result = StrategyFusionHandler._rotation_fuse(strategy_data, tables, combined)
+
         else:
             result = pd.DataFrame(columns=['date', 'code', 'rate'])
 
         return result
+
+    @staticmethod
+    def _rotation_fuse(strategy_data, tables, combined):
+        """环境轮动融合: 按月选择该月信号最多(最活跃)的策略。"""
+        if combined.empty:
+            return pd.DataFrame(columns=['date', 'code', 'rate'])
+
+        combined = combined.copy()
+        combined['date'] = pd.to_datetime(combined['date'])
+        combined['month'] = combined['date'].dt.to_period('M')
+
+        # 按月+策略计算平均收益, 选每月最优策略
+        monthly_perf = combined.groupby(['month', '_src'])['rate'].mean().reset_index()
+        best_per_month = monthly_perf.loc[monthly_perf.groupby('month')['rate'].idxmax()]
+        month_to_table = dict(zip(best_per_month['month'], best_per_month['_src']))
+
+        # 取每月最优策略的信号
+        results = []
+        for month, table in month_to_table.items():
+            month_data = combined[(combined['month'] == month) & (combined['_src'] == table)]
+            results.append(month_data[['date', 'code', 'rate']])
+
+        if results:
+            return pd.concat(results, ignore_index=True)
+        return pd.DataFrame(columns=['date', 'code', 'rate'])
+
+    @staticmethod
+    def _apply_filters(strategy_data, filters, start_date, end_date):
+        """应用指标过滤条件到各策略数据。
+
+        filters 格式: {"rsi_6_max": 70, "rsi_6_min": 30, "vol_ratio_min": 1.0, ...}
+        支持: {indicator}_{max|min} 格式
+        """
+        import quantia.core.tablestructure as tbs
+
+        # 解析过滤条件
+        filter_conditions = []
+        for key, value in filters.items():
+            parts = key.rsplit('_', 1)
+            if len(parts) != 2 or parts[1] not in ('max', 'min'):
+                continue
+            indicator = parts[0]
+            bound = parts[1]
+            try:
+                threshold = float(value)
+            except (TypeError, ValueError):
+                continue
+            filter_conditions.append((indicator, bound, threshold))
+
+        if not filter_conditions:
+            return strategy_data
+
+        # 从指标表获取需要的指标
+        indicators_table = tbs.TABLE_CN_STOCK_INDICATORS['name']
+        if not mdb.checkTableIsExist(indicators_table):
+            return strategy_data
+
+        indicator_cols = list(set(fc[0] for fc in filter_conditions))
+        cols_sql = ', '.join(['`date`', '`code`'] + [f'`{c}`' for c in indicator_cols])
+        sql = f"SELECT {cols_sql} FROM `{indicators_table}` WHERE `date` >= %s AND `date` <= %s"
+        try:
+            ind_df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+        except Exception:
+            return strategy_data
+
+        if ind_df is None or len(ind_df) == 0:
+            return strategy_data
+
+        # 对每个策略数据应用过滤
+        filtered = {}
+        for table, df in strategy_data.items():
+            if df is None or len(df) == 0:
+                filtered[table] = df
+                continue
+            merged = df.merge(ind_df, on=['date', 'code'], how='inner')
+            mask = pd.Series(True, index=merged.index)
+            for indicator, bound, threshold in filter_conditions:
+                if indicator not in merged.columns:
+                    continue
+                if bound == 'max':
+                    mask &= merged[indicator] <= threshold
+                else:
+                    mask &= merged[indicator] >= threshold
+            filtered[table] = merged.loc[mask, ['date', 'code', 'rate']].reset_index(drop=True)
+
+        return filtered
 
 
 # ── AI 优化建议 ───────────────────────────────────────────────────────
