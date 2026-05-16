@@ -186,6 +186,22 @@ class StrategyFusionHandler(webBase.BaseHandler):
                 if best_ind and best_ind != 0:
                     improvement['sharpe_vs_best'] = f"{(fusion_result['sharpe'] - best_ind) / abs(best_ind) * 100:+.1f}%"
 
+        # 日级累计走势 (用于前端收益走势图)
+        daily_series = []
+        if fusion_df is not None and len(fusion_df) > 0:
+            fdf = fusion_df.copy()
+            fdf['date'] = pd.to_datetime(fdf['date'])
+            daily_avg = fdf.groupby('date')['rate'].mean().sort_index()
+            cumulative = (1 + daily_avg / 100).cumprod() * 100
+            running_max = cumulative.cummax()
+            drawdown = (cumulative - running_max) / running_max * 100
+            for dt, cum_val in cumulative.items():
+                daily_series.append({
+                    'date': dt.strftime('%Y-%m-%d'),
+                    'cumulative': _safe_float(round(float(cum_val), 2)),
+                    'drawdown': _safe_float(round(float(drawdown.loc[dt]), 2)),
+                })
+
         _write_json(self, {
             'fusion_mode': mode,
             'vote_threshold': vote_threshold if mode == 'vote' else None,
@@ -194,6 +210,7 @@ class StrategyFusionHandler(webBase.BaseHandler):
             'fusion_result': fusion_result,
             'individual_results': individual_results,
             'improvement': improvement,
+            'daily_series': daily_series,
         })
 
     @staticmethod

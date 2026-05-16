@@ -124,3 +124,16 @@ export interface OptimizeSuggestParams {
 export function getOptimizeSuggest(params: OptimizeSuggestParams) {
   return request({ url: '/api/verify/optimize_suggest', method: 'get', params })
 }
+
+// ── 日级收益序列 ──────────────────────────────────────────────────────
+
+export interface ReturnSeriesParams {
+  strategy: string
+  start_date: string
+  end_date: string
+  holding_days?: number
+}
+
+export function getReturnSeries(params: ReturnSeriesParams) {
+  return request({ url: '/api/verify/return_series', method: 'get', params })
+}

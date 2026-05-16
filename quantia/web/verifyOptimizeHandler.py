@@ -1185,3 +1185,68 @@ class ExitCompareHandler(webBase.BaseHandler):
                 if len(valid_cols) > 0:
                     final_rates[i] = mat[i, valid_cols[-1]]
         return final_rates
+
+
+# ── API 7: 日级收益序列 (累计走势图数据源) ────────────────────────────
+
+class SignalReturnSeriesHandler(webBase.BaseHandler):
+    """GET /quantia/api/verify/return_series
+
+    返回策略的日级平均收益时间序列，用于累计收益走势 + 水下回撤图。
+    """
+
+    def get(self):
+        try:
+            self._handle()
+        except Exception:
+            logging.error("收益序列异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        meta, start_date, end_date, err = _parse_common_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        try:
+            holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            holding_days = 5
+
+        rate_col = f'rate_{holding_days}'
+        df = _load_backtest_data(meta['table'], start_date, end_date, [rate_col])
+        if df is None:
+            _write_json(self, {
+                'strategy': meta['table'],
+                'strategy_cn': meta['cn'],
+                'series': [],
+            })
+            return
+
+        df['date'] = pd.to_datetime(df['date'])
+        # 按日计算该日所有信号的平均收益
+        daily = df.groupby('date')[rate_col].mean().sort_index()
+
+        # 构建累计收益 (假设每日等权再平衡)
+        cumulative = (1 + daily / 100).cumprod() * 100  # 起始 100
+        # 水下回撤
+        running_max = cumulative.cummax()
+        drawdown = (cumulative - running_max) / running_max * 100
+
+        series = []
+        for date, cum_val in cumulative.items():
+            d_str = date.strftime('%Y-%m-%d')
+            series.append({
+                'date': d_str,
+                'cumulative': _safe_float(round(float(cum_val), 2)),
+                'drawdown': _safe_float(round(float(drawdown.loc[date]), 2)),
+                'daily_return': _safe_float(round(float(daily.loc[date]), 2)),
+            })
+
+        _write_json(self, {
+            'strategy': meta['table'],
+            'strategy_cn': meta['cn'],
+            'holding_days': holding_days,
+            'series': series,
+        })

@@ -204,6 +204,7 @@ class Application(tornado.web.Application):
             (r"/quantia/api/verify/signal_decay", verifyOptimizeHandler.SignalDecayHandler),
             (r"/quantia/api/verify/cost_sensitivity", verifyOptimizeHandler.CostSensitivityHandler),
             (r"/quantia/api/verify/exit_compare", verifyOptimizeHandler.ExitCompareHandler),
+            (r"/quantia/api/verify/return_series", verifyOptimizeHandler.SignalReturnSeriesHandler),
             (r"/quantia/api/verify/fusion", verifyFusionHandler.StrategyFusionHandler),
             (r"/quantia/api/verify/optimize_suggest", verifyFusionHandler.OptimizeSuggestHandler),
             # ── Vue SPA 路由 ──
