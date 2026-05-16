@@ -1508,6 +1508,23 @@ def _fetch_from_sources(code, fetch_start, date_end, adjust=''):
                     _report_source_failure(source_name)
 
         # 当前数据源所有重试都失败，尝试下一个
+
+    # ── 所有三大数据源都失败 → 尝试 Akshare 备用通道 ──
+    # akshare.stock_zh_a_hist 走 EastMoney 的 kline-pre 端点，
+    # 当 push2his 接口 500 时往往仍可用。
+    try:
+        import akshare as ak
+        new_data = ak.stock_zh_a_hist(
+            symbol=code, period='daily',
+            start_date=fetch_start, end_date=date_end, adjust=adjust or 'qfq'
+        )
+        if new_data is not None and len(new_data) > 0:
+            new_data.columns = tuple(tbs.CN_STOCK_HIST_DATA['columns'])
+            logging.info(f"从 Akshare 备用通道成功获取数据: {code} ({fetch_start}-{date_end}), {len(new_data)} 条")
+            return new_data
+    except Exception as e:
+        logging.debug(f"Akshare 备用通道也失败: {code} - {e}")
+
     return None
 
 
@@ -2351,6 +2368,13 @@ def read_stock_hist_from_cache(code, date_start, date_end):
         cache_file = _get_cache_file_path(code, 'qfq')
 
         if not os.path.isfile(cache_file):
+            # 缓存文件不存在 → 尝试从 cn_stock_spot 表构建 K线数据
+            data = _fallback_kline_from_spot(code, date_start, date_end)
+            if data is not None and len(data) > 0:
+                data['p_change'] = tl.ROC(data['close'].values, 1)
+                data['p_change'] = data['p_change'].fillna(0.0)
+                data = _normalize_volume_to_shares(data)
+                return data
             return None
 
         data = pd.read_pickle(cache_file, compression="gzip")
@@ -2468,4 +2492,37 @@ def _backfill_from_spot(code, date_end_yyyymmdd):
             return df
     except Exception as e:
         logging.debug(f"_backfill_from_spot 异常：{code} {date_end_yyyymmdd} - {e}")
+    return None
+
+
+def _fallback_kline_from_spot(code, date_start, date_end):
+    """
+    当缓存文件不存在时，从 cn_stock_spot 表读取全部日线行情构建 K线 DataFrame。
+
+    不发起外部 API 请求，仅从已入库的 cn_stock_spot 数据中提取。
+    列名映射与 _backfill_from_spot 一致。
+    """
+    try:
+        import quantia.lib.database as mdb
+        if not mdb.checkTableIsExist('cn_stock_spot'):
+            return None
+        date_start_dash = _to_dash_date(date_start) if len(date_start) == 8 else date_start
+        date_end_dash = _to_dash_date(date_end) if len(date_end) == 8 else date_end
+        sql = (
+            "SELECT `date`, `new_price` AS `close`, `open_price` AS `open`, "
+            "`high_price` AS `high`, `low_price` AS `low`, "
+            "`volume` / 100 AS `volume`, `deal_amount` AS `amount`, "
+            "`amplitude`, `change_rate` AS `quote_change`, "
+            "`ups_downs`, `turnoverrate` AS `turnover` "
+            "FROM `cn_stock_spot` WHERE `code` = %s AND `date` >= %s AND `date` <= %s "
+            "ORDER BY `date`"
+        )
+        df = pd.read_sql(sql, mdb.engine(), params=(code, date_start_dash, date_end_dash))
+        if df is not None and len(df) > 0:
+            df['date'] = pd.to_datetime(df['date'])
+            logging.debug(f"_fallback_kline_from_spot: {code} 从 cn_stock_spot 读取 {len(df)} 行 "
+                          f"({date_start_dash}~{date_end_dash})")
+            return df
+    except Exception as e:
+        logging.debug(f"_fallback_kline_from_spot 异常：{code} - {e}")
     return None

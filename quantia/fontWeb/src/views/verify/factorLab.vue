@@ -467,8 +467,8 @@ onMounted(async () => {
       getFactorCatalog(),
       getFactorPresets(),
     ])
-    categories.value = catRes.data.categories
-    presets.value = presetRes.data.presets
+    categories.value = catRes.categories
+    presets.value = presetRes.presets
   } catch {
     ElMessage.error('加载因子目录失败')
   }
@@ -655,7 +655,7 @@ async function runBacktest() {
       start_date: dateRange.value[0],
       end_date: dateRange.value[1],
     })
-    result.value = res.data
+    result.value = res as any
     await nextTick()
     renderChart()
   } catch (e: any) {
@@ -1228,4 +1228,3 @@ function fmtDeltaPP(curr: number | null, base: number | null) {
   }
 }
 </style>
-</template>
