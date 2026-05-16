@@ -36,10 +36,7 @@
                   <th>夏普</th>
                   <th>Sortino</th>
                   <th>波动率%</th>
-                  <th>P10</th>
-                  <th>P25</th>
-                  <th>P75</th>
-                  <th>P90</th>
+                  <th>分布</th>
                 </tr>
               </thead>
               <tbody>
@@ -51,10 +48,20 @@
                   <td :class="sharpeClass(item.sharpe_approx)">{{ fmt(item.sharpe_approx) }}</td>
                   <td>{{ fmt(item.sortino_approx) }}</td>
                   <td>{{ fmt(item.return_std) }}</td>
-                  <td>{{ fmt(item.percentile_10) }}</td>
-                  <td>{{ fmt(item.percentile_25) }}</td>
-                  <td>{{ fmt(item.percentile_75) }}</td>
-                  <td>{{ fmt(item.percentile_90) }}</td>
+                  <td style="min-width: 120px">
+                    <svg width="110" height="24" viewBox="0 0 110 24">
+                      <!-- whiskers P10 to P90 -->
+                      <line :x1="boxX(item.percentile_10, item)" y1="12" :x2="boxX(item.percentile_90, item)" y2="12" stroke="#8c8c8c" stroke-width="1" />
+                      <line :x1="boxX(item.percentile_10, item)" y1="6" :x2="boxX(item.percentile_10, item)" y2="18" stroke="#8c8c8c" stroke-width="1" />
+                      <line :x1="boxX(item.percentile_90, item)" y1="6" :x2="boxX(item.percentile_90, item)" y2="18" stroke="#8c8c8c" stroke-width="1" />
+                      <!-- box P25 to P75 -->
+                      <rect :x="boxX(item.percentile_25, item)" y="4" :width="boxX(item.percentile_75, item) - boxX(item.percentile_25, item)" height="16" fill="#e6f7ff" stroke="#1890ff" stroke-width="1" rx="2" />
+                      <!-- median line -->
+                      <line :x1="boxX(item.median_return, item)" y1="4" :x2="boxX(item.median_return, item)" y2="20" stroke="#cf1322" stroke-width="2" />
+                      <!-- zero line -->
+                      <line :x1="boxX(0, item)" y1="2" :x2="boxX(0, item)" y2="22" stroke="#bfbfbf" stroke-width="1" stroke-dasharray="2,2" />
+                    </svg>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -89,6 +96,8 @@
             </tbody>
           </table>
         </div>
+        <!-- 散点图: 各桶的平均收益可视化 -->
+        <div v-if="signalBuckets.length > 0" ref="scatterChartRef" style="height: 260px; margin-top: 12px" />
       </el-tab-pane>
 
       <!-- 止盈止损 -->
@@ -97,6 +106,21 @@
         <div v-if="sltpBest" class="best-combo">
           最优组合: 止损 {{ sltpBest.stop_loss }}% / 止盈 {{ sltpBest.take_profit }}%（夏普 {{ fmt(sltpBest.sharpe) }}）
         </div>
+        <!-- 点击单元格弹窗 -->
+        <el-dialog v-model="sltpDialogVisible" title="止盈止损组合详情" width="400px">
+          <div v-if="sltpDialogData">
+            <p><strong>止损:</strong> {{ sltpDialogData.stop_loss }}% &nbsp; <strong>止盈:</strong> {{ sltpDialogData.take_profit }}%</p>
+            <table class="cmp-table" style="margin-top: 8px">
+              <tr><td>平均收益</td><td :class="rateClass(sltpDialogData.avg_return)">{{ fmt(sltpDialogData.avg_return) }}%</td></tr>
+              <tr><td>胜率</td><td>{{ fmt(sltpDialogData.win_rate) }}%</td></tr>
+              <tr><td>夏普</td><td :class="sharpeClass(sltpDialogData.sharpe)">{{ fmt(sltpDialogData.sharpe) }}</td></tr>
+              <tr><td>平均持仓天数</td><td>{{ fmt(sltpDialogData.avg_hold_days) }}</td></tr>
+              <tr><td>触发止损次数</td><td>{{ sltpDialogData.trades_hit_sl ?? '--' }}</td></tr>
+              <tr><td>触发止盈次数</td><td>{{ sltpDialogData.trades_hit_tp ?? '--' }}</td></tr>
+              <tr><td>自然到期次数</td><td>{{ sltpDialogData.trades_expired ?? '--' }}</td></tr>
+            </table>
+          </div>
+        </el-dialog>
       </el-tab-pane>
 
       <!-- 风险控制 -->
@@ -214,11 +238,15 @@ const holdingChartRef = ref<HTMLElement>()
 // 信号诊断
 const signalIndicator = ref('rsi_6')
 const signalBuckets = ref<any[]>([])
+const scatterChartRef = ref<HTMLElement>()
 const indicatorOptions = ['rsi_6', 'rsi_12', 'macd', 'macds', 'kdjk', 'kdjd', 'cci', 'atr', 'cr']
 
 // 止盈止损
 const sltpChartRef = ref<HTMLElement>()
 const sltpBest = ref<any>(null)
+const sltpMatrix = ref<any[]>([])
+const sltpDialogVisible = ref(false)
+const sltpDialogData = ref<any>(null)
 
 // 成本敏感性
 const costData = ref<any[]>([])
@@ -257,6 +285,14 @@ function rateClass(v: number | null): string {
   if (v === null || v === undefined) return ''
   return v > 0 ? 'text-red' : v < 0 ? 'text-green' : ''
 }
+function boxX(val: number | null, item: any): number {
+  // 将百分比值映射到 0-110 SVG 宽度
+  const p10 = item.percentile_10 ?? -10
+  const p90 = item.percentile_90 ?? 10
+  const range = p90 - p10 || 20
+  const v = val ?? 0
+  return Math.max(2, Math.min(108, ((v - p10) / range) * 106 + 2))
+}
 function sharpeClass(v: number | null): string {
   if (v === null || v === undefined) return ''
   return v !== null && v >= 2 ? 'text-red font-bold' : v !== null && v < 0 ? 'text-green' : ''
@@ -276,6 +312,19 @@ async function runAnalysis() {
 
   loading.value = true
   hasQueried.value = true
+  // 重置所有状态避免显示旧数据
+  holdingData.value = []
+  totalSignals.value = 0
+  bestHoldingDays.value = null
+  sltpBest.value = null
+  costData.value = []
+  exitData.value = []
+  bestExitStrategy.value = ''
+  suggestions.value = []
+  oosData.value = { train: null, test: null }
+  oosWarning.value = ''
+  signalBuckets.value = []
+
   const [startDate, endDate] = dateRange.value
   const params = { strategy: strategy.value, start_date: startDate, end_date: endDate }
 
@@ -298,8 +347,9 @@ async function runAnalysis() {
 
     // 止盈止损
     sltpBest.value = sltpRes.best_combo
+    sltpMatrix.value = sltpRes.matrix || []
     await nextTick()
-    renderSltpChart(sltpRes.matrix || [])
+    renderSltpChart(sltpMatrix.value)
 
     // 成本 + 卖出方式
     costData.value = costRes.scenarios || []
@@ -327,13 +377,45 @@ async function loadSignalQuality() {
   try {
     const res: any = await getSignalQuality({ strategy: strategy.value, start_date: startDate, end_date: endDate, indicator: signalIndicator.value, holding_days: 5 })
     signalBuckets.value = res.buckets || []
+    await nextTick()
+    renderScatterChart()
   } catch { /* ignore */ }
 }
 
 onUnmounted(() => {
   if (holdingChartRef.value) echarts.dispose(holdingChartRef.value)
   if (sltpChartRef.value) echarts.dispose(sltpChartRef.value)
+  if (scatterChartRef.value) echarts.dispose(scatterChartRef.value)
 })
+
+function renderScatterChart() {
+  if (!scatterChartRef.value || signalBuckets.value.length === 0) return
+  const existing = echarts.getInstanceByDom(scatterChartRef.value)
+  if (existing) existing.dispose()
+  const chart = echarts.init(scatterChartRef.value)
+
+  // 各桶: X=桶中位值(从label估计), Y=avg_return, size=signal_count
+  const data = signalBuckets.value.map((b: any) => {
+    // 解析 range 如 "0-30" 得中位数 15
+    const parts = b.range.split('-').map(Number)
+    const mid = parts.length === 2 ? (parts[0] + parts[1]) / 2 : parts[0]
+    return {
+      value: [mid, b.avg_return ?? 0, b.signal_count ?? 10],
+      itemStyle: { color: (b.avg_return ?? 0) > 0 ? '#cf1322' : '#389e0d' },
+    }
+  })
+
+  chart.setOption({
+    tooltip: { formatter: (p: any) => `${signalIndicator.value}: ${p.value[0]}<br/>平均收益: ${p.value[1]?.toFixed(2)}%<br/>信号数: ${p.value[2]}` },
+    xAxis: { type: 'value', name: signalIndicator.value, nameLocation: 'center', nameGap: 25 },
+    yAxis: { type: 'value', name: '平均收益%', axisLabel: { formatter: '{value}%' } },
+    series: [{
+      type: 'scatter',
+      data,
+      symbolSize: (v: number[]) => Math.max(12, Math.min(40, Math.sqrt(v[2]) * 3)),
+    }],
+  })
+}
 
 function renderHoldingChart() {
   if (!holdingChartRef.value || holdingData.value.length === 0) return
@@ -367,12 +449,25 @@ function renderSltpChart(matrix: any[]) {
   const data = matrix.map(m => [tpValues.indexOf(m.take_profit), slValues.indexOf(m.stop_loss), m.sharpe ?? 0])
 
   chart.setOption({
-    tooltip: { formatter: (p: any) => `止盈${tpValues[p.data[0]]}% / 止损${slValues[p.data[1]]}%<br/>夏普: ${p.data[2]?.toFixed(2)}` },
+    tooltip: { formatter: (p: any) => `止盈${tpValues[p.data[0]]}% / 止损${slValues[p.data[1]]}%<br/>夏普: ${p.data[2]?.toFixed(2)}<br/><em>点击查看详情</em>` },
     grid: { left: 80, right: 80, bottom: 40, top: 30 },
     xAxis: { type: 'category', data: tpValues.map(v => `${v}%`), name: '止盈' },
     yAxis: { type: 'category', data: slValues.map(v => `${v}%`), name: '止损' },
     visualMap: { min: -1, max: 4, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#3060cf', '#ffffff', '#cf1322'] } },
     series: [{ type: 'heatmap', data, label: { show: true, formatter: (p: any) => p.data[2]?.toFixed(1) } }],
+  })
+
+  // 点击单元格弹窗
+  chart.on('click', (params: any) => {
+    if (params.componentType === 'series') {
+      const tp = tpValues[params.data[0]]
+      const sl = slValues[params.data[1]]
+      const cellData = sltpMatrix.value.find((m: any) => m.stop_loss === sl && m.take_profit === tp)
+      if (cellData) {
+        sltpDialogData.value = cellData
+        sltpDialogVisible.value = true
+      }
+    }
   })
 }
 

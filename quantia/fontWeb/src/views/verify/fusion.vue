@@ -116,16 +116,23 @@
       </div>
     </el-card>
 
+    <!-- 融合收益走势 -->
+    <el-card v-if="dailySeries.length > 0" shadow="never" style="margin-top: 16px">
+      <template #header><span>融合收益走势</span></template>
+      <div ref="fusionChartRef" style="height: 300px" />
+    </el-card>
+
     <el-empty v-if="!loading && !fusionResult && hasQueried" description="暂无融合结果" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, nextTick, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import * as echarts from 'echarts'
 import { runFusion as apiFusion } from '@/api/verify'
 
-const fusionMode = ref<'intersection' | 'union' | 'vote'>('intersection')
+const fusionMode = ref<'intersection' | 'union' | 'vote' | 'rotation'>('intersection')
 const voteThreshold = ref(2)
 const selectedStrategies = ref<string[]>([])
 const dateRange = ref<[string, string]>(['2025-01-01', '2025-12-31'])
@@ -136,6 +143,8 @@ const hasQueried = ref(false)
 const fusionResult = ref<any>(null)
 const individualResults = ref<Record<string, any>>({})
 const improvement = ref<any>({})
+const dailySeries = ref<any[]>([])
+const fusionChartRef = ref<HTMLElement>()
 
 const strategyOptions = [
   { value: 'keep_increasing', label: '放量上涨' },
@@ -184,6 +193,7 @@ async function runFusion() {
   fusionResult.value = null
   individualResults.value = {}
   improvement.value = {}
+  dailySeries.value = []
 
   try {
     const res: any = await apiFusion({
@@ -197,11 +207,61 @@ async function runFusion() {
     fusionResult.value = res.fusion_result
     individualResults.value = res.individual_results || {}
     improvement.value = res.improvement || {}
+    dailySeries.value = res.daily_series || []
+    await nextTick()
+    renderFusionChart()
   } catch (e: any) {
     ElMessage.error(e.message || '融合请求失败')
   } finally {
     loading.value = false
   }
+}
+
+onUnmounted(() => {
+  if (fusionChartRef.value) echarts.dispose(fusionChartRef.value)
+})
+
+function renderFusionChart() {
+  if (!fusionChartRef.value || dailySeries.value.length === 0) return
+  const existing = echarts.getInstanceByDom(fusionChartRef.value)
+  if (existing) existing.dispose()
+  const chart = echarts.init(fusionChartRef.value)
+
+  const dates = dailySeries.value.map((p: any) => p.date)
+  const cumData = dailySeries.value.map((p: any) => p.cumulative)
+  const ddData = dailySeries.value.map((p: any) => p.drawdown)
+
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['融合累计净值', '水下回撤'], bottom: 0 },
+    grid: { top: 30, left: 60, right: 20, bottom: 50 },
+    xAxis: { type: 'category', data: dates },
+    yAxis: [
+      { type: 'value', name: '净值', position: 'left' },
+      { type: 'value', name: '回撤%', position: 'right', axisLabel: { formatter: '{value}%' } },
+    ],
+    dataZoom: [{ type: 'inside' }],
+    series: [
+      {
+        name: '融合累计净值',
+        type: 'line',
+        data: cumData,
+        showSymbol: false,
+        lineStyle: { width: 3, color: '#cf1322' },
+        itemStyle: { color: '#cf1322' },
+      },
+      {
+        name: '水下回撤',
+        type: 'line',
+        yAxisIndex: 1,
+        data: ddData,
+        showSymbol: false,
+        lineStyle: { width: 1.5, color: '#8c8c8c' },
+        areaStyle: { color: 'rgba(255,77,79,0.15)' },
+        itemStyle: { color: '#8c8c8c' },
+      },
+    ],
+  })
 }
 </script>
 

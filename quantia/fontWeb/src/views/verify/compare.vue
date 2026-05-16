@@ -92,6 +92,12 @@
       </el-col>
     </el-row>
 
+    <!-- 累计收益走势 + 水下回撤 -->
+    <el-card v-if="seriesData.length > 0" shadow="never" style="margin-top: 16px">
+      <template #header><span>累计收益走势 & 水下回撤</span></template>
+      <div ref="navChartRef" style="height: 380px" />
+    </el-card>
+
     <!-- 信号衰减月度趋势 -->
     <el-card v-if="decayData.length > 0" shadow="never" style="margin-top: 16px">
       <template #header><span>信号衰减趋势（月度）</span></template>
@@ -128,7 +134,7 @@
 import { ref, nextTick, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
-import { getHoldingPeriod, getSignalDecay, getMarketRegime } from '@/api/verify'
+import { getHoldingPeriod, getSignalDecay, getMarketRegime, getReturnSeries } from '@/api/verify'
 
 const selectedStrategies = ref<string[]>([])
 const holdingDays = ref(5)
@@ -138,8 +144,10 @@ const hasQueried = ref(false)
 const compareData = ref<any[]>([])
 const decayData = ref<any[]>([])
 const regimeData = ref<Record<string, any>>({})
+const seriesData = ref<any[]>([])  // [{strategy, strategy_cn, series: [{date, cumulative, drawdown}]}]
 const decayChartRef = ref<HTMLElement>()
 const radarChartRef = ref<HTMLElement>()
+const navChartRef = ref<HTMLElement>()
 const rankedData = ref<any[]>([])
 
 const dayOptions = [1, 3, 5, 7, 10, 15, 20, 30, 60]
@@ -249,6 +257,19 @@ async function runCompare() {
       const regimeRes: any = await getMarketRegime({ strategy: selectedStrategies.value[0], start_date: startDate, end_date: endDate, holding_days: holdingDays.value })
       regimeData.value = regimeRes.strategy_by_regime || {}
     }
+
+    // 各策略累计收益走势
+    const seriesPromises = selectedStrategies.value.map(s =>
+      getReturnSeries({ strategy: s, start_date: startDate, end_date: endDate, holding_days: holdingDays.value })
+    )
+    const seriesResults = await Promise.all(seriesPromises)
+    seriesData.value = seriesResults.map((r: any) => ({
+      strategy: r.strategy,
+      strategy_cn: r.strategy_cn,
+      series: r.series || [],
+    }))
+    await nextTick()
+    renderNavChart()
   } catch (e: any) {
     ElMessage.error(e.message || '请求失败')
   } finally {
@@ -259,6 +280,7 @@ async function runCompare() {
 onUnmounted(() => {
   if (decayChartRef.value) echarts.dispose(decayChartRef.value)
   if (radarChartRef.value) echarts.dispose(radarChartRef.value)
+  if (navChartRef.value) echarts.dispose(navChartRef.value)
 })
 
 function computeRanking() {
@@ -336,6 +358,58 @@ function renderRadarChart() {
     legend: { bottom: 0, data: series.map(s => s.name) },
     radar: { indicator: indicators, radius: 70, center: ['50%', '45%'] },
     series: [{ type: 'radar', data: series.map(s => ({ name: s.name, value: s.value, areaStyle: { opacity: 0.15 } })) }],
+  })
+}
+
+function renderNavChart() {
+  if (!navChartRef.value || seriesData.value.length === 0) return
+  const existing = echarts.getInstanceByDom(navChartRef.value)
+  if (existing) existing.dispose()
+  const chart = echarts.init(navChartRef.value)
+
+  // 颜色列表
+  const colors = ['#cf1322', '#1890ff', '#389e0d', '#d46b08', '#722ed1', '#13c2c2']
+
+  // 上部: 累计收益; 下部: 水下回撤
+  const cumSeries = seriesData.value.map((item: any, idx: number) => ({
+    name: item.strategy_cn || item.strategy,
+    type: 'line',
+    xAxisIndex: 0,
+    yAxisIndex: 0,
+    data: item.series.map((p: any) => [p.date, p.cumulative]),
+    showSymbol: false,
+    lineStyle: { width: 2 },
+    itemStyle: { color: colors[idx % colors.length] },
+  }))
+  const ddSeries = seriesData.value.map((item: any, idx: number) => ({
+    name: item.strategy_cn || item.strategy,
+    type: 'line',
+    xAxisIndex: 1,
+    yAxisIndex: 1,
+    data: item.series.map((p: any) => [p.date, p.drawdown]),
+    showSymbol: false,
+    lineStyle: { width: 1.5 },
+    areaStyle: { opacity: 0.15 },
+    itemStyle: { color: colors[idx % colors.length] },
+  }))
+
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { bottom: 0, data: cumSeries.map(s => s.name) },
+    grid: [
+      { top: 30, left: 60, right: 20, height: '55%' },
+      { left: 60, right: 20, top: '72%', height: '20%' },
+    ],
+    xAxis: [
+      { type: 'category', gridIndex: 0, axisLabel: { show: false }, data: seriesData.value[0]?.series.map((p: any) => p.date) || [] },
+      { type: 'category', gridIndex: 1, data: seriesData.value[0]?.series.map((p: any) => p.date) || [] },
+    ],
+    yAxis: [
+      { type: 'value', gridIndex: 0, name: '累计净值', axisLabel: { formatter: '{value}' } },
+      { type: 'value', gridIndex: 1, name: '回撤%', axisLabel: { formatter: '{value}%' } },
+    ],
+    dataZoom: [{ type: 'inside', xAxisIndex: [0, 1] }],
+    series: [...cumSeries, ...ddSeries],
   })
 }
 
