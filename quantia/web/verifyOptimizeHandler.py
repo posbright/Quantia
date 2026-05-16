@@ -597,13 +597,32 @@ class CustomStrategyReturnSeriesHandler(webBase.BaseHandler):
         except Exception:
             nav_data = []
 
+        # 可选日期过滤
+        start_s = self.get_argument('start_date', default='', strip=True)
+        end_s = self.get_argument('end_date', default='', strip=True)
+        start_date = _parse_date(start_s)
+        end_date = _parse_date(end_s)
+
         # NAV → cumulative return (以 100 为基准，与信号策略一致)
-        series = []
+        # 如果有日期过滤，先筛选范围内的数据，再以第一个点为基准归一化
+        filtered_nav = []
         for item in nav_data:
+            d = item.get('date', '')
+            if start_date and d < str(start_date):
+                continue
+            if end_date and d > str(end_date):
+                continue
+            filtered_nav.append(item)
+
+        series = []
+        base_nav = filtered_nav[0].get('nav', 1.0) if filtered_nav else 1.0
+        for item in filtered_nav:
             nav_val = item.get('nav', 1.0)
+            # 归一化: 以过滤范围内的第一个点为 100
+            normalized = (float(nav_val) / float(base_nav)) * 100 if base_nav else 100
             series.append({
                 'date': item.get('date', ''),
-                'cumulative': round(float(nav_val) * 100, 4) if nav_val else 100,
+                'cumulative': round(normalized, 4),
             })
 
         _write_json(self, {

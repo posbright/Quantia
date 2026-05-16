@@ -532,7 +532,7 @@ async function runCompare() {
     // 2) 各策略累计收益走势 (10日)
     const seriesPromises = selectedStrategies.value.map(s => {
       if (getStrategyType(s) === 'backtest') {
-        return getCustomReturnSeries({ strategy: s })
+        return getCustomReturnSeries({ strategy: s, start_date: startDate, end_date: endDate })
       }
       return getReturnSeries({ strategy: s, start_date: startDate, end_date: endDate, holding_days: 10 })
     })
@@ -611,34 +611,48 @@ function renderNavChart() {
   if (existing) existing.dispose()
   const chart = echarts.init(navChartRef.value)
 
+  // 收集所有日期（各策略可能有不同日期范围）
+  const allDates = new Set<string>()
+  seriesData.value.forEach((item: any) => {
+    (item.series || []).forEach((p: any) => { if (p.date) allDates.add(p.date) })
+  })
+  const sortedDates = [...allDates].sort()
+
   const allSeries = seriesData.value.map((item: any, idx: number) => ({
     name: item.strategy_cn || item.strategy,
     type: 'line',
-    data: item.series.map((p: any) => [p.date, p.cumulative]),
+    data: (item.series || []).map((p: any) => [p.date, p.cumulative]),
     showSymbol: false,
+    smooth: true,
     lineStyle: { width: 2 },
     itemStyle: { color: strategyColors[idx % strategyColors.length] },
   }))
 
-  // 基准线: 归一化为 100 基准
+  // 基准线: 平坦 100（= 无收益基准参考线）
   const benchmarkName = benchmarkIndex.value === '000300' ? '沪深300' : benchmarkIndex.value === '000905' ? '中证500' : '上证50'
-  if (seriesData.value[0]?.series.length > 0) {
-    const dates = seriesData.value[0].series.map((p: any) => p.date)
+  if (sortedDates.length > 0) {
     allSeries.push({
       name: benchmarkName + '(基准)',
       type: 'line',
-      data: dates.map((d: string) => [d, 100]),
+      data: [[sortedDates[0], 100], [sortedDates[sortedDates.length - 1], 100]],
       showSymbol: false,
-      lineStyle: { width: 1.5, type: 'dashed' as any, color: '#999' } as any,
-      itemStyle: { color: '#999' },
+      smooth: false,
+      lineStyle: { width: 1, type: 'dashed' as any, color: '#bbb' } as any,
+      itemStyle: { color: '#bbb' },
     })
   }
 
   chart.setOption({
     tooltip: { trigger: 'axis' },
-    legend: { bottom: 0, data: allSeries.map(s => s.name), textStyle: { fontSize: 11 } },
-    grid: { top: 30, left: 60, right: 20, bottom: 50 },
-    xAxis: { type: 'category', data: seriesData.value[0]?.series.map((p: any) => p.date) || [] },
+    legend: {
+      bottom: 0,
+      data: allSeries.map(s => s.name),
+      textStyle: { fontSize: 10 },
+      type: 'scroll',
+      pageIconSize: 10,
+    },
+    grid: { top: 30, left: 60, right: 20, bottom: 55 },
+    xAxis: { type: 'time', axisLabel: { formatter: '{MM}-{dd}' } },
     yAxis: { type: 'value', name: '累计净值', axisLabel: { formatter: '{value}' } },
     dataZoom: [{ type: 'inside' }],
     series: allSeries,

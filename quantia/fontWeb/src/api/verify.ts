@@ -26,7 +26,7 @@ export function getCustomCompare(params: { strategy: string }) {
   return request({ url: '/api/verify/custom_compare', method: 'get', params }) as any
 }
 
-export function getCustomReturnSeries(params: { strategy: string }) {
+export function getCustomReturnSeries(params: { strategy: string; start_date?: string; end_date?: string }) {
   return request({ url: '/api/verify/custom_return_series', method: 'get', params }) as any
 }
 
