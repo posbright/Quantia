@@ -208,10 +208,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
-import { getHoldingPeriod, getReturnSeries } from '@/api/verify'
+import { getHoldingPeriod, getReturnSeries, getVerifyStrategyList } from '@/api/verify'
+import type { StrategyGroup } from '@/api/verify'
 import UsageGuide from '@/components/verify/UsageGuide.vue'
 import dayjs from 'dayjs'
 
@@ -242,58 +243,75 @@ const guideTips = [
 ]
 
 // ── 策略分组 & 类别映射 ──────────────────────────────────
-const strategyGroups = [
-  {
-    label: '技术指标',
-    category: 'tech',
-    items: [
-      { value: 'keep_increasing', label: '放量上涨' },
-      { value: 'parking_apron', label: '停机坪' },
-      { value: 'backtrace_ma250', label: '回踩年线' },
-      { value: 'breakthrough_platform', label: '突破平台' },
-      { value: 'low_atr', label: '低ATR成长' },
-    ],
-  },
-  {
-    label: '量价形态',
-    category: 'pat',
-    items: [
-      { value: 'climax_limitdown', label: '放量跌停' },
-      { value: 'high_tight_flag', label: '高而窄旗形' },
-      { value: 'low_backtrace_increase', label: '无大幅回撤' },
-    ],
-  },
-  {
-    label: '趋势突破',
-    category: 'vol',
-    items: [
-      { value: 'turtle_trade', label: '海龟交易' },
-      { value: 'enter_strategy', label: '企业战略' },
-      { value: 'share_holder_increase', label: '股东增持' },
-      { value: 'roaming_loong', label: '游龙' },
-    ],
-  },
-]
+const strategyGroups = ref<StrategyGroup[]>([])
+const strategyGroupsLoading = ref(false)
 
-// 策略 → 类别/颜色映射
-const categoryMap: Record<string, { label: string; key: string; color: string }> = {}
-for (const g of strategyGroups) {
-  const colorMap: Record<string, string> = { tech: '#1890ff', pat: '#d46b08', vol: '#389e0d' }
-  for (const s of g.items) {
-    categoryMap[s.value] = { label: g.label === '技术指标' ? '技术' : g.label === '量价形态' ? '形态' : '趋势', key: g.category, color: colorMap[g.category] || '#1890ff' }
+// 策略 → 类别/颜色映射（动态更新）
+const categoryMap = computed(() => {
+  const map: Record<string, { label: string; key: string; color: string }> = {}
+  const colorMap: Record<string, string> = { tech: '#1890ff', pat: '#d46b08', vol: '#389e0d', fund: '#722ed1', custom: '#cf1322' }
+  const labelMap: Record<string, string> = { tech: '技术', pat: '形态', vol: '趋势', fund: '基本面', custom: '自定义' }
+  for (const g of strategyGroups.value) {
+    for (const s of g.items) {
+      map[s.value] = {
+        label: labelMap[g.category] || g.label,
+        key: g.category,
+        color: colorMap[g.category] || '#1890ff',
+      }
+    }
   }
-}
+  return map
+})
 
-function getCategoryLabel(s: string) { return categoryMap[s]?.label || '策略' }
-function getCategoryKey(s: string) { return categoryMap[s]?.key || 'tech' }
-function getCategoryColor(s: string) { return categoryMap[s]?.color || '#1890ff' }
+function getCategoryLabel(s: string) { return categoryMap.value[s]?.label || '策略' }
+function getCategoryKey(s: string) { return categoryMap.value[s]?.key || 'tech' }
+function getCategoryColor(s: string) { return categoryMap.value[s]?.color || '#1890ff' }
 function getStrategyCn(s: string) {
-  for (const g of strategyGroups) {
+  for (const g of strategyGroups.value) {
     const item = g.items.find(i => i.value === s)
     if (item) return item.label
   }
   return s
 }
+
+async function loadStrategyList() {
+  strategyGroupsLoading.value = true
+  try {
+    const res = await getVerifyStrategyList()
+    if (res?.groups) {
+      strategyGroups.value = res.groups
+    }
+  } catch {
+    // 回退到内置列表
+    strategyGroups.value = [
+      { label: '技术指标', category: 'tech', items: [
+        { value: 'enter', label: '放量上涨' },
+        { value: 'keep_increasing', label: '均线多头' },
+        { value: 'parking_apron', label: '停机坪' },
+        { value: 'backtrace_ma250', label: '回踩年线' },
+        { value: 'breakthrough_platform', label: '突破平台' },
+        { value: 'low_atr', label: '低ATR成长' },
+      ]},
+      { label: '量价形态', category: 'pat', items: [
+        { value: 'climax_limitdown', label: '放量跌停' },
+        { value: 'high_tight_flag', label: '高而窄的旗形' },
+        { value: 'low_backtrace_increase', label: '无大幅回撤' },
+      ]},
+      { label: '趋势突破', category: 'vol', items: [
+        { value: 'turtle_trade', label: '海龟交易法则' },
+        { value: 'trend_pullback', label: '趋势回调' },
+        { value: 'oversold_rebound', label: '超跌反弹' },
+        { value: 'breakout_confirm', label: '突破确认' },
+      ]},
+    ]
+  } finally {
+    strategyGroupsLoading.value = false
+  }
+}
+
+onMounted(() => {
+  loadStrategyList()
+})
 
 // ── 状态 ──────────────────────────────────────────────────
 const selectedStrategies = ref<string[]>([])

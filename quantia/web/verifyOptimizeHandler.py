@@ -63,6 +63,71 @@ def _get_strategy_map():
     return mapping
 
 
+class VerifyStrategyListHandler(webBase.BaseHandler):
+    """GET /quantia/api/verify/strategy_list
+
+    返回所有可用于验证分析的策略列表（内置 + 用户自定义 Backtrader 策略）。
+    用户自定义策略仅返回元数据，实际验证时需要其对应的信号表存在。
+    """
+
+    def get(self):
+        try:
+            groups = []
+            # 1) 内置策略 — 按类型分组
+            tech_items = []
+            pattern_items = []
+            value_items = []
+            for s in tbs.TABLE_CN_STOCK_STRATEGIES:
+                short_key = s['name'].replace('cn_stock_strategy_', '')
+                item = {'value': short_key, 'label': s['cn'], 'table': s['name']}
+                # 按策略功能分组
+                if short_key in ('enter', 'keep_increasing', 'parking_apron', 'backtrace_ma250',
+                                 'breakthrough_platform', 'low_atr'):
+                    tech_items.append(item)
+                elif short_key in ('climax_limitdown', 'high_tight_flag', 'low_backtrace_increase'):
+                    pattern_items.append(item)
+                else:
+                    value_items.append(item)
+            groups.append({'label': '技术指标', 'category': 'tech', 'items': tech_items})
+            groups.append({'label': '量价形态', 'category': 'pat', 'items': pattern_items})
+            groups.append({'label': '趋势突破', 'category': 'vol', 'items': value_items})
+
+            # GPT 策略
+            gpt = tbs.TABLE_CN_STOCK_STRATEGY_GPT_VALUE
+            gpt_short = gpt['name'].replace('cn_stock_strategy_', '')
+            groups.append({
+                'label': '基本面',
+                'category': 'fund',
+                'items': [{'value': gpt_short, 'label': gpt['cn'], 'table': gpt['name']}],
+            })
+
+            # 2) 用户自定义策略（从 cn_stock_strategy_code 表）
+            custom_items = []
+            try:
+                rows = mdb.executeSqlFetch(
+                    "SELECT id, name, description FROM cn_stock_strategy_code "
+                    "WHERE status != 'archived' ORDER BY updated_at DESC LIMIT 50"
+                )
+                if rows:
+                    for r in rows:
+                        custom_items.append({
+                            'value': f'custom_{r[0]}',
+                            'label': r[1],
+                            'description': r[2] or '',
+                            'custom_id': r[0],
+                        })
+            except Exception:
+                logging.debug("读取自定义策略列表失败（表可能不存在）", exc_info=True)
+
+            if custom_items:
+                groups.append({'label': '用户自定义', 'category': 'custom', 'items': custom_items})
+
+            _write_json(self, {'groups': groups})
+        except Exception:
+            logging.error("策略列表异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+
 def _resolve_strategy(key: str):
     """查找策略元数据，返回 (meta, error_msg)。"""
     if not key or not key.strip():

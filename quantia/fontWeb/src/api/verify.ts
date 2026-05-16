@@ -1,5 +1,23 @@
 import request from './request'
 
+// ── 策略列表 ──────────────────────────────────────────────────────────
+
+export interface StrategyItem {
+  value: string
+  label: string
+  table?: string
+  description?: string
+  custom_id?: number
+}
+export interface StrategyGroup {
+  label: string
+  category: string
+  items: StrategyItem[]
+}
+export function getVerifyStrategyList(): Promise<{ groups: StrategyGroup[] }> {
+  return request({ url: '/api/verify/strategy_list', method: 'get' }) as any
+}
+
 // ── 持仓天数扫描 ──────────────────────────────────────────────────────
 
 export interface HoldingPeriodParams {

@@ -198,6 +198,7 @@ class Application(tornado.web.Application):
             (r"/quantia/api/custom_indicator/watchlist", customIndicatorHandler.WatchlistTodayHandler),
             (r"/quantia/api/custom_indicator/series", customIndicatorHandler.IndicatorSeriesHandler),
             # Phase 10: 选股验证中心 — 优化分析（只读）
+            (r"/quantia/api/verify/strategy_list", verifyOptimizeHandler.VerifyStrategyListHandler),
             (r"/quantia/api/verify/holding_period", verifyOptimizeHandler.HoldingPeriodAnalysisHandler),
             (r"/quantia/api/verify/signal_quality", verifyOptimizeHandler.SignalQualityHandler),
             (r"/quantia/api/verify/sl_tp_matrix", verifyOptimizeHandler.StopLossTakeProfitMatrixHandler),
