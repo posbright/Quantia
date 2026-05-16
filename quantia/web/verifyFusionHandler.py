@@ -11,7 +11,6 @@ import datetime
 import json
 import logging
 import math
-from abc import ABC
 
 import numpy as np
 import pandas as pd
@@ -33,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # ── 策略融合运算 ──────────────────────────────────────────────────────
 
-class StrategyFusionHandler(webBase.BaseHandler, ABC):
+class StrategyFusionHandler(webBase.BaseHandler):
     """POST /quantia/api/verify/fusion
 
     对多策略进行信号融合（交集/并集/投票），计算融合后的收益指标。
@@ -232,7 +231,7 @@ class StrategyFusionHandler(webBase.BaseHandler, ABC):
 
 # ── AI 优化建议 ───────────────────────────────────────────────────────
 
-class OptimizeSuggestHandler(webBase.BaseHandler, ABC):
+class OptimizeSuggestHandler(webBase.BaseHandler):
     """GET /quantia/api/verify/optimize_suggest
 
     基于持仓天数分析和止盈止损分析结果，生成优化建议。

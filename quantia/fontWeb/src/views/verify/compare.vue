@@ -102,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import { getHoldingPeriod, getSignalDecay, getMarketRegime } from '@/api/verify'
@@ -226,8 +226,16 @@ async function runCompare() {
   }
 }
 
+onUnmounted(() => {
+  if (decayChartRef.value) {
+    echarts.dispose(decayChartRef.value)
+  }
+})
+
 function renderDecayChart() {
   if (!decayChartRef.value || decayData.value.length === 0) return
+  const existing = echarts.getInstanceByDom(decayChartRef.value)
+  if (existing) existing.dispose()
   const chart = echarts.init(decayChartRef.value)
   const months = decayData.value.map((d: any) => d.month)
   chart.setOption({

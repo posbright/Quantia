@@ -140,7 +140,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import { getHoldingPeriod, getSignalQuality, getSlTpMatrix, getCostSensitivity, getOptimizeSuggest } from '@/api/verify'
@@ -262,8 +262,15 @@ async function loadSignalQuality() {
   } catch { /* ignore */ }
 }
 
+onUnmounted(() => {
+  if (holdingChartRef.value) echarts.dispose(holdingChartRef.value)
+  if (sltpChartRef.value) echarts.dispose(sltpChartRef.value)
+})
+
 function renderHoldingChart() {
   if (!holdingChartRef.value || holdingData.value.length === 0) return
+  const existing = echarts.getInstanceByDom(holdingChartRef.value)
+  if (existing) existing.dispose()
   const chart = echarts.init(holdingChartRef.value)
   const days = holdingData.value.map((d: any) => `${d.holding_days}天`)
   chart.setOption({
@@ -284,6 +291,8 @@ function renderHoldingChart() {
 
 function renderSltpChart(matrix: any[]) {
   if (!sltpChartRef.value || matrix.length === 0) return
+  const existing = echarts.getInstanceByDom(sltpChartRef.value)
+  if (existing) existing.dispose()
   const chart = echarts.init(sltpChartRef.value)
   const slValues = [...new Set(matrix.map(m => m.stop_loss))].sort((a, b) => a - b)
   const tpValues = [...new Set(matrix.map(m => m.take_profit))].sort((a, b) => a - b)

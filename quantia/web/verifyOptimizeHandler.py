@@ -12,7 +12,6 @@ import datetime
 import json
 import logging
 import math
-from abc import ABC
 
 import numpy as np
 import pandas as pd
@@ -53,9 +52,13 @@ def _get_strategy_map():
             mapping[short] = entry
     # GPT 策略
     gpt = tbs.TABLE_CN_STOCK_STRATEGY_GPT_VALUE
-    mapping[gpt['name']] = {'table': gpt['name'], 'cn': gpt['cn']}
+    gpt_entry = {'table': gpt['name'], 'cn': gpt['cn']}
+    mapping[gpt['name']] = gpt_entry
     if gpt['cn'] != gpt['name']:
-        mapping[gpt['cn']] = {'table': gpt['name'], 'cn': gpt['cn']}
+        mapping[gpt['cn']] = gpt_entry
+    gpt_short = gpt['name'].replace('cn_stock_strategy_', '')
+    if gpt_short != gpt['name']:
+        mapping[gpt_short] = gpt_entry
     _STRATEGY_MAP = mapping
     return mapping
 
@@ -197,7 +200,7 @@ def _parse_common_args(handler):
 
 # ── API 1: 持仓天数扫描 ──────────────────────────────────────────────
 
-class HoldingPeriodAnalysisHandler(webBase.BaseHandler, ABC):
+class HoldingPeriodAnalysisHandler(webBase.BaseHandler):
     """GET /quantia/api/verify/holding_period
 
     对选定策略的每个持仓天数统计: 平均收益、胜率、夏普、Sortino、分位数等。
@@ -302,7 +305,7 @@ _SIGNAL_QUALITY_INDICATORS = {
     'close', 'volume', 'turnover',
 }
 
-class SignalQualityHandler(webBase.BaseHandler, ABC):
+class SignalQualityHandler(webBase.BaseHandler):
     """GET /quantia/api/verify/signal_quality
 
     按指定指标分桶，统计各区间的信号质量（平均收益、胜率、夏普）。
@@ -433,6 +436,24 @@ class SignalQualityHandler(webBase.BaseHandler, ABC):
         filter_ranges = [b['range'] for b in buckets_result if b['quality'] == 'filter']
         golden_ranges = [b['range'] for b in buckets_result if b['quality'] == 'golden']
 
+        # 计算过滤后的预期提升
+        expected_improvement = {}
+        if filter_ranges:
+            kept = [b for b in buckets_result if b['quality'] != 'filter']
+            if kept:
+                total_kept_signals = sum(b['signal_count'] for b in kept)
+                if total_kept_signals > 0:
+                    # 加权平均
+                    kept_win_rate = sum(b['win_rate'] * b['signal_count'] for b in kept if b['win_rate'] is not None) / total_kept_signals
+                    kept_sharpe_vals = [b['sharpe'] for b in kept if b['sharpe'] is not None]
+                    all_rates = df['rate'].dropna().values
+                    overall_win_rate = float((all_rates > 0).mean() * 100)
+                    overall_sharpe = _calc_annualized_sharpe(all_rates, holding_days)
+                    expected_improvement['win_rate_delta'] = _safe_float(kept_win_rate - overall_win_rate)
+                    if overall_sharpe and kept_sharpe_vals:
+                        avg_kept_sharpe = sum(s * b['signal_count'] for s, b in zip(kept_sharpe_vals, [b for b in kept if b['sharpe'] is not None])) / sum(b['signal_count'] for b in kept if b['sharpe'] is not None)
+                        expected_improvement['sharpe_delta'] = _safe_float(avg_kept_sharpe - overall_sharpe)
+
         _write_json(self, {
             'strategy': meta['table'],
             'strategy_cn': meta['cn'],
@@ -443,13 +464,14 @@ class SignalQualityHandler(webBase.BaseHandler, ABC):
             'recommendation': {
                 'filter_ranges': filter_ranges,
                 'golden_ranges': golden_ranges,
+                'expected_improvement': expected_improvement,
             },
         })
 
 
 # ── API 3: 止盈止损矩阵 ──────────────────────────────────────────────
 
-class StopLossTakeProfitMatrixHandler(webBase.BaseHandler, ABC):
+class StopLossTakeProfitMatrixHandler(webBase.BaseHandler):
     """GET /quantia/api/verify/sl_tp_matrix
 
     对 (SL, TP) 网格的每个组合，模拟止盈止损并统计夏普/胜率/回撤。
@@ -560,75 +582,90 @@ class StopLossTakeProfitMatrixHandler(webBase.BaseHandler, ABC):
         返回: 1-D array (N,) 每笔交易的最终收益。
         """
         n_trades = rates_matrix.shape[0]
-        final_rates = np.full(n_trades, np.nan)
+        mat = rates_matrix[:, :max_hold].copy()
 
-        for i in range(n_trades):
-            row = rates_matrix[i]
-            locked = False
-            for d in range(max_hold):
-                r = row[d]
-                if np.isnan(r):
-                    break
-                if r <= sl:
-                    final_rates[i] = sl
-                    locked = True
-                    break
-                if r >= tp:
-                    final_rates[i] = tp
-                    locked = True
-                    break
-            if not locked and not np.isnan(row[max_hold - 1]):
-                final_rates[i] = row[max_hold - 1]
+        # 累积有效性掩码: NaN 之后的所有位置视为无效（与逐行循环行为一致）
+        valid_mask = np.cumprod(np.isfinite(mat), axis=1).astype(bool)
+        mat[~valid_mask] = np.nan
+
+        # 布尔矩阵: 各天是否触达 SL/TP（NaN 位置的比较结果为 False）
+        hit_sl = mat <= sl
+        hit_tp = mat >= tp
+        hit_any = hit_sl | hit_tp
+
+        # argmax 在全 False 行返回 0，需要区分
+        has_exit = hit_any.any(axis=1)
+        # 首次触达的列索引
+        first_exit_day = np.argmax(hit_any, axis=1)
+
+        # 确定退出类型: SL 优先于 TP（同天同时满足算 SL）
+        exit_is_sl = hit_sl[np.arange(n_trades), first_exit_day] & has_exit
+
+        final_rates = np.full(n_trades, np.nan)
+        final_rates[has_exit & exit_is_sl] = sl
+        final_rates[has_exit & ~exit_is_sl] = tp
+
+        # 未触达 SL/TP 的，取最后一天收益（如果有效）
+        no_exit = ~has_exit
+        last_col = mat[:, max_hold - 1]
+        valid_expired = no_exit & np.isfinite(last_col)
+        final_rates[valid_expired] = last_col[valid_expired]
 
         return final_rates
 
     @staticmethod
     def _count_exits(rates_matrix, sl, tp, max_hold):
-        """统计各退出原因的笔数。"""
-        sl_hit = 0
-        tp_hit = 0
-        expired = 0
-        for i in range(rates_matrix.shape[0]):
-            row = rates_matrix[i]
-            exited = False
-            for d in range(max_hold):
-                r = row[d]
-                if np.isnan(r):
-                    break
-                if r <= sl:
-                    sl_hit += 1
-                    exited = True
-                    break
-                if r >= tp:
-                    tp_hit += 1
-                    exited = True
-                    break
-            if not exited and not np.isnan(row[max_hold - 1]):
-                expired += 1
-        return sl_hit, tp_hit, expired
+        """统计各退出原因的笔数（向量化）。"""
+        mat = rates_matrix[:, :max_hold].copy()
+        n_trades = mat.shape[0]
+        valid_mask = np.cumprod(np.isfinite(mat), axis=1).astype(bool)
+        mat[~valid_mask] = np.nan
+
+        hit_sl = mat <= sl
+        hit_tp = mat >= tp
+        hit_any = hit_sl | hit_tp
+        has_exit = hit_any.any(axis=1)
+        first_exit_day = np.argmax(hit_any, axis=1)
+
+        exit_is_sl = hit_sl[np.arange(n_trades), first_exit_day] & has_exit
+        exit_is_tp = hit_tp[np.arange(n_trades), first_exit_day] & has_exit & ~exit_is_sl
+
+        no_exit = ~has_exit
+        last_col = mat[:, max_hold - 1]
+        valid_expired = no_exit & np.isfinite(last_col)
+
+        return int(exit_is_sl.sum()), int(exit_is_tp.sum()), int(valid_expired.sum())
 
     @staticmethod
     def _avg_hold_days(rates_matrix, sl, tp, max_hold):
-        """计算平均持仓天数。"""
-        days_list = []
-        for i in range(rates_matrix.shape[0]):
-            row = rates_matrix[i]
-            for d in range(max_hold):
-                r = row[d]
-                if np.isnan(r):
-                    break
-                if r <= sl or r >= tp:
-                    days_list.append(d + 1)
-                    break
-            else:
-                if not np.isnan(row[max_hold - 1]):
-                    days_list.append(max_hold)
-        return float(np.mean(days_list)) if days_list else 0.0
+        """计算平均持仓天数（向量化）。"""
+        mat = rates_matrix[:, :max_hold].copy()
+        n_trades = mat.shape[0]
+        valid_mask = np.cumprod(np.isfinite(mat), axis=1).astype(bool)
+        mat[~valid_mask] = np.nan
+
+        hit_any = (mat <= sl) | (mat >= tp)
+        has_exit = hit_any.any(axis=1)
+        first_exit_day = np.argmax(hit_any, axis=1)  # 0-based column index
+
+        no_exit = ~has_exit
+        last_col = mat[:, max_hold - 1]
+        valid_expired = no_exit & np.isfinite(last_col)
+
+        # 持仓天数: 触达的为 first_exit_day + 1, 到期的为 max_hold
+        days = np.zeros(n_trades)
+        days[has_exit] = first_exit_day[has_exit] + 1
+        days[valid_expired] = max_hold
+
+        valid_mask = has_exit | valid_expired
+        if valid_mask.sum() == 0:
+            return 0.0
+        return float(days[valid_mask].mean())
 
 
 # ── API 4: 市场环境分类 ──────────────────────────────────────────────
 
-class MarketRegimeHandler(webBase.BaseHandler, ABC):
+class MarketRegimeHandler(webBase.BaseHandler):
     """GET /quantia/api/verify/market_regime
 
     用 MA20/MA60 交叉 + ATR 中位数对市场环境分类，
@@ -762,7 +799,7 @@ class MarketRegimeHandler(webBase.BaseHandler, ABC):
 
 # ── API 5: 信号衰减分析 ──────────────────────────────────────────────
 
-class SignalDecayHandler(webBase.BaseHandler, ABC):
+class SignalDecayHandler(webBase.BaseHandler):
     """GET /quantia/api/verify/signal_decay
 
     按月分组统计策略的胜率/收益率/夏普变化趋势。
@@ -839,7 +876,7 @@ class SignalDecayHandler(webBase.BaseHandler, ABC):
 
 # ── API 7: 交易成本敏感性 ────────────────────────────────────────────
 
-class CostSensitivityHandler(webBase.BaseHandler, ABC):
+class CostSensitivityHandler(webBase.BaseHandler):
     """GET /quantia/api/verify/cost_sensitivity
 
     展示不同交易成本假设下的策略表现变化。
