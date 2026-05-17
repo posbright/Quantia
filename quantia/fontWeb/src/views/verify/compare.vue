@@ -211,7 +211,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
-import { getHoldingPeriod, getReturnSeries, getVerifyStrategyList, getCustomCompare, getCustomReturnSeries } from '@/api/verify'
+import { getHoldingPeriod, getReturnSeries, getVerifyStrategyList, getCustomCompare } from '@/api/verify'
 import type { StrategyGroup } from '@/api/verify'
 import UsageGuide from '@/components/verify/UsageGuide.vue'
 import dayjs from 'dayjs'
@@ -323,6 +323,7 @@ const hasQueried = ref(false)
 const compareData = ref<any[]>([])          // 10日周期的主指标
 const multiPeriodData = ref<Record<string, Record<number, any>>>({})  // strategy → { 5: {...}, 10: {...}, 20: {...} }
 const seriesData = ref<any[]>([])
+const benchmarkSeriesData = ref<any[]>([])
 const radarChartRef = ref<HTMLElement>()
 const navChartRef = ref<HTMLElement>()
 
@@ -495,6 +496,7 @@ async function runCompare() {
   compareData.value = []
   multiPeriodData.value = {}
   seriesData.value = []
+  benchmarkSeriesData.value = []
 
   const [startDate, endDate] = dateRange.value
 
@@ -502,7 +504,7 @@ async function runCompare() {
     // 1) 并行请求各策略的 5/10/20 日数据（按类型走不同 API）
     const promises = selectedStrategies.value.map(s => {
       if (getStrategyType(s) === 'backtest') {
-        return getCustomCompare({ strategy: s })
+        return getCustomCompare({ strategy: s, start_date: startDate, end_date: endDate, benchmark: benchmarkIndex.value })
       }
       return getHoldingPeriod({ strategy: s, start_date: startDate, end_date: endDate, holding_days: '5,10,20' })
     })
@@ -530,11 +532,17 @@ async function runCompare() {
     renderRadarChart()
 
     // 2) 各策略累计收益走势 (10日)
-    const seriesPromises = selectedStrategies.value.map(s => {
+    const seriesPromises = selectedStrategies.value.map((s, idx) => {
       if (getStrategyType(s) === 'backtest') {
-        return getCustomReturnSeries({ strategy: s, start_date: startDate, end_date: endDate })
+        const res = results[idx] as any
+        return Promise.resolve({
+          strategy: s,
+          strategy_cn: res.strategy_cn,
+          series: res.series || [],
+          benchmark_series: res.benchmark_series || [],
+        })
       }
-      return getReturnSeries({ strategy: s, start_date: startDate, end_date: endDate, holding_days: 10 })
+      return getReturnSeries({ strategy: s, start_date: startDate, end_date: endDate, holding_days: 10, benchmark: benchmarkIndex.value })
     })
     const seriesResults = await Promise.all(seriesPromises)
     seriesData.value = seriesResults.map((r: any) => ({
@@ -542,6 +550,7 @@ async function runCompare() {
       strategy_cn: r.strategy_cn,
       series: r.series || [],
     }))
+    benchmarkSeriesData.value = (seriesResults.find((r: any) => (r.benchmark_series || []).length > 0) as any)?.benchmark_series || []
     await nextTick()
     renderNavChart()
   } catch (e: any) {
@@ -611,13 +620,6 @@ function renderNavChart() {
   if (existing) existing.dispose()
   const chart = echarts.init(navChartRef.value)
 
-  // 收集所有日期（各策略可能有不同日期范围）
-  const allDates = new Set<string>()
-  seriesData.value.forEach((item: any) => {
-    (item.series || []).forEach((p: any) => { if (p.date) allDates.add(p.date) })
-  })
-  const sortedDates = [...allDates].sort()
-
   const allSeries = seriesData.value.map((item: any, idx: number) => ({
     name: item.strategy_cn || item.strategy,
     type: 'line',
@@ -628,13 +630,13 @@ function renderNavChart() {
     itemStyle: { color: strategyColors[idx % strategyColors.length] },
   }))
 
-  // 基准线: 平坦 100（= 无收益基准参考线）
+  // 基准线: 使用真实基准指数累计净值
   const benchmarkName = benchmarkIndex.value === '000300' ? '沪深300' : benchmarkIndex.value === '000905' ? '中证500' : '上证50'
-  if (sortedDates.length > 0) {
+  if (benchmarkSeriesData.value.length > 0) {
     allSeries.push({
       name: benchmarkName + '(基准)',
       type: 'line',
-      data: [[sortedDates[0], 100], [sortedDates[sortedDates.length - 1], 100]],
+      data: benchmarkSeriesData.value.map((p: any) => [p.date, p.cumulative]),
       showSymbol: false,
       smooth: false,
       lineStyle: { width: 1, type: 'dashed' as any, color: '#bbb' } as any,

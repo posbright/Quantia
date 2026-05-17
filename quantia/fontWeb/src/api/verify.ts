@@ -22,7 +22,7 @@ export function getVerifyStrategyList(): Promise<{ groups: StrategyGroup[] }> {
 
 // ── 自定义策略对比 ────────────────────────────────────────────────────
 
-export function getCustomCompare(params: { strategy: string }) {
+export function getCustomCompare(params: { strategy: string; start_date: string; end_date: string; benchmark?: string }) {
   return request({ url: '/api/verify/custom_compare', method: 'get', params }) as any
 }
 
@@ -162,6 +162,7 @@ export interface ReturnSeriesParams {
   start_date: string
   end_date: string
   holding_days?: number
+  benchmark?: string
 }
 
 export function getReturnSeries(params: ReturnSeriesParams) {

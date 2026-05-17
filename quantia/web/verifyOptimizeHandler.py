@@ -12,13 +12,16 @@ import datetime
 import json
 import logging
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
+from tornado.ioloop import IOLoop
 
 import quantia.core.tablestructure as tbs
 import quantia.lib.database as mdb
 import quantia.web.base as webBase
+from quantia.core.backtest.data_feed import load_benchmark_data
 from quantia.core.backtest.rate_stats import ROUND_TRIP_COST_PCT
 from quantia.web.utils import parse_int_list as _parse_int_list, json_default as _json_default
 
@@ -30,6 +33,7 @@ __date__ = '2026/05/15'
 RATE_FIELDS_COUNT = tbs.RATE_FIELDS_COUNT  # 100
 _BACKTEST_DATA_TABLE = tbs.TABLE_CN_STOCK_BACKTEST_DATA['name']
 _BACKTEST_SUMMARY_TABLE = tbs.TABLE_CN_STOCK_BACKTEST['name']
+_CUSTOM_COMPARE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix='verify-custom')
 
 # 策略白名单（表名 → 中文名映射）
 _STRATEGY_MAP = None
@@ -274,6 +278,228 @@ def _parse_common_args(handler):
     return meta, start_date, end_date, None
 
 
+def _parse_custom_strategy_args(handler):
+    """解析自定义策略对比参数。"""
+    strategy_key = handler.get_argument('strategy', default='', strip=True)
+    if not strategy_key.startswith('custom_'):
+        return None, None, None, None, '此接口仅支持自定义策略 (custom_*)'
+
+    try:
+        strategy_id = int(strategy_key.replace('custom_', ''))
+    except ValueError:
+        return None, None, None, None, '无效的策略ID'
+
+    start_s = handler.get_argument('start_date', default='', strip=True)
+    end_s = handler.get_argument('end_date', default='', strip=True)
+    start_date = _parse_date(start_s)
+    end_date = _parse_date(end_s)
+
+    if not start_date or not end_date:
+        return None, None, None, None, 'start_date 和 end_date 必填，格式 YYYY-MM-DD'
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    if (end_date - start_date).days > 366:
+        return None, None, None, None, '日期区间过大，请控制在 366 天以内'
+    if (end_date - start_date).days < 7:
+        return None, None, None, None, '日期区间过短，请至少选择 7 天以上的范围以获得有意义的统计结果'
+
+    return strategy_key, strategy_id, start_date, end_date, None
+
+
+def _benchmark_return_series(benchmark, start_date, end_date):
+    """返回基准指数累计净值序列，起点归一化为 100。"""
+    try:
+        df = load_benchmark_data(benchmark or '000300', start_date, end_date)
+    except Exception:
+        logging.warning("加载基准收益序列失败: %s %s~%s", benchmark, start_date, end_date, exc_info=True)
+        return []
+    if df is None or len(df) == 0 or 'close' not in df.columns:
+        return []
+
+    df = df.copy()
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date')
+    base = None
+    series = []
+    for _, row in df.iterrows():
+        close = row.get('close')
+        if close is None:
+            continue
+        close_val = float(close)
+        if not np.isfinite(close_val) or close_val <= 0:
+            continue
+        if base is None:
+            base = close_val
+        cumulative = close_val / base * 100 if base else 100
+        series.append({
+            'date': row['date'].strftime('%Y-%m-%d'),
+            'cumulative': _safe_float(cumulative),
+        })
+    return series
+
+
+def _series_from_nav(nav_data, include_benchmark=False):
+    """将回测 NAV 数据转换为前端收益曲线序列。"""
+    series = []
+    benchmark_series = []
+    base_nav = None
+    base_benchmark = None
+    for item in nav_data or []:
+        date_text = item.get('date', '')
+        try:
+            nav_val = float(item.get('nav', 1.0))
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(nav_val) or nav_val <= 0:
+            continue
+        if base_nav is None:
+            base_nav = nav_val
+        series.append({
+            'date': date_text,
+            'cumulative': _safe_float(nav_val / base_nav * 100 if base_nav else 100),
+        })
+
+        if include_benchmark:
+            try:
+                bm_nav = float(item.get('benchmark_nav', 1.0))
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(bm_nav) and bm_nav > 0:
+                if base_benchmark is None:
+                    base_benchmark = bm_nav
+                benchmark_series.append({
+                    'date': date_text,
+                    'cumulative': _safe_float(bm_nav / base_benchmark * 100 if base_benchmark else 100),
+                })
+    return series, benchmark_series
+
+
+def _calc_rolling_nav_analysis(nav_data, holding_days_list, trade_count=0):
+    """基于组合 NAV 计算不同持有窗口的滚动收益统计。"""
+    values = []
+    for item in nav_data or []:
+        try:
+            nav_val = float(item.get('nav', 0))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(nav_val) and nav_val > 0:
+            values.append(nav_val)
+
+    if len(values) < 2:
+        return [], None, None
+
+    nav = np.asarray(values, dtype=float)
+    trading_days = len(nav)
+    daily_signal_count = round(float(trade_count or 0) / trading_days, 1) if trading_days else 0.0
+    analysis = []
+    best_sharpe = None
+    best_holding_days = None
+
+    for d in holding_days_list:
+        if d <= 0 or len(nav) <= d:
+            continue
+        base = nav[:-d]
+        future = nav[d:]
+        rates = (future / base - 1) * 100
+        rates = rates[np.isfinite(rates)]
+        if len(rates) == 0:
+            continue
+
+        avg_ret = float(rates.mean())
+        std_ret = float(rates.std(ddof=1)) if len(rates) > 1 else 0.0
+        sharpe = _calc_annualized_sharpe(rates, d)
+        sortino = _calc_sortino(rates, d)
+        win_rate = float((rates > 0).mean() * 100)
+        gains = rates[rates > 0]
+        losses = rates[rates < 0]
+        if len(gains) > 0 and len(losses) > 0:
+            profit_loss_ratio = float(gains.mean() / abs(losses.mean()))
+        elif len(gains) > 0:
+            profit_loss_ratio = float('inf')
+        else:
+            profit_loss_ratio = 0.0
+
+        max_loss = float(rates.min())
+        annualized_ret = avg_ret * (252 / d) if d > 0 else 0.0
+        if max_loss < 0:
+            calmar_ratio = annualized_ret / abs(max_loss)
+        else:
+            calmar_ratio = float('inf') if annualized_ret > 0 else 0.0
+
+        analysis.append({
+            'holding_days': d,
+            'avg_return': _safe_float(avg_ret),
+            'median_return': _safe_float(float(np.median(rates))),
+            'win_rate': _safe_float(win_rate),
+            'return_std': _safe_float(std_ret),
+            'sharpe_approx': _safe_float(sharpe),
+            'sortino_approx': _safe_float(sortino),
+            'max_single_loss': _safe_float(max_loss),
+            'max_single_gain': _safe_float(float(rates.max())),
+            'percentile_10': _safe_float(float(np.percentile(rates, 10))),
+            'percentile_25': _safe_float(float(np.percentile(rates, 25))),
+            'percentile_75': _safe_float(float(np.percentile(rates, 75))),
+            'percentile_90': _safe_float(float(np.percentile(rates, 90))),
+            'signal_count': len(rates),
+            'profit_loss_ratio': _safe_float(round(profit_loss_ratio, 2)),
+            'calmar_ratio': _safe_float(round(calmar_ratio, 2)),
+            'daily_signal_count': _safe_float(daily_signal_count),
+        })
+
+        if sharpe is not None and (best_sharpe is None or sharpe > best_sharpe):
+            best_sharpe = sharpe
+            best_holding_days = d
+
+    return analysis, best_holding_days, best_sharpe
+
+
+def _load_cached_custom_backtest(strategy_id, start_date, end_date, benchmark):
+    """优先复用完整覆盖所选区间的已完成自定义回测。"""
+    try:
+        rows = mdb.executeSqlFetch(
+            "SELECT id, result_json, benchmark FROM cn_stock_backtest_portfolio "
+            "WHERE strategy_id = %s AND status = 'completed' "
+            "AND start_date <= %s AND end_date >= %s "
+            "ORDER BY completed_at DESC LIMIT 5",
+            (strategy_id, str(start_date), str(end_date)))
+    except Exception:
+        logging.debug("读取自定义策略覆盖区间回测缓存失败", exc_info=True)
+        return None, None
+
+    benchmark = str(benchmark or '000300')
+    for bt_id, result_json_raw, cached_benchmark in rows or []:
+        cached_benchmark = str(cached_benchmark or '000300')
+        if cached_benchmark and cached_benchmark != benchmark:
+            continue
+        if not result_json_raw:
+            continue
+        try:
+            result = json.loads(result_json_raw) if isinstance(result_json_raw, str) else result_json_raw
+        except Exception:
+            logging.debug("解析自定义回测缓存失败: id=%s", bt_id, exc_info=True)
+            continue
+        if not isinstance(result, dict) or result.get('status') != 'completed':
+            continue
+
+        nav = []
+        for item in result.get('nav', []) or []:
+            date_text = item.get('date', '')
+            if date_text < str(start_date) or date_text > str(end_date):
+                continue
+            nav.append(item)
+        if len(nav) < 2:
+            continue
+
+        result = dict(result)
+        result['nav'] = nav
+        result['positions'] = [p for p in (result.get('positions', []) or [])
+                               if str(start_date) <= str(p.get('date', '')) <= str(end_date)]
+        result['_cached_backtest_id'] = bt_id
+        return result, f'backtest_portfolio_cache:{bt_id}'
+
+    return None, None
+
+
 # ── API 1: 持仓天数扫描 ──────────────────────────────────────────────
 
 class HoldingPeriodAnalysisHandler(webBase.BaseHandler):
@@ -399,151 +625,118 @@ class HoldingPeriodAnalysisHandler(webBase.BaseHandler):
 class CustomStrategyCompareHandler(webBase.BaseHandler):
     """GET /quantia/api/verify/custom_compare
 
-    从 cn_stock_backtest_portfolio 读取自定义策略的最新回测结果，
-    映射成与 HoldingPeriodAnalysisHandler 兼容的对比格式。
+    按页面选择的时间区间即时运行自定义组合策略，
+    再基于回测 NAV 计算 5/10/20 交易日滚动收益统计。
 
-    参数: strategy=custom_<id>&start_date=...&end_date=...
+    参数: strategy=custom_<id>&start_date=...&end_date=...&benchmark=...
     """
 
-    def get(self):
+    async def get(self):
         try:
-            self._handle()
+            await self._handle()
         except Exception:
             logging.error("自定义策略对比异常", exc_info=True)
             _write_error(self, '服务器内部错误', 500)
 
-    def _handle(self):
-        strategy_key = self.get_argument('strategy', default='', strip=True)
-        if not strategy_key.startswith('custom_'):
-            _write_error(self, '此接口仅支持自定义策略 (custom_*)')
+    async def _handle(self):
+        strategy_key, strategy_id, start_date, end_date, err = _parse_custom_strategy_args(self)
+        if err:
+            _write_error(self, err)
             return
 
-        try:
-            strategy_id = int(strategy_key.replace('custom_', ''))
-        except ValueError:
-            _write_error(self, '无效的策略ID')
-            return
-
-        # 获取策略名
-        name_rows = mdb.executeSqlFetch(
-            "SELECT name FROM cn_stock_strategy_code WHERE id = %s", (strategy_id,))
-        strategy_name = name_rows[0][0] if name_rows else f'策略#{strategy_id}'
-
-        # 获取最新完成的回测结果
         rows = mdb.executeSqlFetch(
-            "SELECT id, total_return, annual_return, max_drawdown, sharpe_ratio, "
-            "win_rate, trade_count, result_json, start_date, end_date "
-            "FROM cn_stock_backtest_portfolio "
-            "WHERE strategy_id = %s AND status = 'completed' "
-            "ORDER BY completed_at DESC LIMIT 1",
-            (strategy_id,)
-        )
+            "SELECT name, code, initial_cash, benchmark, commission_rate, stamp_tax_rate, slippage "
+            "FROM cn_stock_strategy_code WHERE id = %s AND status != 'archived' LIMIT 1",
+            (strategy_id,))
         if not rows:
             _write_json(self, {
                 'strategy': strategy_key,
-                'strategy_cn': strategy_name,
+                'strategy_cn': f'策略#{strategy_id}',
                 'total_signals': 0,
                 'analysis': [],
-                'message': '该策略尚无完成的回测结果，请先在"策略回测"页运行回测',
+                'series': [],
+                'benchmark_series': [],
+                'message': '自定义策略不存在或已归档',
             })
             return
 
-        r = rows[0]
-        bt_id, total_return, annual_return, max_drawdown = r[0], r[1], r[2], r[3]
-        sharpe_ratio, win_rate, trade_count = r[4], r[5], r[6]
-        result_json_raw, bt_start, bt_end = r[7], r[8], r[9]
+        strategy_name, strategy_code = rows[0][0], rows[0][1]
+        initial_cash = float(rows[0][2] or 1000000)
+        benchmark = self.get_argument('benchmark', default=(rows[0][3] or '000300'), strip=True) or '000300'
+        commission = float(rows[0][4] or 0.0003)
+        tax = float(rows[0][5] or 0.001)
+        slippage = float(rows[0][6] or 0.002)
 
-        # 解析 result_json 获取交易记录和 NAV
-        trades = []
-        nav_series = []
-        sortino_val = None
-        calmar_val = None
-        return_std = None
-        profit_loss_ratio = None
-        daily_signal_count = None
-
-        if result_json_raw:
-            try:
-                rj = json.loads(result_json_raw) if isinstance(result_json_raw, str) else result_json_raw
-                trades = rj.get('trades', [])
-                nav_series = rj.get('nav', [])
-                metrics = rj.get('metrics', {})
-
-                # 从交易记录计算盈亏比
-                sell_trades = [t for t in trades if t.get('direction') == 'sell']
-                if sell_trades:
-                    gains = [t['return_rate'] for t in sell_trades if t.get('return_rate', 0) > 0]
-                    losses = [t['return_rate'] for t in sell_trades if t.get('return_rate', 0) < 0]
-                    if gains and losses:
-                        profit_loss_ratio = round(
-                            sum(gains) / len(gains) / abs(sum(losses) / len(losses)), 2)
-                    elif gains:
-                        profit_loss_ratio = 999.0  # 全胜
-                    else:
-                        profit_loss_ratio = 0.0
-
-                # 从 NAV 计算日收益率序列的统计量
-                if nav_series and len(nav_series) >= 2:
-                    daily_returns = []
-                    for i in range(1, len(nav_series)):
-                        dr = nav_series[i].get('daily_return', 0)
-                        if dr is not None:
-                            daily_returns.append(float(dr))
-                    if daily_returns:
-                        dr_arr = np.array(daily_returns)
-                        return_std = round(float(dr_arr.std(ddof=1)), 4) if len(dr_arr) > 1 else 0.0
-                        # Sortino
-                        downside = dr_arr[dr_arr < 0]
-                        if len(downside) > 0:
-                            ds_std = float(downside.std(ddof=1))
-                            if ds_std > 0:
-                                avg_daily = float(dr_arr.mean())
-                                sortino_val = round(avg_daily / ds_std * math.sqrt(252), 4)
-                    # 日均信号数 = 交易总数 / 交易日数
-                    trading_days = len(nav_series)
-                    if trading_days > 0 and trade_count:
-                        daily_signal_count = round(float(trade_count) / trading_days, 1)
-
-                # Calmar = 年化收益 / |最大回撤|
-                if annual_return and max_drawdown and float(max_drawdown) != 0:
-                    calmar_val = round(float(annual_return) / abs(float(max_drawdown)), 4)
-
-            except Exception as e:
-                logging.debug(f"解析回测 result_json 异常: bt_id={bt_id} - {e}")
-
-        # 构造与 HoldingPeriodAnalysisHandler 兼容的响应格式
-        # 自定义策略没有多周期(5/10/20日)概念，用回测整体指标填充
-        analysis = []
-        for holding_days in [5, 10, 20]:
-            analysis.append({
-                'holding_days': holding_days,
-                'avg_return': _safe_float(total_return),
-                'median_return': _safe_float(total_return),
-                'win_rate': _safe_float(win_rate),
-                'return_std': _safe_float(return_std),
-                'sharpe_approx': _safe_float(sharpe_ratio),
-                'sortino_approx': _safe_float(sortino_val),
-                'max_single_loss': _safe_float(max_drawdown),
-                'max_single_gain': _safe_float(total_return),
-                'percentile_10': None,
-                'percentile_25': None,
-                'percentile_75': None,
-                'percentile_90': None,
-                'signal_count': trade_count or 0,
-                'profit_loss_ratio': _safe_float(profit_loss_ratio),
-                'calmar_ratio': _safe_float(calmar_val),
-                'daily_signal_count': _safe_float(daily_signal_count),
+        if not strategy_code:
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': strategy_name or f'策略#{strategy_id}',
+                'period': f'{start_date} ~ {end_date}',
+                'total_signals': 0,
+                'analysis': [],
+                'series': [],
+                'benchmark_series': [],
+                'message': '自定义策略代码为空',
             })
+            return
+
+        result, data_source = _load_cached_custom_backtest(strategy_id, start_date, end_date, benchmark)
+        if result is None:
+            def _run_backtest_for_compare():
+                try:
+                    from quantia.core.backtest.portfolio_engine import PortfolioBacktestEngine
+                    engine = PortfolioBacktestEngine()
+                    return engine.run(
+                        strategy_code, str(start_date), str(end_date),
+                        initial_cash=initial_cash,
+                        benchmark=benchmark,
+                        commission=commission,
+                        tax=tax,
+                        slippage=slippage,
+                    )
+                finally:
+                    try:
+                        mdb.close_thread_connection()
+                    except Exception:
+                        pass
+
+            result = await IOLoop.current().run_in_executor(
+                _CUSTOM_COMPARE_EXECUTOR, _run_backtest_for_compare)
+            data_source = 'portfolio_engine_live'
+
+        if result.get('status') != 'completed':
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': strategy_name or f'策略#{strategy_id}',
+                'period': f'{start_date} ~ {end_date}',
+                'total_signals': 0,
+                'analysis': [],
+                'series': [],
+                'benchmark_series': [],
+                'message': result.get('message') or '自定义策略回测失败',
+                'hints': result.get('hints') or [],
+            })
+            return
+
+        metrics = result.get('metrics', {}) or {}
+        nav_series = result.get('nav', []) or []
+        trade_count = metrics.get('trade_count') or len(result.get('trades', []) or [])
+        analysis, best_holding_days, best_sharpe = _calc_rolling_nav_analysis(
+            nav_series, [5, 10, 20], trade_count=trade_count)
+        series, benchmark_series = _series_from_nav(nav_series, include_benchmark=True)
 
         _write_json(self, {
             'strategy': strategy_key,
             'strategy_cn': strategy_name,
-            'period': f'{bt_start} ~ {bt_end}',
+            'period': f'{start_date} ~ {end_date}',
             'total_signals': trade_count or 0,
             'analysis': analysis,
-            'best_holding_days': 10,
-            'best_sharpe': _safe_float(sharpe_ratio),
-            'data_source': 'backtest_portfolio',
+            'best_holding_days': best_holding_days,
+            'best_sharpe': _safe_float(best_sharpe),
+            'series': series,
+            'benchmark_series': benchmark_series,
+            'metrics': metrics,
+            'data_source': data_source,
         })
 
 
@@ -614,21 +807,13 @@ class CustomStrategyReturnSeriesHandler(webBase.BaseHandler):
                 continue
             filtered_nav.append(item)
 
-        series = []
-        base_nav = filtered_nav[0].get('nav', 1.0) if filtered_nav else 1.0
-        for item in filtered_nav:
-            nav_val = item.get('nav', 1.0)
-            # 归一化: 以过滤范围内的第一个点为 100
-            normalized = (float(nav_val) / float(base_nav)) * 100 if base_nav else 100
-            series.append({
-                'date': item.get('date', ''),
-                'cumulative': round(normalized, 4),
-            })
+        series, benchmark_series = _series_from_nav(filtered_nav, include_benchmark=True)
 
         _write_json(self, {
             'strategy': strategy_key,
             'strategy_cn': strategy_name,
             'series': series,
+            'benchmark_series': benchmark_series,
         })
 
 
@@ -1553,6 +1738,7 @@ class SignalReturnSeriesHandler(webBase.BaseHandler):
             return
 
         holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        benchmark = self.get_argument('benchmark', default='000300', strip=True) or '000300'
         try:
             holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
         except (TypeError, ValueError):
@@ -1565,6 +1751,7 @@ class SignalReturnSeriesHandler(webBase.BaseHandler):
                 'strategy': meta['table'],
                 'strategy_cn': meta['cn'],
                 'series': [],
+                'benchmark_series': _benchmark_return_series(benchmark, start_date, end_date),
             })
             return
 
@@ -1593,4 +1780,5 @@ class SignalReturnSeriesHandler(webBase.BaseHandler):
             'strategy_cn': meta['cn'],
             'holding_days': holding_days,
             'series': series,
+            'benchmark_series': _benchmark_return_series(benchmark, start_date, end_date),
         })
