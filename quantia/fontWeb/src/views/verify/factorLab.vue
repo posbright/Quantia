@@ -547,6 +547,7 @@ import {
   type FactorLabConfig,
 } from '@/api/factorLab'
 import UsageGuide from '@/components/verify/UsageGuide.vue'
+import { aiChat } from '@/api/ai'
 
 const guideSteps = [
   '从左侧 <b>因子面板</b> 点击 "+" 添加因子到中间栏（支持搜索和分类浏览）',
@@ -642,14 +643,49 @@ const aiInput = ref('')
 const aiSuggestion = ref('')
 const aiLoading = ref(false)
 async function askAi() {
-  if (!aiInput.value.trim() && activeFactors.value.length === 0) return
+  const userInput = aiInput.value.trim()
+  if (!userInput && activeFactors.value.length === 0) return
   aiLoading.value = true
   aiSuggestion.value = ''
+
+  // 构建上下文 prompt
+  const factorsDesc = activeFactors.value.length > 0
+    ? activeFactors.value.map(f => {
+        const op = f.operator || '='
+        const val = Array.isArray(f.value) ? f.value.join('~') : (f.value ?? '')
+        return `- ${f.name}(${f.category}) ${op} ${val}，权重 ${f.weight}%`
+      }).join('\n')
+    : '（当前未添加任何因子）'
+
+  const r = result.value?.kpi
+  const kpiDesc = r ? `\n最近一次回测结果：\n- 平均收益 ${r.avg_return?.toFixed(2) ?? '--'}%\n- 夏普比率 ${r.sharpe?.toFixed(2) ?? '--'}\n- 最大回撤 ${r.max_drawdown?.toFixed(2) ?? '--'}%\n- 胜率 ${r.win_rate?.toFixed(2) ?? '--'}%` : ''
+
+  const prompt = `你是一位量化因子策略顾问。请基于以下因子组合给出简洁、可执行的优化建议（不超过 200 字），包括因子权重调整、新增因子或剔除因子的具体建议。\n\n当前因子组合：\n${factorsDesc}\n${kpiDesc}\n\n用户问题：${userInput || '请给出整体优化建议'}`
+
+  // aiModel 映射到具体 model 名（与后端 AI provider 配置兼容）
+  const modelMap: Record<string, string> = {
+    gpt4o: 'gpt-4o',
+    deepseek: 'deepseek-chat',
+    qwen: 'qwen-max',
+  }
+  const modelOverride = modelMap[aiModel.value]
+
   try {
-    // Placeholder: will integrate with actual AI endpoint
-    await new Promise(r => setTimeout(r, 800))
-    aiSuggestion.value = `建议: 当前因子组合中，${activeFactors.value.length > 3 ? '可尝试降低低贡献因子权重' : '建议添加资金流向因子以提升多维验证效果'}。`
-    addLog(`AI建议: ${aiSuggestion.value.slice(0, 30)}...`, 'ai')
+    const res = await aiChat({
+      prompt,
+      scene: 'factor_lab',
+      ...(modelOverride ? { model: modelOverride } : {}),
+    })
+    const content = (res as any)?.data?.content || ''
+    if (!content) {
+      ElMessage.warning('AI 未返回有效建议')
+      return
+    }
+    aiSuggestion.value = content
+    addLog(`AI建议: ${content.slice(0, 30)}...`, 'ai')
+  } catch (e: any) {
+    const msg = e?.response?.data?.msg || e?.message || 'AI 请求失败'
+    ElMessage.error(msg)
   } finally {
     aiLoading.value = false
     aiInput.value = ''

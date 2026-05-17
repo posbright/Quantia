@@ -261,12 +261,14 @@
       <el-tab-pane label="风险控制" name="risk">
         <div class="chart-grid">
           <div class="result-card">
-            <div class="card-head"><h3>回撤深度 & 恢复分析</h3></div>
-            <div class="chart-placeholder"><span>📉</span><p>区域图: 每日回撤深度 + 标注最大回撤起止点 + 恢复天数</p></div>
+            <div class="card-head"><h3>回撤深度 & 恢复分析</h3><span>日级累计收益的水下回撤曲线</span></div>
+            <div v-if="returnSeries.length > 0" ref="drawdownChartRef" class="chart-box" />
+            <div v-else class="chart-placeholder"><span>📉</span><p>区域图: 每日回撤深度 + 标注最大回撤起止点 + 恢复天数</p></div>
           </div>
           <div class="result-card">
-            <div class="card-head"><h3>交易成本敏感性</h3></div>
-            <div class="chart-placeholder"><span>💰</span><p>折线: 不同手续费 × 净收益，标注当前费率</p></div>
+            <div class="card-head"><h3>交易成本敏感性</h3><span>不同手续费下的收益与夏普</span></div>
+            <div v-if="normalizedCostData.length > 0" ref="costChartRef" class="chart-box" />
+            <div v-else class="chart-placeholder"><span>💰</span><p>折线: 不同手续费 × 净收益，标注当前费率</p></div>
           </div>
         </div>
         <div class="result-card" style="margin-top: 12px">
@@ -317,7 +319,8 @@
         <div v-if="oosData.train && oosData.test" class="result-card">
           <div class="card-head"><h3>样本外验证 (防过拟合)</h3><span>70% 训练集 / 30% 测试集 · 时间顺序拆分</span></div>
           <div class="oos-grid">
-            <div class="chart-placeholder"><span>🧪</span><p>双线图: 训练集 vs 测试集累计收益曲线</p></div>
+            <div v-if="oosTrainSeries.length > 0 || oosTestSeries.length > 0" ref="oosChartRef" class="chart-box" />
+            <div v-else class="chart-placeholder"><span>🧪</span><p>双线图: 训练集 vs 测试集累计收益曲线</p></div>
             <div class="table-wrapper">
               <table class="cmp-table">
                 <thead><tr><th>指标</th><th>训练集</th><th>测试集</th><th>衰减</th></tr></thead>
@@ -353,7 +356,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
-import { getHoldingPeriod, getSignalQuality, getSlTpMatrix, getCostSensitivity, getOptimizeSuggest, getExitCompare, getVerifyStrategyList, getCustomCompare } from '@/api/verify'
+import { getHoldingPeriod, getSignalQuality, getSlTpMatrix, getCostSensitivity, getOptimizeSuggest, getExitCompare, getVerifyStrategyList, getCustomCompare, getReturnSeries } from '@/api/verify'
 import type { StrategyGroup, StrategyItem } from '@/api/verify'
 import UsageGuide from '@/components/verify/UsageGuide.vue'
 import dayjs from 'dayjs'
@@ -449,6 +452,14 @@ const bestExitStrategy = ref('')
 // 样本外验证
 const oosData = ref<{ train: any; test: any }>({ train: null, test: null })
 const oosWarning = ref('')
+const oosTrainSeries = ref<Array<{ date: string; cumulative: number }>>([])
+const oosTestSeries = ref<Array<{ date: string; cumulative: number }>>([])
+const oosChartRef = ref<HTMLElement>()
+
+// 风险控制图表
+const returnSeries = ref<Array<{ date: string; cumulative: number; drawdown: number; daily_return?: number }>>([])
+const drawdownChartRef = ref<HTMLElement>()
+const costChartRef = ref<HTMLElement>()
 
 // 优化建议
 const suggestions = ref<any[]>([])
@@ -625,6 +636,9 @@ function snapshotAnalysis() {
     suggestions: suggestions.value,
     oosData: oosData.value,
     oosWarning: oosWarning.value,
+    oosTrainSeries: oosTrainSeries.value,
+    oosTestSeries: oosTestSeries.value,
+    returnSeries: returnSeries.value,
     signalBuckets: signalBuckets.value,
     customComparePayload: customComparePayload.value,
   })
@@ -671,6 +685,9 @@ async function restoreAnalysisFromCache(snapshot: any) {
   suggestions.value = snapshot.suggestions || []
   oosData.value = snapshot.oosData || { train: null, test: null }
   oosWarning.value = snapshot.oosWarning || ''
+  oosTrainSeries.value = snapshot.oosTrainSeries || []
+  oosTestSeries.value = snapshot.oosTestSeries || []
+  returnSeries.value = snapshot.returnSeries || []
   signalBuckets.value = snapshot.signalBuckets || []
   customComparePayload.value = snapshot.customComparePayload || null
 
@@ -679,6 +696,9 @@ async function restoreAnalysisFromCache(snapshot: any) {
   renderLossChart()
   if (!isCustomStrategy.value && sltpMatrix.value.length > 0) renderSltpChart(sltpMatrix.value)
   if (!isCustomStrategy.value && signalBuckets.value.length > 0) renderScatterChart()
+  if (returnSeries.value.length > 0) renderDrawdownChart()
+  if (normalizedCostData.value.length > 0) renderCostChart()
+  if (oosTrainSeries.value.length > 0 || oosTestSeries.value.length > 0) renderOosChart()
 }
 
 function fmt(v: number | null | undefined): string {
@@ -828,6 +848,9 @@ async function runAnalysis() {
   suggestions.value = []
   oosData.value = { train: null, test: null }
   oosWarning.value = ''
+  oosTrainSeries.value = []
+  oosTestSeries.value = []
+  returnSeries.value = []
   signalBuckets.value = []
   customComparePayload.value = null
   customTaskMessage.value = ''
@@ -850,12 +873,13 @@ async function runAnalysis() {
 
     // 并行请求
     const holdingDaysParam = normalizedHoldingDays()
-    const [holdingRes, sltpRes, costRes, suggestRes, exitRes] = await Promise.all([
+    const [holdingRes, sltpRes, costRes, suggestRes, exitRes, seriesRes] = await Promise.all([
       getHoldingPeriod({ ...params, holding_days: holdingDaysParam }),
       getSlTpMatrix({ ...params, max_hold_days: 20 }),
       getCostSensitivity({ ...params, holding_days: 5 }),
       getOptimizeSuggest(params),
       getExitCompare({ ...params, holding_days: 5 }),
+      getReturnSeries({ ...params, holding_days: 5 }).catch(() => null),
     ]) as any[]
 
     // 持仓优化
@@ -879,6 +903,12 @@ async function runAnalysis() {
 
     // 建议
     suggestions.value = suggestRes.suggestions || []
+
+    // 风险控制: 回撚与成本敏感性图表
+    returnSeries.value = seriesRes?.series || []
+    await nextTick()
+    if (returnSeries.value.length > 0) renderDrawdownChart()
+    if (normalizedCostData.value.length > 0) renderCostChart()
 
     // 样本外验证
     await computeOOS()
@@ -1018,10 +1048,128 @@ function renderSltpChart(matrix: any[]) {
   })
 }
 
+function renderDrawdownChart() {
+  if (!drawdownChartRef.value || returnSeries.value.length === 0) return
+  const existing = echarts.getInstanceByDom(drawdownChartRef.value)
+  if (existing) existing.dispose()
+  const chart = echarts.init(drawdownChartRef.value)
+  const dates = returnSeries.value.map(s => s.date)
+  const dd = returnSeries.value.map(s => Number(s.drawdown || 0))
+  let maxDD = 0
+  let maxIdx = 0
+  dd.forEach((v, i) => { if (v < maxDD) { maxDD = v; maxIdx = i } })
+  chart.setOption({
+    tooltip: { trigger: 'axis', formatter: (params: any) => {
+      const p = params[0]
+      return `${p.axisValue}<br/>回撤: ${Number(p.data).toFixed(2)}%`
+    } },
+    grid: { left: 56, right: 24, bottom: 36, top: 30 },
+    xAxis: { type: 'category', data: dates, boundaryGap: false, axisLabel: { fontSize: 10 } },
+    yAxis: { type: 'value', name: '回撤%', max: 0, axisLabel: { formatter: '{value}%' } },
+    series: [{
+      name: '回撤',
+      type: 'line',
+      data: dd,
+      symbol: 'none',
+      smooth: true,
+      lineStyle: { color: '#ff4d4f', width: 1.5 },
+      areaStyle: {
+        color: new (echarts as any).graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: 'rgba(255,77,79,0.05)' },
+          { offset: 1, color: 'rgba(255,77,79,0.4)' },
+        ]),
+      },
+      markPoint: dates.length && maxDD < 0 ? {
+        symbol: 'pin',
+        symbolSize: 50,
+        data: [{ name: '最大回撤', coord: [dates[maxIdx], maxDD], value: `${maxDD.toFixed(1)}%` }],
+        itemStyle: { color: '#cf1322' },
+        label: { fontSize: 10 },
+      } : undefined,
+    }],
+  })
+}
+
+function renderCostChart() {
+  if (!costChartRef.value || normalizedCostData.value.length === 0) return
+  const existing = echarts.getInstanceByDom(costChartRef.value)
+  if (existing) existing.dispose()
+  const chart = echarts.init(costChartRef.value)
+  const rows = normalizedCostData.value
+  const xs = rows.map((r: any) => `${Number(r.cost_pct).toFixed(2)}%`)
+  const avgReturn = rows.map((r: any) => Number(r.avg_return ?? 0))
+  const sharpe = rows.map((r: any) => r.sharpe == null ? null : Number(r.sharpe))
+  const currentIdx = rows.findIndex((r: any) => r.is_current)
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['平均收益', '夏普'], top: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 56, right: 56, bottom: 30, top: 36 },
+    xAxis: { type: 'category', data: xs, name: '手续费' },
+    yAxis: [
+      { type: 'value', name: '收益%', axisLabel: { formatter: '{value}%' } },
+      { type: 'value', name: '夏普', position: 'right' },
+    ],
+    series: [
+      {
+        name: '平均收益',
+        type: 'line',
+        data: avgReturn,
+        smooth: true,
+        symbolSize: 8,
+        lineStyle: { color: '#1890ff', width: 2 },
+        itemStyle: { color: '#1890ff' },
+        markPoint: currentIdx >= 0 ? {
+          symbol: 'pin',
+          symbolSize: 44,
+          data: [{ name: '当前费率', coord: [xs[currentIdx], avgReturn[currentIdx]], value: '当前' }],
+          itemStyle: { color: '#52c41a' },
+          label: { fontSize: 10 },
+        } : undefined,
+      },
+      {
+        name: '夏普',
+        type: 'line',
+        yAxisIndex: 1,
+        data: sharpe,
+        smooth: true,
+        symbolSize: 6,
+        lineStyle: { color: '#fa8c16', width: 2, type: 'dashed' },
+        itemStyle: { color: '#fa8c16' },
+      },
+    ],
+  })
+}
+
+function renderOosChart() {
+  if (!oosChartRef.value) return
+  if (oosTrainSeries.value.length === 0 && oosTestSeries.value.length === 0) return
+  const existing = echarts.getInstanceByDom(oosChartRef.value)
+  if (existing) existing.dispose()
+  const chart = echarts.init(oosChartRef.value)
+  const trainData = oosTrainSeries.value.map((s: any) => [s.date, Number(s.cumulative)])
+  const testData = oosTestSeries.value.map((s: any) => [s.date, Number(s.cumulative)])
+  chart.setOption({
+    tooltip: { trigger: 'axis', formatter: (params: any) => {
+      const lines = params.map((p: any) => `${p.marker}${p.seriesName}: ${Number(p.data[1]).toFixed(2)}`)
+      return `${params[0].axisValue}<br/>${lines.join('<br/>')}`
+    } },
+    legend: { data: ['训练集', '测试集'], top: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 56, right: 24, bottom: 36, top: 36 },
+    xAxis: { type: 'time', axisLabel: { fontSize: 10 } },
+    yAxis: { type: 'value', name: '累计收益', axisLabel: { formatter: '{value}' } },
+    series: [
+      { name: '训练集', type: 'line', data: trainData, smooth: true, symbol: 'none', lineStyle: { color: '#1890ff', width: 2 }, itemStyle: { color: '#1890ff' } },
+      { name: '测试集', type: 'line', data: testData, smooth: true, symbol: 'none', lineStyle: { color: '#fa8c16', width: 2 }, itemStyle: { color: '#fa8c16' } },
+    ],
+  })
+}
+
 async function computeOOS() {
   // 前端样本外验证: 基于日期拆分 70/30
   oosData.value = { train: null, test: null }
   oosWarning.value = ''
+  oosTrainSeries.value = []
+  oosTestSeries.value = []
 
   if (!startDate.value || !endDate.value) return
   const start = new Date(startDate.value)
@@ -1039,9 +1187,11 @@ async function computeOOS() {
   // 用两次 API 请求获取训练集和测试集数据
   const params = { strategy: strategy.value, holding_days: '5' }
   try {
-    const [trainRes, testRes] = await Promise.all([
-    getHoldingPeriod({ ...params, start_date: startDate.value, end_date: splitStr }),
-    getHoldingPeriod({ ...params, start_date: splitStr, end_date: endDate.value }),
+    const [trainRes, testRes, trainSeriesRes, testSeriesRes] = await Promise.all([
+      getHoldingPeriod({ ...params, start_date: startDate.value, end_date: splitStr }),
+      getHoldingPeriod({ ...params, start_date: splitStr, end_date: endDate.value }),
+      getReturnSeries({ strategy: strategy.value, start_date: startDate.value, end_date: splitStr, holding_days: 5 }).catch(() => null),
+      getReturnSeries({ strategy: strategy.value, start_date: splitStr, end_date: endDate.value, holding_days: 5 }).catch(() => null),
     ]) as any[]
 
     const trainAnalysis = trainRes.analysis?.[0] || {}
@@ -1049,6 +1199,12 @@ async function computeOOS() {
     oosData.value = {
       train: { ...trainAnalysis, period: `${startDate.value} ~ ${splitStr}`, signal_count: trainRes.total_signals || 0 },
       test: { ...testAnalysis, period: `${splitStr} ~ ${endDate.value}`, signal_count: testRes.total_signals || 0 },
+    }
+    oosTrainSeries.value = trainSeriesRes?.series || []
+    oosTestSeries.value = testSeriesRes?.series || []
+    if (oosTrainSeries.value.length > 0 || oosTestSeries.value.length > 0) {
+      await nextTick()
+      renderOosChart()
     }
 
     // 过拟合检测: 夏普衰减 >30%
