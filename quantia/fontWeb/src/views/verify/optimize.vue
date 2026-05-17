@@ -353,7 +353,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import { getHoldingPeriod, getSignalQuality, getSlTpMatrix, getCostSensitivity, getOptimizeSuggest, getExitCompare, getVerifyStrategyList, getCustomCompare, getReturnSeries } from '@/api/verify'
@@ -942,6 +942,29 @@ onUnmounted(() => {
   if (lossChartRef.value) echarts.dispose(lossChartRef.value)
   if (sltpChartRef.value) echarts.dispose(sltpChartRef.value)
   if (scatterChartRef.value) echarts.dispose(scatterChartRef.value)
+  if (drawdownChartRef.value) echarts.dispose(drawdownChartRef.value)
+  if (costChartRef.value) echarts.dispose(costChartRef.value)
+  if (oosChartRef.value) echarts.dispose(oosChartRef.value)
+})
+
+// el-tabs 默认懒挂载，切到隐藏 tab 时图表 ref 宽度为 0；首次显示时需要重渲
+watch(activeTab, async (tab) => {
+  await nextTick()
+  if (tab === 'risk') {
+    if (returnSeries.value.length > 0) renderDrawdownChart()
+    if (normalizedCostData.value.length > 0) renderCostChart()
+  } else if (tab === 'oos') {
+    if (oosTrainSeries.value.length > 0 || oosTestSeries.value.length > 0) renderOosChart()
+  } else if (tab === 'sltp') {
+    if (sltpMatrix.value.length > 0) renderSltpChart(sltpMatrix.value)
+  } else if (tab === 'signal') {
+    if (signalBuckets.value.length > 0) renderScatterChart()
+  } else if (tab === 'holding') {
+    if (holdingData.value.length > 0) {
+      renderHoldingChart()
+      renderLossChart()
+    }
+  }
 })
 
 function renderScatterChart() {
