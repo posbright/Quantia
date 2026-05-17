@@ -12,11 +12,11 @@ import datetime
 import json
 import logging
 import math
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
-from tornado.ioloop import IOLoop
 
 import quantia.core.tablestructure as tbs
 import quantia.lib.database as mdb
@@ -34,6 +34,7 @@ RATE_FIELDS_COUNT = tbs.RATE_FIELDS_COUNT  # 100
 _BACKTEST_DATA_TABLE = tbs.TABLE_CN_STOCK_BACKTEST_DATA['name']
 _BACKTEST_SUMMARY_TABLE = tbs.TABLE_CN_STOCK_BACKTEST['name']
 _CUSTOM_COMPARE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix='verify-custom')
+_CUSTOM_COMPARE_TASKS = {}
 
 # 策略白名单（表名 → 中文名映射）
 _STRATEGY_MAP = None
@@ -492,12 +493,170 @@ def _load_cached_custom_backtest(strategy_id, start_date, end_date, benchmark):
 
         result = dict(result)
         result['nav'] = nav
+        result['trades'] = [t for t in (result.get('trades', []) or [])
+                            if str(start_date) <= str(t.get('date', '')) <= str(end_date)]
         result['positions'] = [p for p in (result.get('positions', []) or [])
                                if str(start_date) <= str(p.get('date', '')) <= str(end_date)]
         result['_cached_backtest_id'] = bt_id
         return result, f'backtest_portfolio_cache:{bt_id}'
 
     return None, None
+
+
+def _build_custom_compare_payload(strategy_key, strategy_name, start_date, end_date, result, data_source):
+    """把自定义策略回测结果转换为策略对比页统一响应。"""
+    if result.get('status') != 'completed':
+        return {
+            'strategy': strategy_key,
+            'strategy_cn': strategy_name,
+            'period': f'{start_date} ~ {end_date}',
+            'status': 'failed',
+            'total_signals': 0,
+            'analysis': [],
+            'series': [],
+            'benchmark_series': [],
+            'message': result.get('message') or '自定义策略回测失败',
+            'hints': result.get('hints') or [],
+            'data_source': data_source,
+        }
+
+    metrics = result.get('metrics', {}) or {}
+    nav_series = result.get('nav', []) or []
+    trades = result.get('trades', []) or []
+    trade_count = metrics.get('trade_count') or len(trades)
+    analysis, best_holding_days, best_sharpe = _calc_rolling_nav_analysis(
+        nav_series, [5, 10, 20], trade_count=trade_count)
+    series, benchmark_series = _series_from_nav(nav_series, include_benchmark=True)
+
+    return {
+        'strategy': strategy_key,
+        'strategy_cn': strategy_name,
+        'period': f'{start_date} ~ {end_date}',
+        'status': 'completed',
+        'total_signals': trade_count or 0,
+        'analysis': analysis,
+        'best_holding_days': best_holding_days,
+        'best_sharpe': _safe_float(best_sharpe),
+        'series': series,
+        'benchmark_series': benchmark_series,
+        'metrics': metrics,
+        'data_source': data_source,
+    }
+
+
+def _start_custom_compare_task(strategy_key, strategy_id, strategy_name, strategy_code,
+                               start_date, end_date, initial_cash, benchmark,
+                               commission, tax, slippage):
+    """启动自定义策略对比后台任务，避免单个 HTTP 请求等待长回测。"""
+    task_id = str(uuid.uuid4())[:8]
+    _CUSTOM_COMPARE_TASKS[task_id] = {
+        'status': 'running',
+        'strategy': strategy_key,
+        'strategy_cn': strategy_name,
+        'period': f'{start_date} ~ {end_date}',
+        'result': None,
+        'message': '自定义策略回测计算中，请稍候...',
+    }
+
+    def _run():
+        try:
+            from quantia.core.backtest.portfolio_engine import PortfolioBacktestEngine
+            engine = PortfolioBacktestEngine()
+            result = engine.run(
+                strategy_code, str(start_date), str(end_date),
+                initial_cash=initial_cash,
+                benchmark=benchmark,
+                commission=commission,
+                tax=tax,
+                slippage=slippage,
+            )
+            _persist_custom_compare_result(
+                strategy_id, strategy_name, strategy_code,
+                start_date, end_date, initial_cash, benchmark, result)
+            payload = _build_custom_compare_payload(
+                strategy_key, strategy_name, start_date, end_date,
+                result, 'portfolio_engine_live')
+            task = _CUSTOM_COMPARE_TASKS.get(task_id)
+            if task is not None:
+                task['status'] = payload.get('status') or 'completed'
+                task['result'] = payload
+                task['message'] = payload.get('message') or 'done'
+        except Exception as e:
+            logging.error("自定义策略对比后台任务异常: task_id=%s", task_id, exc_info=True)
+            task = _CUSTOM_COMPARE_TASKS.get(task_id)
+            if task is not None:
+                task['status'] = 'failed'
+                task['result'] = {
+                    'strategy': strategy_key,
+                    'strategy_cn': strategy_name,
+                    'period': f'{start_date} ~ {end_date}',
+                    'status': 'failed',
+                    'total_signals': 0,
+                    'analysis': [],
+                    'series': [],
+                    'benchmark_series': [],
+                    'message': str(e),
+                    'data_source': 'portfolio_engine_live',
+                }
+                task['message'] = str(e)
+        finally:
+            try:
+                mdb.close_thread_connection()
+            except Exception:
+                pass
+
+    _CUSTOM_COMPARE_EXECUTOR.submit(_run)
+    return task_id
+
+
+def _persist_custom_compare_result(strategy_id, strategy_name, strategy_code,
+                                   start_date, end_date, initial_cash, benchmark, result):
+    """将后台对比回测结果落库，供下次同区间对比复用。"""
+    if result.get('status') != 'completed':
+        return
+    try:
+        if not mdb.checkTableIsExist('cn_stock_backtest_portfolio'):
+            return
+        m = result.get('metrics', {}) or {}
+        result_to_save = dict(result)
+        result_to_save['strategy_code_snapshot'] = strategy_code
+        now = datetime.datetime.now()
+        mdb.executeSql(
+            'INSERT INTO cn_stock_backtest_portfolio '
+            '(strategy_id, strategy_name, start_date, end_date, initial_cash, benchmark, status, '
+            'started_at, completed_at, total_return, annual_return, max_drawdown, '
+            'sharpe_ratio, alpha, beta, win_rate, trade_count, result_json) '
+            'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+            (strategy_id, strategy_name or None, str(start_date), str(end_date), initial_cash,
+             benchmark or '000300', 'completed', now, now,
+             m.get('total_return'), m.get('annual_return'), m.get('max_drawdown'),
+             m.get('sharpe_ratio'), m.get('alpha'), m.get('beta'),
+             m.get('daily_win_rate'), m.get('trade_count'),
+             json.dumps(result_to_save, ensure_ascii=False, default=str)))
+    except Exception:
+        logging.warning("自定义策略对比结果落库失败（不影响本次响应）", exc_info=True)
+
+
+def _custom_compare_task_payload(task_id):
+    task = _CUSTOM_COMPARE_TASKS.get(task_id)
+    if not task:
+        return {'status': 'failed', 'task_id': task_id, 'message': '对比任务不存在或已过期'}
+    if task.get('status') == 'running':
+        return {
+            'status': 'running',
+            'task_id': task_id,
+            'strategy': task.get('strategy'),
+            'strategy_cn': task.get('strategy_cn'),
+            'period': task.get('period'),
+            'analysis': [],
+            'series': [],
+            'benchmark_series': [],
+            'message': task.get('message'),
+        }
+    result = task.get('result') or {}
+    result = dict(result)
+    result['task_id'] = task_id
+    return result
 
 
 # ── API 1: 持仓天数扫描 ──────────────────────────────────────────────
@@ -625,8 +784,9 @@ class HoldingPeriodAnalysisHandler(webBase.BaseHandler):
 class CustomStrategyCompareHandler(webBase.BaseHandler):
     """GET /quantia/api/verify/custom_compare
 
-    按页面选择的时间区间即时运行自定义组合策略，
+    按页面选择的时间区间运行自定义组合策略，
     再基于回测 NAV 计算 5/10/20 交易日滚动收益统计。
+    命中覆盖区间缓存时同步返回；未命中时启动后台任务并通过 task_id 轮询。
 
     参数: strategy=custom_<id>&start_date=...&end_date=...&benchmark=...
     """
@@ -639,6 +799,11 @@ class CustomStrategyCompareHandler(webBase.BaseHandler):
             _write_error(self, '服务器内部错误', 500)
 
     async def _handle(self):
+        task_id = self.get_argument('task_id', default='', strip=True)
+        if task_id:
+            _write_json(self, _custom_compare_task_payload(task_id))
+            return
+
         strategy_key, strategy_id, start_date, end_date, err = _parse_custom_strategy_args(self)
         if err:
             _write_error(self, err)
@@ -682,62 +847,26 @@ class CustomStrategyCompareHandler(webBase.BaseHandler):
 
         result, data_source = _load_cached_custom_backtest(strategy_id, start_date, end_date, benchmark)
         if result is None:
-            def _run_backtest_for_compare():
-                try:
-                    from quantia.core.backtest.portfolio_engine import PortfolioBacktestEngine
-                    engine = PortfolioBacktestEngine()
-                    return engine.run(
-                        strategy_code, str(start_date), str(end_date),
-                        initial_cash=initial_cash,
-                        benchmark=benchmark,
-                        commission=commission,
-                        tax=tax,
-                        slippage=slippage,
-                    )
-                finally:
-                    try:
-                        mdb.close_thread_connection()
-                    except Exception:
-                        pass
-
-            result = await IOLoop.current().run_in_executor(
-                _CUSTOM_COMPARE_EXECUTOR, _run_backtest_for_compare)
-            data_source = 'portfolio_engine_live'
-
-        if result.get('status') != 'completed':
+            task_id = _start_custom_compare_task(
+                strategy_key, strategy_id, strategy_name or f'策略#{strategy_id}', strategy_code,
+                start_date, end_date, initial_cash, benchmark,
+                commission, tax, slippage)
             _write_json(self, {
                 'strategy': strategy_key,
                 'strategy_cn': strategy_name or f'策略#{strategy_id}',
                 'period': f'{start_date} ~ {end_date}',
-                'total_signals': 0,
+                'status': 'running',
+                'task_id': task_id,
                 'analysis': [],
                 'series': [],
                 'benchmark_series': [],
-                'message': result.get('message') or '自定义策略回测失败',
-                'hints': result.get('hints') or [],
+                'message': '未找到覆盖该区间的已完成回测，已启动后台对比任务',
             })
             return
 
-        metrics = result.get('metrics', {}) or {}
-        nav_series = result.get('nav', []) or []
-        trade_count = metrics.get('trade_count') or len(result.get('trades', []) or [])
-        analysis, best_holding_days, best_sharpe = _calc_rolling_nav_analysis(
-            nav_series, [5, 10, 20], trade_count=trade_count)
-        series, benchmark_series = _series_from_nav(nav_series, include_benchmark=True)
-
-        _write_json(self, {
-            'strategy': strategy_key,
-            'strategy_cn': strategy_name,
-            'period': f'{start_date} ~ {end_date}',
-            'total_signals': trade_count or 0,
-            'analysis': analysis,
-            'best_holding_days': best_holding_days,
-            'best_sharpe': _safe_float(best_sharpe),
-            'series': series,
-            'benchmark_series': benchmark_series,
-            'metrics': metrics,
-            'data_source': data_source,
-        })
+        payload = _build_custom_compare_payload(
+            strategy_key, strategy_name, start_date, end_date, result, data_source)
+        _write_json(self, payload)
 
 
 class CustomStrategyReturnSeriesHandler(webBase.BaseHandler):

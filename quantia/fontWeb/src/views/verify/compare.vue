@@ -328,6 +328,8 @@ const radarChartRef = ref<HTMLElement>()
 const navChartRef = ref<HTMLElement>()
 
 const strategyColors = ['#1890ff', '#d46b08', '#389e0d', '#722ed1', '#cf1322', '#13c2c2']
+const CUSTOM_COMPARE_POLL_INTERVAL = 3000
+const CUSTOM_COMPARE_MAX_POLLS = 240
 
 const periodPresets = [
   { label: '近1月', months: 1 },
@@ -480,6 +482,29 @@ function getStrategyType(key: string): 'signal' | 'backtest' {
   return 'signal'
 }
 
+function sleep(ms: number) {
+  return new Promise(resolve => window.setTimeout(resolve, ms))
+}
+
+async function getCustomCompareWithPolling(params: { strategy: string; start_date: string; end_date: string; benchmark: string }) {
+  let res: any = await getCustomCompare(params)
+  if (res?.status !== 'running' || !res?.task_id) return res
+
+  const strategyName = res.strategy_cn || getStrategyCn(params.strategy)
+  ElMessage.info(`${strategyName} 正在后台回测，完成后自动刷新对比结果`)
+
+  for (let i = 0; i < CUSTOM_COMPARE_MAX_POLLS; i++) {
+    await sleep(CUSTOM_COMPARE_POLL_INTERVAL)
+    res = await getCustomCompare({ ...params, task_id: res.task_id })
+    if (res?.status === 'running') continue
+    if (res?.status === 'failed') {
+      throw new Error(res.message || `${strategyName} 回测失败`)
+    }
+    return res
+  }
+  throw new Error(`${strategyName} 回测仍在运行，请稍后重新点击开始对比`)
+}
+
 // ── 主请求 ──────────────────────────────────────────────
 async function runCompare() {
   if (selectedStrategies.value.length < 2) {
@@ -504,7 +529,7 @@ async function runCompare() {
     // 1) 并行请求各策略的 5/10/20 日数据（按类型走不同 API）
     const promises = selectedStrategies.value.map(s => {
       if (getStrategyType(s) === 'backtest') {
-        return getCustomCompare({ strategy: s, start_date: startDate, end_date: endDate, benchmark: benchmarkIndex.value })
+        return getCustomCompareWithPolling({ strategy: s, start_date: startDate, end_date: endDate, benchmark: benchmarkIndex.value })
       }
       return getHoldingPeriod({ strategy: s, start_date: startDate, end_date: endDate, holding_days: '5,10,20' })
     })
