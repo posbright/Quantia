@@ -318,10 +318,13 @@
         <div class="card ai-panel">
           <div class="card-h">
             AI 助手
-            <el-select v-model="aiModel" size="small" style="width: 120px; margin-left: auto" placeholder="模型">
-              <el-option label="GPT-4o" value="gpt4o" />
+            <el-select v-model="aiModel" size="small" style="width: 140px; margin-left: auto" placeholder="使用默认" clearable>
+              <el-option label="默认 (依 后端配置)" value="" />
+              <el-option label="通义千问 Qwen" value="qwen" />
+              <el-option label="OpenAI GPT-4o" value="openai" />
               <el-option label="DeepSeek" value="deepseek" />
-              <el-option label="Qwen-Max" value="qwen" />
+              <el-option label="Kimi (Moonshot)" value="kimi" />
+              <el-option label="OpenRouter" value="openrouter" />
             </el-select>
           </div>
           <div class="card-b ai-body">
@@ -638,7 +641,7 @@ function addLog(text: string, type: LogEntry['type'] = 'mod') {
 }
 
 // AI 助手
-const aiModel = ref('gpt4o')
+const aiModel = ref('')
 const aiInput = ref('')
 const aiSuggestion = ref('')
 const aiLoading = ref(false)
@@ -662,19 +665,15 @@ async function askAi() {
 
   const prompt = `你是一位量化因子策略顾问。请基于以下因子组合给出简洁、可执行的优化建议（不超过 200 字），包括因子权重调整、新增因子或剔除因子的具体建议。\n\n当前因子组合：\n${factorsDesc}\n${kpiDesc}\n\n用户问题：${userInput || '请给出整体优化建议'}`
 
-  // aiModel 映射到具体 model 名（与后端 AI provider 配置兼容）
-  const modelMap: Record<string, string> = {
-    gpt4o: 'gpt-4o',
-    deepseek: 'deepseek-chat',
-    qwen: 'qwen-max',
-  }
-  const modelOverride = modelMap[aiModel.value]
+  // aiModel 下拉对应 provider 名，后端会从 QUANTIA_AI_PROVIDER_<NAME>_*
+  // 加载对应 api_base / api_key / default_model；空值代表使用后端默认 provider
+  const providerOverride = aiModel.value || undefined
 
   try {
     const res = await aiChat({
       prompt,
       scene: 'factor_lab',
-      ...(modelOverride ? { model: modelOverride } : {}),
+      ...(providerOverride ? { provider: providerOverride } : {}),
     })
     const content = (res as any)?.data?.content || ''
     if (!content) {

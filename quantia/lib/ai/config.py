@@ -166,6 +166,17 @@ def load_config(overrides: Optional[Dict[str, Any]] = None) -> AIConfig:
         for k in ('api_base', 'api_key', 'model'):
             if k in ns and (overrides.get(k) in (None, '')):
                 merged[k] = ns[k]
+    # 修复：当 provider 来自 env 默认 (QUANTIA_AI_DEFAULT_PROVIDER) 或 db 时，
+    # 若同名 namespaced 配置 (QUANTIA_AI_PROVIDER_<NAME>_*) 存在，则 namespace
+    # 优先于顶层 QUANTIA_AI_API_BASE/_API_KEY/_MODEL（后者通常是另一个 provider
+    # 的 fallback，例如默认 OpenAI key），避免错配导致 401。
+    # 仅当 overrides 未显式指定 provider/api_base/api_key/model 时生效。
+    elif merged.get('provider'):
+        ns = _load_namespaced_provider(str(merged['provider']))
+        if ns:
+            for k in ('api_base', 'api_key', 'model'):
+                if k in ns and not (overrides and overrides.get(k)):
+                    merged[k] = ns[k]
     valid_keys = {'provider', 'api_base', 'api_key', 'model',
                   'temperature', 'max_tokens', 'timeout', 'extra'}
     extra = {k: v for k, v in merged.items() if k not in valid_keys}
