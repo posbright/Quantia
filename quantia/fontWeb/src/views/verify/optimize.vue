@@ -1,5 +1,12 @@
 <template>
   <div class="verify-optimize">
+    <div class="feature-tabs">
+      <router-link class="feature-tab" to="/verify/compare">策略对比</router-link>
+      <router-link class="feature-tab active" to="/verify/optimize">买卖点优化</router-link>
+      <router-link class="feature-tab" to="/verify/fusion">策略融合</router-link>
+      <router-link class="feature-tab" to="/verify/factor-lab">因子实验室</router-link>
+    </div>
+
     <!-- 使用说明 -->
     <UsageGuide
       title="📖 买卖点优化 使用说明（点击展开）"
@@ -89,10 +96,12 @@
                   <th><el-tooltip content="该持仓周期下所有信号的平均涨跌幅" placement="top"><span class="th-tip">平均收益% <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th><el-tooltip content="收益排序后的中间值，比均值更抗极端值干扰" placement="top"><span class="th-tip">中位数% <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th><el-tooltip content="盈利信号数/总信号数×100%" placement="top"><span class="th-tip">胜率% <i class="tip-icon">?</i></span></el-tooltip></th>
-                  <th><el-tooltip content="(收益-无风险利率)/波动率。越高越好，>1良好" placement="top"><span class="th-tip">夏普 <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th class="sort-th"><el-tooltip content="(收益-无风险利率)/波动率。越高越好，>1良好" placement="top"><span class="th-tip">夏普 ▼ <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th><el-tooltip content="只计算下行波动的风险调整指标，对亏损更敏感" placement="top"><span class="th-tip">Sortino <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th><el-tooltip content="平均盈利/平均亏损，衡量赔率" placement="top"><span class="th-tip">盈亏比 <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th><el-tooltip content="收益的标准差。<15%为低波动策略" placement="top"><span class="th-tip">波动率% <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th><el-tooltip content="箱线图: 红线=中位数, 蓝框=P25~P75, 须线=P10~P90, 虚线=零轴" placement="top"><span class="th-tip">分布 <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th>结论</th>
                 </tr>
               </thead>
               <tbody>
@@ -101,8 +110,9 @@
                   <td :class="rateClass(item.avg_return)">{{ fmt(item.avg_return) }}</td>
                   <td :class="rateClass(item.median_return)">{{ fmt(item.median_return) }}</td>
                   <td>{{ fmt(item.win_rate) }}</td>
-                  <td :class="sharpeClass(item.sharpe_approx)">{{ fmt(item.sharpe_approx) }}</td>
+                  <td class="sort-cell" :class="sharpeClass(item.sharpe_approx)">{{ fmt(item.sharpe_approx) }}<span v-if="item.holding_days === bestHoldingDays" class="star">★</span></td>
                   <td>{{ fmt(item.sortino_approx) }}</td>
+                  <td>{{ fmt(item.profit_loss_ratio) }}</td>
                   <td>{{ fmt(item.return_std) }}</td>
                   <td style="min-width: 120px">
                     <svg width="110" height="24" viewBox="0 0 110 24">
