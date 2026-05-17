@@ -9,6 +9,7 @@
 """
 
 import datetime
+import hashlib
 import json
 import logging
 import math
@@ -35,6 +36,7 @@ _BACKTEST_DATA_TABLE = tbs.TABLE_CN_STOCK_BACKTEST_DATA['name']
 _BACKTEST_SUMMARY_TABLE = tbs.TABLE_CN_STOCK_BACKTEST['name']
 _CUSTOM_COMPARE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix='verify-custom')
 _CUSTOM_COMPARE_TASKS = {}
+_CUSTOM_COMPARE_TASK_KEYS = {}
 
 # 策略白名单（表名 → 中文名映射）
 _STRATEGY_MAP = None
@@ -544,9 +546,34 @@ def _build_custom_compare_payload(strategy_key, strategy_name, start_date, end_d
     }
 
 
+def _custom_compare_task_key(strategy_id, strategy_code, start_date, end_date, initial_cash,
+                             benchmark, commission, tax, slippage):
+    code_hash = hashlib.sha256((strategy_code or '').encode('utf-8')).hexdigest()
+    return (
+        int(strategy_id), code_hash, str(start_date), str(end_date),
+        round(float(initial_cash or 0), 2), str(benchmark or '000300'),
+        round(float(commission or 0), 8), round(float(tax or 0), 8),
+        round(float(slippage or 0), 8),
+    )
+
+
+def _find_reusable_custom_compare_task(cache_key):
+    task_id = _CUSTOM_COMPARE_TASK_KEYS.get(cache_key)
+    if not task_id:
+        return None
+    task = _CUSTOM_COMPARE_TASKS.get(task_id)
+    if not task:
+        _CUSTOM_COMPARE_TASK_KEYS.pop(cache_key, None)
+        return None
+    if task.get('status') == 'failed':
+        _CUSTOM_COMPARE_TASK_KEYS.pop(cache_key, None)
+        return None
+    return task_id
+
+
 def _start_custom_compare_task(strategy_key, strategy_id, strategy_name, strategy_code,
                                start_date, end_date, initial_cash, benchmark,
-                               commission, tax, slippage):
+                               commission, tax, slippage, cache_key=None):
     """启动自定义策略对比后台任务，避免单个 HTTP 请求等待长回测。"""
     task_id = str(uuid.uuid4())[:8]
     _CUSTOM_COMPARE_TASKS[task_id] = {
@@ -554,9 +581,12 @@ def _start_custom_compare_task(strategy_key, strategy_id, strategy_name, strateg
         'strategy': strategy_key,
         'strategy_cn': strategy_name,
         'period': f'{start_date} ~ {end_date}',
+        'cache_key': cache_key,
         'result': None,
         'message': '自定义策略回测计算中，请稍候...',
     }
+    if cache_key is not None:
+        _CUSTOM_COMPARE_TASK_KEYS[cache_key] = task_id
 
     def _run():
         try:
@@ -599,6 +629,8 @@ def _start_custom_compare_task(strategy_key, strategy_id, strategy_name, strateg
                     'data_source': 'portfolio_engine_live',
                 }
                 task['message'] = str(e)
+            if cache_key is not None:
+                _CUSTOM_COMPARE_TASK_KEYS.pop(cache_key, None)
         finally:
             try:
                 mdb.close_thread_connection()
@@ -847,16 +879,28 @@ class CustomStrategyCompareHandler(webBase.BaseHandler):
 
         result, data_source = _load_cached_custom_backtest(strategy_id, start_date, end_date, benchmark)
         if result is None:
+            cache_key = _custom_compare_task_key(
+                strategy_id, strategy_code, start_date, end_date,
+                initial_cash, benchmark, commission, tax, slippage)
+            reusable_task_id = _find_reusable_custom_compare_task(cache_key)
+            if reusable_task_id:
+                payload = _custom_compare_task_payload(reusable_task_id)
+                payload['cache_hit'] = True
+                payload['message'] = payload.get('message') or '已复用同参数分析任务'
+                _write_json(self, payload)
+                return
+
             task_id = _start_custom_compare_task(
                 strategy_key, strategy_id, strategy_name or f'策略#{strategy_id}', strategy_code,
                 start_date, end_date, initial_cash, benchmark,
-                commission, tax, slippage)
+                commission, tax, slippage, cache_key=cache_key)
             _write_json(self, {
                 'strategy': strategy_key,
                 'strategy_cn': strategy_name or f'策略#{strategy_id}',
                 'period': f'{start_date} ~ {end_date}',
                 'status': 'running',
                 'task_id': task_id,
+                'cache_hit': False,
                 'analysis': [],
                 'series': [],
                 'benchmark_series': [],

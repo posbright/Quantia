@@ -42,6 +42,12 @@
           <el-date-picker v-model="endDate" type="date" placeholder="结束日期" value-format="YYYY-MM-DD" style="width: 138px" @change="activePeriod = ''" />
         </div>
       </div>
+      <div class="toolbar-group">
+        <el-tooltip content="按逗号分隔的持仓交易日数列表，例如 3,5,10,20。范围 1-100，最多 30 个。" placement="top">
+          <span class="toolbar-label">持仓天数 <i class="tip-icon">?</i></span>
+        </el-tooltip>
+        <el-input v-model="holdingDaysInput" placeholder="如 1,3,5,7,10,15,20,30,60" style="width: 220px" clearable />
+      </div>
       <el-button class="analyze-btn" type="primary" :loading="loading" @click="runAnalysis">
         分析
       </el-button>
@@ -92,28 +98,28 @@
             <table class="cmp-table">
               <thead>
                 <tr>
-                  <th>持仓天数</th>
-                  <th><el-tooltip content="该持仓周期下所有信号的平均涨跌幅" placement="top"><span class="th-tip">平均收益% <i class="tip-icon">?</i></span></el-tooltip></th>
-                  <th><el-tooltip content="收益排序后的中间值，比均值更抗极端值干扰" placement="top"><span class="th-tip">中位数% <i class="tip-icon">?</i></span></el-tooltip></th>
-                  <th><el-tooltip content="盈利信号数/总信号数×100%" placement="top"><span class="th-tip">胜率% <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th>持仓</th>
+                  <th><el-tooltip content="该持仓周期下所有信号的平均涨跌幅" placement="top"><span class="th-tip">平均收益 <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th><el-tooltip content="收益排序后的中间值，比均值更抗极端值干扰" placement="top"><span class="th-tip">中位数 <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th><el-tooltip content="盈利信号数/总信号数×100%" placement="top"><span class="th-tip">胜率 <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th><el-tooltip content="收益的标准差。<15%为低波动策略" placement="top"><span class="th-tip">波动率 <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th class="sort-th"><el-tooltip content="(收益-无风险利率)/波动率。越高越好，>1良好" placement="top"><span class="th-tip">夏普 ▼ <i class="tip-icon">?</i></span></el-tooltip></th>
-                  <th><el-tooltip content="只计算下行波动的风险调整指标，对亏损更敏感" placement="top"><span class="th-tip">Sortino <i class="tip-icon">?</i></span></el-tooltip></th>
+                  <th><el-tooltip content="只计算下行波动的风险调整指标，对亏损更敏感" placement="top"><span class="th-tip">索提诺 <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th><el-tooltip content="平均盈利/平均亏损，衡量赔率" placement="top"><span class="th-tip">盈亏比 <i class="tip-icon">?</i></span></el-tooltip></th>
-                  <th><el-tooltip content="收益的标准差。<15%为低波动策略" placement="top"><span class="th-tip">波动率% <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th><el-tooltip content="箱线图: 红线=中位数, 蓝框=P25~P75, 须线=P10~P90, 虚线=零轴" placement="top"><span class="th-tip">分布 <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th>结论</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="item in holdingData" :key="item.holding_days" :class="{ 'best-row': item.holding_days === bestHoldingDays }">
-                  <td><strong>{{ item.holding_days }}天</strong></td>
-                  <td :class="rateClass(item.avg_return)">{{ fmt(item.avg_return) }}</td>
-                  <td :class="rateClass(item.median_return)">{{ fmt(item.median_return) }}</td>
-                  <td>{{ fmt(item.win_rate) }}</td>
+                  <td><strong>{{ item.holding_days }}日</strong></td>
+                  <td :class="rateClass(item.avg_return)">{{ fmtPct(item.avg_return) }}</td>
+                  <td :class="rateClass(item.median_return)">{{ fmtPct(item.median_return) }}</td>
+                  <td>{{ fmtPct(item.win_rate) }}</td>
+                  <td>{{ fmtPct(item.return_std) }}</td>
                   <td class="sort-cell" :class="sharpeClass(item.sharpe_approx)">{{ fmt(item.sharpe_approx) }}<span v-if="item.holding_days === bestHoldingDays" class="star">★</span></td>
                   <td>{{ fmt(item.sortino_approx) }}</td>
                   <td>{{ fmt(item.profit_loss_ratio) }}</td>
-                  <td>{{ fmt(item.return_std) }}</td>
                   <td style="min-width: 120px">
                     <svg width="110" height="24" viewBox="0 0 110 24">
                       <!-- whiskers P10 to P90 -->
@@ -137,11 +143,11 @@
           </div>
           <div class="chart-grid">
             <div class="result-card">
-              <div class="card-head"><h3>持仓天数 vs 夏普比率</h3></div>
+              <div class="card-head"><h3>持仓期 vs 夏普比率</h3></div>
               <div ref="holdingChartRef" class="chart-box" />
             </div>
             <div class="result-card">
-              <div class="card-head"><h3>持仓天数 vs 最大单笔亏损</h3></div>
+              <div class="card-head"><h3>持仓期 vs 最大单笔亏损</h3></div>
               <div ref="lossChartRef" class="chart-box" />
             </div>
           </div>
@@ -405,6 +411,26 @@ const signalIndicator = ref('rsi_6')
 const signalBuckets = ref<any[]>([])
 const scatterChartRef = ref<HTMLElement>()
 const indicatorOptions = ['rsi_6', 'rsi_12', 'macd', 'macds', 'kdjk', 'kdjd', 'cci', 'atr', 'cr']
+const DEFAULT_HOLDING_DAYS = '1,3,5,7,10,15,20,30,60'
+const holdingDaysInput = ref(DEFAULT_HOLDING_DAYS)
+
+function normalizedHoldingDays(): string {
+  const raw = (holdingDaysInput.value || '').trim()
+  if (!raw) return DEFAULT_HOLDING_DAYS
+  const parts = raw
+    .split(/[\s,，;；]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+  const ints: number[] = []
+  for (const p of parts) {
+    const n = Number(p)
+    if (!Number.isFinite(n)) continue
+    const v = Math.floor(n)
+    if (v >= 1 && v <= 100 && !ints.includes(v)) ints.push(v)
+  }
+  ints.sort((a, b) => a - b)
+  return ints.length ? ints.slice(0, 30).join(',') : DEFAULT_HOLDING_DAYS
+}
 
 // 止盈止损
 const sltpChartRef = ref<HTMLElement>()
@@ -427,6 +453,10 @@ const oosWarning = ref('')
 // 优化建议
 const suggestions = ref<any[]>([])
 const customComparePayload = ref<any>(null)
+
+const ANALYSIS_CACHE_PREFIX = 'verify-optimize-analysis:'
+const ANALYSIS_CACHE_TTL = 30 * 60 * 1000
+const analysisMemoryCache = new Map<string, any>()
 
 const periodPresets = [
   { label: '近1月', months: 1 },
@@ -573,9 +603,93 @@ function normalizeDateRange() {
   return true
 }
 
+function analysisCacheKey() {
+  return `${strategy.value}|${startDate.value}|${endDate.value}|${isCustomStrategy.value ? 'custom' : 'signal'}|${signalIndicator.value}|hd:${normalizedHoldingDays()}`
+}
+
+function cloneData<T>(data: T): T {
+  return JSON.parse(JSON.stringify(data))
+}
+
+function snapshotAnalysis() {
+  return cloneData({
+    savedAt: Date.now(),
+    holdingData: holdingData.value,
+    totalSignals: totalSignals.value,
+    bestHoldingDays: bestHoldingDays.value,
+    sltpBest: sltpBest.value,
+    sltpMatrix: sltpMatrix.value,
+    costData: costData.value,
+    exitData: exitData.value,
+    bestExitStrategy: bestExitStrategy.value,
+    suggestions: suggestions.value,
+    oosData: oosData.value,
+    oosWarning: oosWarning.value,
+    signalBuckets: signalBuckets.value,
+    customComparePayload: customComparePayload.value,
+  })
+}
+
+function getCachedAnalysis(key: string) {
+  const cached = analysisMemoryCache.get(key)
+  if (cached && Date.now() - cached.savedAt < ANALYSIS_CACHE_TTL) return cloneData(cached)
+
+  try {
+    const raw = sessionStorage.getItem(`${ANALYSIS_CACHE_PREFIX}${key}`)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed?.savedAt || Date.now() - parsed.savedAt > ANALYSIS_CACHE_TTL) {
+      sessionStorage.removeItem(`${ANALYSIS_CACHE_PREFIX}${key}`)
+      return null
+    }
+    analysisMemoryCache.set(key, parsed)
+    return cloneData(parsed)
+  } catch {
+    return null
+  }
+}
+
+function setCachedAnalysis(key: string) {
+  const snapshot = snapshotAnalysis()
+  analysisMemoryCache.set(key, snapshot)
+  try {
+    sessionStorage.setItem(`${ANALYSIS_CACHE_PREFIX}${key}`, JSON.stringify(snapshot))
+  } catch {
+    // sessionStorage quota errors should not block analysis results.
+  }
+}
+
+async function restoreAnalysisFromCache(snapshot: any) {
+  holdingData.value = snapshot.holdingData || []
+  totalSignals.value = snapshot.totalSignals || 0
+  bestHoldingDays.value = snapshot.bestHoldingDays ?? null
+  sltpBest.value = snapshot.sltpBest || null
+  sltpMatrix.value = snapshot.sltpMatrix || []
+  costData.value = snapshot.costData || []
+  exitData.value = snapshot.exitData || []
+  bestExitStrategy.value = snapshot.bestExitStrategy || ''
+  suggestions.value = snapshot.suggestions || []
+  oosData.value = snapshot.oosData || { train: null, test: null }
+  oosWarning.value = snapshot.oosWarning || ''
+  signalBuckets.value = snapshot.signalBuckets || []
+  customComparePayload.value = snapshot.customComparePayload || null
+
+  await nextTick()
+  renderHoldingChart()
+  renderLossChart()
+  if (!isCustomStrategy.value && sltpMatrix.value.length > 0) renderSltpChart(sltpMatrix.value)
+  if (!isCustomStrategy.value && signalBuckets.value.length > 0) renderScatterChart()
+}
+
 function fmt(v: number | null | undefined): string {
   if (v === null || v === undefined) return '--'
   return Number(v).toFixed(2)
+}
+function fmtPct(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '--'
+  const n = Number(v)
+  const sign = n > 0 ? '+' : ''
+  return `${sign}${n.toFixed(2)}%`
 }
 function rateClass(v: number | null): string {
   if (v === null || v === undefined) return ''
@@ -687,6 +801,20 @@ async function runAnalysis() {
   if (!strategy.value) { ElMessage.warning('请选择策略'); return }
   if (!normalizeDateRange()) { ElMessage.warning('请选择日期范围'); return }
 
+  const cacheKey = analysisCacheKey()
+  const cached = getCachedAnalysis(cacheKey)
+  if (cached) {
+    loading.value = true
+    hasQueried.value = true
+    try {
+      await restoreAnalysisFromCache(cached)
+      ElMessage.success('已使用缓存结果')
+      return
+    } finally {
+      loading.value = false
+    }
+  }
+
   loading.value = true
   hasQueried.value = true
   // 重置所有状态避免显示旧数据
@@ -715,13 +843,15 @@ async function runAnalysis() {
       await nextTick()
       renderHoldingChart()
       renderLossChart()
+      setCachedAnalysis(cacheKey)
       ElMessage.success('自定义策略分析完成')
       return
     }
 
     // 并行请求
+    const holdingDaysParam = normalizedHoldingDays()
     const [holdingRes, sltpRes, costRes, suggestRes, exitRes] = await Promise.all([
-      getHoldingPeriod({ ...params, holding_days: '1,3,5,7,10,15,20,30,60' }),
+      getHoldingPeriod({ ...params, holding_days: holdingDaysParam }),
       getSlTpMatrix({ ...params, max_hold_days: 20 }),
       getCostSensitivity({ ...params, holding_days: 5 }),
       getOptimizeSuggest(params),
@@ -751,10 +881,11 @@ async function runAnalysis() {
     suggestions.value = suggestRes.suggestions || []
 
     // 样本外验证
-    computeOOS()
+    await computeOOS()
 
     // 信号诊断
     await loadSignalQuality()
+    setCachedAnalysis(cacheKey)
   } catch (e: any) {
     ElMessage.error(e.message || '请求失败')
   } finally {
@@ -887,7 +1018,7 @@ function renderSltpChart(matrix: any[]) {
   })
 }
 
-function computeOOS() {
+async function computeOOS() {
   // 前端样本外验证: 基于日期拆分 70/30
   oosData.value = { train: null, test: null }
   oosWarning.value = ''
@@ -907,10 +1038,12 @@ function computeOOS() {
 
   // 用两次 API 请求获取训练集和测试集数据
   const params = { strategy: strategy.value, holding_days: '5' }
-  Promise.all([
+  try {
+    const [trainRes, testRes] = await Promise.all([
     getHoldingPeriod({ ...params, start_date: startDate.value, end_date: splitStr }),
     getHoldingPeriod({ ...params, start_date: splitStr, end_date: endDate.value }),
-  ]).then(([trainRes, testRes]: any[]) => {
+    ]) as any[]
+
     const trainAnalysis = trainRes.analysis?.[0] || {}
     const testAnalysis = testRes.analysis?.[0] || {}
     oosData.value = {
@@ -927,7 +1060,7 @@ function computeOOS() {
         oosWarning.value = `⚠️ 过拟合风险: 夏普从训练集 ${trainSharpe.toFixed(2)} 降至测试集 ${testSharpe.toFixed(2)}（衰减 ${decay.toFixed(0)}%）`
       }
     }
-  }).catch(() => { /* ignore */ })
+  } catch { /* ignore */ }
 }
 </script>
 
