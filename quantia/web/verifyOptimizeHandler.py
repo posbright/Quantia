@@ -28,6 +28,7 @@ import pandas as pd
 
 import quantia.core.tablestructure as tbs
 import quantia.core.stockfetch as stf
+import quantia.core.indicator.calculate_indicator as idr
 import quantia.lib.database as mdb
 import quantia.lib.envconfig as _envcfg
 import quantia.web.base as webBase
@@ -1270,12 +1271,131 @@ class CustomStrategyReturnSeriesHandler(webBase.BaseHandler):
 # ── API 2: 信号质量诊断 ──────────────────────────────────────────────
 
 # 可用于诊断的指标白名单
+# 注：仅保留 calculate_indicator.get_indicators 实际产出的列 + hist 原生 close/volume。
+# turnover/amount 等需要 cn_stock_hist_data 维度的字段被有意排除，避免兜底路径静默 0 结果。
 _SIGNAL_QUALITY_INDICATORS = {
     'rsi_6', 'rsi_12', 'kdjk', 'kdjd', 'kdjj',
     'macd', 'macds', 'macdh',
     'cr', 'cci', 'atr',
-    'close', 'volume', 'turnover',
+    'close', 'volume',
 }
+
+
+def _signal_quality_cache_path(strategy_table, indicator, holding_days, start_date, end_date) -> str:
+    if not os.path.exists(_SIGNAL_CACHE_DIR):
+        try:
+            os.makedirs(_SIGNAL_CACHE_DIR, exist_ok=True)
+        except Exception:
+            pass
+    safe_ind = str(indicator).replace('/', '_').replace('\\', '_')
+    return os.path.join(
+        _SIGNAL_CACHE_DIR,
+        f"quality_{strategy_table}_{safe_ind}_hd{int(holding_days)}_{start_date}_{end_date}.gzip.pickle",
+    )
+
+
+def _build_signal_quality_fallback(strategy_table, indicator, holding_days, start_date, end_date):
+    """信号诊断兜底：当 cn_stock_indicators JOIN 无数据时，
+    走 K 线缓存：先用 _load_backtest_data 取该 rate_N 的信号集（自带 K 线回退），
+    再为每个涉及的股票单次 get_indicators，按 (date, code) 查出指标值。
+
+    结果写盘到 cache/signal/quality_<table>_<ind>_hd<N>_<start>_<end>.gzip.pickle，
+    后续命中直接读盘（同 _compute_signals_from_kline_cache 的策略）。
+
+    Returns: DataFrame[date, code, rate, ind_val] 或 None。
+    """
+    # 1) 命中文件缓存
+    cache_path = _signal_quality_cache_path(strategy_table, indicator, holding_days, start_date, end_date)
+    if os.path.exists(cache_path):
+        try:
+            cached = pd.read_pickle(cache_path, compression='gzip')
+            if cached is not None and not cached.empty:
+                logging.info(
+                    f"[signal-quality] 命中缓存 {cache_path}: {len(cached)} rows"
+                )
+                return cached
+        except Exception as exc:
+            logging.warning(f"[signal-quality] 读缓存失败 {cache_path}: {exc}")
+
+    rate_col = f'rate_{holding_days}'
+    base = _load_backtest_data(strategy_table, start_date, end_date, [rate_col])
+    if base is None or base.empty:
+        return None
+    if rate_col not in base.columns:
+        return None
+
+    base = base[['date', 'code', rate_col]].rename(columns={rate_col: 'rate'})
+    base = base.dropna(subset=['rate'])
+    if base.empty:
+        return None
+
+    # 统一为 Timestamp 便于查找
+    base['date'] = pd.to_datetime(base['date'])
+
+    # 计算 K 线读取范围：往前留 _FALLBACK_HIST_BUFFER_DAYS 给指标窗口
+    earliest = base['date'].min()
+    latest = base['date'].max()
+    ext_start = (earliest - datetime.timedelta(days=_FALLBACK_HIST_BUFFER_DAYS)).strftime('%Y%m%d')
+    ext_end = (latest + datetime.timedelta(days=5)).strftime('%Y%m%d')
+
+    results = []
+    skipped_read = 0
+    skipped_calc = 0
+    for code, grp in base.groupby('code'):
+        try:
+            hist = stf.read_stock_hist_from_cache(code, ext_start, ext_end)
+        except Exception as exc:
+            skipped_read += 1
+            logging.debug(f"[signal-quality] read_hist 失败 code={code}: {exc}")
+            continue
+        if hist is None or hist.empty:
+            continue
+        try:
+            ind_df = idr.get_indicators(hist, end_date=latest, threshold=120)
+        except Exception as exc:
+            skipped_calc += 1
+            logging.debug(f"[signal-quality] get_indicators 失败 code={code}: {exc}")
+            continue
+        if ind_df is None or ind_df.empty or indicator not in ind_df.columns:
+            continue
+        if not pd.api.types.is_datetime64_any_dtype(ind_df['date']):
+            ind_df = ind_df.copy()
+            ind_df['date'] = pd.to_datetime(ind_df['date'])
+        # 去重保护：缓存极少数情况下可能存在同一日期重复行
+        ind_df = ind_df.drop_duplicates(subset=['date'], keep='last')
+        # 向量化合并替代 iterrows，性能与正确性更稳
+        ind_lookup = ind_df[['date', indicator]].rename(columns={indicator: 'ind_val'})
+        merged = grp.merge(ind_lookup, on='date', how='left')
+        merged = merged.dropna(subset=['ind_val'])
+        # 过滤 inf
+        merged = merged[~merged['ind_val'].isin([float('inf'), float('-inf')])]
+        if merged.empty:
+            continue
+        merged['date_str'] = merged['date'].dt.strftime('%Y-%m-%d')
+        for _, row in merged.iterrows():
+            results.append({
+                'date': row['date_str'],
+                'code': code,
+                'rate': float(row['rate']),
+                'ind_val': float(row['ind_val']),
+            })
+
+    if skipped_read or skipped_calc:
+        logging.info(
+            f"[signal-quality] 兜底跳过：read={skipped_read} calc={skipped_calc}"
+        )
+
+    if not results:
+        return None
+    out = pd.DataFrame(results)
+    # 2) 写文件缓存（失败不影响主流程）
+    try:
+        out.to_pickle(cache_path, compression='gzip')
+        logging.info(f"[signal-quality] 写缓存 {cache_path}: {len(out)} rows")
+    except Exception as exc:
+        logging.warning(f"[signal-quality] 写缓存失败 {cache_path}: {exc}")
+    return out
+
 
 class SignalQualityHandler(webBase.BaseHandler):
     """GET /quantia/api/verify/signal_quality
@@ -1313,32 +1433,37 @@ class SignalQualityHandler(webBase.BaseHandler):
         # 加载策略回测数据 (仅需 rate_N)
         rate_col = f'rate_{holding_days}'
         strategy_table = meta['table']
-        if not mdb.checkTableIsExist(strategy_table):
-            _write_error(self, f"策略表 {strategy_table} 不存在")
-            return
 
+        df = None
         indicators_table = tbs.TABLE_CN_STOCK_INDICATORS['name']
-        if not mdb.checkTableIsExist(indicators_table):
-            _write_error(self, f"指标表 {indicators_table} 不存在")
-            return
+        # 仅当两表都存在时尝试 JOIN；否则直接走 K 线兜底
+        if mdb.checkTableIsExist(strategy_table) and mdb.checkTableIsExist(indicators_table):
+            sql = f"""
+                SELECT s.`date`, s.`code`, s.`{rate_col}` AS rate,
+                       i.`{indicator}` AS ind_val
+                FROM `{strategy_table}` s
+                INNER JOIN `{indicators_table}` i
+                    ON s.`date` = i.`date` AND s.`code` = i.`code`
+                WHERE s.`date` >= %s AND s.`date` <= %s
+                  AND s.`{rate_col}` IS NOT NULL
+                  AND i.`{indicator}` IS NOT NULL
+            """
+            try:
+                df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+            except Exception as e:
+                logging.error(f"信号质量查询失败: {e}", exc_info=True)
+                df = None
 
-        # JOIN 策略表和指标表获取信号时刻的指标值
-        sql = f"""
-            SELECT s.`date`, s.`code`, s.`{rate_col}` AS rate,
-                   i.`{indicator}` AS ind_val
-            FROM `{strategy_table}` s
-            INNER JOIN `{indicators_table}` i
-                ON s.`date` = i.`date` AND s.`code` = i.`code`
-            WHERE s.`date` >= %s AND s.`date` <= %s
-              AND s.`{rate_col}` IS NOT NULL
-              AND i.`{indicator}` IS NOT NULL
-        """
-        try:
-            df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
-        except Exception as e:
-            logging.error(f"信号质量查询失败: {e}", exc_info=True)
-            _write_error(self, '查询失败', 500)
-            return
+        used_fallback = False
+        if df is None or len(df) == 0:
+            # DB JOIN 无数据 → 走 K 线兜底：用信号 fallback 缓存 + 临时算指标
+            logging.info(
+                f"[signal-quality] DB JOIN 空 → K 线兜底 strategy={strategy_table}, "
+                f"indicator={indicator}, hd={holding_days}, {start_date}~{end_date}"
+            )
+            df = _build_signal_quality_fallback(
+                strategy_table, indicator, holding_days, start_date, end_date)
+            used_fallback = df is not None and not df.empty
 
         if df is None or len(df) == 0:
             _write_json(self, {
@@ -1438,6 +1563,7 @@ class SignalQualityHandler(webBase.BaseHandler):
                 'golden_ranges': golden_ranges,
                 'expected_improvement': expected_improvement,
             },
+            'data_source': 'kline_fallback' if used_fallback else 'db',
         })
 
 
