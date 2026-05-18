@@ -43,10 +43,10 @@
         </div>
       </div>
       <div class="toolbar-group">
-        <el-tooltip content="按逗号分隔的持仓交易日数列表，例如 3,5,10,20。范围 1-100，最多 30 个。" placement="top">
+        <el-tooltip content="按逗号分隔的持仓交易日数列表。范围 1-240（约 1 年），最多 30 个。>100 时走 K 线缓存重算，首次约 1 分钟，后续秒级。" placement="top">
           <span class="toolbar-label">持仓天数 <i class="tip-icon">?</i></span>
         </el-tooltip>
-        <el-input v-model="holdingDaysInput" placeholder="如 1,3,5,7,10,15,20,30,60" style="width: 220px" clearable />
+        <el-input v-model="holdingDaysInput" placeholder="如 1,3,5,10,20,40,60,120,180,240" style="width: 260px" clearable />
       </div>
       <el-button class="analyze-btn" type="primary" :loading="loading" @click="runAnalysis">
         分析
@@ -99,6 +99,7 @@
               <thead>
                 <tr>
                   <th>持仓</th>
+                  <th><el-tooltip content="档位：短≤10日 / 中11~60日 / 长>60日" placement="top"><span class="th-tip">档位 <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th><el-tooltip content="该持仓周期下所有信号的平均涨跌幅" placement="top"><span class="th-tip">平均收益 <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th><el-tooltip content="收益排序后的中间值，比均值更抗极端值干扰" placement="top"><span class="th-tip">中位数 <i class="tip-icon">?</i></span></el-tooltip></th>
                   <th><el-tooltip content="盈利信号数/总信号数×100%" placement="top"><span class="th-tip">胜率 <i class="tip-icon">?</i></span></el-tooltip></th>
@@ -111,8 +112,11 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="item in holdingData" :key="item.holding_days" :class="{ 'best-row': item.holding_days === bestHoldingDays }">
+                <tr v-for="item in holdingData" :key="item.holding_days" :class="[`tier-${holdingTier(item.holding_days)}`, { 'best-row': item.holding_days === bestHoldingDays }]">
                   <td><strong>{{ item.holding_days }}日</strong></td>
+                  <td>
+                    <span class="tier-badge" :class="`tier-badge-${holdingTier(item.holding_days)}`">{{ tierLabel(item.holding_days) }}</span>
+                  </td>
                   <td :class="rateClass(item.avg_return)">{{ fmtPct(item.avg_return) }}</td>
                   <td :class="rateClass(item.median_return)">{{ fmtPct(item.median_return) }}</td>
                   <td>{{ fmtPct(item.win_rate) }}</td>
@@ -139,7 +143,7 @@
               </tbody>
             </table>
             </div>
-            <div class="data-note">数据: cn_stock_strategy_* 表 rate_1..100 前瞻收益列 · 箱线图 hover 查看百分位</div>
+            <div class="data-note">数据: cn_stock_strategy_* 表 rate_1..100；持仓 &gt;100 日时走 cache/hist/ 重算 · 箱线图 hover 查看百分位</div>
           </div>
           <div class="chart-grid">
             <div class="result-card">
@@ -150,6 +154,15 @@
               <div class="card-head"><h3>持仓期 vs 最大单笔亏损</h3></div>
               <div ref="lossChartRef" class="chart-box" />
             </div>
+          </div>
+          <div class="result-card" style="margin-top: 12px">
+            <div class="card-head">
+              <div>
+                <h3>短/中/长 三档收益-风险对比</h3>
+                <span>按持仓档位聚合（短≤10日 / 中11~60日 / 长&gt;60日），直观看出周期延长后收益与波动的演化</span>
+              </div>
+            </div>
+            <div ref="tierChartRef" class="chart-box" style="height: 340px" />
           </div>
         </div>
         <el-empty v-else-if="!loading && hasQueried" description="无数据" />
@@ -408,14 +421,31 @@ const totalSignals = ref(0)
 const bestHoldingDays = ref<number | null>(null)
 const holdingChartRef = ref<HTMLElement>()
 const lossChartRef = ref<HTMLElement>()
+const tierChartRef = ref<HTMLElement>()
 
 // 信号诊断
 const signalIndicator = ref('rsi_6')
 const signalBuckets = ref<any[]>([])
 const scatterChartRef = ref<HTMLElement>()
 const indicatorOptions = ['rsi_6', 'rsi_12', 'macd', 'macds', 'kdjk', 'kdjd', 'cci', 'atr', 'cr']
-const DEFAULT_HOLDING_DAYS = '1,3,5,7,10,15,20,30,60'
+const DEFAULT_HOLDING_DAYS = '1,3,5,10,20,40,60,120,180,240'
+const MAX_HOLDING_DAY = 240
 const holdingDaysInput = ref(DEFAULT_HOLDING_DAYS)
+
+// 持仓档位分类：短(<=10)/中(11~60)/长(>60)
+function holdingTier(days: number): 'short' | 'mid' | 'long' {
+  if (!Number.isFinite(days) || days <= 10) return 'short'
+  if (days <= 60) return 'mid'
+  return 'long'
+}
+function tierLabel(days: number): string {
+  const t = holdingTier(days)
+  return t === 'short' ? '短' : t === 'mid' ? '中' : '长'
+}
+function tierColor(days: number): string {
+  const t = holdingTier(days)
+  return t === 'short' ? '#5470c6' : t === 'mid' ? '#91cc75' : '#fac858'
+}
 
 function normalizedHoldingDays(): string {
   const raw = (holdingDaysInput.value || '').trim()
@@ -429,7 +459,7 @@ function normalizedHoldingDays(): string {
     const n = Number(p)
     if (!Number.isFinite(n)) continue
     const v = Math.floor(n)
-    if (v >= 1 && v <= 100 && !ints.includes(v)) ints.push(v)
+    if (v >= 1 && v <= MAX_HOLDING_DAY && !ints.includes(v)) ints.push(v)
   }
   ints.sort((a, b) => a - b)
   return ints.length ? ints.slice(0, 30).join(',') : DEFAULT_HOLDING_DAYS
@@ -713,6 +743,7 @@ async function restoreAnalysisFromCache(snapshot: any) {
   await nextTick()
   renderHoldingChart()
   renderLossChart()
+  renderTierChart()
   if (!isCustomStrategy.value && sltpMatrix.value.length > 0) renderSltpChart(sltpMatrix.value)
   if (!isCustomStrategy.value && signalBuckets.value.length > 0) renderScatterChart()
   if (returnSeries.value.length > 0) renderDrawdownChart()
@@ -890,6 +921,7 @@ async function runAnalysis() {
       await nextTick()
       renderHoldingChart()
       renderLossChart()
+      renderTierChart()
       setCachedAnalysis(cacheKey)
       ElMessage.success('自定义策略分析完成')
       return
@@ -913,6 +945,7 @@ async function runAnalysis() {
     await nextTick()
     renderHoldingChart()
     renderLossChart()
+    renderTierChart()
 
     // 止盈止损
     sltpBest.value = sltpRes.best_combo
@@ -970,6 +1003,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (holdingChartRef.value) echarts.dispose(holdingChartRef.value)
   if (lossChartRef.value) echarts.dispose(lossChartRef.value)
+  if (tierChartRef.value) echarts.dispose(tierChartRef.value)
   if (sltpChartRef.value) echarts.dispose(sltpChartRef.value)
   if (scatterChartRef.value) echarts.dispose(scatterChartRef.value)
   if (drawdownChartRef.value) echarts.dispose(drawdownChartRef.value)
@@ -993,6 +1027,7 @@ watch(activeTab, async (tab) => {
     if (holdingData.value.length > 0) {
       renderHoldingChart()
       renderLossChart()
+      renderTierChart()
     }
   }
 })
@@ -1032,18 +1067,55 @@ function renderHoldingChart() {
   if (existing) existing.dispose()
   const chart = echarts.init(holdingChartRef.value)
   const days = holdingData.value.map((d: any) => `${d.holding_days}天`)
+  const colors = holdingData.value.map((d: any) => tierColor(d.holding_days))
+  const avgBars = holdingData.value.map((d: any, i: number) => ({
+    value: d.avg_return,
+    itemStyle: { color: colors[i] },
+  }))
   chart.setOption({
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: any[]) => {
+        if (!params || !params.length) return ''
+        const idx = params[0].dataIndex
+        const item = holdingData.value[idx] as any
+        const tier = tierLabel(item.holding_days)
+        return [
+          `<b>${item.holding_days} 日（${tier}档）</b>`,
+          `夏普: ${Number(item.sharpe_approx ?? 0).toFixed(3)}`,
+          `平均收益: ${Number(item.avg_return ?? 0).toFixed(2)}%`,
+          `胜率: ${Number(item.win_rate ?? 0).toFixed(1)}%`,
+        ].join('<br/>')
+      },
+    },
     legend: { data: ['夏普', '平均收益%'], top: 0 },
-    grid: { left: 50, right: 50, bottom: 30, top: 40 },
-    xAxis: { type: 'category', data: days },
+    grid: { left: 50, right: 50, bottom: 40, top: 40 },
+    xAxis: {
+      type: 'category',
+      data: days,
+      axisLabel: { rotate: days.length > 8 ? 30 : 0, fontSize: 11 },
+    },
     yAxis: [
       { type: 'value', name: '夏普' },
       { type: 'value', name: '收益%', position: 'right' },
     ],
     series: [
-      { name: '夏普', type: 'line', data: holdingData.value.map((d: any) => d.sharpe_approx), markPoint: { data: [{ type: 'max', name: '最优' }] } },
-      { name: '平均收益%', type: 'bar', yAxisIndex: 1, data: holdingData.value.map((d: any) => d.avg_return), itemStyle: { color: '#91cc75' } },
+      {
+        name: '夏普',
+        type: 'line',
+        smooth: true,
+        symbolSize: 7,
+        lineStyle: { width: 2.5 },
+        itemStyle: { color: '#5470c6' },
+        data: holdingData.value.map((d: any) => d.sharpe_approx),
+        markPoint: { data: [{ type: 'max', name: '最优' }] },
+      },
+      {
+        name: '平均收益%',
+        type: 'bar',
+        yAxisIndex: 1,
+        data: avgBars,
+      },
     ],
   })
 }
@@ -1056,15 +1128,94 @@ function renderLossChart() {
   const days = holdingData.value.map((d: any) => `${d.holding_days}天`)
   const p10 = holdingData.value.map((d: any) => d.percentile_10 ?? d.max_single_loss ?? 0)
   const maxLoss = holdingData.value.map((d: any) => d.max_single_loss ?? 0)
+  const colors = holdingData.value.map((d: any) => tierColor(d.holding_days))
+  const p10Bars = p10.map((v: number, i: number) => ({ value: v, itemStyle: { color: colors[i], opacity: 0.65 } }))
   chart.setOption({
     tooltip: { trigger: 'axis' },
     legend: { data: ['P10亏损', '最大单笔亏损'], top: 0, textStyle: { fontSize: 11 } },
-    grid: { left: 56, right: 24, bottom: 30, top: 42 },
-    xAxis: { type: 'category', data: days },
+    grid: { left: 56, right: 24, bottom: 40, top: 42 },
+    xAxis: {
+      type: 'category',
+      data: days,
+      axisLabel: { rotate: days.length > 8 ? 30 : 0, fontSize: 11 },
+    },
     yAxis: { type: 'value', name: '亏损%', axisLabel: { formatter: '{value}%' } },
     series: [
-      { name: 'P10亏损', type: 'bar', data: p10, itemStyle: { color: '#91caff' } },
+      { name: 'P10亏损', type: 'bar', data: p10Bars },
       { name: '最大单笔亏损', type: 'line', data: maxLoss, smooth: true, symbolSize: 6, itemStyle: { color: '#cf1322' }, lineStyle: { color: '#cf1322' } },
+    ],
+  })
+}
+
+function renderTierChart() {
+  if (!tierChartRef.value || holdingData.value.length === 0) return
+  const existing = echarts.getInstanceByDom(tierChartRef.value)
+  if (existing) existing.dispose()
+  const chart = echarts.init(tierChartRef.value)
+  // 按档位聚合
+  const buckets: Record<string, any[]> = { short: [], mid: [], long: [] }
+  for (const d of holdingData.value as any[]) {
+    buckets[holdingTier(d.holding_days)].push(d)
+  }
+  const tiers: Array<'short' | 'mid' | 'long'> = ['short', 'mid', 'long']
+  const tierNames = { short: '短(≤10日)', mid: '中(11~60日)', long: '长(>60日)' }
+  const tierColors = { short: '#5470c6', mid: '#91cc75', long: '#fac858' }
+  const avg = (arr: number[]) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null
+  const tierAvgRet: (number | null)[] = []
+  const tierWinRate: (number | null)[] = []
+  const tierSharpe: (number | null)[] = []
+  const tierMaxLoss: (number | null)[] = []
+  const sampleCnt: number[] = []
+  for (const t of tiers) {
+    const arr = buckets[t]
+    sampleCnt.push(arr.length)
+    if (arr.length === 0) {
+      tierAvgRet.push(null); tierWinRate.push(null); tierSharpe.push(null); tierMaxLoss.push(null)
+      continue
+    }
+    tierAvgRet.push(avg(arr.map((x: any) => Number(x.avg_return) || 0)))
+    tierWinRate.push(avg(arr.map((x: any) => Number(x.win_rate) || 0)))
+    tierSharpe.push(avg(arr.map((x: any) => Number(x.sharpe_approx) || 0)))
+    tierMaxLoss.push(avg(arr.map((x: any) => Number(x.max_single_loss ?? x.percentile_10) || 0)))
+  }
+  const xLabels = tiers.map(t => `${tierNames[t]}\n(${sampleCnt[tiers.indexOf(t)]}档)`)
+  const colorList = tiers.map(t => tierColors[t])
+  const makeBar = (data: (number | null)[]) => data.map((v, i) => ({ value: v, itemStyle: { color: colorList[i], opacity: 0.85 } }))
+
+  chart.setOption({
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: any[]) => {
+        const i = params[0].dataIndex
+        const fmt = (n: any) => (n === null || n === undefined) ? '--' : Number(n).toFixed(2)
+        return [
+          `<b>${tierNames[tiers[i]]}</b>（包含 ${sampleCnt[i]} 个持仓档）`,
+          `平均收益: ${fmt(tierAvgRet[i])}%`,
+          `平均胜率: ${fmt(tierWinRate[i])}%`,
+          `平均夏普: ${fmt(tierSharpe[i])}`,
+          `平均最大单笔亏损: ${fmt(tierMaxLoss[i])}%`,
+        ].join('<br/>')
+      },
+    },
+    legend: {
+      data: ['平均收益%', '平均胜率%', '平均夏普', '平均最大亏损%'],
+      top: 0,
+    },
+    grid: { left: 60, right: 60, bottom: 50, top: 50 },
+    xAxis: {
+      type: 'category',
+      data: xLabels,
+      axisLabel: { fontSize: 12, lineHeight: 16 },
+    },
+    yAxis: [
+      { type: 'value', name: '收益/胜率/亏损 %', axisLabel: { formatter: '{value}%' } },
+      { type: 'value', name: '夏普', position: 'right' },
+    ],
+    series: [
+      { name: '平均收益%', type: 'bar', barGap: 0, data: makeBar(tierAvgRet) },
+      { name: '平均胜率%', type: 'bar', data: tierWinRate.map(v => ({ value: v, itemStyle: { color: '#3ba272', opacity: 0.6 } })) },
+      { name: '平均夏普', type: 'line', yAxisIndex: 1, smooth: true, symbolSize: 10, lineStyle: { width: 3 }, itemStyle: { color: '#ee6666' }, data: tierSharpe },
+      { name: '平均最大亏损%', type: 'line', smooth: true, symbolSize: 8, lineStyle: { color: '#cf1322', type: 'dashed' }, itemStyle: { color: '#cf1322' }, data: tierMaxLoss },
     ],
   })
 }
@@ -1316,6 +1467,14 @@ async function computeOOS() {
 .cmp-table .sort-cell { background: #f0f7ff; font-weight: 600; }
 .best-row { background: #f0f9eb; }
 .best-row .sort-cell { background: #d6eaff; color: #1890ff; font-size: 13px; }
+/* 持仓档位行底色：避免遮挡 best-row 高亮，使用左侧色带而非整行底色 */
+.cmp-table tr.tier-short td:first-child { box-shadow: inset 3px 0 0 #5470c6; }
+.cmp-table tr.tier-mid td:first-child { box-shadow: inset 3px 0 0 #91cc75; }
+.cmp-table tr.tier-long td:first-child { box-shadow: inset 3px 0 0 #fac858; }
+.tier-badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: #fff; }
+.tier-badge-short { background: #5470c6; }
+.tier-badge-mid { background: #91cc75; color: #2c3e50; }
+.tier-badge-long { background: #fac858; color: #644b1c; }
 .star { margin-left: 4px; color: #f5a623; }
 .data-note { padding: 6px 12px; border-top: 1px solid #ebeef5; color: #909399; font-size: 11px; }
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }

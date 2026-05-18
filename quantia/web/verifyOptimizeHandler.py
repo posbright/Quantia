@@ -41,6 +41,8 @@ __date__ = '2026/05/15'
 # ── 常量 ──────────────────────────────────────────────────────────────
 
 RATE_FIELDS_COUNT = tbs.RATE_FIELDS_COUNT  # 100
+# 持仓天数扫描的真正可分析上限：DB 仅有 rate_1..100，>100 时走 K 线兜底动态算
+MAX_HOLDING_DAYS_EXTENDED = 240
 _BACKTEST_DATA_TABLE = tbs.TABLE_CN_STOCK_BACKTEST_DATA['name']
 _BACKTEST_SUMMARY_TABLE = tbs.TABLE_CN_STOCK_BACKTEST['name']
 _CUSTOM_COMPARE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix='verify-custom')
@@ -226,19 +228,36 @@ def _calc_sortino(rates, holding_days, rf_annual=0.015):
     return round(float((avg - rf_period) / downside_std * annualization), 4)
 
 
+def _max_rate_day(rate_cols):
+    """从 rate_cols 中提取最大 N 值，如 ['rate_1','rate_60','rate_180'] -> 180。"""
+    mx = 0
+    for c in rate_cols or []:
+        try:
+            mx = max(mx, int(str(c).replace('rate_', '')))
+        except (ValueError, AttributeError):
+            continue
+    return mx
+
+
 def _load_backtest_data(strategy_table, start_date, end_date, rate_cols=None):
     """从策略表加载回测数据。
 
     Returns: DataFrame with date, code, name + rate columns, or None.
 
-    DB 中无信号时启用 fallback：扫描 cache/hist/ 跑策略 check() 计算信号 +
-    前向收益，并把结果缓存到 cache/signal/。详见 _compute_signals_from_kline_cache。
+    路由规则：
+    - max(N) ≤ 100 且 DB 有数据 → DB 读取（最快）。
+    - max(N) ≤ 100 且 DB 空 → K 线兜底（max_rate=100，可缓存复用）。
+    - max(N) > 100 → 直接 K 线兜底（DB 本身没有 rate_>100 的列），
+      max_rate 对齐到 max(N)，缓存按 max_rate 分文件。
     """
     if rate_cols is None:
         rate_cols = [f'rate_{i}' for i in range(1, RATE_FIELDS_COUNT + 1)]
 
+    max_day = _max_rate_day(rate_cols)
+    needs_extended = max_day > RATE_FIELDS_COUNT
+
     df = None
-    if mdb.checkTableIsExist(strategy_table):
+    if not needs_extended and mdb.checkTableIsExist(strategy_table):
         base_cols = ['date', 'code', 'name']
         all_cols = base_cols + rate_cols
         cols_sql = ', '.join(f'`{c}`' for c in all_cols)
@@ -250,8 +269,10 @@ def _load_backtest_data(strategy_table, start_date, end_date, rate_cols=None):
             df = None
 
     if df is None or len(df) == 0:
-        # ── DB 缺数据 → 走 K 线缓存 fallback ──
-        fallback_df = _compute_signals_from_kline_cache(strategy_table, start_date, end_date)
+        # ── DB 缺数据 / 请求 N>100 → 走 K 线缓存 fallback ──
+        max_rate = max(RATE_FIELDS_COUNT, max_day) if max_day > 0 else RATE_FIELDS_COUNT
+        fallback_df = _compute_signals_from_kline_cache(
+            strategy_table, start_date, end_date, max_rate=max_rate)
         if fallback_df is not None and len(fallback_df) > 0:
             keep = ['date', 'code', 'name'] + [c for c in rate_cols if c in fallback_df.columns]
             df = fallback_df[keep].copy()
@@ -282,14 +303,16 @@ _FALLBACK_HIST_BUFFER_DAYS = 365 * 2  # K 线前置缓冲（供 TA-Lib 窗口用
 _FALLBACK_FORWARD_BUFFER_DAYS = 130   # 后向缓冲（供 rate_60 等前向收益计算）
 
 
-def _signal_cache_path(strategy_table: str, start_date, end_date) -> str:
+def _signal_cache_path(strategy_table: str, start_date, end_date, max_rate: int = 100) -> str:
     if not os.path.exists(_SIGNAL_CACHE_DIR):
         try:
             os.makedirs(_SIGNAL_CACHE_DIR, exist_ok=True)
         except Exception:
             pass
+    # max_rate 不同 → 缓存文件分开，避免 100 档与 240 档相互覆盖
     return os.path.join(
-        _SIGNAL_CACHE_DIR, f"{strategy_table}_{start_date}_{end_date}.gzip.pickle"
+        _SIGNAL_CACHE_DIR,
+        f"{strategy_table}_{start_date}_{end_date}_r{int(max_rate)}.gzip.pickle",
     )
 
 
@@ -406,22 +429,26 @@ def _scan_one_stock_for_signals(stock, strategy_func, threshold, start_ts, end_t
     return rows
 
 
-def _compute_signals_from_kline_cache(strategy_table: str, start_date, end_date):
+def _compute_signals_from_kline_cache(strategy_table: str, start_date, end_date,
+                                       max_rate: int = RATE_FIELDS_COUNT):
     """DB 无数据时的 fallback：扫 cache/hist/ 跑策略 check() 算信号 + 前向收益。
 
-    1. 优先读 cache/signal/<table>_<start>_<end>.gzip.pickle。
+    1. 优先读 cache/signal/<table>_<start>_<end>_r{max_rate}.gzip.pickle。
     2. miss 时扫描 cn_stock_spot 最近一天的前 max_stocks 只股票，逐只调用
-       策略 check() 函数；命中则基于同一份 K 线计算 rate_1..rate_N。
+       策略 check() 函数；命中则基于同一份 K 线计算 rate_1..rate_{max_rate}。
+       后向缓冲按 max_rate 动态放大（默认 130 天足够 rate_60，max_rate=240
+       时放宽到约 360 天）。
     3. 完成后写入 gzip.pickle 缓存供下次直接读取。
     """
     if not _FALLBACK_ENABLED:
         return None
 
-    cache_path = _signal_cache_path(strategy_table, start_date, end_date)
+    max_rate = max(1, int(max_rate))
+    cache_path = _signal_cache_path(strategy_table, start_date, end_date, max_rate)
     cached = _load_signal_cache_file(cache_path)
     if cached is not None and len(cached) > 0:
         logging.info(
-            f"[signal-fallback] 命中文件缓存 {cache_path}: {len(cached)} rows"
+            f"[signal-fallback] 命中文件缓存 {cache_path}: {len(cached)} rows (max_rate={max_rate})"
         )
         return cached
 
@@ -437,14 +464,17 @@ def _compute_signals_from_kline_cache(strategy_table: str, start_date, end_date)
 
     total = len(stocks)
     logging.info(
-        f"[signal-fallback] 开始扫描 {total} 只股票，区间 {start_date}~{end_date}，策略={strategy_table}"
+        f"[signal-fallback] 开始扫描 {total} 只股票，区间 {start_date}~{end_date}，"
+        f"策略={strategy_table}, max_rate={max_rate}"
     )
 
+    # max_rate 越大，后向缓冲越长。粗估：1 个交易日 ≈ 1.45 个自然日
+    forward_buffer_days = max(_FALLBACK_FORWARD_BUFFER_DAYS, int(max_rate * 1.5) + 30)
     ext_start = (start_date - datetime.timedelta(days=_FALLBACK_HIST_BUFFER_DAYS)).strftime('%Y%m%d')
-    ext_end = (end_date + datetime.timedelta(days=_FALLBACK_FORWARD_BUFFER_DAYS)).strftime('%Y%m%d')
+    ext_end = (end_date + datetime.timedelta(days=forward_buffer_days)).strftime('%Y%m%d')
     start_ts = pd.Timestamp(start_date)
     end_ts = pd.Timestamp(end_date)
-    rate_cols_all = [f'rate_{i}' for i in range(1, RATE_FIELDS_COUNT + 1)]
+    rate_cols_all = [f'rate_{i}' for i in range(1, max_rate + 1)]
 
     results = []
     with ThreadPoolExecutor(max_workers=max(1, _FALLBACK_WORKERS),
@@ -956,9 +986,15 @@ class HoldingPeriodAnalysisHandler(webBase.BaseHandler):
         # 可选参数: 指定持仓天数列表
         days_arg = self.get_argument('holding_days', default='', strip=True)
         if days_arg:
-            holding_days_list = _parse_int_list(days_arg, min_value=1, max_value=RATE_FIELDS_COUNT, max_items=30)
+            holding_days_list = _parse_int_list(
+                days_arg,
+                min_value=1,
+                max_value=MAX_HOLDING_DAYS_EXTENDED,
+                max_items=30,
+            )
         else:
-            holding_days_list = [1, 2, 3, 5, 7, 10, 15, 20, 30, 60]
+            # 短/中/长三档默认：1d~3w 短期，1~3 个月中期，6 个月~1 年长期
+            holding_days_list = [1, 3, 5, 10, 20, 40, 60, 120, 180, 240]
 
         if not holding_days_list:
             _write_error(self, 'holding_days 参数无效')
