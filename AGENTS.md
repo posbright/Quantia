@@ -98,6 +98,19 @@ Streaming analysis ([quantia/job/streaming_analysis_job.py]) processes 4900+ sto
 
 切换 tab 后 v-show 重新出现的 ECharts 容器尺寸可能为 0：tab change 时调 `chart.resize()`，或在 `nextTick` 后再 `init`。详见 commit e6d6268。
 
+## 策略融合 v2（verifyFusionHandler）
+
+`POST /quantia/api/verify/fusion` 双版本路由：请求体带 `version: 2` 走 v2 真五维（tech/fund/flow/sent/custom）× 4 模式（weighted_score / vote / condition_tree / rotation）；否则走 v1 旧 `strategy_names` 交并集。详见 [document/API_REFERENCE.md](document/API_REFERENCE.md#策略融合验证-v2)。
+
+不可违反：
+- **fund/flow items 必须是白名单表达式** —— `<col>_<op>_<val>`，col 来自 `_FUND_ALLOWED_COLS` / `_FLOW_ALLOWED_COLS`，op ∈ {lt,gt,lte,gte,eq}。直接拼 SQL 是注入面。`_parse_item_expr` 是唯一入口。
+- **Shapley 守恒** —— `_shapley_real` 返回值满足 $\sum_k \phi_k = v(N)$（v(∅)=0）。如果你修改 `_fuse_subset_signals` / `_evaluate` 让任一子集回退到默认 sharpe，等式会破，单元测试 `test_shapley_real_three_dims_sums_to_fusion_minus_empty` 会立刻挂。
+- **子集权重必须重归一化** —— `_fuse_subset_signals` 对子集内 enabled dim 把 weight 拉回到合计 100；`vote_threshold` clip 到子集大小，且对 `None` 兼容（`spec.get('vote_threshold') or 2`）。
+- **Shapley 8s 超时降级** —— `_shapley_real` 用 `time.monotonic()` 控预算；超时返回 `(None, True, {'reason':'timeout', ...})`，`_handle_v2` 必须 fallback 到 `_shapley_naive` 并写入 warning `"Shapley 真值计算超时（已评估 X/Y 子集），降级为快速估算"`。
+- **Overlap co_occurrence 是扁平 N×N list**（含对角与对称对，jaccard 对角 = 1.0），不是上三角。前端 heatmap 用 `enabledKeys.indexOf(row.a)` 索引到矩阵。
+- **测试数据**：单元用 `_make_signal_df(codes, dates)` / `_make_rate_df(codes, dates, rate_value)` 合成；端到端 mock 用 `mock.patch.object(vfh, '_load_dim_signals')` + `_load_rate_df`，不打 DB。
+- **黑盒 smoke 用 2026-03-01 ~ 2026-05-14**（系统时钟已到 2026，2025 区间在生产 DB 里是空集）。
+
 ## Destructive file ops（必须遵循）
 
 **严禁**未经用户确认就执行以下操作（无论用什么工具：terminal / execution_subagent / 文件系统调用 / git）：
@@ -155,3 +168,4 @@ Streaming analysis ([quantia/job/streaming_analysis_job.py]) processes 4900+ sto
 - Don't forget to ask about commit & push when a user-facing change is finished (see Commit workflow).
 - Don't delete directories or batch-delete files without listing them and getting user confirmation first (see Destructive file ops).
 - Hard-rule expressions (composite): AST sandbox blocks `__import__`, dunders, lambda, file ops, exec/eval, attribute access on dicts. Don't try to "improve" the sandbox by relaxing these.
+- Fusion v2 fund/flow items must pass `_parse_item_expr` whitelist — don't accept raw SQL fragments. Shapley sum invariant must hold (`∑φ_k = v(N)`); subset weights must be renormalized to 100 in `_fuse_subset_signals`. Use `2026-03~05` for black-box smoke.

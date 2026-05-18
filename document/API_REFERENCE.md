@@ -838,3 +838,116 @@ GET /quantia/api/backtest/portfolio/detail?id={backtest_id}
 ```
 
 **响应**: 包含完整的 metrics / nav / trades / positions / logs 数据。
+
+---
+
+## 策略融合验证 v2
+
+`/quantia/api/verify/fusion` 支持 v1（多条 `strategy_names` 简单交并集，兼容旧前端）与 v2（5 维 × 4 模式真融合，含 Shapley/AB/Overlap 贡献分析）。请求体携带 `version: 2` 切换到 v2 路径。
+
+### POST /quantia/api/verify/fusion （v2）
+
+**请求体**：
+
+```jsonc
+{
+  "version": 2,
+  "mode": "weighted_score",          // weighted_score | vote | condition_tree | rotation
+  "start_date": "2026-03-01",         // 必填，YYYY-MM-DD；区间 ≤ 366 天
+  "end_date": "2026-05-14",           // 必填
+  "holding_days": 10,                  // 持仓天数，影响 rate_df 计算口径
+  "min_score": 0.4,                    // weighted_score 模式生效，[0,1]
+  "vote_threshold": 2,                 // vote 模式生效，至少命中维度数
+  "dimensions": {
+    "tech":   { "enabled": true,  "weight": 40, "items": ["cn_stock_strategy_keep_increasing"] },
+    "fund":   { "enabled": true,  "weight": 30, "items": ["pe9_lt_30", "roe_weight_gte_10"] },
+    "flow":   { "enabled": true,  "weight": 30, "items": ["fund_amount_gt_0"] },
+    "sent":   { "enabled": false, "weight": 0,  "items": [] },
+    "custom": { "enabled": false, "weight": 0,  "items": [] }   // items 形如 "cn_stock_strategy_custom_<id>"
+  }
+}
+```
+
+**维度 items 取值约定**：
+
+| 维度 | items 形式 | 数据源 |
+|------|-----------|--------|
+| `tech` | `cn_stock_strategy_<name>` | `cn_stock_strategy_*` 信号表 |
+| `fund` | `<col>_<op>_<val>`，op ∈ {lt,gt,lte,gte,eq}，col ∈ `_FUND_ALLOWED_COLS` | `cn_stock_indicators_buy` |
+| `flow` | `<col>_<op>_<val>`，col ∈ `_FLOW_ALLOWED_COLS` | `cn_stock_fund_flow` |
+| `sent` | TODO（Stage 1 暂未接入） | — |
+| `custom` | `cn_stock_strategy_custom_<id>` | 自定义策略落库表 |
+
+**响应**：
+
+```jsonc
+{
+  "version": 2,
+  "mode": "weighted_score",
+  "holding_days": 10,
+  "period": { "start": "2026-03-01", "end": "2026-05-14" },
+  "fusion_result": {
+    "sharpe": -0.169, "win_rate": 48.2, "max_drawdown": -8.7,
+    "signal_count": 20166, "avg_return": 0.31, "daily_signal_avg": 429.1
+  },
+  "individual_results": {
+    "tech": { "cn": "技术信号", "sharpe": -0.16, "win_rate": 48.0, ... },
+    "fund": { ... }, "flow": { ... }
+  },
+  "daily_series": [ { "date": "2026-03-02", "cumulative": 0.0, "drawdown": 0.0 }, ... ],
+
+  // ── Stage 3 真贡献分析 ──
+  "shapley": [
+    { "dim": "tech", "cn": "技术信号", "name": "技术信号",
+      "contrib": 0.4456, "contribution": 0.4456, "sharpe_delta": 0.4456, "rank": 1 },
+    { "dim": "flow", ..., "rank": 2 },
+    { "dim": "fund", ..., "rank": 3 }
+  ],
+  "ab_steps": [
+    { "step": 1, "dims": ["tech"], "label": "技术信号",
+      "sharpe": -0.159, "win_rate": 47.8, "max_drawdown": -8.2,
+      "signal_count": 19951, "avg_return": 0.28 },
+    { "step": 2, "dims": ["tech","flow"], "label": "技术信号 + 资金流", ... },
+    { "step": 3, "dims": ["tech","flow","fund"], ... }
+  ],
+  "overlap": {
+    "calendar":      [ { "date": "2026-03-02", "signal_count": 2699, "dims_hit": 3 }, ... ],
+    "co_occurrence": [ { "a": "tech", "b": "tech", "jaccard": 1.0 },
+                       { "a": "tech", "b": "fund", "jaccard": 0.0188 }, ... ]   // N×N 扁平 list（含对角）
+  },
+
+  "improvement": { "sharpe_vs_best_single": "+12.3%", "drawdown_vs_worst_single": "+4.5%" },
+  "warnings": [],
+  "diagnostics": {
+    "enabled_dims": ["tech", "fund", "flow"],
+    "shapley": { "n_dims": 3, "n_subsets_evaluated": 7, "total_subsets": 8, "elapsed_s": 1.32 }
+  }
+}
+```
+
+**Shapley 实现**：`_shapley_real` 用 $2^n - 1$ 个非空子集枚举（`math.factorial` 权重），满足 $\sum_k \phi_k = v(N)$（v(∅)=0）。8 秒时间预算超时则降级为 `_shapley_naive`（单 dim 留一法），响应 `warnings` 会包含 `"Shapley 真值计算超时（已评估 X/Y 子集），降级为快速估算"`。
+
+**AB 步进**：按 Shapley `rank` 升序逐步累加维度，每步重算融合得到 `sharpe / win_rate / max_drawdown / signal_count`。`_fuse_subset_signals` 会将子集内权重重新归一化到 100，`vote_threshold` clip 到子集大小。
+
+**Overlap**：
+- `calendar` 按日期聚合不重复股票数 + `dims_hit`（当日出现的维度数）。
+- `co_occurrence` 用 (date, code) pair 集合的 Jaccard：对角恒为 1.0，矩阵对称。
+
+**错误**：
+
+| code | 场景 |
+|------|------|
+| 400 | `mode` 非法 / 无 enabled 维度 / 区间 > 366 天 / 维度 weight 非法 / item 表达式不合法 |
+| 200 + warnings | 某维度命中 0（该维度被丢弃，`diagnostics.enabled_dims` 不含它） |
+
+### POST /quantia/api/verify/fusion （v1 — 旧版兼容）
+
+省略 `version` 或 `version != 2` 时走旧路径。请求体：
+
+```jsonc
+{ "strategy_names": ["放量上涨", "均线多头"],
+  "mode": "intersection",          // intersection | union | weighted
+  "start_date": "2026-03-01", "end_date": "2026-05-14" }
+```
+
+返回简单交并集统计；不含 shapley/ab_steps/overlap 字段。
