@@ -62,7 +62,7 @@
           v-for="dim in dimensions"
           :key="dim.key"
           class="dim-section"
-          :class="{ 'active-dim': dim.enabled, 'dim-off': !dim.enabled }"
+          :class="{ 'active-dim': dim.enabled, 'dim-off': !dim.enabled, 'dim-full-row': dim.key === 'custom' }"
         >
           <div class="dim-head">
             <div class="dim-name">
@@ -88,15 +88,19 @@
               >{{ dim.enabled ? 'ON' : 'OFF' }}</span>
             </div>
           </div>
-          <div class="dim-items">
-            <label
+          <div class="dim-chips">
+            <span
               v-for="item in dim.items"
               :key="item.id"
-              class="dim-item-label"
+              class="dim-item-chip"
+              :class="{ checked: item.checked, disabled: !dim.enabled }"
+              :style="item.checked && dim.enabled ? { background: dim.color + '22', borderColor: dim.color, color: dim.color } : {}"
+              @click="dim.enabled && (item.checked = !item.checked)"
             >
-              <input type="checkbox" v-model="item.checked" :disabled="!dim.enabled">
+              <span class="chip-mark" v-if="item.checked">✓</span>
               {{ item.label }}
-            </label>
+            </span>
+            <span v-if="!dim.items.length" class="dim-empty-tip">暂无可选项</span>
           </div>
           <div class="dim-tip">{{ dim.tip }}</div>
         </div>
@@ -277,10 +281,10 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
 import request from '@/api/request'
-import { runFusion as apiFusion } from '@/api/verify'
+import { runFusion as apiFusion, exportFusionCodeApi, saveFusionSchemeApi } from '@/api/verify'
 import UsageGuide from '@/components/verify/UsageGuide.vue'
 
 const guideSteps = [
@@ -669,30 +673,45 @@ function saveFusionScheme() {
     })),
     savedAt: new Date().toISOString(),
   }
+  // 始终先写本地，作为离线兜底
   localStorage.setItem('quantia_fusion_scheme_v2', JSON.stringify(scheme))
-  ElMessage.success('方案已保存到本地（localStorage: quantia_fusion_scheme_v2）')
+  // 异步询问方案名并上云
+  ElMessageBox.prompt('为方案命名（同名将覆盖）', '保存到云端', {
+    confirmButtonText: '保存',
+    cancelButtonText: '仅本地',
+    inputPlaceholder: '例如：3 维加权-基本面强化',
+    inputValidator: (v: string) => (!!v && v.trim().length > 0 && v.length <= 200) || '名称 1-200 字符',
+  }).then(({ value }) => {
+    const payload = buildV2Payload()
+    return saveFusionSchemeApi({ ...payload, name: String(value).trim() })
+  }).then((res: any) => {
+    ElMessage.success(`已保存到云端（id=${res?.id}）`)
+  }).catch((err: any) => {
+    if (err === 'cancel' || err === 'close') {
+      ElMessage.info('已保存到本地 localStorage')
+      return
+    }
+    ElMessage.error(err?.response?.data?.error || err?.message || '云端保存失败，已留本地副本')
+  })
 }
 
-function exportFusionCode() {
+async function exportFusionCode() {
   const payload = buildV2Payload()
-  const lines = [
-    '# Quantia 策略融合代码（自动生成 v2）',
-    `# 模式: ${fusionModes.find(m => m.value === fusionMode.value)?.label || fusionMode.value}`,
-    `# 区间: ${startDate.value} ~ ${endDate.value}, 持仓 ${holdingDays.value} 天`,
-    '',
-    'import requests',
-    '',
-    'payload = ' + JSON.stringify(payload, null, 2),
-    '',
-    'r = requests.post("http://localhost:9988/quantia/api/verify/fusion", json=payload)',
-    'print(r.json())',
-  ]
-  const code = lines.join('\n')
-  navigator.clipboard.writeText(code).then(() => {
-    ElMessage.success('策略代码已复制到剪贴板')
-  }).catch(() => {
-    ElMessage.info('代码生成成功，请手动复制')
-  })
+  try {
+    const res = await exportFusionCodeApi(payload)
+    const code = res?.code || ''
+    if (!code) throw new Error('后端未返回代码')
+    try {
+      await navigator.clipboard.writeText(code)
+      ElMessage.success(`策略代码已复制到剪贴板（${code.length} 字符）`)
+    } catch {
+      ElMessage.info('代码生成成功，请手动复制')
+      // eslint-disable-next-line no-console
+      console.log(code)
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.error || e?.message || '代码导出失败')
+  }
 }
 
 function fmt(v: number | null | undefined): string {
@@ -761,6 +780,21 @@ function sharpeClass(v: number | null | undefined): string {
 .dim-toggle.on { background: #ecf5ff; color: #409eff; border-color: #409eff; }
 .dim-items { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 11px; }
 .dim-item-label { display: flex; align-items: center; gap: 4px; }
+.dim-chips {
+  display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; min-height: 28px;
+}
+.dim-item-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 4px 10px; border: 1px solid #dcdfe6; border-radius: 14px;
+  background: #fff; color: #606266; cursor: pointer; transition: .15s;
+  user-select: none; line-height: 1.2;
+}
+.dim-item-chip:hover:not(.disabled) { border-color: #c0c4cc; background: #f5f7fa; }
+.dim-item-chip.checked { font-weight: 600; }
+.dim-item-chip.disabled { cursor: not-allowed; opacity: .55; }
+.chip-mark { font-size: 10px; font-weight: 700; }
+.dim-empty-tip { font-size: 11px; color: #c0c4cc; padding: 4px 0; }
+.dim-full-row { grid-column: 1 / -1; }
 .dim-tip { font-size: 10px; color: #c0c4cc; margin-top: 8px; }
 
 /* Action bar */

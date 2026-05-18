@@ -1183,3 +1183,244 @@ class OptimizeSuggestHandler(webBase.BaseHandler):
             'period': f'{start_date} ~ {end_date}',
             'suggestions': suggestions,
         })
+
+
+# ── Stage 4: 方案持久化 + 代码导出 ────────────────────────────────────
+
+_fusion_scheme_table_ready = False
+
+
+def _ensure_fusion_scheme_table():
+    """Idempotent CREATE for `cn_stock_fusion_scheme`."""
+    global _fusion_scheme_table_ready
+    if _fusion_scheme_table_ready:
+        return
+    if not mdb.checkTableIsExist('cn_stock_fusion_scheme'):
+        mdb.executeSql("""
+            CREATE TABLE IF NOT EXISTS `cn_stock_fusion_scheme` (
+              `id` INT AUTO_INCREMENT PRIMARY KEY,
+              `name` VARCHAR(200) NOT NULL COMMENT '方案名称',
+              `description` VARCHAR(500) DEFAULT '' COMMENT '简要描述',
+              `mode` VARCHAR(32) NOT NULL DEFAULT 'weighted_score',
+              `scheme` JSON NOT NULL COMMENT 'v2 spec JSON',
+              `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+              `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY `uk_name` (`name`),
+              INDEX `idx_updated` (`updated_at`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        logger.info('[verify_fusion] 已创建表 cn_stock_fusion_scheme')
+    _fusion_scheme_table_ready = True
+
+
+def _render_fusion_code(spec: dict) -> str:
+    """Generate a runnable Python script that POSTs the v2 spec back to /verify/fusion.
+
+    The output is intentionally a thin client wrapper around the canonical API
+    rather than a re-implementation — keeps the truth source in the backend.
+    """
+    mode = spec.get('mode', 'weighted_score')
+    mode_cn = {'weighted_score': '加权打分', 'vote': '投票', 'condition_tree': '条件树',
+               'rotation': '动量轮动'}.get(mode, mode)
+    enabled = [k for k, d in (spec.get('dimensions') or {}).items()
+               if d.get('enabled') and d.get('items')]
+    dim_summary = ', '.join(f"{_DIM_LABEL.get(k, k)}({(spec['dimensions'][k] or {}).get('weight', 0)}%)"
+                            for k in enabled) or '(无)'
+
+    lines = [
+        '"""Quantia 策略融合 v2 自动生成代码',
+        '',
+        f'模式: {mode_cn}',
+        f'区间: {spec.get("start_date")} ~ {spec.get("end_date")}'
+        f'，持仓 {spec.get("holding_days")} 天',
+        f'启用维度: {dim_summary}',
+        '"""',
+        'import json',
+        'import urllib.request',
+        '',
+        'API = "http://localhost:9988/quantia/api/verify/fusion"',
+        '',
+        'PAYLOAD = ' + json.dumps(spec, ensure_ascii=False, indent=2, default=str),
+        '',
+        'def run() -> dict:',
+        '    req = urllib.request.Request(',
+        '        API,',
+        '        data=json.dumps(PAYLOAD).encode("utf-8"),',
+        '        headers={"Content-Type": "application/json"},',
+        '    )',
+        '    with urllib.request.urlopen(req) as resp:',
+        '        return json.loads(resp.read())',
+        '',
+        'if __name__ == "__main__":',
+        '    result = run()',
+        '    fr = result.get("fusion_result", {})',
+        '    print(f"融合结果: sharpe={fr.get(\'sharpe\')} '
+        'win_rate={fr.get(\'win_rate\')}% signals={fr.get(\'signal_count\')}")',
+        '    for it in result.get("shapley", []):',
+        '        print(f"  [{it.get(\'rank\')}] {it.get(\'name\')}: '
+        'contrib={it.get(\'contrib\')}")',
+    ]
+    return '\n'.join(lines)
+
+
+class FusionExportCodeHandler(webBase.BaseHandler):
+    """POST /quantia/api/verify/fusion_export
+
+    把前端的 v2 spec 转成可运行的 Python 脚本字符串（后端统一生成、便于以后扩展）。
+    Body: 完整 v2 spec（同 /verify/fusion 请求体）。
+    Response: { code: str, length: int }
+    """
+
+    def post(self):
+        try:
+            self._handle()
+        except Exception:
+            logger.error('fusion 代码导出异常', exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        try:
+            body = json.loads(self.request.body)
+        except (json.JSONDecodeError, TypeError):
+            _write_error(self, '请求体必须为 JSON')
+            return
+        # 复用 spec 校验
+        try:
+            spec = _parse_v2_spec(body)
+        except _ValidationError as e:
+            _write_error(self, str(e))
+            return
+        # 把 date 还原为字符串，方便 JSON 序列化
+        spec_out = dict(spec)
+        spec_out['start_date'] = str(spec['start_date'])
+        spec_out['end_date'] = str(spec['end_date'])
+        # 去除前端不需要看到的内部字段（如果有）
+        code = _render_fusion_code(spec_out)
+        _write_json(self, {'code': code, 'length': len(code)})
+
+
+class FusionSchemeSaveHandler(webBase.BaseHandler):
+    """POST /quantia/api/verify/fusion_scheme
+
+    保存/更新融合方案。Body: { name, description?, id?, ...v2 spec }
+    - 不传 id：新建（按 name 唯一）
+    - 传 id：按 id 更新
+    """
+
+    def post(self):
+        try:
+            self._handle()
+        except Exception:
+            logger.error('fusion 方案保存异常', exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+    def _handle(self):
+        try:
+            body = json.loads(self.request.body)
+        except (json.JSONDecodeError, TypeError):
+            _write_error(self, '请求体必须为 JSON')
+            return
+        name = str(body.get('name', '')).strip()
+        if not name or len(name) > 200:
+            _write_error(self, '方案名称必填，不超过 200 字符')
+            return
+        description = str(body.get('description', '')).strip()[:500]
+        scheme_id = body.get('id')
+        try:
+            spec = _parse_v2_spec(body)
+        except _ValidationError as e:
+            _write_error(self, str(e))
+            return
+        spec_json = dict(spec)
+        spec_json['start_date'] = str(spec['start_date'])
+        spec_json['end_date'] = str(spec['end_date'])
+        scheme_str = json.dumps(spec_json, ensure_ascii=False, default=str)
+
+        _ensure_fusion_scheme_table()
+
+        if scheme_id:
+            scheme_id = int(scheme_id)
+            mdb.executeSql("""
+                UPDATE `cn_stock_fusion_scheme`
+                SET `name` = %s, `description` = %s, `mode` = %s, `scheme` = %s
+                WHERE `id` = %s
+            """, (name, description, spec.get('mode'), scheme_str, scheme_id))
+            _write_json(self, {'id': scheme_id, 'message': '已更新'})
+            return
+
+        # 新建（按 name 唯一）：若同名存在，转为更新
+        rows = mdb.executeSqlFetch(
+            "SELECT `id` FROM `cn_stock_fusion_scheme` WHERE `name` = %s LIMIT 1",
+            (name,))
+        if rows:
+            existing_id = int(rows[0][0])
+            mdb.executeSql("""
+                UPDATE `cn_stock_fusion_scheme`
+                SET `description` = %s, `mode` = %s, `scheme` = %s
+                WHERE `id` = %s
+            """, (description, spec.get('mode'), scheme_str, existing_id))
+            _write_json(self, {'id': existing_id, 'message': '已覆盖同名方案'})
+            return
+
+        mdb.executeSql("""
+            INSERT INTO `cn_stock_fusion_scheme`
+                (`name`, `description`, `mode`, `scheme`)
+            VALUES (%s, %s, %s, %s)
+        """, (name, description, spec.get('mode'), scheme_str))
+        rows = mdb.executeSqlFetch('SELECT LAST_INSERT_ID()')
+        new_id = int(rows[0][0]) if rows else None
+        _write_json(self, {'id': new_id, 'message': '已保存'})
+
+
+class FusionSchemeListHandler(webBase.BaseHandler):
+    """GET /quantia/api/verify/fusion_scheme/list
+
+    返回最近 50 个方案的元数据（不含 scheme JSON 全量）。
+    """
+
+    def get(self):
+        try:
+            _ensure_fusion_scheme_table()
+            rows = mdb.executeSqlFetch("""
+                SELECT `id`, `name`, `description`, `mode`, `scheme`,
+                       `created_at`, `updated_at`
+                FROM `cn_stock_fusion_scheme`
+                ORDER BY `updated_at` DESC
+                LIMIT 50
+            """)
+            items = []
+            for r in (rows or []):
+                scheme_data = r[4]
+                if isinstance(scheme_data, str):
+                    try:
+                        scheme_data = json.loads(scheme_data)
+                    except json.JSONDecodeError:
+                        scheme_data = None
+                items.append({
+                    'id': r[0],
+                    'name': r[1],
+                    'description': r[2] or '',
+                    'mode': r[3],
+                    'scheme': scheme_data,
+                    'created_at': r[5].strftime('%Y-%m-%d %H:%M') if r[5] else '',
+                    'updated_at': r[6].strftime('%Y-%m-%d %H:%M') if r[6] else '',
+                })
+            _write_json(self, {'items': items})
+        except Exception:
+            logger.error('fusion 方案列表异常', exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+
+class FusionSchemeDeleteHandler(webBase.BaseHandler):
+    r"""DELETE /quantia/api/verify/fusion_scheme/(\d+)"""
+
+    def delete(self, scheme_id):
+        try:
+            sid = int(scheme_id)
+            _ensure_fusion_scheme_table()
+            mdb.executeSql(
+                'DELETE FROM `cn_stock_fusion_scheme` WHERE `id` = %s', (sid,))
+            _write_json(self, {'id': sid, 'message': '已删除'})
+        except Exception:
+            logger.error('fusion 方案删除异常', exc_info=True)
+            _write_error(self, '服务器内部错误', 500)

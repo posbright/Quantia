@@ -167,6 +167,34 @@ export function runFusion(data: FusionParams | FusionParamsV2) {
   return request({ url: '/api/verify/fusion', method: 'post', data })
 }
 
+// ── 融合：代码导出 / 方案持久化 ───────────────────────────────────────
+
+export function exportFusionCodeApi(data: FusionParamsV2): Promise<{ code: string; length: number }> {
+  return request({ url: '/api/verify/fusion_export', method: 'post', data }) as any
+}
+
+export interface FusionSchemeMeta {
+  id: number
+  name: string
+  description: string
+  mode: string
+  scheme: FusionParamsV2 | null
+  created_at: string
+  updated_at: string
+}
+
+export function saveFusionSchemeApi(data: FusionParamsV2 & { name: string; description?: string; id?: number }): Promise<{ id: number; message: string }> {
+  return request({ url: '/api/verify/fusion_scheme', method: 'post', data }) as any
+}
+
+export function listFusionSchemesApi(): Promise<{ items: FusionSchemeMeta[] }> {
+  return request({ url: '/api/verify/fusion_scheme/list', method: 'get' }) as any
+}
+
+export function deleteFusionSchemeApi(id: number): Promise<{ id: number; message: string }> {
+  return request({ url: `/api/verify/fusion_scheme/${id}`, method: 'delete' }) as any
+}
+
 // ── 优化建议 ──────────────────────────────────────────────────────────
 
 export interface OptimizeSuggestParams {

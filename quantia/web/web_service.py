@@ -210,6 +210,10 @@ class Application(tornado.web.Application):
             (r"/quantia/api/verify/exit_compare", verifyOptimizeHandler.ExitCompareHandler),
             (r"/quantia/api/verify/return_series", verifyOptimizeHandler.SignalReturnSeriesHandler),
             (r"/quantia/api/verify/fusion", verifyFusionHandler.StrategyFusionHandler),
+            (r"/quantia/api/verify/fusion_export", verifyFusionHandler.FusionExportCodeHandler),
+            (r"/quantia/api/verify/fusion_scheme", verifyFusionHandler.FusionSchemeSaveHandler),
+            (r"/quantia/api/verify/fusion_scheme/list", verifyFusionHandler.FusionSchemeListHandler),
+            (r"/quantia/api/verify/fusion_scheme/(\d+)", verifyFusionHandler.FusionSchemeDeleteHandler),
             (r"/quantia/api/verify/optimize_suggest", verifyFusionHandler.OptimizeSuggestHandler),
             # ── 因子实验室 ──
             (r"/quantia/api/factor_lab/factors", factorLabHandler.FactorCatalogHandler),
