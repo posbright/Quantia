@@ -20,6 +20,7 @@ import quantia.lib.database as mdb
 import quantia.web.base as webBase
 from quantia.web.verifyOptimizeHandler import (
     _calc_annualized_sharpe, _get_strategy_map, _json_default,
+    _load_backtest_data,
     _parse_date, _resolve_strategy, _safe_float, _write_error, _write_json,
     RATE_FIELDS_COUNT,
 )
@@ -386,18 +387,10 @@ class OptimizeSuggestHandler(webBase.BaseHandler):
         # 加载数据做简单分析
         rate_cols = [f'rate_{d}' for d in [1, 3, 5, 7, 10, 15, 20, 30]]
         table = meta['table']
-        if not mdb.checkTableIsExist(table):
-            _write_error(self, f"策略表 {table} 不存在")
-            return
 
-        cols_sql = ', '.join(['`date`', '`code`'] + [f'`{c}`' for c in rate_cols])
-        sql = f"SELECT {cols_sql} FROM `{table}` WHERE `date` >= %s AND `date` <= %s"
-        try:
-            df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
-        except Exception as e:
-            logger.error(f"优化建议查询失败: {e}", exc_info=True)
-            _write_error(self, '查询失败', 500)
-            return
+        # 走 _load_backtest_data：DB 有则直接读，DB 空则走 K 线兜底，
+        # 与买卖点优化页其它端点保持一致，避免 2025 历史区间无建议。
+        df = _load_backtest_data(table, start_date, end_date, rate_cols)
 
         if df is None or len(df) == 0:
             _write_json(self, {'suggestions': [], 'message': '无数据，无法生成建议'})
