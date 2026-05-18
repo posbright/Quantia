@@ -46,7 +46,7 @@
         <el-tooltip content="按逗号分隔的持仓交易日数列表。范围 1-240（约 1 年），最多 30 个。>100 时走 K 线缓存重算，首次约 1 分钟，后续秒级。" placement="top">
           <span class="toolbar-label">持仓天数 <i class="tip-icon">?</i></span>
         </el-tooltip>
-        <el-input v-model="holdingDaysInput" placeholder="如 1,3,5,10,20,40,60,120,180,240" style="width: 260px" clearable />
+        <el-input v-model="holdingDaysInput" placeholder="如 5,10,20,40,60,120,180,240" style="width: 260px" clearable />
       </div>
       <el-button class="analyze-btn" type="primary" :loading="loading" @click="runAnalysis">
         分析
@@ -190,10 +190,10 @@
           <div v-if="isCustomStrategy" class="custom-note">
             当前选择的是自定义组合策略，信号诊断会基于组合净值、交易次数和滚动持仓收益展示，不再强行 JOIN 内置策略信号表。
           </div>
-          <div v-if="!isCustomStrategy && signalBuckets.length > 0" class="table-wrapper">
+          <div v-if="signalBuckets.length > 0" class="table-wrapper">
             <table class="cmp-table">
               <thead>
-                <tr><th>{{ signalIndicator }} 区间</th><th>信号数</th><th>占比%</th><th>平均收益%</th><th>胜率%</th><th>夏普</th><th>质量</th></tr>
+                <tr><th>{{ isCustomStrategy ? '诊断维度' : `${signalIndicator} 区间` }}</th><th>信号数</th><th>占比%</th><th>平均收益%</th><th>胜率%</th><th>夏普</th><th>质量</th></tr>
               </thead>
               <tbody>
                 <tr v-for="b in signalBuckets" :key="b.range" :class="{ 'best-row': b.quality === 'golden' }">
@@ -208,26 +208,11 @@
               </tbody>
             </table>
           </div>
-          <div v-if="isCustomStrategy && matrixReady" class="table-wrapper">
-            <table class="cmp-table">
-              <thead><tr><th>诊断维度</th><th>样本数</th><th>平均收益</th><th>胜率</th><th>夏普</th><th>结论</th></tr></thead>
-              <tbody>
-                <tr v-for="item in holdingData.slice(0, 4)" :key="item.holding_days" :class="{ 'best-row': item.holding_days === bestHoldingDays }">
-                  <td>{{ item.holding_days }}日滚动窗口</td>
-                  <td>{{ item.signal_count }}</td>
-                  <td :class="rateClass(item.avg_return)">{{ fmt(item.avg_return) }}%</td>
-                  <td>{{ fmt(item.win_rate) }}%</td>
-                  <td>{{ fmt(item.sharpe_approx) }}</td>
-                  <td><span class="badge" :class="conclusionClass(item)">{{ holdingConclusion(item) }}</span></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <el-empty v-if="!isCustomStrategy && !loading && hasQueried && signalBuckets.length === 0" description="无信号诊断数据" />
+          <el-empty v-if="!loading && hasQueried && signalBuckets.length === 0" description="无信号诊断数据" />
         </div>
         <div class="result-card chart-card" style="margin-top: 12px">
           <div class="card-head"><h3>{{ isCustomStrategy ? '组合净值信号质量散点' : `${signalIndicator} - 收益率散点图` }}</h3></div>
-          <div v-if="!isCustomStrategy && signalBuckets.length > 0" ref="scatterChartRef" class="chart-box" />
+          <div v-if="signalBuckets.length > 0" ref="scatterChartRef" class="chart-box" />
           <div v-else class="chart-placeholder"><span>📊</span><p>{{ isCustomStrategy ? '自定义策略使用组合 NAV 与交易日志进行质量诊断' : '分析后展示指标分桶散点图' }}</p></div>
         </div>
       </el-tab-pane>
@@ -428,7 +413,7 @@ const signalIndicator = ref('rsi_6')
 const signalBuckets = ref<any[]>([])
 const scatterChartRef = ref<HTMLElement>()
 const indicatorOptions = ['rsi_6', 'rsi_12', 'macd', 'macds', 'kdjk', 'kdjd', 'cci', 'atr', 'cr']
-const DEFAULT_HOLDING_DAYS = '1,3,5,10,20,40,60,120,180,240'
+const DEFAULT_HOLDING_DAYS = '5,10,20,40,60,120,180,240'
 const MAX_HOLDING_DAY = 240
 const holdingDaysInput = ref(DEFAULT_HOLDING_DAYS)
 
@@ -744,8 +729,8 @@ async function restoreAnalysisFromCache(snapshot: any) {
   renderHoldingChart()
   renderLossChart()
   renderTierChart()
-  if (!isCustomStrategy.value && sltpMatrix.value.length > 0) renderSltpChart(sltpMatrix.value)
-  if (!isCustomStrategy.value && signalBuckets.value.length > 0) renderScatterChart()
+  if (sltpMatrix.value.length > 0) renderSltpChart(sltpMatrix.value)
+  if (signalBuckets.value.length > 0) renderScatterChart()
   if (returnSeries.value.length > 0) renderDrawdownChart()
   if (normalizedCostData.value.length > 0) renderCostChart()
   if (oosTrainSeries.value.length > 0 || oosTestSeries.value.length > 0) renderOosChart()
@@ -778,11 +763,11 @@ function sharpeClass(v: number | null): string {
   return v !== null && v >= 2 ? 'text-red font-bold' : v !== null && v < 0 ? 'text-green' : ''
 }
 function qualityLabel(q: string): string {
-  const map: Record<string, string> = { golden: '黄金', good: '良好', neutral: '中性', filter: '过滤' }
+  const map: Record<string, string> = { golden: '黄金', good: '良好', neutral: '中性', filter: '过滤', no_data: '无样本' }
   return map[q] || q
 }
 function qualityBadgeClass(q: string): string {
-  const map: Record<string, string> = { golden: 'b-best', good: 'b-pos', neutral: 'b-flat', filter: 'b-neg' }
+  const map: Record<string, string> = { golden: 'b-best', good: 'b-pos', neutral: 'b-flat', filter: 'b-neg', no_data: 'b-flat' }
   return map[q] || 'b-flat'
 }
 
@@ -813,14 +798,15 @@ function sleep(ms: number) {
   return new Promise(resolve => window.setTimeout(resolve, ms))
 }
 
-async function getCustomCompareWithPolling(params: { strategy: string; start_date: string; end_date: string }) {
+async function getCustomCompareWithPolling(params: { strategy: string; start_date: string; end_date: string; holding_days?: string }) {
   let res: any = await getCustomCompare(params)
   if (res.status !== 'running' || !res.task_id) return res
 
   customTaskMessage.value = res.message || '自定义策略回测计算中...'
-  for (let i = 0; i < 240; i++) {
+  // 轮询上限 ≈ 30 分钟（600 次 × 3 秒），覆盖长区间 / 多年度自定义回测
+  for (let i = 0; i < 600; i++) {
     await sleep(3000)
-    res = await getCustomCompare({ strategy: params.strategy, start_date: params.start_date, end_date: params.end_date, task_id: res.task_id })
+    res = await getCustomCompare({ strategy: params.strategy, start_date: params.start_date, end_date: params.end_date, task_id: res.task_id, holding_days: params.holding_days })
     customTaskMessage.value = res.message || customTaskMessage.value
     if (res.status !== 'running') return res
   }
@@ -847,7 +833,35 @@ function buildCustomFallbackData(payload: any) {
     signal_count: payload.total_signals || metrics.trade_count || 0,
   }]
   bestExitStrategy.value = 'portfolio_nav'
-  signalBuckets.value = []
+  // 自定义策略的信号诊断：把每个滚动持仓窗口当作一个“桶”，沿用现有诊断 UI
+  // （表格 + 散点）。x = 持仓天数，y = 平均收益，size = 滚动样本数。
+  // “占比”以全部滚动样本总和为分母，避免与 total_signals（=交易次数）
+  // 量纲不一致导致 % 远超 100 的问题。
+  const rollingTotal = (holdingData.value || []).reduce(
+    (sum: number, it: any) => sum + (Number(it.signal_count) || 0), 0)
+  signalBuckets.value = (holdingData.value || []).map((item: any) => {
+    const sharpe = item.sharpe_approx
+    const winRate = item.win_rate
+    let quality: string = 'neutral'
+    if (sharpe != null && winRate != null) {
+      if (sharpe >= 2.5 && winRate >= 65) quality = 'golden'
+      else if (sharpe >= 1.5 && winRate >= 55) quality = 'good'
+      else if (sharpe >= 0) quality = 'neutral'
+      else quality = 'filter'
+    }
+    const cnt = Number(item.signal_count) || 0
+    return {
+      range: `${item.holding_days}日`,
+      range_lo: item.holding_days,
+      range_hi: item.holding_days,
+      signal_count: cnt,
+      pct: rollingTotal > 0 ? (cnt / rollingTotal) * 100 : 0,
+      avg_return: item.avg_return,
+      win_rate: item.win_rate,
+      sharpe: item.sharpe_approx,
+      quality,
+    }
+  })
   suggestions.value = []
   computeOOSFromHolding()
 }
@@ -914,14 +928,25 @@ async function runAnalysis() {
 
   try {
     if (isCustomStrategy.value) {
-      const payload = await getCustomCompareWithPolling(params)
+      const payload = await getCustomCompareWithPolling({ ...params, holding_days: normalizedHoldingDays() })
       if (payload.status === 'failed') throw new Error(payload.message || '自定义策略分析失败')
       customComparePayload.value = payload
       buildCustomFallbackData(payload)
+      // 自定义策略也跑止盈止损矩阵：后端会根据 trades + K 线缓存逐笔模拟
+      try {
+        const sltpRes: any = await getSlTpMatrix({ ...params, max_hold_days: 20 })
+        sltpMatrix.value = sltpRes.matrix || []
+        sltpBest.value = sltpRes.best_combo || null
+      } catch {
+        sltpMatrix.value = []
+        sltpBest.value = null
+      }
       await nextTick()
       renderHoldingChart()
       renderLossChart()
       renderTierChart()
+      renderScatterChart()
+      if (sltpMatrix.value.length > 0) renderSltpChart(sltpMatrix.value)
       setCachedAnalysis(cacheKey)
       ElMessage.success('自定义策略分析完成')
       return
@@ -1038,20 +1063,34 @@ function renderScatterChart() {
   if (existing) existing.dispose()
   const chart = echarts.init(scatterChartRef.value)
 
-  // 各桶: X=桶中位值(从label估计), Y=avg_return, size=signal_count
-  const data = signalBuckets.value.map((b: any) => {
-    // 解析 range 如 "0-30" 得中位数 15
-    const parts = b.range.split('-').map(Number)
-    const mid = parts.length === 2 ? (parts[0] + parts[1]) / 2 : parts[0]
-    return {
-      value: [mid, b.avg_return ?? 0, b.signal_count ?? 10],
-      itemStyle: { color: (b.avg_return ?? 0) > 0 ? '#cf1322' : '#389e0d' },
-    }
-  })
+  const isCustom = isCustomStrategy.value
+  const xAxisName = isCustom ? '持仓天数' : signalIndicator.value
+  // 各桶: X=桶中位值(从label估计 或 自定义=持仓天数), Y=avg_return, size=signal_count
+  const data = signalBuckets.value
+    .filter((b: any) => b.avg_return != null && (b.signal_count ?? 0) > 0)
+    .map((b: any) => {
+      let x: number
+      if (isCustom) {
+        // range like "5日"
+        x = Number(b.range_lo ?? parseFloat(String(b.range))) || 0
+      } else {
+        // 解析 range 如 "0-30" 得中位数 15
+        const parts = String(b.range).split('-').map(Number)
+        x = parts.length === 2 ? (parts[0] + parts[1]) / 2 : parts[0]
+      }
+      return {
+        value: [x, b.avg_return ?? 0, b.signal_count ?? 10],
+        itemStyle: { color: (b.avg_return ?? 0) > 0 ? '#cf1322' : '#389e0d' },
+      }
+    })
 
   chart.setOption({
-    tooltip: { formatter: (p: any) => `${signalIndicator.value}: ${p.value[0]}<br/>平均收益: ${p.value[1]?.toFixed(2)}%<br/>信号数: ${p.value[2]}` },
-    xAxis: { type: 'value', name: signalIndicator.value, nameLocation: 'center', nameGap: 25 },
+    tooltip: {
+      formatter: (p: any) => isCustom
+        ? `持仓 ${p.value[0]} 日<br/>平均收益: ${p.value[1]?.toFixed(2)}%<br/>样本数: ${p.value[2]}`
+        : `${signalIndicator.value}: ${p.value[0]}<br/>平均收益: ${p.value[1]?.toFixed(2)}%<br/>信号数: ${p.value[2]}`,
+    },
+    xAxis: { type: 'value', name: xAxisName, nameLocation: 'center', nameGap: 25 },
     yAxis: { type: 'value', name: '平均收益%', axisLabel: { formatter: '{value}%' } },
     series: [{
       type: 'scatter',

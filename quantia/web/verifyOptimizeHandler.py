@@ -673,17 +673,27 @@ def _calc_rolling_nav_analysis(nav_data, holding_days_list, trade_count=0):
     for d in holding_days_list:
         if d <= 0 or len(nav) <= d:
             continue
-        base = nav[:-d]
-        future = nav[d:]
-        rates = (future / base - 1) * 100
+        # 非重叠采样：相邻样本完全独立，避免重叠窗口造成的高度
+        # 自相关 → std 严重低估 → sharpe 被放大、win_rate 接近 100%。
+        # 仅当样本数 >= 3 时才统计 sharpe / sortino，避免极端值。
+        sampled = nav[::d]
+        if len(sampled) < 2:
+            # 数据窗口短于持仓周期，无法形成完整周期 → 跳过
+            continue
+        rates = (sampled[1:] / sampled[:-1] - 1) * 100
         rates = rates[np.isfinite(rates)]
         if len(rates) == 0:
             continue
 
         avg_ret = float(rates.mean())
         std_ret = float(rates.std(ddof=1)) if len(rates) > 1 else 0.0
-        sharpe = _calc_annualized_sharpe(rates, d)
-        sortino = _calc_sortino(rates, d)
+        # 样本数 < 3 时 std 不可靠，sharpe / sortino 置 None
+        if len(rates) < 3:
+            sharpe = None
+            sortino = None
+        else:
+            sharpe = _calc_annualized_sharpe(rates, d)
+            sortino = _calc_sortino(rates, d)
         win_rate = float((rates > 0).mean() * 100)
         gains = rates[rates > 0]
         losses = rates[rates < 0]
@@ -777,8 +787,124 @@ def _load_cached_custom_backtest(strategy_id, start_date, end_date, benchmark):
     return None, None
 
 
-def _build_custom_compare_payload(strategy_key, strategy_name, start_date, end_date, result, data_source):
-    """把自定义策略回测结果转换为策略对比页统一响应。"""
+def _collect_custom_buy_trades(strategy_id, start_date, end_date, benchmark):
+    """从内存中正在运行/已完成的自定义对比任务 或 持久化的回测结果中收集 buy 交易。
+
+    优先使用内存中最近完成的任务（用户刚刚跑过 verify/compare 才能保证一致性），
+    fallback 到 cn_stock_backtest_portfolio 表中覆盖该区间的已完成回测。
+    返回 [{date, code, price}, ...] 列表（按日期升序）。
+    """
+    trades = []
+    for task in (_CUSTOM_COMPARE_TASKS.values() if _CUSTOM_COMPARE_TASKS else []):
+        if task.get('status') != 'completed':
+            continue
+        ck = task.get('cache_key')
+        raw = task.get('raw_result')
+        if not ck or not raw or not isinstance(raw, dict):
+            continue
+        try:
+            if int(ck[0]) != int(strategy_id):
+                continue
+        except (TypeError, ValueError):
+            continue
+        if str(task.get('start_date')) > str(start_date) or str(task.get('end_date')) < str(end_date):
+            # 区间不完全覆盖也接受（兼容用户改窄区间）
+            pass
+        trades = raw.get('trades', []) or []
+        if trades:
+            break
+
+    if not trades:
+        result, _ = _load_cached_custom_backtest(strategy_id, start_date, end_date, benchmark)
+        trades = (result or {}).get('trades', []) if result else []
+
+    out = []
+    s_str = str(start_date)
+    e_str = str(end_date)
+    for t in trades or []:
+        if t.get('direction') != 'buy':
+            continue
+        date_str = str(t.get('date', ''))
+        if not date_str or date_str < s_str or date_str > e_str:
+            continue
+        try:
+            price = float(t.get('price', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0:
+            continue
+        code = str(t.get('code', '') or '').strip()
+        if not code:
+            continue
+        out.append({'date': date_str, 'code': code, 'price': price})
+    out.sort(key=lambda x: x['date'])
+    return out
+
+
+def _build_custom_trade_rate_matrix(buy_trades, max_hold):
+    """逐笔买入事件 + 后续 K 线 → (N, max_hold) 收益矩阵。
+
+    单只股票的全量 K 线只读取一次（缓存在本函数内），避免重复 IO。
+    返回 numpy.ndarray，dtype=float64，单位为百分比。
+    """
+    if not buy_trades or max_hold <= 0:
+        return np.zeros((0, max_hold), dtype=float)
+
+    hist_cache = {}
+    rows = []
+    for tr in buy_trades:
+        code = tr['code']
+        if code not in hist_cache:
+            try:
+                # 给 read_stock_hist_from_cache 传宽区间，让其返回完整缓存。
+                hist = stf.read_stock_hist_from_cache(code, '19900101', '20991231')
+            except Exception:
+                hist = None
+            if hist is not None and len(hist) > 0:
+                try:
+                    if not pd.api.types.is_datetime64_any_dtype(hist['date']):
+                        hist = hist.copy()
+                        hist['date'] = pd.to_datetime(hist['date'])
+                except Exception:
+                    hist = None
+            hist_cache[code] = hist
+        hist = hist_cache[code]
+        if hist is None or len(hist) == 0 or 'close' not in getattr(hist, 'columns', []):
+            continue
+
+        target_ts = pd.Timestamp(tr['date'])
+        date_arr = hist['date'].values
+        idxs = np.where(date_arr >= np.datetime64(target_ts))[0]
+        if len(idxs) == 0:
+            continue
+        idx = int(idxs[0])
+        buy_price = float(tr['price'])
+        closes = hist['close'].values
+        rate_row = np.full(max_hold, np.nan)
+        for d in range(1, max_hold + 1):
+            fwd = idx + d
+            if fwd >= len(closes):
+                break
+            try:
+                close_v = float(closes[fwd])
+                if close_v > 0 and buy_price > 0:
+                    rate_row[d - 1] = (close_v - buy_price) / buy_price * 100
+            except (TypeError, ValueError):
+                continue
+        if np.isfinite(rate_row).any():
+            rows.append(rate_row)
+
+    if not rows:
+        return np.zeros((0, max_hold), dtype=float)
+    return np.vstack(rows)
+
+
+def _build_custom_compare_payload(strategy_key, strategy_name, start_date, end_date, result, data_source, holding_days_list=None):
+    """把自定义策略回测结果转换为策略对比页统一响应。
+
+    holding_days_list: 用户在前端勾选的持仓天数；不传时回退到 [5,10,20]
+    （历史默认），上限受 MAX_HOLDING_DAYS_EXTENDED 控制（在调用端校验）。
+    """
     if result.get('status') != 'completed':
         return {
             'strategy': strategy_key,
@@ -798,8 +924,9 @@ def _build_custom_compare_payload(strategy_key, strategy_name, start_date, end_d
     nav_series = result.get('nav', []) or []
     trades = result.get('trades', []) or []
     trade_count = metrics.get('trade_count') or len(trades)
+    days_list = holding_days_list or [5, 10, 20]
     analysis, best_holding_days, best_sharpe = _calc_rolling_nav_analysis(
-        nav_series, [5, 10, 20], trade_count=trade_count)
+        nav_series, days_list, trade_count=trade_count)
     series, benchmark_series = _series_from_nav(nav_series, include_benchmark=True)
 
     return {
@@ -845,16 +972,24 @@ def _find_reusable_custom_compare_task(cache_key):
 
 def _start_custom_compare_task(strategy_key, strategy_id, strategy_name, strategy_code,
                                start_date, end_date, initial_cash, benchmark,
-                               commission, tax, slippage, cache_key=None):
-    """启动自定义策略对比后台任务，避免单个 HTTP 请求等待长回测。"""
+                               commission, tax, slippage, cache_key=None,
+                               holding_days_list=None):
+    """启动自定义策略对比后台任务，避免单个 HTTP 请求等待长回测。
+
+    holding_days_list 仅作为首次构建 payload 的默认值；任务完成后会保留原始
+    回测结果，后续轮询请求可携带新的 holding_days 重新计算分析。
+    """
     task_id = str(uuid.uuid4())[:8]
     _CUSTOM_COMPARE_TASKS[task_id] = {
         'status': 'running',
         'strategy': strategy_key,
         'strategy_cn': strategy_name,
+        'start_date': str(start_date),
+        'end_date': str(end_date),
         'period': f'{start_date} ~ {end_date}',
         'cache_key': cache_key,
         'result': None,
+        'raw_result': None,
         'message': '自定义策略回测计算中，请稍候...',
     }
     if cache_key is not None:
@@ -877,11 +1012,14 @@ def _start_custom_compare_task(strategy_key, strategy_id, strategy_name, strateg
                 start_date, end_date, initial_cash, benchmark, result)
             payload = _build_custom_compare_payload(
                 strategy_key, strategy_name, start_date, end_date,
-                result, 'portfolio_engine_live')
+                result, 'portfolio_engine_live',
+                holding_days_list=holding_days_list)
             task = _CUSTOM_COMPARE_TASKS.get(task_id)
             if task is not None:
                 task['status'] = payload.get('status') or 'completed'
                 task['result'] = payload
+                task['raw_result'] = result if payload.get('status') == 'completed' else None
+                task['data_source'] = 'portfolio_engine_live'
                 task['message'] = payload.get('message') or 'done'
         except Exception as e:
             logging.error("自定义策略对比后台任务异常: task_id=%s", task_id, exc_info=True)
@@ -941,7 +1079,7 @@ def _persist_custom_compare_result(strategy_id, strategy_name, strategy_code,
         logging.warning("自定义策略对比结果落库失败（不影响本次响应）", exc_info=True)
 
 
-def _custom_compare_task_payload(task_id):
+def _custom_compare_task_payload(task_id, holding_days_list=None):
     task = _CUSTOM_COMPARE_TASKS.get(task_id)
     if not task:
         return {'status': 'failed', 'task_id': task_id, 'message': '对比任务不存在或已过期'}
@@ -957,6 +1095,15 @@ def _custom_compare_task_payload(task_id):
             'benchmark_series': [],
             'message': task.get('message'),
         }
+    raw = task.get('raw_result')
+    if raw is not None and holding_days_list:
+        payload = _build_custom_compare_payload(
+            task.get('strategy'), task.get('strategy_cn'),
+            task.get('start_date'), task.get('end_date'),
+            raw, task.get('data_source') or 'portfolio_engine_live',
+            holding_days_list=holding_days_list)
+        payload['task_id'] = task_id
+        return payload
     result = task.get('result') or {}
     result = dict(result)
     result['task_id'] = task_id
@@ -1109,9 +1256,21 @@ class CustomStrategyCompareHandler(webBase.BaseHandler):
             _write_error(self, '服务器内部错误', 500)
 
     async def _handle(self):
+        # 解析持仓天数（与内建策略保持一致），允许在轮询时携带以重新计算
+        days_arg = self.get_argument('holding_days', default='', strip=True)
+        if days_arg:
+            holding_days_list = _parse_int_list(
+                days_arg,
+                min_value=1,
+                max_value=MAX_HOLDING_DAYS_EXTENDED,
+                max_items=30,
+            ) or [5, 10, 20]
+        else:
+            holding_days_list = [5, 10, 20]
+
         task_id = self.get_argument('task_id', default='', strip=True)
         if task_id:
-            _write_json(self, _custom_compare_task_payload(task_id))
+            _write_json(self, _custom_compare_task_payload(task_id, holding_days_list=holding_days_list))
             return
 
         strategy_key, strategy_id, start_date, end_date, err = _parse_custom_strategy_args(self)
@@ -1162,7 +1321,7 @@ class CustomStrategyCompareHandler(webBase.BaseHandler):
                 initial_cash, benchmark, commission, tax, slippage)
             reusable_task_id = _find_reusable_custom_compare_task(cache_key)
             if reusable_task_id:
-                payload = _custom_compare_task_payload(reusable_task_id)
+                payload = _custom_compare_task_payload(reusable_task_id, holding_days_list=holding_days_list)
                 payload['cache_hit'] = True
                 payload['message'] = payload.get('message') or '已复用同参数分析任务'
                 _write_json(self, payload)
@@ -1171,7 +1330,8 @@ class CustomStrategyCompareHandler(webBase.BaseHandler):
             task_id = _start_custom_compare_task(
                 strategy_key, strategy_id, strategy_name or f'策略#{strategy_id}', strategy_code,
                 start_date, end_date, initial_cash, benchmark,
-                commission, tax, slippage, cache_key=cache_key)
+                commission, tax, slippage, cache_key=cache_key,
+                holding_days_list=holding_days_list)
             _write_json(self, {
                 'strategy': strategy_key,
                 'strategy_cn': strategy_name or f'策略#{strategy_id}',
@@ -1187,7 +1347,8 @@ class CustomStrategyCompareHandler(webBase.BaseHandler):
             return
 
         payload = _build_custom_compare_payload(
-            strategy_key, strategy_name, start_date, end_date, result, data_source)
+            strategy_key, strategy_name, start_date, end_date, result, data_source,
+            holding_days_list=holding_days_list)
         _write_json(self, payload)
 
 
@@ -1488,9 +1649,17 @@ class SignalQualityHandler(webBase.BaseHandler):
                     except ValueError:
                         continue
         else:
-            # 自动四分位分桶
-            q = df['ind_val'].quantile([0, 0.25, 0.5, 0.75, 1.0]).values
-            bucket_ranges = [(q[0], q[1]), (q[1], q[2]), (q[2], q[3]), (q[3], q[4])]
+            # 自动四分位分桶；当指标值高度集中导致分位点重复时（如 RSI 极端区
+            # 间），需要去重后再切桶，避免出现 (x, x) 的空桶被跳过 → 表格只
+            # 显示部分桶的现象。
+            q_raw = df['ind_val'].quantile([0, 0.25, 0.5, 0.75, 1.0]).values
+            q_unique = sorted(set(float(v) for v in q_raw if np.isfinite(v)))
+            if len(q_unique) >= 2:
+                bucket_ranges = [(q_unique[i], q_unique[i + 1]) for i in range(len(q_unique) - 1)]
+            else:
+                vmin = float(df['ind_val'].min())
+                vmax = float(df['ind_val'].max())
+                bucket_ranges = [(vmin, vmax)] if np.isfinite(vmin) and np.isfinite(vmax) else []
 
         buckets_result = []
         for lo, hi in bucket_ranges:
@@ -1501,6 +1670,18 @@ class SignalQualityHandler(webBase.BaseHandler):
             subset = df.loc[mask, 'rate'].values
 
             if len(subset) == 0:
+                # 始终输出该桶占位，避免前端表格"只有部分数据"的错觉
+                buckets_result.append({
+                    'range': f'{lo:.1f}-{hi:.1f}',
+                    'range_lo': _safe_float(lo),
+                    'range_hi': _safe_float(hi),
+                    'signal_count': 0,
+                    'pct': 0.0,
+                    'avg_return': None,
+                    'win_rate': None,
+                    'sharpe': None,
+                    'quality': 'no_data',
+                })
                 continue
 
             avg_ret = float(subset.mean())
@@ -1529,14 +1710,14 @@ class SignalQualityHandler(webBase.BaseHandler):
                 'quality': quality,
             })
 
-        # 生成过滤建议: 标记 quality=filter 的区间
+        # 生成过滤建议: 标记 quality=filter 的区间（no_data 桶不参与统计）
         filter_ranges = [b['range'] for b in buckets_result if b['quality'] == 'filter']
         golden_ranges = [b['range'] for b in buckets_result if b['quality'] == 'golden']
 
         # 计算过滤后的预期提升
         expected_improvement = {}
         if filter_ranges:
-            kept = [b for b in buckets_result if b['quality'] != 'filter']
+            kept = [b for b in buckets_result if b['quality'] not in ('filter', 'no_data') and b['signal_count'] > 0]
             if kept:
                 total_kept_signals = sum(b['signal_count'] for b in kept)
                 if total_kept_signals > 0:
@@ -1583,6 +1764,13 @@ class StopLossTakeProfitMatrixHandler(webBase.BaseHandler):
             _write_error(self, '服务器内部错误', 500)
 
     def _handle(self):
+        strategy_arg = self.get_argument('strategy', default='', strip=True)
+        is_custom = strategy_arg.startswith('custom_')
+
+        if is_custom:
+            self._handle_custom(strategy_arg)
+            return
+
         meta, start_date, end_date, err = _parse_common_args(self)
         if err:
             _write_error(self, err)
@@ -1624,43 +1812,7 @@ class StopLossTakeProfitMatrixHandler(webBase.BaseHandler):
         rate_df = df[rate_cols].copy()
         rates_matrix = rate_df.values  # (N, max_hold)
 
-        matrix = []
-        best_sharpe = None
-        best_combo = None
-
-        for sl in sl_levels:
-            for tp in tp_levels:
-                final_rates = self._simulate_sl_tp(rates_matrix, sl, tp, max_hold)
-                valid = final_rates[np.isfinite(final_rates)]
-                if len(valid) == 0:
-                    continue
-
-                avg_ret = float(valid.mean())
-                std_ret = float(valid.std(ddof=1)) if len(valid) > 1 else 0.0
-                win_rate = float((valid > 0).mean() * 100)
-                sharpe = _calc_annualized_sharpe(valid, max_hold)
-
-                # 统计命中分布
-                sl_hit, tp_hit, expired = self._count_exits(rates_matrix, sl, tp, max_hold)
-
-                item = {
-                    'stop_loss': sl,
-                    'take_profit': tp,
-                    'sharpe': _safe_float(sharpe),
-                    'avg_return': _safe_float(avg_ret),
-                    'win_rate': _safe_float(win_rate),
-                    'return_std': _safe_float(std_ret),
-                    'avg_hold_days': _safe_float(self._avg_hold_days(rates_matrix, sl, tp, max_hold)),
-                    'trades_hit_sl': int(sl_hit),
-                    'trades_hit_tp': int(tp_hit),
-                    'trades_expired': int(expired),
-                    'total_trades': int(len(valid)),
-                }
-                matrix.append(item)
-
-                if sharpe is not None and (best_sharpe is None or sharpe > best_sharpe):
-                    best_sharpe = sharpe
-                    best_combo = {'stop_loss': sl, 'take_profit': tp, 'sharpe': _safe_float(sharpe)}
+        matrix, best_combo = self._scan_sl_tp_grid(rates_matrix, sl_levels, tp_levels, max_hold)
 
         _write_json(self, {
             'strategy': meta['table'],
@@ -1671,6 +1823,102 @@ class StopLossTakeProfitMatrixHandler(webBase.BaseHandler):
             'matrix': matrix,
             'best_combo': best_combo,
         })
+
+    def _handle_custom(self, strategy_key):
+        """自定义策略 SL/TP 矩阵：基于回测的 buy 交易 + K 线缓存逐笔模拟。"""
+        strategy_key, strategy_id, start_date, end_date, err = _parse_custom_strategy_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        sl_arg = self.get_argument('sl_range', default='-2,-3,-5,-8,-10', strip=True)
+        tp_arg = self.get_argument('tp_range', default='3,5,8,10,15', strip=True)
+        max_hold_arg = self.get_argument('max_hold_days', default='20', strip=True)
+        benchmark = self.get_argument('benchmark', default='000300', strip=True) or '000300'
+
+        try:
+            sl_levels = sorted(set(float(x.strip()) for x in sl_arg.split(',') if x.strip()), reverse=True)
+        except ValueError:
+            sl_levels = [-2, -3, -5, -8, -10]
+        try:
+            tp_levels = sorted(set(float(x.strip()) for x in tp_arg.split(',') if x.strip()))
+        except ValueError:
+            tp_levels = [3, 5, 8, 10, 15]
+        try:
+            max_hold = max(1, min(int(max_hold_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            max_hold = 20
+
+        trades = _collect_custom_buy_trades(strategy_id, start_date, end_date, benchmark)
+        if not trades:
+            _write_json(self, {
+                'strategy': strategy_key,
+                'max_hold_days': max_hold,
+                'matrix': [],
+                'total_signals': 0,
+                'message': '当前自定义策略在该区间无可复用回测或买入记录，请先运行组合回测/策略对比',
+            })
+            return
+
+        rates_matrix = _build_custom_trade_rate_matrix(trades, max_hold)
+        if rates_matrix.shape[0] == 0:
+            _write_json(self, {
+                'strategy': strategy_key,
+                'max_hold_days': max_hold,
+                'matrix': [],
+                'total_signals': 0,
+                'message': '逐笔 K 线缓存不足，无法计算止盈止损矩阵',
+            })
+            return
+
+        matrix, best_combo = self._scan_sl_tp_grid(rates_matrix, sl_levels, tp_levels, max_hold)
+        _write_json(self, {
+            'strategy': strategy_key,
+            'period': f'{start_date} ~ {end_date}',
+            'max_hold_days': max_hold,
+            'total_signals': int(rates_matrix.shape[0]),
+            'matrix': matrix,
+            'best_combo': best_combo,
+            'data_source': 'custom_trades+kline',
+        })
+
+    @classmethod
+    def _scan_sl_tp_grid(cls, rates_matrix, sl_levels, tp_levels, max_hold):
+        matrix = []
+        best_sharpe = None
+        best_combo = None
+        for sl in sl_levels:
+            for tp in tp_levels:
+                final_rates = cls._simulate_sl_tp(rates_matrix, sl, tp, max_hold)
+                valid = final_rates[np.isfinite(final_rates)]
+                if len(valid) == 0:
+                    continue
+
+                avg_ret = float(valid.mean())
+                std_ret = float(valid.std(ddof=1)) if len(valid) > 1 else 0.0
+                win_rate = float((valid > 0).mean() * 100)
+                sharpe = _calc_annualized_sharpe(valid, max_hold)
+
+                sl_hit, tp_hit, expired = cls._count_exits(rates_matrix, sl, tp, max_hold)
+
+                matrix.append({
+                    'stop_loss': sl,
+                    'take_profit': tp,
+                    'sharpe': _safe_float(sharpe),
+                    'avg_return': _safe_float(avg_ret),
+                    'win_rate': _safe_float(win_rate),
+                    'return_std': _safe_float(std_ret),
+                    'avg_hold_days': _safe_float(cls._avg_hold_days(rates_matrix, sl, tp, max_hold)),
+                    'trades_hit_sl': int(sl_hit),
+                    'trades_hit_tp': int(tp_hit),
+                    'trades_expired': int(expired),
+                    'total_trades': int(len(valid)),
+                })
+
+                if sharpe is not None and (best_sharpe is None or sharpe > best_sharpe):
+                    best_sharpe = sharpe
+                    best_combo = {'stop_loss': sl, 'take_profit': tp, 'sharpe': _safe_float(sharpe)}
+        return matrix, best_combo
 
     @staticmethod
     def _simulate_sl_tp(rates_matrix, sl, tp, max_hold):

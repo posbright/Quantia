@@ -23,7 +23,9 @@ const WRITE_METHODS = new Set(['post', 'put', 'delete', 'patch'])
 // 创建 axios 实例
 const service: AxiosInstance = axios.create({
   baseURL: '/quantia',
-  timeout: 60000,
+  // 部分验证 / 回测页面的同步分析接口可能耗时较长（K 线兜底、组合回测等），
+  // 全局超时放宽到 5 分钟，避免长区间数据请求被 axios 中断。
+  timeout: 300000,
   headers: {
     'Content-Type': 'application/json;charset=UTF-8'
   },
