@@ -933,30 +933,53 @@ function computeOOSFromHoldingByNav(navSeries: any[]) {
     navVals.push(cum)
     navDates.push(String(s?.date || ''))
   }
-  const d = Number(bestHoldingDays.value) || 20
-  if (navVals.length < d * 3) {
+  const dBest = Number(bestHoldingDays.value) || 20
+  const N = navVals.length
+  // 至少需要 8 个非重叠采样点（train/test 各 ≥ 3 个 + 端点重叠 1 个 + 余量）：
+  // splitIdx≈0.7N, train 段长 ≥ 3d+1, test 段长 ≥ 3d+1。
+  // 取保守下限 N ≥ 8 才能跑 d=1。
+  if (N < 8) {
     oosData.value = { train: null, test: null }
-    oosWarning.value = `回测窗口过短（${navVals.length} 个交易日 < ${d * 3}），无法做样本外验证：至少需要 3 个非重叠持仓周期`
+    oosWarning.value = `回测交易日不足（${N} 天），无法做样本外验证`
     oosTrainSeries.value = []
     oosTestSeries.value = []
     return
   }
-  const splitIdx = Math.floor(navVals.length * 0.7)
+  // 自动降级：若 best 持仓窗口太大装不下两侧各 3 个非重叠样本，降到一个有效值。
+  // 双段都要 ≥ 3d+1，splitIdx ≈ 0.7N 时，约束为 N ≥ d * (3/0.3 + 3/0.3) = ~20d。
+  // 保守取 dCap = floor((N - 2) / 8) 让 train 段(0.7N) 能容 ~5 个非重叠点、test 段(0.3N) 能容 ~2 个。
+  const dCap = Math.max(1, Math.floor((N - 2) / 8))
+  const dEff = Math.max(5, Math.min(dBest, dCap))
+  const downgraded = dEff < dBest
+
+  // 切分位置：保证 train/test 各自 ≥ 2*dEff+1 (即 ≥ 2 个非重叠采样)
+  const minSeg = 2 * dEff + 1
+  let splitIdx = Math.floor(N * 0.7)
+  if (splitIdx < minSeg) splitIdx = minSeg
+  if (N - splitIdx + 1 < minSeg) splitIdx = N - minSeg + 1
+  if (splitIdx < minSeg || N - splitIdx + 1 < minSeg) {
+    oosData.value = { train: null, test: null }
+    oosWarning.value = `回测窗口过短（${N} 个交易日），即使降级到持仓 ${dEff} 日仍无法切出训练/测试集`
+    oosTrainSeries.value = []
+    oosTestSeries.value = []
+    return
+  }
+
   const trainNav = navVals.slice(0, splitIdx)
   const testNav = navVals.slice(splitIdx - 1) // 共享分界点，保证连续
-  const splitDate = navDates[splitIdx] || navDates[navDates.length - 1] || ''
-  const train = _computeRollingStats(trainNav, d)
-  const test = _computeRollingStats(testNav, d)
+  const splitDate = navDates[splitIdx] || navDates[N - 1] || ''
+  const train = _computeRollingStats(trainNav, dEff)
+  const test = _computeRollingStats(testNav, dEff)
   if (!train || !test) {
     oosData.value = { train: null, test: null }
-    oosWarning.value = `训练 / 测试集非重叠样本不足（持仓周期 ${d} 日），无法计算样本外指标`
+    oosWarning.value = `训练 / 测试集非重叠样本不足（持仓周期 ${dEff} 日），无法计算样本外指标`
     oosTrainSeries.value = []
     oosTestSeries.value = []
     return
   }
   oosData.value = {
-    train: { ...train, period: `${navDates[0] || startDate.value} ~ ${splitDate}` },
-    test: { ...test, period: `${splitDate} ~ ${navDates[navDates.length - 1] || endDate.value}` },
+    train: { ...train, period: `${navDates[0] || startDate.value} ~ ${splitDate}`, holding_days_used: dEff },
+    test: { ...test, period: `${splitDate} ~ ${navDates[N - 1] || endDate.value}`, holding_days_used: dEff },
   }
   const normalize = (vals: number[], dates: string[]) => {
     if (vals.length === 0) return []
@@ -966,7 +989,9 @@ function computeOOSFromHoldingByNav(navSeries: any[]) {
   }
   oosTrainSeries.value = normalize(trainNav, navDates.slice(0, splitIdx))
   oosTestSeries.value = normalize(testNav, navDates.slice(splitIdx - 1))
-  oosWarning.value = ''
+  oosWarning.value = downgraded
+    ? `最优持仓 ${dBest} 日窗口下样本不足，已自动降级到 ${dEff} 日持仓周期计算样本外指标`
+    : ''
 }
 
 async function runAnalysis() {
