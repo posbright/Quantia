@@ -223,12 +223,12 @@
           <div class="card-head">
             <div>
               <h3>止损 × 止盈 二维收益扫描</h3>
-              <span>{{ isCustomStrategy ? '自定义策略使用组合回测结果，展示风险建议占位' : '逐日模拟止损/止盈触发，色阶=夏普比率' }}</span>
+              <span>{{ isCustomStrategy ? '逐笔买入 + K 线模拟止盈/止损触发，色阶=夏普比率' : '逐日模拟止损/止盈触发，色阶=夏普比率' }}</span>
             </div>
-            <em>{{ isCustomStrategy ? '组合策略' : 'rate_1..20' }}</em>
+            <em>{{ isCustomStrategy ? '逐笔模拟' : 'rate_1..20' }}</em>
           </div>
-          <div v-if="!isCustomStrategy && sltpMatrix.length > 0" ref="sltpChartRef" class="heatmap-box" />
-          <div v-else class="chart-placeholder heatmap-box"><span>🔥</span><p>{{ isCustomStrategy ? '自定义策略暂不强行复用内置信号 rate_N 矩阵，建议使用组合回撤和持仓周期辅助止盈止损' : '分析后展示止损 × 止盈热力图' }}</p></div>
+          <div v-if="sltpMatrix.length > 0" ref="sltpChartRef" class="heatmap-box" />
+          <div v-else class="chart-placeholder heatmap-box"><span>🔥</span><p>{{ isCustomStrategy ? '未找到可复用的自定义回测买入记录，请先运行策略对比 / 组合回测后重试' : '分析后展示止损 × 止盈热力图' }}</p></div>
         </div>
         <div v-if="sltpBest" class="best-combo">
           最优组合: 止损 {{ sltpBest.stop_loss }}% / 止盈 {{ sltpBest.take_profit }}%（夏普 {{ fmt(sltpBest.sharpe) }}）
@@ -863,21 +863,103 @@ function buildCustomFallbackData(payload: any) {
     }
   })
   suggestions.value = []
-  computeOOSFromHolding()
+  // 用真实 NAV 序列填充回撤曲线（payload.series 是已归一化为 100 的累计净值）
+  fillReturnSeriesFromNav(payload.series || [])
+  // 用真实 NAV 70/30 切分计算样本外验证（替换原来用固定衰减系数造假数据的实现）
+  computeOOSFromHoldingByNav(payload.series || [])
 }
 
-function computeOOSFromHolding() {
-  const best = bestHolding.value
-  if (!best) {
+function fillReturnSeriesFromNav(navSeries: any[]) {
+  let peak = -Infinity
+  let prevCum: number | null = null
+  const out: Array<{ date: string; cumulative: number; drawdown: number; daily_return: number }> = []
+  for (const s of navSeries || []) {
+    const cum = Number(s?.cumulative)
+    if (!Number.isFinite(cum) || cum <= 0) continue
+    if (cum > peak) peak = cum
+    const drawdown = peak > 0 ? ((cum - peak) / peak) * 100 : 0
+    const daily_return = prevCum && prevCum > 0 ? (cum / prevCum - 1) * 100 : 0
+    out.push({ date: s.date, cumulative: cum, drawdown, daily_return })
+    prevCum = cum
+  }
+  returnSeries.value = out
+}
+
+function _computeRollingStats(navVals: number[], d: number) {
+  if (!Array.isArray(navVals) || navVals.length <= d || d <= 0) return null
+  // 非重叠采样，与后端 _calc_rolling_nav_analysis 一致，避免重叠窗口
+  // 造成 std 严重低估、sharpe / 胜率被人为放大。
+  const samples: number[] = []
+  for (let i = d; i < navVals.length; i += d) {
+    const base = navVals[i - d]
+    const future = navVals[i]
+    if (base > 0 && Number.isFinite(future)) {
+      const r = (future / base - 1) * 100
+      if (Number.isFinite(r)) samples.push(r)
+    }
+  }
+  if (samples.length < 2) return null
+  const avg = samples.reduce((a, b) => a + b, 0) / samples.length
+  const variance = samples.reduce((a, b) => a + (b - avg) ** 2, 0) / (samples.length - 1)
+  const std = Math.sqrt(variance)
+  const winners = samples.filter(v => v > 0).length
+  const winRate = (winners / samples.length) * 100
+  const annualization = Math.sqrt(252 / d)
+  const sharpe = samples.length >= 3 && std > 0 ? (avg / std) * annualization : null
+  const downside = samples.filter(v => v < 0)
+  let sortino: number | null = null
+  if (samples.length >= 3 && downside.length >= 2) {
+    const downStd = Math.sqrt(downside.reduce((a, b) => a + b * b, 0) / (downside.length - 1))
+    sortino = downStd > 0 ? (avg / downStd) * annualization : null
+  }
+  const maxLoss = samples.reduce((m, v) => (v < m ? v : m), 0)
+  return {
+    avg_return: avg,
+    win_rate: winRate,
+    sharpe,
+    sortino,
+    max_single_loss: maxLoss,
+    signal_count: samples.length,
+  }
+}
+
+function computeOOSFromHoldingByNav(navSeries: any[]) {
+  const navVals: number[] = (navSeries || [])
+    .map((s: any) => Number(s?.cumulative))
+    .filter((v: number) => Number.isFinite(v) && v > 0)
+  const d = Number(bestHoldingDays.value) || 20
+  if (navVals.length < d * 3) {
     oosData.value = { train: null, test: null }
+    oosWarning.value = `回测窗口过短（${navVals.length} 个交易日 < ${d * 3}），无法做样本外验证：至少需要 3 个非重叠持仓周期`
+    oosTrainSeries.value = []
+    oosTestSeries.value = []
     return
   }
-  const trainSharpe = Number(best.sharpe_approx || 0)
-  const testSharpe = trainSharpe ? trainSharpe * 0.86 : 0
-  oosData.value = {
-    train: { ...best, sharpe: trainSharpe, period: `${startDate.value} ~ 训练集`, signal_count: Math.round(totalSignals.value * 0.7) },
-    test: { ...best, avg_return: Number(best.avg_return || 0) * 0.83, win_rate: Number(best.win_rate || 0) * 0.94, sharpe: testSharpe, sortino: Number(best.sortino_approx || 0) * 0.88, period: `测试集 ~ ${endDate.value}`, signal_count: Math.round(totalSignals.value * 0.3) },
+  const splitIdx = Math.floor(navVals.length * 0.7)
+  const trainNav = navVals.slice(0, splitIdx)
+  const testNav = navVals.slice(splitIdx - 1) // 共享分界点，保证连续
+  const splitDate = navSeries[splitIdx]?.date || ''
+  const train = _computeRollingStats(trainNav, d)
+  const test = _computeRollingStats(testNav, d)
+  if (!train || !test) {
+    oosData.value = { train: null, test: null }
+    oosWarning.value = `训练 / 测试集非重叠样本不足（持仓周期 ${d} 日），无法计算样本外指标`
+    oosTrainSeries.value = []
+    oosTestSeries.value = []
+    return
   }
+  oosData.value = {
+    train: { ...train, period: `${startDate.value} ~ ${splitDate}` },
+    test: { ...test, period: `${splitDate} ~ ${endDate.value}` },
+  }
+  const navDates = (navSeries || []).map((s: any) => s?.date || '')
+  const normalize = (vals: number[], dates: string[]) => {
+    if (vals.length === 0) return []
+    const base = vals[0]
+    return vals.map((v, i) => ({ date: dates[i] || '', cumulative: (v / base) * 100 }))
+  }
+  oosTrainSeries.value = normalize(trainNav, navDates.slice(0, splitIdx))
+  oosTestSeries.value = normalize(testNav, navDates.slice(splitIdx - 1))
   oosWarning.value = ''
 }
 
@@ -947,6 +1029,8 @@ async function runAnalysis() {
       renderTierChart()
       renderScatterChart()
       if (sltpMatrix.value.length > 0) renderSltpChart(sltpMatrix.value)
+      if (returnSeries.value.length > 0) renderDrawdownChart()
+      if (oosTrainSeries.value.length > 0 || oosTestSeries.value.length > 0) renderOosChart()
       setCachedAnalysis(cacheKey)
       ElMessage.success('自定义策略分析完成')
       return
