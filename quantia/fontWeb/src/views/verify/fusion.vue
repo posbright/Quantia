@@ -36,6 +36,26 @@
         </label>
       </div>
 
+      <!-- 回测参数 -->
+      <div class="param-bar">
+        <span class="param-label">回测区间:</span>
+        <el-date-picker v-model="startDate" type="date" size="small" value-format="YYYY-MM-DD" style="width: 140px" />
+        <span class="param-sep">~</span>
+        <el-date-picker v-model="endDate" type="date" size="small" value-format="YYYY-MM-DD" style="width: 140px" />
+        <span class="param-label">持仓天数:</span>
+        <el-input-number v-model="holdingDays" :min="1" :max="60" size="small" style="width: 100px" />
+        <template v-if="fusionMode === 'weighted_score'">
+          <span class="param-label">最小评分:</span>
+          <el-input-number v-model="minScore" :min="0" :max="1" :step="0.05" :precision="2" size="small" style="width: 110px" />
+          <span class="param-tip">(0~1，达到才算融合命中)</span>
+        </template>
+        <template v-if="fusionMode === 'vote'">
+          <span class="param-label">最少同维度:</span>
+          <el-input-number v-model="voteThreshold" :min="1" :max="5" size="small" style="width: 100px" />
+          <span class="param-tip">(≥N 个维度命中)</span>
+        </template>
+      </div>
+
       <!-- 五维配置 -->
       <div class="dim-grid">
         <div
@@ -96,13 +116,23 @@
         </span>
       </div>
 
+      <!-- warnings -->
+      <el-alert
+        v-for="(w, i) in warnings"
+        :key="i"
+        :title="w"
+        type="warning"
+        :closable="false"
+        style="margin-top: 10px"
+      />
+
       <!-- 融合结果 -->
       <template v-if="fusionResult">
         <div class="kpi-row">
           <div class="kpi-card highlight">
             <div class="kpi-value" :class="fusionResult.sharpe > 0 ? 'text-pos' : 'text-neg'">{{ fmt(fusionResult.sharpe) }}</div>
             <div class="kpi-label">融合夏普</div>
-            <div v-if="improvement.sharpe_vs_best" class="kpi-delta text-pos">{{ improvement.sharpe_vs_best }}</div>
+            <div v-if="improvement.sharpe_vs_best_single || improvement.sharpe_vs_best" class="kpi-delta text-pos">vs 最佳单维 {{ improvement.sharpe_vs_best_single || improvement.sharpe_vs_best }}</div>
           </div>
           <div class="kpi-card">
             <div class="kpi-value" :class="fusionResult.win_rate > 50 ? 'text-pos' : ''">{{ fmt(fusionResult.win_rate) }}%</div>
@@ -115,6 +145,7 @@
           <div class="kpi-card">
             <div class="kpi-value" :class="(fusionResult.max_drawdown || 0) > -10 ? 'text-blue' : 'text-neg'">{{ fmt(fusionResult.max_drawdown) }}%</div>
             <div class="kpi-label">最大回撤</div>
+            <div v-if="improvement.drawdown_vs_worst_single" class="kpi-delta text-blue">vs 最差单维 {{ improvement.drawdown_vs_worst_single }}</div>
           </div>
         </div>
 
@@ -161,15 +192,20 @@
       <div class="card">
         <div class="card-h">因子贡献分析 (Shapley Value) <span class="card-sub">每个维度对夏普比率的边际贡献</span></div>
         <div class="card-b">
-          <template v-if="fusionResult && shapleyContribs.length">
+          <template v-if="!fusionResult">
+            <el-empty description="请先在「融合配置器」运行融合回测" :image-size="60" />
+          </template>
+          <template v-else-if="shapleyContribs.length">
             <div v-for="c in shapleyContribs" :key="c.name" class="factor-bar">
               <div class="fb-name">{{ c.name }}</div>
               <div class="fb-track"><div class="fb-fill" :style="{ width: c.pct + '%', background: c.color }"></div></div>
               <div class="fb-val" :class="c.impact >= 0 ? 'text-pos' : 'text-neg'">{{ c.impact >= 0 ? '+' : '' }}{{ c.impact.toFixed(2) }}</div>
             </div>
-            <div class="tip">Shapley 贡献度 = 逐步加入维度后夏普的边际增量（均值）</div>
+            <div class="tip">Shapley 贡献度 = 各子集中加入该维度的平均边际增量</div>
           </template>
-          <el-empty v-else description="请先运行融合回测" :image-size="60" />
+          <template v-else>
+            <el-empty description="Shapley 数据将在 Stage 3 提供（当前回测启用维度可能 < 2 或后端暂未计算）" :image-size="60" />
+          </template>
         </div>
       </div>
     </div>
@@ -177,9 +213,12 @@
     <!-- Sub 2: A/B 对比验证 -->
     <div v-show="activeSubTab === 2" class="sub-panel">
       <div class="card">
-        <div class="card-h">A/B 逐步验证 <span class="card-sub">逐维度加入后的增量效果</span></div>
+        <div class="card-h">A/B 逐步验证 <span class="card-sub">按 Shapley 顺序逐维加入后的累计效果</span></div>
         <div class="card-b">
-          <template v-if="fusionResult && abSteps.length">
+          <template v-if="!fusionResult">
+            <el-empty description="请先在「融合配置器」运行融合回测" :image-size="60" />
+          </template>
+          <template v-else-if="abSteps.length">
             <table class="cmp-table">
               <thead><tr><th>维度组合</th><th>夏普</th><th>胜率</th><th>最大回撤</th><th>信号数</th><th>累计增量</th></tr></thead>
               <tbody>
@@ -200,7 +239,9 @@
             </table>
             <div class="tip">每加一维度，信号数减少（过滤噪音），但剩余信号质量提升。边际效益递减是正常的。</div>
           </template>
-          <el-empty v-else description="请先运行融合回测" :image-size="60" />
+          <template v-else>
+            <el-empty description="A/B 步进数据将在 Stage 3 提供" :image-size="60" />
+          </template>
         </div>
       </div>
     </div>
@@ -210,19 +251,24 @@
       <div class="card">
         <div class="card-h">信号重叠可视化 <span class="card-sub">多维共振信号分布</span></div>
         <div class="card-b">
-          <template v-if="fusionResult">
+          <template v-if="!fusionResult">
+            <el-empty description="请先在「融合配置器」运行融合回测" :image-size="60" />
+          </template>
+          <template v-else-if="(overlapData.calendar && overlapData.calendar.length) || (overlapData.co_occurrence && overlapData.co_occurrence.length)">
             <div class="overlap-grid">
               <div class="card-inner">
                 <div class="card-inner-h">日历热力图</div>
                 <div ref="calendarRef" style="height: 200px" />
               </div>
               <div class="card-inner">
-                <div class="card-inner-h">维度重叠矩阵</div>
+                <div class="card-inner-h">维度 Jaccard 重叠矩阵</div>
                 <div ref="overlapRef" style="height: 200px" />
               </div>
             </div>
           </template>
-          <el-empty v-else description="请先运行融合回测" :image-size="60" />
+          <template v-else>
+            <el-empty description="信号重叠数据将在 Stage 3 提供" :image-size="60" />
+          </template>
         </div>
       </div>
     </div>
@@ -230,9 +276,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onUnmounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
+import request from '@/api/request'
 import { runFusion as apiFusion } from '@/api/verify'
 import UsageGuide from '@/components/verify/UsageGuide.vue'
 
@@ -293,53 +340,53 @@ const dimensions = ref<Dimension[]>([
   {
     key: 'tech', name: '技术策略信号', color: '#1890ff', weight: 30, enabled: true,
     items: [
-      { id: 'keep_increasing', label: '均线多头', checked: true },
-      { id: 'breakthrough_platform', label: '突破确认', checked: true },
-      { id: 'backtrace_ma250', label: '趋势回调', checked: true },
-      { id: 'turtle_trade', label: '海龟交易', checked: false },
-      { id: 'low_atr', label: '超跌反弹', checked: false },
-      { id: 'high_tight_flag', label: '放量上涨', checked: false },
+      { id: 'cn_stock_strategy_keep_increasing', label: '均线多头', checked: true },
+      { id: 'cn_stock_strategy_breakthrough_platform', label: '突破平台', checked: true },
+      { id: 'cn_stock_strategy_backtrace_ma250', label: '回踩年线', checked: true },
+      { id: 'cn_stock_strategy_turtle_trade', label: '海龟交易', checked: false },
+      { id: 'cn_stock_strategy_oversold_rebound', label: '超跌反弹', checked: false },
+      { id: 'cn_stock_strategy_enter', label: '放量上涨', checked: false },
+      { id: 'cn_stock_strategy_breakout_confirm', label: '突破确认', checked: false },
+      { id: 'cn_stock_strategy_trend_pullback', label: '趋势回调', checked: false },
     ],
-    tip: '来源: 13个 cn_stock_strategy_* 表 | 规则: 信号触发=看多',
+    tip: '来源: 13个 cn_stock_strategy_* 表（同维度内多策略 OR 关系）',
   },
   {
     key: 'fund', name: '基本面筛选', color: '#722ed1', weight: 25, enabled: true,
     items: [
-      { id: 'pe_lt_30', label: 'PE < 30', checked: true },
-      { id: 'pb_lt_5', label: 'PB < 5', checked: true },
-      { id: 'roe_gte_10', label: 'ROE ≥ 10%', checked: true },
-      { id: 'gpr_gte_20', label: '毛利率 ≥ 20%', checked: true },
-      { id: 'debt_lt_60', label: '负债率 < 60%', checked: true },
-      { id: 'growth_10', label: '净利润3Y增长 > 10%', checked: false },
+      { id: 'pe9_lt_30', label: '市盈率 PE < 30', checked: true },
+      { id: 'pbnewmrq_lt_5', label: '市净率 PB < 5', checked: true },
+      { id: 'roe_weight_gte_10', label: 'ROE ≥ 10%', checked: true },
+      { id: 'sale_gpr_gte_20', label: '毛利率 ≥ 20%', checked: true },
+      { id: 'jroa_gte_3', label: 'ROA ≥ 3%', checked: false },
+      { id: 'pettmdeducted_lt_40', label: 'PE扣非 < 40', checked: false },
     ],
-    tip: '来源: cn_stock_selection (pe9, pbnewmrq, roe_weight...)',
+    tip: '来源: cn_stock_selection（同维度内多条件 AND）',
   },
   {
     key: 'flow', name: '资金流向', color: '#13c2c2', weight: 20, enabled: true,
     items: [
       { id: 'fund_amount_gt_0', label: '当日主力净流入 > 0', checked: true },
       { id: 'fund_amount_3_gt_0', label: '3日主力净流入 > 0', checked: true },
-      { id: 'fund_rate_gt_0', label: '主力占比 > 0', checked: false },
+      { id: 'fund_rate_gt_0', label: '主力占比 > 0%', checked: false },
+      { id: 'fund_amount_super_gt_0', label: '超大单净流入 > 0', checked: false },
     ],
-    tip: '来源: cn_stock_fund_flow',
+    tip: '来源: cn_stock_fund_flow（同维度内多条件 AND）',
   },
   {
-    key: 'sent', name: '市场情绪 & 事件', color: '#eb2f96', weight: 15, enabled: true,
+    key: 'sent', name: '市场情绪', color: '#eb2f96', weight: 15, enabled: true,
     items: [
-      { id: 'inst_ratio_5', label: '机构持股 ≥ 5%', checked: true },
-      { id: 'fund_num_3', label: '基金持股 ≥ 3家', checked: true },
-      { id: 'holder_dec', label: '股东户数环比↓', checked: false },
-      { id: 'mgmt_buy', label: '近3月高管增持', checked: false },
+      { id: 'turnoverrate_gte_3', label: '换手率 ≥ 3%', checked: true },
+      { id: 'volume_ratio_gte_1', label: '量比 ≥ 1', checked: true },
+      { id: 'amplitude_gte_2', label: '振幅 ≥ 2%', checked: false },
+      { id: 'change_rate_gte_0', label: '涨跌幅 ≥ 0', checked: false },
     ],
-    tip: '来源: cn_stock_selection (allcorp_ratio, allcorp_fund_num...)',
+    tip: '来源: cn_stock_selection（换手率/量比/振幅/涨跌幅）',
   },
   {
-    key: 'custom', name: '自定义策略 & 复合指标', color: '#fa8c16', weight: 10, enabled: true,
-    items: [
-      { id: 'custom_momentum', label: '我的动量策略', checked: false },
-      { id: 'composite_super_rsi', label: '超级趋势+RSI', checked: false },
-    ],
-    tip: '来源: cn_stock_custom_indicator + 用户策略',
+    key: 'custom', name: '自定义策略 & 复合指标', color: '#fa8c16', weight: 10, enabled: false,
+    items: [],
+    tip: '来源: 用户自定义策略 cn_stock_strategy_<custom_id>（加载中…）',
   },
 ])
 
@@ -354,28 +401,80 @@ const fusionResult = ref<any>(null)
 const individualResults = ref<Record<string, any>>({})
 const improvement = ref<any>({})
 const dailySeries = ref<any[]>([])
+const shapleyData = ref<Array<{ dim: string; name?: string; contrib: number }>>([])
+const abStepsData = ref<Array<any>>([])
+const overlapData = ref<any>({ calendar: [], co_occurrence: [] })
+const warnings = ref<string[]>([])
+const diagnostics = ref<any>({})
 const fusionChartRef = ref<HTMLElement>()
 const calendarRef = ref<HTMLElement>()
 const overlapRef = ref<HTMLElement>()
 
-async function runFusionBacktest() {
-  // 收集启用维度中选中的策略
-  const techDim = dimensions.value.find(d => d.key === 'tech')
-  const selectedStrategies = techDim?.enabled
-    ? techDim.items.filter(i => i.checked).map(i => i.id)
-    : []
+// 回测参数
+const today = new Date()
+const startDate = ref<string>(`${today.getFullYear()}-01-01`)
+const endDate = ref<string>(today.toISOString().slice(0, 10))
+const holdingDays = ref<number>(10)
+const minScore = ref<number>(0.5)
+const voteThreshold = ref<number>(2)
 
-  if (selectedStrategies.length < 2) {
-    ElMessage.warning('请在技术策略维度中至少选择 2 个策略')
+// 自定义维度动态加载
+async function loadCustomStrategies() {
+  try {
+    const res: any = await request({ url: '/api/strategy/list', method: 'get' })
+    const list = Array.isArray(res) ? res : (res?.data || res?.strategies || [])
+    const customDim = dimensions.value.find(d => d.key === 'custom')
+    if (!customDim) return
+    const items: DimItem[] = []
+    for (const s of list) {
+      const id = s.id ?? s.strategy_id ?? s.name
+      const label = s.name || s.title || `策略#${id}`
+      if (id == null) continue
+      items.push({ id: `cn_stock_strategy_custom_${id}`, label: `自定义: ${label}`, checked: false })
+    }
+    customDim.items = items
+    customDim.tip = items.length
+      ? `共 ${items.length} 个用户自定义策略（同维度内 OR）`
+      : '尚无自定义策略，请先在「策略管理」创建'
+  } catch (e) {
+    const customDim = dimensions.value.find(d => d.key === 'custom')
+    if (customDim) customDim.tip = '自定义策略列表加载失败（接口不可用，跳过）'
+  }
+}
+onMounted(() => { loadCustomStrategies() })
+
+function buildV2Payload() {
+  const dims: Record<string, any> = {}
+  for (const d of dimensions.value) {
+    const checkedItems = d.items.filter(i => i.checked).map(i => i.id)
+    dims[d.key] = {
+      enabled: !!d.enabled && checkedItems.length > 0,
+      weight: Number(d.weight) || 0,
+      items: checkedItems,
+    }
+  }
+  return {
+    version: 2 as const,
+    mode: fusionMode.value as 'weighted_score' | 'vote' | 'condition_tree' | 'rotation',
+    start_date: startDate.value,
+    end_date: endDate.value,
+    holding_days: holdingDays.value,
+    min_score: minScore.value,
+    vote_threshold: voteThreshold.value,
+    dimensions: dims,
+  }
+}
+
+async function runFusionBacktest() {
+  const payload = buildV2Payload()
+  const enabledDims = Object.entries(payload.dimensions).filter(([, d]: any) => d.enabled && d.items.length > 0)
+  if (enabledDims.length === 0) {
+    ElMessage.warning('请至少启用一个维度并勾选条目')
     return
   }
-
-  // Map frontend fusion mode to backend API format
-  const modeMap: Record<string, string> = {
-    weighted_score: 'intersection',
-    vote: 'vote',
-    condition_tree: 'union',
-    rotation: 'rotation',
+  if (totalWeight.value !== 100) {
+    ElMessage.warning(`已启用维度权重之和需 = 100%（当前 ${totalWeight.value}%）`)
+    return
   }
 
   loading.value = true
@@ -383,93 +482,73 @@ async function runFusionBacktest() {
   individualResults.value = {}
   improvement.value = {}
   dailySeries.value = []
+  shapleyData.value = []
+  abStepsData.value = []
+  overlapData.value = { calendar: [], co_occurrence: [] }
+  warnings.value = []
+  diagnostics.value = {}
 
   try {
-    const res: any = await apiFusion({
-      strategy_names: selectedStrategies,
-      mode: (modeMap[fusionMode.value] || 'intersection') as 'intersection' | 'union' | 'vote' | 'rotation',
-      vote_threshold: 2,
-      start_date: '2025-01-01',
-      end_date: '2025-12-31',
-      holding_days: 10,
-    })
-    fusionResult.value = res.fusion_result
+    const res: any = await apiFusion(payload as any)
+    fusionResult.value = res.fusion_result || null
     individualResults.value = res.individual_results || {}
     improvement.value = res.improvement || {}
     dailySeries.value = res.daily_series || []
+    shapleyData.value = Array.isArray(res.shapley) ? res.shapley : []
+    abStepsData.value = Array.isArray(res.ab_steps) ? res.ab_steps : []
+    overlapData.value = res.overlap || { calendar: [], co_occurrence: [] }
+    warnings.value = Array.isArray(res.warnings) ? res.warnings : []
+    diagnostics.value = res.diagnostics || {}
     await nextTick()
     renderFusionChart()
     if (activeSubTab.value === 3) renderOverlapCharts()
+    if (!fusionResult.value || !fusionResult.value.signal_count) {
+      ElMessage.warning('融合后无信号，请放宽条件或调整日期区间')
+    } else {
+      ElMessage.success(`融合完成，共 ${fusionResult.value.signal_count} 条信号`)
+    }
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.error || e.message || '融合请求失败')
+    ElMessage.error(e?.response?.data?.error || e?.message || '融合请求失败')
   } finally {
     loading.value = false
   }
 }
 
-// ── 因子贡献数据 ──────────────────────────────────────────────────────
+// ── 因子贡献数据（来自后端 shapley 字段） ────────────────────────────
 
 const shapleyContribs = computed(() => {
-  if (!fusionResult.value || !individualResults.value) return []
-  const entries = Object.entries(individualResults.value)
-  if (entries.length === 0) return []
-
   const dimColors: Record<string, string> = { tech: '#1890ff', fund: '#722ed1', flow: '#13c2c2', sent: '#eb2f96', custom: '#fa8c16' }
-  const result: { name: string; impact: number; pct: number; color: string }[] = []
-  const fusionSharpe = fusionResult.value.sharpe || 0
-
-  entries.forEach(([key, data]: [string, any]) => {
-    const sharpe = data.sharpe || 0
-    const impact = fusionSharpe - sharpe
-    result.push({
-      name: data.cn || key,
-      impact: impact > 0 ? impact : impact * 0.5,
-      pct: 0,
-      color: dimColors.tech,
-    })
-  })
-
-  const maxAbs = Math.max(...result.map(r => Math.abs(r.impact)), 0.01)
-  result.forEach(r => r.pct = (Math.abs(r.impact) / maxAbs) * 100)
-  result.sort((a, b) => b.impact - a.impact)
-  return result
+  const dimNames: Record<string, string> = { tech: '技术信号', fund: '基本面', flow: '资金流向', sent: '市场情绪', custom: '自定义' }
+  if (!Array.isArray(shapleyData.value) || shapleyData.value.length === 0) return []
+  const arr = shapleyData.value.map((s: any) => ({
+    name: s.name || dimNames[s.dim] || s.dim,
+    impact: Number(s.contrib) || 0,
+    pct: 0,
+    color: dimColors[s.dim] || '#999',
+  }))
+  const maxAbs = Math.max(...arr.map(r => Math.abs(r.impact)), 0.01)
+  arr.forEach(r => r.pct = (Math.abs(r.impact) / maxAbs) * 100)
+  arr.sort((a, b) => b.impact - a.impact)
+  return arr
 })
 
-// ── A/B 步进数据 ──────────────────────────────────────────────────────
+// ── A/B 步进数据（来自后端 ab_steps 字段） ────────────────────────────
 
 const abSteps = computed(() => {
-  if (!fusionResult.value || !individualResults.value) return []
-  const entries = Object.entries(individualResults.value)
-  if (entries.length === 0) return []
-
-  const steps: { label: string; sharpe: number; winRate: number; maxDD: number; signalCount: number; delta: number }[] = []
-  let prevSharpe = 0
-
-  entries.forEach(([_key, data]: [string, any], idx) => {
-    const sharpe = data.sharpe || 0
-    const labels = entries.slice(0, idx + 1).map(([, d]: [string, any], i) => `${['①','②','③','④','⑤'][i]}${d.cn || ''}`)
-    steps.push({
-      label: labels.join(' + '),
+  if (!Array.isArray(abStepsData.value) || abStepsData.value.length === 0) return []
+  return abStepsData.value.map((s: any, idx: number, arr: any[]) => {
+    const sharpe = Number(s.sharpe) || 0
+    const prev = idx === 0 ? 0 : Number(arr[idx - 1].sharpe) || 0
+    const delta = idx === 0 ? 0 : ((sharpe - prev) / Math.abs(prev || 1)) * 100
+    return {
+      label: s.label || (s.dims ? s.dims.join(' + ') : `Step ${idx + 1}`),
       sharpe,
-      winRate: data.win_rate || 0,
-      maxDD: data.max_drawdown || -10,
-      signalCount: data.signal_count || 0,
-      delta: idx === 0 ? 0 : ((sharpe - prevSharpe) / Math.abs(prevSharpe || 1)) * 100,
-    })
-    prevSharpe = sharpe
+      winRate: Number(s.win_rate) || 0,
+      maxDD: Number(s.max_drawdown) || 0,
+      signalCount: Number(s.signal_count) || 0,
+      delta,
+    }
   })
-
-  // Add fusion as final row
-  steps.push({
-    label: '🔗 全维度融合',
-    sharpe: fusionResult.value.sharpe || 0,
-    winRate: fusionResult.value.win_rate || 0,
-    maxDD: fusionResult.value.max_drawdown || 0,
-    signalCount: fusionResult.value.signal_count || 0,
-    delta: prevSharpe ? ((fusionResult.value.sharpe - prevSharpe) / Math.abs(prevSharpe)) * 100 : 0,
-  })
-
-  return steps
 })
 
 // ── 图表 ──────────────────────────────────────────────────────────────
@@ -510,23 +589,54 @@ function renderFusionChart() {
 
 function renderOverlapCharts() {
   if (!calendarRef.value || !overlapRef.value) return
-  // Calendar heatmap placeholder
+  const calData: any[] = Array.isArray(overlapData.value?.calendar) ? overlapData.value.calendar : []
+  const coData: any[] = Array.isArray(overlapData.value?.co_occurrence) ? overlapData.value.co_occurrence : []
+
+  // ── 日历热图 ──
+  const calExisting = echarts.getInstanceByDom(calendarRef.value)
+  if (calExisting) calExisting.dispose()
   const cal = echarts.init(calendarRef.value)
+  const calPoints = calData.map((p: any) => [p.date, Number(p.signal_count) || 0])
+  const maxCnt = calPoints.length ? Math.max(...calPoints.map(p => p[1] as number)) : 10
+  const range = calPoints.length
+    ? [calPoints[0][0], calPoints[calPoints.length - 1][0]]
+    : [startDate.value, endDate.value]
   cal.setOption({
     tooltip: { formatter: (p: any) => `${p.value[0]}: ${p.value[1]} 信号` },
-    visualMap: { min: 0, max: 10, show: false, inRange: { color: ['#ebedf0', '#9be9a8', '#40c463', '#30a14e', '#216e39'] } },
-    calendar: { range: '2025-06', cellSize: [14, 14], top: 30, left: 30, right: 10 },
-    series: [{ type: 'heatmap', coordinateSystem: 'calendar', data: [] }],
+    visualMap: {
+      min: 0, max: maxCnt || 1, show: false,
+      inRange: { color: ['#ebedf0', '#9be9a8', '#40c463', '#30a14e', '#216e39'] },
+    },
+    calendar: { range, cellSize: [14, 14], top: 30, left: 30, right: 10 },
+    series: [{ type: 'heatmap', coordinateSystem: 'calendar', data: calPoints }],
   })
 
-  // Overlap matrix
+  // ── 维度重叠矩阵 ──
+  const ovExisting = echarts.getInstanceByDom(overlapRef.value)
+  if (ovExisting) ovExisting.dispose()
   const ov = echarts.init(overlapRef.value)
-  const dims = dimensions.value.filter(d => d.enabled).map(d => d.name.substring(0, 4))
+  const dimNames: Record<string, string> = { tech: '技术', fund: '基本面', flow: '资金', sent: '情绪', custom: '自定义' }
+  const enabledKeys = dimensions.value.filter(d => d.enabled && d.items.some(i => i.checked)).map(d => d.key)
+  const axisLabels = enabledKeys.map(k => dimNames[k] || k)
+  const matrix: any[] = []
+  for (const row of coData) {
+    const xi = enabledKeys.indexOf(row.a)
+    const yi = enabledKeys.indexOf(row.b)
+    if (xi >= 0 && yi >= 0) matrix.push([xi, yi, Number(row.jaccard) || 0])
+  }
   ov.setOption({
-    tooltip: {},
-    xAxis: { type: 'category', data: dims, axisLabel: { fontSize: 10 } },
-    yAxis: { type: 'category', data: dims, axisLabel: { fontSize: 10 } },
-    series: [{ type: 'heatmap', data: [], label: { show: true } }],
+    tooltip: { formatter: (p: any) => `${axisLabels[p.value[0]]} ∩ ${axisLabels[p.value[1]]}: ${(p.value[2] * 100).toFixed(1)}%` },
+    grid: { top: 30, left: 60, right: 20, bottom: 30 },
+    xAxis: { type: 'category', data: axisLabels, axisLabel: { fontSize: 10 } },
+    yAxis: { type: 'category', data: axisLabels, axisLabel: { fontSize: 10 } },
+    visualMap: {
+      min: 0, max: 1, show: false,
+      inRange: { color: ['#f0f5ff', '#91d5ff', '#1890ff', '#0050b3'] },
+    },
+    series: [{
+      type: 'heatmap', data: matrix,
+      label: { show: true, formatter: (p: any) => (p.value[2] * 100).toFixed(0) + '%', fontSize: 10 },
+    }],
   })
 }
 
@@ -545,25 +655,37 @@ onUnmounted(() => {
 // ── 工具函数 ──────────────────────────────────────────────────────────
 
 function saveFusionScheme() {
-  ElMessage.success('方案已保存到本地')
-  // Store in localStorage for persistence
   const scheme = {
-    dimensions: dimensions.value.map(d => ({ key: d.key, weight: d.weight, enabled: d.enabled, items: d.items })),
+    version: 2,
     mode: fusionMode.value,
+    start_date: startDate.value,
+    end_date: endDate.value,
+    holding_days: holdingDays.value,
+    min_score: minScore.value,
+    vote_threshold: voteThreshold.value,
+    dimensions: dimensions.value.map(d => ({
+      key: d.key, name: d.name, weight: d.weight, enabled: d.enabled,
+      items: d.items.map(i => ({ id: i.id, label: i.label, checked: i.checked })),
+    })),
     savedAt: new Date().toISOString(),
   }
-  localStorage.setItem('quantia_fusion_scheme', JSON.stringify(scheme))
+  localStorage.setItem('quantia_fusion_scheme_v2', JSON.stringify(scheme))
+  ElMessage.success('方案已保存到本地（localStorage: quantia_fusion_scheme_v2）')
 }
 
 function exportFusionCode() {
-  const enabledDims = dimensions.value.filter(d => d.enabled)
+  const payload = buildV2Payload()
   const lines = [
-    '# 融合策略代码 (自动生成)',
+    '# Quantia 策略融合代码（自动生成 v2）',
     `# 模式: ${fusionModes.find(m => m.value === fusionMode.value)?.label || fusionMode.value}`,
+    `# 区间: ${startDate.value} ~ ${endDate.value}, 持仓 ${holdingDays.value} 天`,
     '',
-    'dimensions = {',
-    ...enabledDims.map(d => `    "${d.name}": {"weight": ${d.weight}, "items": ${JSON.stringify(d.items.filter(i => i.checked).map(i => i.id))}},`),
-    '}',
+    'import requests',
+    '',
+    'payload = ' + JSON.stringify(payload, null, 2),
+    '',
+    'r = requests.post("http://localhost:9988/quantia/api/verify/fusion", json=payload)',
+    'print(r.json())',
   ]
   const code = lines.join('\n')
   navigator.clipboard.writeText(code).then(() => {
@@ -611,6 +733,12 @@ function sharpeClass(v: number | null | undefined): string {
 }
 .mode-option.active { background: #e6f7ff; border-color: #91d5ff; }
 .mode-desc { font-size: 10px; color: #909399; }
+
+/* Param bar */
+.param-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; padding: 8px 12px; background: #fafbfc; border-radius: 4px; border: 1px solid #ebeef5; }
+.param-label { font-size: 12px; color: #606266; font-weight: 600; margin-left: 4px; }
+.param-sep { color: #909399; }
+.param-tip { font-size: 11px; color: #909399; }
 
 /* Dimension grid */
 .dim-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }

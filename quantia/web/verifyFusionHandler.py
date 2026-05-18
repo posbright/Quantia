@@ -53,6 +53,10 @@ class StrategyFusionHandler(webBase.BaseHandler):
             _write_error(self, '请求体必须为 JSON')
             return
 
+        # v2 schema (五维真融合) 走新通路。旧 schema (仅 strategy_names) 继续走 legacy。
+        if int(body.get('version', 0) or 0) >= 2 or 'dimensions' in body:
+            return _handle_v2(self, body)
+
         strategy_names = body.get('strategy_names', [])
         if not isinstance(strategy_names, list) or len(strategy_names) < 2:
             _write_error(self, '至少需要选择 2 个策略')
@@ -350,6 +354,539 @@ class StrategyFusionHandler(webBase.BaseHandler):
             filtered[table] = merged.loc[mask, ['date', 'code', 'rate']].reset_index(drop=True)
 
         return filtered
+
+
+# ── 策略融合 v2 — 五维真融合 ──────────────────────────────────────────
+#
+# 设计 doc: document/strategy_fusion_redesign_plan.md
+#
+# 五维数据源：
+#   tech   → cn_stock_strategy_<x>  (items = 策略表名/别名, 同维 OR)
+#   fund   → cn_stock_selection     (items = "<col>_<op>_<val>", 同维 AND)
+#   flow   → cn_stock_fund_flow     (items = "<col>_<op>_<val>", 同维 AND)
+#   sent   → cn_stock_selection     (items = "<col>_<op>_<val>", 同维 AND, 不同列子集)
+#   custom → cn_stock_strategy_<custom_id> 或 composite_<id> (items 同 tech)
+#
+# 收益评估：cn_stock_backtest_data 表 (date, code, rate_1..rate_100)
+#   若该表无数据，fallback 用 cn_stock_strategy_* union 出 (date, code, rate_N)。
+
+_DIM_LABEL = {'tech': '技术信号', 'fund': '基本面', 'flow': '资金流', 'sent': '情绪', 'custom': '自定义'}
+
+# fund / flow / sent 字段白名单：避免 SQL 注入并控制可选过滤范围
+_FUND_ALLOWED_COLS = {
+    'pe9': '市盈率TTM', 'pbnewmrq': '市净率MRQ', 'pettmdeducted': '市盈率TTM扣非',
+    'ps9': '市销率TTM', 'pcfjyxjl9': '市现率TTM', 'roe_weight': '净资产收益率ROE',
+    'jroa': '总资产净利率ROA', 'roic': '投入资本回报率ROIC',
+    'sale_gpr': '毛利率', 'sale_npr': '净利率', 'zxgxl': '最新股息率',
+    'ycpeg': '预测PEG', 'dtsyl': '动态市盈率',
+    'total_market_cap': '总市值', 'free_cap': '流通市值',
+}
+_FLOW_ALLOWED_COLS = {
+    'fund_amount': '当日主力净流入', 'fund_rate': '当日主力净流入占比',
+    'fund_amount_3': '3日主力净流入', 'fund_rate_3': '3日主力净流入占比',
+    'fund_amount_5': '5日主力净流入', 'fund_rate_5': '5日主力净流入占比',
+    'fund_amount_10': '10日主力净流入', 'fund_rate_10': '10日主力净流入占比',
+    'fund_amount_super': '当日超大单净流入', 'fund_rate_super': '当日超大单净流入占比',
+    'fund_amount_large': '当日大单净流入', 'fund_rate_large': '当日大单净流入占比',
+}
+_SENT_ALLOWED_COLS = {
+    'turnoverrate': '换手率', 'volume_ratio': '量比',
+    'change_rate': '涨跌幅', 'amplitude': '振幅', 'ups_downs': '涨跌额',
+}
+
+_OP_MAP = {'lt': '<', 'lte': '<=', 'gt': '>', 'gte': '>=', 'eq': '='}
+
+
+class _ValidationError(Exception):
+    """v2 spec 解析校验失败。"""
+
+
+def _parse_item_expr(item: str, allowed_cols: dict):
+    """解析 'col_op_val' 形式表达式。
+
+    返回 (col, sql_op, threshold) 或 raise _ValidationError。
+    item 必须以 allowed_cols 中的某个 col 起始（最长前缀匹配，因为 col 名可能含 '_'）。
+    """
+    if not isinstance(item, str) or not item.strip():
+        raise _ValidationError(f"item 必须为非空字符串: {item!r}")
+    s = item.strip()
+    # 最长前缀匹配 column 名
+    matched_col = None
+    for col in sorted(allowed_cols.keys(), key=len, reverse=True):
+        if s.startswith(col + '_'):
+            matched_col = col
+            break
+    if not matched_col:
+        raise _ValidationError(f"未知列: {item!r}（允许列: {', '.join(sorted(allowed_cols.keys()))}）")
+    tail = s[len(matched_col) + 1:]
+    parts = tail.split('_', 1)
+    if len(parts) != 2:
+        raise _ValidationError(f"item 格式错误: {item!r}, 应为 '<col>_<op>_<val>'")
+    op_key, val_s = parts
+    if op_key not in _OP_MAP:
+        raise _ValidationError(f"不支持的操作符 {op_key!r}, 仅支持 {list(_OP_MAP.keys())}")
+    try:
+        threshold = float(val_s)
+    except ValueError:
+        raise _ValidationError(f"阈值不是数字: {val_s!r}")
+    return matched_col, _OP_MAP[op_key], threshold
+
+
+def _parse_v2_spec(body):
+    """解析 v2 schema 请求体，返回 dict 形式 spec。
+
+    抛 _ValidationError 表示请求非法。
+    """
+    mode = body.get('mode') or 'weighted_score'
+    if mode not in ('weighted_score', 'vote', 'condition_tree', 'rotation'):
+        raise _ValidationError("mode 必须为 weighted_score / vote / condition_tree / rotation")
+
+    start_date = _parse_date(body.get('start_date', ''))
+    end_date = _parse_date(body.get('end_date', ''))
+    if not start_date or not end_date:
+        raise _ValidationError('start_date 和 end_date 必填，格式 YYYY-MM-DD')
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    if (end_date - start_date).days > 366:
+        raise _ValidationError('日期区间过大，请控制在 366 天以内')
+
+    try:
+        holding_days = int(body.get('holding_days', 10))
+    except (TypeError, ValueError):
+        raise _ValidationError('holding_days 必须为整数')
+    holding_days = max(1, min(holding_days, RATE_FIELDS_COUNT))
+
+    try:
+        min_score = float(body.get('min_score', 0.6))
+    except (TypeError, ValueError):
+        min_score = 0.6
+    min_score = max(0.0, min(min_score, 1.0))
+
+    vote_threshold_raw = body.get('vote_threshold')
+
+    dimensions_raw = body.get('dimensions') or {}
+    if not isinstance(dimensions_raw, dict):
+        raise _ValidationError('dimensions 必须为对象')
+
+    dimensions = {}
+    for k in ('tech', 'fund', 'flow', 'sent', 'custom'):
+        d = dimensions_raw.get(k) or {}
+        items = d.get('items') or []
+        if not isinstance(items, list):
+            items = []
+        try:
+            weight = float(d.get('weight', 0))
+        except (TypeError, ValueError):
+            weight = 0.0
+        dimensions[k] = {
+            'key': k,
+            'enabled': bool(d.get('enabled', False)) and len(items) > 0,
+            'weight': max(0.0, weight),
+            'items': [str(x).strip() for x in items if str(x).strip()],
+        }
+
+    enabled_dims = [k for k, v in dimensions.items() if v['enabled']]
+    if not enabled_dims:
+        raise _ValidationError('至少需要启用 1 个维度并选中信号项')
+
+    if mode == 'vote':
+        if vote_threshold_raw is None:
+            vote_threshold = max(2, (len(enabled_dims) + 1) // 2)
+        else:
+            try:
+                vote_threshold = int(vote_threshold_raw)
+            except (TypeError, ValueError):
+                raise _ValidationError('vote_threshold 必须为整数')
+            vote_threshold = max(1, min(vote_threshold, len(enabled_dims)))
+    else:
+        vote_threshold = None
+
+    return {
+        'mode': mode,
+        'start_date': start_date,
+        'end_date': end_date,
+        'holding_days': holding_days,
+        'min_score': min_score,
+        'vote_threshold': vote_threshold,
+        'dimensions': dimensions,
+    }
+
+
+# ── 维度信号加载器 ────────────────────────────────────────────────────
+
+def _load_dim_signals_tech(items, start_date, end_date):
+    """技术维度：items = 策略表名/别名/中文名，同维 OR (UNION)。"""
+    warnings = []
+    frames = []
+    seen_tables = set()
+    for item in items:
+        meta, err = _resolve_strategy(item)
+        if err or not meta:
+            warnings.append(f"技术维度跳过无效策略 {item!r}: {err or '未知'}")
+            continue
+        table = meta['table']
+        if table in seen_tables:
+            continue
+        seen_tables.add(table)
+        if not mdb.checkTableIsExist(table):
+            warnings.append(f"技术维度表 {table} 不存在，跳过")
+            continue
+        sql = f"SELECT `date`, `code` FROM `{table}` WHERE `date` >= %s AND `date` <= %s"
+        try:
+            df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+        except Exception as e:
+            logger.warning(f"技术维度加载 {table} 失败: {e}")
+            warnings.append(f"技术维度加载 {table} 失败")
+            continue
+        if df is not None and len(df) > 0:
+            frames.append(df[['date', 'code']])
+    if not frames:
+        return pd.DataFrame(columns=['date', 'code']), warnings
+    merged = pd.concat(frames, ignore_index=True).drop_duplicates(subset=['date', 'code']).reset_index(drop=True)
+    return merged, warnings
+
+
+def _load_dim_signals_table_filter(table, allowed_cols, items, start_date, end_date, dim_label):
+    """通用：从指定表按 items (col_op_val) 同维 AND 过滤。"""
+    warnings = []
+    if not items:
+        return pd.DataFrame(columns=['date', 'code']), warnings
+    if not mdb.checkTableIsExist(table):
+        warnings.append(f"{dim_label}维度表 {table} 不存在")
+        return pd.DataFrame(columns=['date', 'code']), warnings
+    conds = []
+    parsed = []
+    for item in items:
+        try:
+            col, op, val = _parse_item_expr(item, allowed_cols)
+        except _ValidationError as e:
+            warnings.append(f"{dim_label}维度跳过 {item!r}: {e}")
+            continue
+        parsed.append((col, op, val))
+        conds.append(f"`{col}` {op} %s")
+    if not parsed:
+        return pd.DataFrame(columns=['date', 'code']), warnings
+    where_extra = ' AND '.join(conds)
+    sql = (f"SELECT `date`, `code` FROM `{table}` "
+           f"WHERE `date` >= %s AND `date` <= %s AND {where_extra}")
+    params = [str(start_date), str(end_date)] + [v for (_, _, v) in parsed]
+    try:
+        df = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
+    except Exception as e:
+        logger.warning(f"{dim_label}维度查询 {table} 失败: {e}")
+        warnings.append(f"{dim_label}维度查询失败")
+        return pd.DataFrame(columns=['date', 'code']), warnings
+    if df is None or len(df) == 0:
+        return pd.DataFrame(columns=['date', 'code']), warnings
+    df = df[['date', 'code']].drop_duplicates().reset_index(drop=True)
+    return df, warnings
+
+
+def _load_dim_signals(key, items, start_date, end_date):
+    """统一入口：返回 (DataFrame[date, code], warnings)。"""
+    if key == 'tech':
+        return _load_dim_signals_tech(items, start_date, end_date)
+    if key == 'fund':
+        return _load_dim_signals_table_filter(
+            'cn_stock_selection', _FUND_ALLOWED_COLS, items, start_date, end_date, '基本面')
+    if key == 'flow':
+        return _load_dim_signals_table_filter(
+            'cn_stock_fund_flow', _FLOW_ALLOWED_COLS, items, start_date, end_date, '资金流')
+    if key == 'sent':
+        return _load_dim_signals_table_filter(
+            'cn_stock_selection', _SENT_ALLOWED_COLS, items, start_date, end_date, '情绪')
+    if key == 'custom':
+        # 自定义维度复用 tech 通路（custom_<id> / composite_<id> 经 _resolve_strategy 解析）
+        return _load_dim_signals_tech(items, start_date, end_date)
+    return pd.DataFrame(columns=['date', 'code']), [f"未知维度 {key}"]
+
+
+# ── 融合 ──────────────────────────────────────────────────────────────
+
+def _fuse_v2(dim_signals, spec):
+    """根据 spec.mode 把多维 (date, code) 集融合为最终入选集。
+
+    Args:
+        dim_signals: dict[dim_key, DataFrame[date, code]]
+        spec: dict from _parse_v2_spec
+
+    Returns:
+        DataFrame[date, code] 去重后的最终信号集。
+    """
+    enabled = [k for k, df in dim_signals.items() if df is not None and len(df) > 0]
+    if not enabled:
+        return pd.DataFrame(columns=['date', 'code'])
+
+    mode = spec['mode']
+    if mode == 'rotation':
+        # Stage 1: rotation 简化为 weighted_score（warning 已在主流程加）
+        mode = 'weighted_score'
+
+    if mode == 'condition_tree':
+        ordered = sorted(enabled, key=lambda k: -spec['dimensions'][k]['weight'])
+        result = dim_signals[ordered[0]][['date', 'code']].drop_duplicates()
+        for k in ordered[1:]:
+            result = result.merge(
+                dim_signals[k][['date', 'code']].drop_duplicates(),
+                on=['date', 'code'], how='inner')
+        return result.reset_index(drop=True)
+
+    # weighted_score / vote 都依赖每对 (date,code) 命中的维度集合
+    pieces = []
+    for k in enabled:
+        df = dim_signals[k][['date', 'code']].drop_duplicates().copy()
+        df['_dim'] = k
+        df['_w'] = float(spec['dimensions'][k]['weight'])
+        pieces.append(df)
+    all_rows = pd.concat(pieces, ignore_index=True)
+
+    if mode == 'vote':
+        threshold = spec.get('vote_threshold') or max(2, (len(enabled) + 1) // 2)
+        counts = all_rows.groupby(['date', 'code'])['_dim'].nunique().reset_index(name='_n')
+        return counts[counts['_n'] >= threshold][['date', 'code']].reset_index(drop=True)
+
+    # weighted_score
+    total_w = sum(spec['dimensions'][k]['weight'] for k in enabled) or 1.0
+    scored = all_rows.groupby(['date', 'code'])['_w'].sum().reset_index(name='_score')
+    scored['_score'] = scored['_score'] / total_w
+    return scored[scored['_score'] >= spec['min_score']][['date', 'code']].reset_index(drop=True)
+
+
+# ── 收益评估 ──────────────────────────────────────────────────────────
+
+def _load_rate_df(start_date, end_date, holding_days):
+    """加载 (date, code) → rate_N 映射。
+
+    优先从 cn_stock_backtest_data 表读，若表不存在或为空，从所有
+    cn_stock_strategy_* 表 UNION 出 (date, code, rate_N)。
+    """
+    rate_col = f'rate_{holding_days}'
+    table = tbs.TABLE_CN_STOCK_BACKTEST_DATA['name']
+    if mdb.checkTableIsExist(table):
+        sql = (f"SELECT `date`, `code`, `{rate_col}` AS rate FROM `{table}` "
+               f"WHERE `date` >= %s AND `date` <= %s AND `{rate_col}` IS NOT NULL")
+        try:
+            df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+            if df is not None and len(df) > 0:
+                return df.drop_duplicates(subset=['date', 'code']).reset_index(drop=True)
+        except Exception as e:
+            logger.warning(f"cn_stock_backtest_data 查询失败: {e}")
+
+    # fallback: union all cn_stock_strategy_*
+    frames = []
+    for s in tbs.TABLE_CN_STOCK_STRATEGIES:
+        tname = s['name']
+        if not mdb.checkTableIsExist(tname):
+            continue
+        sql = (f"SELECT `date`, `code`, `{rate_col}` AS rate FROM `{tname}` "
+               f"WHERE `date` >= %s AND `date` <= %s AND `{rate_col}` IS NOT NULL")
+        try:
+            df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+        except Exception:
+            continue
+        if df is not None and len(df) > 0:
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame(columns=['date', 'code', 'rate'])
+    combined = pd.concat(frames, ignore_index=True)
+    return combined.groupby(['date', 'code'], as_index=False)['rate'].mean()
+
+
+def _evaluate(signal_df, rate_df, holding_days):
+    """对 (date, code) 集做收益评估。
+
+    Returns:
+        (metrics_dict, daily_series_list)
+    """
+    empty = ({
+        'avg_return': None, 'win_rate': None, 'sharpe': None,
+        'max_drawdown': None, 'signal_count': 0, 'daily_signal_avg': 0,
+        'total_return': None,
+    }, [])
+    if signal_df is None or len(signal_df) == 0:
+        return empty
+    if rate_df is None or len(rate_df) == 0:
+        m = empty[0].copy()
+        m['signal_count'] = int(len(signal_df))
+        m['daily_signal_avg'] = _safe_float(float(signal_df.groupby('date').size().mean()))
+        return m, []
+
+    merged = signal_df.merge(rate_df, on=['date', 'code'], how='inner')
+    if len(merged) == 0:
+        m = empty[0].copy()
+        m['signal_count'] = int(len(signal_df))
+        m['daily_signal_avg'] = _safe_float(float(signal_df.groupby('date').size().mean()))
+        return m, []
+
+    rates = merged['rate'].dropna().astype(float).values
+    rates = rates[np.isfinite(rates)]
+    if len(rates) == 0:
+        return empty
+
+    # 日级序列：每日入选股平均收益 → 累计净值 + 回撤
+    fdf = merged.copy()
+    fdf['date'] = pd.to_datetime(fdf['date'])
+    daily_avg = fdf.groupby('date')['rate'].mean().sort_index()
+    cumulative = (1 + daily_avg / 100).cumprod() * 100
+    running_max = cumulative.cummax()
+    drawdown = (cumulative - running_max) / running_max * 100
+    daily_signal_count = fdf.groupby('date').size().sort_index()
+
+    daily_series = []
+    for dt, cum_val in cumulative.items():
+        daily_series.append({
+            'date': dt.strftime('%Y-%m-%d'),
+            'cumulative': _safe_float(round(float(cum_val), 2)),
+            'drawdown': _safe_float(round(float(drawdown.loc[dt]), 2)),
+            'signal_count': int(daily_signal_count.loc[dt]),
+        })
+
+    max_dd = float(drawdown.min()) if len(drawdown) > 0 else 0.0
+    total_return = float(cumulative.iloc[-1] - 100) if len(cumulative) > 0 else None
+
+    metrics = {
+        'avg_return': _safe_float(float(rates.mean())),
+        'win_rate': _safe_float(float((rates > 0).mean() * 100)),
+        'sharpe': _safe_float(_calc_annualized_sharpe(rates, holding_days)) if len(rates) > 1 else None,
+        'max_drawdown': _safe_float(max_dd),
+        'signal_count': int(len(rates)),
+        'daily_signal_avg': _safe_float(float(daily_signal_count.mean())),
+        'total_return': _safe_float(total_return),
+    }
+    return metrics, daily_series
+
+
+# ── 主流程 ────────────────────────────────────────────────────────────
+
+def _calc_improvement(fusion_result, individual_results):
+    out = {}
+    if fusion_result.get('sharpe') is None:
+        return out
+    sharpes = [v.get('sharpe') for v in individual_results.values() if v.get('sharpe') is not None]
+    if sharpes:
+        best = max(sharpes)
+        if best and best != 0:
+            out['sharpe_vs_best_single'] = f"{(fusion_result['sharpe'] - best) / abs(best) * 100:+.1f}%"
+    dds = [v.get('max_drawdown') for v in individual_results.values() if v.get('max_drawdown') is not None]
+    if dds and fusion_result.get('max_drawdown') is not None:
+        worst = min(dds)  # 回撤越负越差
+        if worst and worst != 0:
+            out['drawdown_vs_worst_single'] = f"{(fusion_result['max_drawdown'] - worst) / abs(worst) * 100:+.1f}%"
+    return out
+
+
+def _shapley_naive(individual_results, fusion_result):
+    """Stage 1 占位：用 fusion.sharpe - individual.sharpe 的归一化作为贡献。
+
+    Stage 3 会替换为真 Shapley value (2^k 子集枚举)。
+    """
+    if not individual_results or fusion_result.get('sharpe') is None:
+        return []
+    fusion_sharpe = fusion_result['sharpe'] or 0.0
+    deltas = []
+    for k, v in individual_results.items():
+        ind = v.get('sharpe') or 0.0
+        deltas.append((k, max(0.0, fusion_sharpe - ind)))
+    total = sum(d for _, d in deltas) or 1.0
+    items = []
+    for k, d in sorted(deltas, key=lambda x: -x[1]):
+        items.append({
+            'dim': k,
+            'cn': _DIM_LABEL.get(k, k),
+            'contribution': _safe_float(d / total),
+            'sharpe_delta': _safe_float(d),
+        })
+    for i, it in enumerate(items, 1):
+        it['rank'] = i
+    return items
+
+
+def _handle_v2(handler, body):
+    """v2 五维真融合主入口。"""
+    try:
+        spec = _parse_v2_spec(body)
+    except _ValidationError as e:
+        _write_error(handler, str(e))
+        return
+    except Exception:
+        logger.error('v2 spec 解析异常', exc_info=True)
+        _write_error(handler, '请求体校验失败', 400)
+        return
+
+    warnings = []
+
+    # 1. 各维度信号
+    dim_signals = {}
+    for k, dim in spec['dimensions'].items():
+        if not dim['enabled']:
+            continue
+        df, w = _load_dim_signals(k, dim['items'], spec['start_date'], spec['end_date'])
+        if w:
+            warnings.extend(w)
+        if df is None or len(df) == 0:
+            warnings.append(f"{_DIM_LABEL.get(k, k)}维度命中 0 条，已剔除")
+            continue
+        dim_signals[k] = df
+
+    if not dim_signals:
+        _write_json(handler, {
+            'version': 2,
+            'fusion_result': None,
+            'individual_results': {},
+            'daily_series': [],
+            'shapley': [],
+            'ab_steps': [],
+            'overlap': {'calendar': [], 'co_occurrence': {'labels': [], 'matrix': []}},
+            'improvement': {},
+            'warnings': warnings + ['所有启用维度命中为 0，无法融合'],
+            'diagnostics': {'enabled_dims': [], 'mode': spec['mode']},
+        })
+        return
+
+    if spec['mode'] == 'rotation':
+        warnings.append('rotation 模式 Stage 1 暂等同 weighted_score，将在 Stage 3 引入真 regime 检测')
+
+    # 2. 主融合
+    fused = _fuse_v2(dim_signals, spec)
+
+    # 3. 收益数据
+    rate_df = _load_rate_df(spec['start_date'], spec['end_date'], spec['holding_days'])
+    if rate_df is None or len(rate_df) == 0:
+        warnings.append(f"区间内 rate_{spec['holding_days']} 数据为空，指标可能为空")
+
+    # 4. evaluate 融合 + 单维
+    fusion_result, daily_series = _evaluate(fused, rate_df, spec['holding_days'])
+    individual_results = {}
+    for k, df in dim_signals.items():
+        m, _ds = _evaluate(df, rate_df, spec['holding_days'])
+        m['cn'] = _DIM_LABEL.get(k, k)
+        individual_results[k] = m
+
+    # 5. improvement + Stage 1 占位 shapley
+    improvement = _calc_improvement(fusion_result, individual_results)
+    shapley = _shapley_naive(individual_results, fusion_result)
+
+    _write_json(handler, {
+        'version': 2,
+        'mode': spec['mode'],
+        'holding_days': spec['holding_days'],
+        'period': f"{spec['start_date']} ~ {spec['end_date']}",
+        'fusion_result': fusion_result,
+        'individual_results': individual_results,
+        'daily_series': daily_series,
+        'shapley': shapley,
+        'ab_steps': [],  # Stage 3
+        'overlap': {'calendar': [], 'co_occurrence': {'labels': [], 'matrix': []}},  # Stage 3
+        'improvement': improvement,
+        'warnings': warnings,
+        'diagnostics': {
+            'enabled_dims': list(dim_signals.keys()),
+            'mode': spec['mode'],
+            'fusion_signal_count': int(len(fused)),
+            'min_score': spec['min_score'] if spec['mode'] == 'weighted_score' else None,
+            'vote_threshold': spec['vote_threshold'] if spec['mode'] == 'vote' else None,
+        },
+    })
 
 
 # ── AI 优化建议 ───────────────────────────────────────────────────────

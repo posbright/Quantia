@@ -129,6 +129,7 @@ export function getExitCompare(params: ExitCompareParams) {
 
 // ── 策略融合 ──────────────────────────────────────────────────────────
 
+/** Legacy v1：仅多策略合并（保留以兼容旧调用方）。 */
 export interface FusionParams {
   strategy_names: string[]
   mode: 'intersection' | 'union' | 'vote' | 'rotation'
@@ -139,7 +140,30 @@ export interface FusionParams {
   filters?: Record<string, number>
 }
 
-export function runFusion(data: FusionParams) {
+/** v2 五维真融合：详见 document/strategy_fusion_redesign_plan.md */
+export interface FusionDimSpec {
+  enabled: boolean
+  weight: number
+  items: string[]
+}
+export interface FusionParamsV2 {
+  version: 2
+  mode: 'weighted_score' | 'vote' | 'condition_tree' | 'rotation'
+  start_date: string
+  end_date: string
+  holding_days?: number
+  vote_threshold?: number
+  min_score?: number
+  dimensions: {
+    tech?: FusionDimSpec
+    fund?: FusionDimSpec
+    flow?: FusionDimSpec
+    sent?: FusionDimSpec
+    custom?: FusionDimSpec
+  }
+}
+
+export function runFusion(data: FusionParams | FusionParamsV2) {
   return request({ url: '/api/verify/fusion', method: 'post', data })
 }
 
