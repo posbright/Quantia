@@ -34,8 +34,22 @@ const runFusionMock = vi.fn().mockResolvedValue({
     { dim: 'tech', name: '技术信号', contrib: 0.45 },
     { dim: 'fund', name: '基本面', contrib: 0.32 },
   ],
-  ab_steps: [],
-  overlap: { calendar: [], co_occurrence: [] },
+  ab_steps: [
+    { step: 1, dims: ['tech'], label: '技术信号', sharpe: 1.2, win_rate: 55, max_drawdown: -12.5, signal_count: 2850 },
+    { step: 2, dims: ['tech', 'fund'], label: '技术信号 + 基本面', sharpe: 1.87, win_rate: 60, max_drawdown: -8.2, signal_count: 842 },
+  ],
+  overlap: {
+    calendar: [
+      { date: '2025-09-01', signal_count: 12, dims_hit: 2 },
+      { date: '2025-09-02', signal_count: 18, dims_hit: 2 },
+    ],
+    co_occurrence: [
+      { a: 'tech', b: 'tech', jaccard: 1.0 },
+      { a: 'tech', b: 'fund', jaccard: 0.42 },
+      { a: 'fund', b: 'tech', jaccard: 0.42 },
+      { a: 'fund', b: 'fund', jaccard: 1.0 },
+    ],
+  },
   improvement: { sharpe_vs_best_single: '+55.8%', drawdown_vs_worst_single: '+18.8%' },
   warnings: [],
   diagnostics: { enabled_dims: ['tech', 'fund'] },
@@ -241,5 +255,59 @@ describe('fusion.vue v2', () => {
     await tabs[1].trigger('click')
     await flushPromises()
     expect(tabs[1].classes()).toContain('active')
+  })
+
+  it('shapleyContribs sorted by impact desc with rank order', async () => {
+    const wrapper = factory()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.dimensions[0].weight = 30
+    vm.dimensions[1].weight = 30
+    vm.dimensions[2].weight = 25
+    vm.dimensions[3].weight = 15
+    vm.dimensions[4].enabled = false
+    await vm.runFusionBacktest()
+    await flushPromises()
+    const contribs = vm.shapleyContribs
+    expect(contribs.length).toBe(2)
+    // Sorted: 0.45 first, 0.32 second
+    expect(contribs[0].impact).toBeGreaterThanOrEqual(contribs[1].impact)
+    expect(contribs[0].name).toBe('技术信号')
+  })
+
+  it('abSteps binds backend ab_steps array', async () => {
+    const wrapper = factory()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.dimensions[0].weight = 30
+    vm.dimensions[1].weight = 30
+    vm.dimensions[2].weight = 25
+    vm.dimensions[3].weight = 15
+    vm.dimensions[4].enabled = false
+    await vm.runFusionBacktest()
+    await flushPromises()
+    expect(vm.abSteps.length).toBe(2)
+    expect(vm.abSteps[0].label).toBe('技术信号')
+    expect(vm.abSteps[1].label).toBe('技术信号 + 基本面')
+    expect(vm.abSteps[1].sharpe).toBeCloseTo(1.87, 2)
+    expect(vm.abSteps[1].signalCount).toBe(842)
+  })
+
+  it('overlapData binds calendar and co_occurrence from backend', async () => {
+    const wrapper = factory()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    vm.dimensions[0].weight = 30
+    vm.dimensions[1].weight = 30
+    vm.dimensions[2].weight = 25
+    vm.dimensions[3].weight = 15
+    vm.dimensions[4].enabled = false
+    await vm.runFusionBacktest()
+    await flushPromises()
+    expect(vm.overlapData.calendar.length).toBe(2)
+    expect(vm.overlapData.co_occurrence.length).toBe(4)
+    const pair = vm.overlapData.co_occurrence.find((p: any) => p.a === 'tech' && p.b === 'fund')
+    expect(pair).toBeDefined()
+    expect(pair.jaccard).toBeCloseTo(0.42, 2)
   })
 })

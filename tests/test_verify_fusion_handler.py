@@ -397,6 +397,230 @@ class TestStrategyFusionHandlerV2(AsyncHTTPTestCase):
         assert '366' in data.get('error', '')
 
 
+# ── Stage 3: 真 Shapley / AB / Overlap 单元测试 ────────────────────────
+
+class TestShapleyABOverlap:
+    """直接测试 Stage 3 模块级函数（不走 HTTP 层）。"""
+
+    def _make_spec(self, mode='weighted_score', weights=None, holding=5):
+        weights = weights or {'tech': 50, 'fund': 30, 'flow': 20}
+        dims = {}
+        for k, w in weights.items():
+            dims[k] = {'enabled': True, 'weight': w, 'items': ['x']}
+        return {
+            'mode': mode,
+            'start_date': pd.Timestamp('2025-01-01').date(),
+            'end_date': pd.Timestamp('2025-02-01').date(),
+            'holding_days': holding,
+            'min_score': 0.0,
+            'vote_threshold': 1,
+            'dimensions': dims,
+        }
+
+    def test_fuse_subset_signals_single_dim(self):
+        dates = pd.date_range('2025-01-02', periods=3, freq='B')
+        sig = _make_signal_df(['A', 'B'], dates)
+        spec = self._make_spec(weights={'tech': 50, 'fund': 50})
+        fused = vfh._fuse_subset_signals({'tech': sig}, spec)
+        assert len(fused) == 6  # 3 days × 2 codes
+
+    def test_fuse_subset_signals_renormalizes_weights(self):
+        dates = pd.date_range('2025-01-02', periods=3, freq='B')
+        tech = _make_signal_df(['A', 'B'], dates)
+        fund = _make_signal_df(['B', 'C'], dates)
+        # spec weights: tech=50/fund=30/flow=20。子集 tech+fund 重新归一化 -> tech=62.5, fund=37.5
+        spec = self._make_spec(weights={'tech': 50, 'fund': 30, 'flow': 20})
+        spec['min_score'] = 0.5
+        fused = vfh._fuse_subset_signals({'tech': tech, 'fund': fund}, spec)
+        # 重归一化后 tech 62.5%, fund 37.5%; B 同时命中 = 1.0 ≥ 0.5 ✓
+        # A 仅 tech = 0.625 ≥ 0.5 ✓
+        # C 仅 fund = 0.375 < 0.5 ✗
+        codes = set(fused['code'].unique())
+        assert 'A' in codes and 'B' in codes
+        assert 'C' not in codes
+
+    def test_shapley_real_two_dims(self):
+        dates = pd.date_range('2025-01-02', periods=4, freq='B')
+        tech = _make_signal_df(['A', 'B'], dates)
+        fund = _make_signal_df(['B', 'C'], dates)
+        rate = _make_rate_df(['A', 'B', 'C'], dates, rate_value=1.0)
+        dim_signals = {'tech': tech, 'fund': fund}
+        spec = self._make_spec(weights={'tech': 50, 'fund': 50})
+        spec['min_score'] = 0.0
+        items, used_fb, diag = vfh._shapley_real(dim_signals, spec, rate, time_budget_s=8.0)
+        assert used_fb is False
+        assert len(items) == 2
+        # 子集枚举数 = 2^2 - 1 = 3（不含空集）
+        assert diag['n_subsets_evaluated'] == 3
+        assert diag['total_subsets'] == 4
+        # 排序：贡献大的在前；rank 字段连续 1..n
+        ranks = [i['rank'] for i in items]
+        assert ranks == [1, 2]
+        # 每个 item 必有 dim/contrib/contribution/sharpe_delta
+        for it in items:
+            assert 'dim' in it and 'contrib' in it and 'sharpe_delta' in it
+
+    def test_shapley_real_three_dims_sums_to_fusion_minus_empty(self):
+        """Shapley 性质：Σ phi_k = v(N) - v(∅) = v(N)（因 v(∅)=0）。"""
+        dates = pd.date_range('2025-01-02', periods=4, freq='B')
+        a = _make_signal_df(['X', 'Y'], dates)
+        b = _make_signal_df(['Y', 'Z'], dates)
+        c = _make_signal_df(['Z', 'W'], dates)
+        rate = _make_rate_df(['X', 'Y', 'Z', 'W'], dates, rate_value=1.0)
+        dim_signals = {'tech': a, 'fund': b, 'flow': c}
+        spec = self._make_spec(weights={'tech': 40, 'fund': 30, 'flow': 30})
+        spec['min_score'] = 0.0
+        items, _, _ = vfh._shapley_real(dim_signals, spec, rate, time_budget_s=8.0)
+        # v(N) = fusion sharpe over all 3 dims
+        full = vfh._fuse_subset_signals(dim_signals, spec)
+        m, _ds = vfh._evaluate(full, rate, spec['holding_days'])
+        v_full = float(m.get('sharpe') or 0.0)
+        s = sum(it['contrib'] or 0.0 for it in items)
+        # Shapley sum = v(N)（容差 1e-6）
+        assert abs(s - v_full) < 1e-6
+
+    def test_shapley_real_timeout_returns_none(self):
+        """超时预算 0 秒应立即返回 used_fallback=True。"""
+        dates = pd.date_range('2025-01-02', periods=2, freq='B')
+        sig = _make_signal_df(['A'], dates)
+        rate = _make_rate_df(['A'], dates, rate_value=1.0)
+        spec = self._make_spec(weights={'tech': 50, 'fund': 50})
+        items, used_fb, diag = vfh._shapley_real(
+            {'tech': sig, 'fund': sig}, spec, rate, time_budget_s=0.0)
+        assert used_fb is True
+        assert items is None
+        assert diag.get('reason') == 'timeout'
+
+    def test_shapley_real_less_than_two_dims_empty(self):
+        """单维度时不计算 Shapley。"""
+        dates = pd.date_range('2025-01-02', periods=2, freq='B')
+        sig = _make_signal_df(['A'], dates)
+        rate = _make_rate_df(['A'], dates, rate_value=1.0)
+        spec = self._make_spec(weights={'tech': 100})
+        items, used_fb, diag = vfh._shapley_real({'tech': sig}, spec, rate)
+        assert items == []
+        assert used_fb is False
+        assert diag.get('reason') == 'less_than_2_dims'
+
+    def test_ab_steps_follows_shapley_order(self):
+        """AB 步进按 Shapley 排序顺序累加。"""
+        dates = pd.date_range('2025-01-02', periods=4, freq='B')
+        tech = _make_signal_df(['A', 'B'], dates)
+        fund = _make_signal_df(['B', 'C'], dates)
+        rate = _make_rate_df(['A', 'B', 'C'], dates, rate_value=1.0)
+        dim_signals = {'tech': tech, 'fund': fund}
+        spec = self._make_spec(weights={'tech': 50, 'fund': 50})
+        spec['min_score'] = 0.0
+        shapley_items = [
+            {'dim': 'fund', 'cn': '基本面', 'contrib': 0.5, 'rank': 1},
+            {'dim': 'tech', 'cn': '技术信号', 'contrib': 0.3, 'rank': 2},
+        ]
+        steps = vfh._ab_steps(dim_signals, shapley_items, spec, rate)
+        assert len(steps) == 2
+        assert steps[0]['dims'] == ['fund']
+        assert steps[1]['dims'] == ['fund', 'tech']
+        assert steps[0]['step'] == 1 and steps[1]['step'] == 2
+        # signal_count 单调（fund=2*4=8；fund∪tech 也是 3*4=12 for weighted mode 0 threshold）
+        assert steps[1]['signal_count'] >= 1
+
+    def test_overlap_jaccard_symmetric(self):
+        """Jaccard 矩阵对角=1，对称。"""
+        dates = pd.date_range('2025-01-02', periods=3, freq='B')
+        a = _make_signal_df(['X', 'Y'], dates)
+        b = _make_signal_df(['Y', 'Z'], dates)
+        out = vfh._overlap({'tech': a, 'fund': b})
+        pairs = {(p['a'], p['b']): p['jaccard'] for p in out['co_occurrence']}
+        # 对角 = 1.0
+        assert pairs[('tech', 'tech')] == 1.0
+        assert pairs[('fund', 'fund')] == 1.0
+        # 对称
+        assert pairs[('tech', 'fund')] == pairs[('fund', 'tech')]
+        # 交=Y×3 dates=3, 并 = |tech ∪ fund| = 6+6-3 = 9 → jaccard=3/9≈0.3333
+        assert abs(pairs[('tech', 'fund')] - 1.0 / 3) < 1e-3
+
+    def test_overlap_calendar_aggregates(self):
+        """日历按 date 聚合 distinct code 总数 + dims_hit。"""
+        dates = ['2025-01-02', '2025-01-03']
+        a = pd.DataFrame([{'date': '2025-01-02', 'code': 'X'}, {'date': '2025-01-03', 'code': 'Y'}])
+        b = pd.DataFrame([{'date': '2025-01-02', 'code': 'X'}, {'date': '2025-01-02', 'code': 'Z'}])
+        out = vfh._overlap({'tech': a, 'fund': b})
+        cal = {row['date']: row for row in out['calendar']}
+        assert cal['2025-01-02']['signal_count'] == 2  # X, Z
+        assert cal['2025-01-02']['dims_hit'] == 2     # 两维都有 2025-01-02
+        assert cal['2025-01-03']['signal_count'] == 1  # Y
+        assert cal['2025-01-03']['dims_hit'] == 1     # 只 tech 有 2025-01-03
+
+    def test_overlap_empty(self):
+        out = vfh._overlap({})
+        assert out == {'calendar': [], 'co_occurrence': []}
+
+
+class TestStage3Integration(AsyncHTTPTestCase):
+    """v2 接口端到端：返回非空 shapley/ab_steps/overlap。"""
+
+    def setUp(self):
+        super().setUp()
+        _reset_strategy_cache()
+
+    def get_app(self):
+        return _make_app()
+
+    def _post(self, body):
+        resp = self.fetch('/api/verify/fusion', method='POST',
+                          body=json.dumps(body),
+                          headers={'Content-Type': 'application/json'})
+        return resp.code, json.loads(resp.body)
+
+    def test_v2_two_dims_returns_shapley_ab_overlap(self):
+        dates = pd.date_range('2025-01-02', periods=5, freq='B')
+        tech = _make_signal_df(['A', 'B'], dates)
+        fund = _make_signal_df(['B', 'C'], dates)
+        rate = _make_rate_df(['A', 'B', 'C'], dates, rate_value=1.0)
+
+        def load_side(key, items, s, e):
+            return {'tech': (tech, []), 'fund': (fund, [])}.get(key, (pd.DataFrame(columns=['date', 'code']), []))
+
+        with mock.patch.object(vfh, '_load_dim_signals', side_effect=load_side), \
+             mock.patch.object(vfh, '_load_rate_df', return_value=rate):
+            code, data = self._post({
+                'version': 2, 'mode': 'weighted_score', 'min_score': 0.0,
+                'start_date': '2025-01-01', 'end_date': '2025-02-01', 'holding_days': 5,
+                'dimensions': {
+                    'tech': {'enabled': True, 'weight': 50, 'items': ['x']},
+                    'fund': {'enabled': True, 'weight': 50, 'items': ['pe9_lt_30']},
+                },
+            })
+        assert code == 200, data
+        # Shapley 非空，包含 contrib + rank
+        assert len(data['shapley']) == 2
+        for it in data['shapley']:
+            assert 'dim' in it and 'contrib' in it and 'rank' in it
+        # AB 步进 = 2 步
+        assert len(data['ab_steps']) == 2
+        assert data['ab_steps'][0]['step'] == 1
+        # Overlap calendar 非空（5 个日期）+ co_occurrence 4 对（2x2）
+        assert len(data['overlap']['calendar']) == 5
+        assert len(data['overlap']['co_occurrence']) == 4
+
+    def test_v2_single_dim_no_shapley(self):
+        """单维度时 shapley/ab 仍可返回（≥1 维），但 shapley 走 naive 路径。"""
+        dates = pd.date_range('2025-01-02', periods=3, freq='B')
+        sig = _make_signal_df(['A'], dates)
+        rate = _make_rate_df(['A'], dates, rate_value=1.0)
+
+        with mock.patch.object(vfh, '_load_dim_signals', return_value=(sig, [])), \
+             mock.patch.object(vfh, '_load_rate_df', return_value=rate):
+            code, data = self._post({
+                'version': 2, 'mode': 'weighted_score', 'min_score': 0.0,
+                'start_date': '2025-01-01', 'end_date': '2025-02-01', 'holding_days': 5,
+                'dimensions': {'tech': {'enabled': True, 'weight': 100, 'items': ['x']}},
+            })
+        assert code == 200, data
+        # 单维 overlap 仍有 1x1 对
+        assert len(data['overlap']['co_occurrence']) == 1
+        assert data['overlap']['co_occurrence'][0]['jaccard'] == 1.0
+
+
 # ── OptimizeSuggestHandler 测试 ───────────────────────────────────────
 
 class TestOptimizeSuggestHandler(AsyncHTTPTestCase):

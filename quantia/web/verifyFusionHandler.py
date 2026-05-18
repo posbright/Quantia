@@ -11,6 +11,9 @@ import datetime
 import json
 import logging
 import math
+import time
+from collections import defaultdict
+from itertools import combinations
 
 import numpy as np
 import pandas as pd
@@ -778,7 +781,7 @@ def _calc_improvement(fusion_result, individual_results):
 def _shapley_naive(individual_results, fusion_result):
     """Stage 1 占位：用 fusion.sharpe - individual.sharpe 的归一化作为贡献。
 
-    Stage 3 会替换为真 Shapley value (2^k 子集枚举)。
+    保留作为 Stage 3 真 Shapley 超时 fallback。
     """
     if not individual_results or fusion_result.get('sharpe') is None:
         return []
@@ -799,6 +802,164 @@ def _shapley_naive(individual_results, fusion_result):
     for i, it in enumerate(items, 1):
         it['rank'] = i
     return items
+
+
+# ── Stage 3: 真 Shapley / AB / Overlap ────────────────────────────────
+
+def _fuse_subset_signals(dim_signals_subset, spec):
+    """对 dim_signals 的子集运行融合（权重重新归一化），返回融合 DataFrame。"""
+    if not dim_signals_subset:
+        return pd.DataFrame(columns=['date', 'code'])
+    if len(dim_signals_subset) == 1:
+        # 单维：信号即融合结果
+        df = next(iter(dim_signals_subset.values()))
+        return df[['date', 'code']].drop_duplicates().reset_index(drop=True)
+    # 多维：重写 spec 的 dimensions weights，仅子集启用
+    sub_dims = {}
+    subset_weights = {k: spec['dimensions'][k]['weight'] for k in dim_signals_subset.keys()}
+    total_w = sum(subset_weights.values()) or 1.0
+    for k, dim in spec['dimensions'].items():
+        if k in dim_signals_subset:
+            new_w = dim['weight'] / total_w * 100
+            sub_dims[k] = {**dim, 'weight': new_w, 'enabled': True}
+        else:
+            sub_dims[k] = {**dim, 'enabled': False}
+    sub_spec = dict(spec)
+    sub_spec['dimensions'] = sub_dims
+    sub_spec['vote_threshold'] = min((spec.get('vote_threshold') or 2), len(dim_signals_subset))
+    return _fuse_v2(dim_signals_subset, sub_spec)
+
+
+def _shapley_real(dim_signals, spec, rate_df, time_budget_s=8.0):
+    """真 Shapley value via 2^n 子集枚举。
+
+    返回 (shapley_list, used_fallback, diag)。如超时返回 (None, True, diag)。
+    """
+    keys = list(dim_signals.keys())
+    n = len(keys)
+    if n < 2:
+        return [], False, {'reason': 'less_than_2_dims', 'n': n}
+
+    t_start = time.time()
+    subset_sharpe = {frozenset(): 0.0}
+    n_eval = 0
+    timeout = False
+
+    for size in range(1, n + 1):
+        for combo in combinations(keys, size):
+            if time.time() - t_start > time_budget_s:
+                timeout = True
+                break
+            sub = {k: dim_signals[k] for k in combo}
+            fused = _fuse_subset_signals(sub, spec)
+            m, _ = _evaluate(fused, rate_df, spec.get('holding_days', 10))
+            sharpe = m.get('sharpe')
+            subset_sharpe[frozenset(combo)] = float(sharpe) if sharpe is not None else 0.0
+            n_eval += 1
+        if timeout:
+            break
+
+    diag = {
+        'n_dims': n, 'n_subsets_evaluated': n_eval, 'total_subsets': 2 ** n,
+        'elapsed_s': round(time.time() - t_start, 3),
+    }
+    if timeout:
+        diag['reason'] = 'timeout'
+        return None, True, diag
+
+    # Shapley: phi_k = Σ over S ⊆ N\{k} : |S|!(n-|S|-1)!/n! * (v(S∪{k}) - v(S))
+    fact = math.factorial
+    shapley_map = {}
+    for k in keys:
+        phi = 0.0
+        others = [x for x in keys if x != k]
+        for size in range(len(others) + 1):
+            for combo in combinations(others, size):
+                S = frozenset(combo)
+                S_with_k = S | {k}
+                weight = fact(len(S)) * fact(n - len(S) - 1) / fact(n)
+                phi += weight * (subset_sharpe.get(S_with_k, 0.0) - subset_sharpe.get(S, 0.0))
+        shapley_map[k] = phi
+
+    sorted_items = sorted(shapley_map.items(), key=lambda x: -x[1])
+    items = []
+    for rank, (k, v) in enumerate(sorted_items, 1):
+        items.append({
+            'dim': k,
+            'cn': _DIM_LABEL.get(k, k),
+            'name': _DIM_LABEL.get(k, k),
+            'contrib': _safe_float(v),
+            'contribution': _safe_float(v),
+            'sharpe_delta': _safe_float(v),
+            'rank': rank,
+        })
+    return items, False, diag
+
+
+def _ab_steps(dim_signals, shapley_items, spec, rate_df):
+    """按 Shapley 排序逐维累加融合，返回累计步进列表。"""
+    if not shapley_items:
+        return []
+    ordered_keys = [s['dim'] for s in shapley_items if s.get('dim') in dim_signals]
+    steps = []
+    for i in range(1, len(ordered_keys) + 1):
+        sub_keys = ordered_keys[:i]
+        sub = {k: dim_signals[k] for k in sub_keys}
+        fused = _fuse_subset_signals(sub, spec)
+        m, _ = _evaluate(fused, rate_df, spec.get('holding_days', 10))
+        steps.append({
+            'step': i,
+            'dims': sub_keys,
+            'label': ' + '.join(_DIM_LABEL.get(k, k) for k in sub_keys),
+            'sharpe': m.get('sharpe'),
+            'win_rate': m.get('win_rate'),
+            'max_drawdown': m.get('max_drawdown'),
+            'signal_count': m.get('signal_count'),
+            'avg_return': m.get('avg_return'),
+        })
+    return steps
+
+
+def _overlap(dim_signals):
+    """计算日历热图 + Jaccard 共现矩阵。
+
+    Returns: {calendar: [{date, signal_count, dims_hit}], co_occurrence: [{a, b, jaccard}]}
+    """
+    if not dim_signals:
+        return {'calendar': [], 'co_occurrence': []}
+
+    # 每维度的 (date, code) 集合
+    key_sets = {}
+    for k, df in dim_signals.items():
+        if df is None or len(df) == 0:
+            key_sets[k] = set()
+            continue
+        key_sets[k] = set(zip(df['date'].astype(str), df['code'].astype(str)))
+
+    # 日历：date -> 独立 code 总数 + 命中维度数
+    by_date_codes = defaultdict(set)
+    by_date_dims = defaultdict(set)
+    for k, s in key_sets.items():
+        for date, code in s:
+            by_date_codes[date].add(code)
+            by_date_dims[date].add(k)
+    calendar = sorted(
+        ({'date': d, 'signal_count': len(by_date_codes[d]), 'dims_hit': len(by_date_dims[d])}
+         for d in by_date_codes),
+        key=lambda x: x['date'],
+    )
+
+    # Jaccard
+    keys = list(key_sets.keys())
+    pairs = []
+    for k1 in keys:
+        for k2 in keys:
+            s1, s2 = key_sets[k1], key_sets[k2]
+            union = len(s1 | s2)
+            jacc = (len(s1 & s2) / union) if union else 0.0
+            pairs.append({'a': k1, 'b': k2, 'jaccard': round(jacc, 4)})
+
+    return {'calendar': calendar, 'co_occurrence': pairs}
 
 
 def _handle_v2(handler, body):
@@ -836,7 +997,7 @@ def _handle_v2(handler, body):
             'daily_series': [],
             'shapley': [],
             'ab_steps': [],
-            'overlap': {'calendar': [], 'co_occurrence': {'labels': [], 'matrix': []}},
+            'overlap': {'calendar': [], 'co_occurrence': []},
             'improvement': {},
             'warnings': warnings + ['所有启用维度命中为 0，无法融合'],
             'diagnostics': {'enabled_dims': [], 'mode': spec['mode']},
@@ -862,9 +1023,25 @@ def _handle_v2(handler, body):
         m['cn'] = _DIM_LABEL.get(k, k)
         individual_results[k] = m
 
-    # 5. improvement + Stage 1 占位 shapley
+    # 5. improvement + Stage 3 真 Shapley / AB / Overlap
     improvement = _calc_improvement(fusion_result, individual_results)
-    shapley = _shapley_naive(individual_results, fusion_result)
+
+    # 5a. Shapley（≥2 维启用时计算；超时 fallback 到 naive）
+    shapley_diag = {}
+    if len(dim_signals) >= 2:
+        shapley, used_fb, sh_diag = _shapley_real(dim_signals, spec, rate_df, time_budget_s=8.0)
+        shapley_diag = sh_diag
+        if used_fb or shapley is None:
+            warnings.append(f"Shapley 真值计算超时（已评估 {sh_diag.get('n_subsets_evaluated',0)}/{sh_diag.get('total_subsets','?')} 子集），降级为快速估算")
+            shapley = _shapley_naive(individual_results, fusion_result)
+    else:
+        shapley = _shapley_naive(individual_results, fusion_result)
+
+    # 5b. AB 累加
+    ab = _ab_steps(dim_signals, shapley, spec, rate_df)
+
+    # 5c. Overlap
+    overlap = _overlap(dim_signals)
 
     _write_json(handler, {
         'version': 2,
@@ -875,8 +1052,8 @@ def _handle_v2(handler, body):
         'individual_results': individual_results,
         'daily_series': daily_series,
         'shapley': shapley,
-        'ab_steps': [],  # Stage 3
-        'overlap': {'calendar': [], 'co_occurrence': {'labels': [], 'matrix': []}},  # Stage 3
+        'ab_steps': ab,
+        'overlap': overlap,
         'improvement': improvement,
         'warnings': warnings,
         'diagnostics': {
@@ -885,6 +1062,7 @@ def _handle_v2(handler, body):
             'fusion_signal_count': int(len(fused)),
             'min_score': spec['min_score'] if spec['mode'] == 'weighted_score' else None,
             'vote_threshold': spec['vote_threshold'] if spec['mode'] == 'vote' else None,
+            'shapley': shapley_diag,
         },
     })
 
