@@ -5,7 +5,13 @@
 提供持仓天数扫描、信号质量诊断、止盈止损矩阵、市场环境分类、
 信号衰减分析、交易成本敏感性等只读分析接口。
 
-数据来源: MySQL + cache/hist/（遵守 Fetch/Analysis/Web 分离原则）
+数据来源: MySQL + cache/hist/
+
+【架构例外】当策略表 (cn_stock_strategy_*) 在请求区间无数据时，
+_compute_signals_from_kline_cache() 会扫描 cache/hist/ 跑策略 check() 计算
+信号 + 前向收益，结果落盘到 cache/signal/。这违反 AGENTS.md 规则 1 "Web
+层不得跑分析"，仅作为兜底，对外部 API 仍零调用。可通过
+QUANTIA_VERIFY_FALLBACK_ENABLED=0 关闭。
 """
 
 import datetime
@@ -13,14 +19,17 @@ import hashlib
 import json
 import logging
 import math
+import os
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
 
 import quantia.core.tablestructure as tbs
+import quantia.core.stockfetch as stf
 import quantia.lib.database as mdb
+import quantia.lib.envconfig as _envcfg
 import quantia.web.base as webBase
 from quantia.core.backtest.data_feed import load_benchmark_data
 from quantia.core.backtest.rate_stats import ROUND_TRIP_COST_PCT
@@ -221,21 +230,253 @@ def _load_backtest_data(strategy_table, start_date, end_date, rate_cols=None):
     """从策略表加载回测数据。
 
     Returns: DataFrame with date, code, name + rate columns, or None.
+
+    DB 中无信号时启用 fallback：扫描 cache/hist/ 跑策略 check() 计算信号 +
+    前向收益，并把结果缓存到 cache/signal/。详见 _compute_signals_from_kline_cache。
     """
-    if not mdb.checkTableIsExist(strategy_table):
-        return None
     if rate_cols is None:
         rate_cols = [f'rate_{i}' for i in range(1, RATE_FIELDS_COUNT + 1)]
-    base_cols = ['date', 'code', 'name']
-    all_cols = base_cols + rate_cols
-    cols_sql = ', '.join(f'`{c}`' for c in all_cols)
-    sql = f"SELECT {cols_sql} FROM `{strategy_table}` WHERE `date` >= %s AND `date` <= %s"
-    try:
-        df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
-    except Exception as e:
-        logging.error(f"读取 {strategy_table} 失败: {e}", exc_info=True)
-        return None
+
+    df = None
+    if mdb.checkTableIsExist(strategy_table):
+        base_cols = ['date', 'code', 'name']
+        all_cols = base_cols + rate_cols
+        cols_sql = ', '.join(f'`{c}`' for c in all_cols)
+        sql = f"SELECT {cols_sql} FROM `{strategy_table}` WHERE `date` >= %s AND `date` <= %s"
+        try:
+            df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+        except Exception as e:
+            logging.error(f"读取 {strategy_table} 失败: {e}", exc_info=True)
+            df = None
+
+    if df is None or len(df) == 0:
+        # ── DB 缺数据 → 走 K 线缓存 fallback ──
+        fallback_df = _compute_signals_from_kline_cache(strategy_table, start_date, end_date)
+        if fallback_df is not None and len(fallback_df) > 0:
+            keep = ['date', 'code', 'name'] + [c for c in rate_cols if c in fallback_df.columns]
+            df = fallback_df[keep].copy()
+
     return df if df is not None and len(df) > 0 else None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Signal fallback: 当策略表在请求区间无数据时，扫描 cache/hist/ K 线，
+# 临时执行 strategy func 得到 (date, code, name, rate_1..rate_N) 信号集，
+# 结果落盘到 cache/signal/<table>_<start>_<end>.gzip.pickle 供后续命中。
+#
+# 架构例外：本来 AGENTS.md 规则 1 禁止 Web 层跑分析。此处作为 DB 数据缺
+# 失时的兜底（用户选项 C，知情同意）；首次扫描耗时较长，但后续走文件缓存。
+# 通过环境变量控制：
+#   QUANTIA_VERIFY_FALLBACK_ENABLED=1   (默认开启)
+#   QUANTIA_VERIFY_FALLBACK_MAX_STOCKS=300
+#   QUANTIA_VERIFY_FALLBACK_WORKERS=4
+# ──────────────────────────────────────────────────────────────────────
+
+_SIGNAL_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), 'cache', 'signal'
+)
+_FALLBACK_ENABLED = _envcfg.get_bool('QUANTIA_VERIFY_FALLBACK_ENABLED', True)
+_FALLBACK_MAX_STOCKS = _envcfg.get_int('QUANTIA_VERIFY_FALLBACK_MAX_STOCKS', 300)
+_FALLBACK_WORKERS = _envcfg.get_int('QUANTIA_VERIFY_FALLBACK_WORKERS', 4)
+_FALLBACK_HIST_BUFFER_DAYS = 365 * 2  # K 线前置缓冲（供 TA-Lib 窗口用）
+_FALLBACK_FORWARD_BUFFER_DAYS = 130   # 后向缓冲（供 rate_60 等前向收益计算）
+
+
+def _signal_cache_path(strategy_table: str, start_date, end_date) -> str:
+    if not os.path.exists(_SIGNAL_CACHE_DIR):
+        try:
+            os.makedirs(_SIGNAL_CACHE_DIR, exist_ok=True)
+        except Exception:
+            pass
+    return os.path.join(
+        _SIGNAL_CACHE_DIR, f"{strategy_table}_{start_date}_{end_date}.gzip.pickle"
+    )
+
+
+def _load_signal_cache_file(path: str):
+    if not os.path.exists(path):
+        return None
+    try:
+        return pd.read_pickle(path, compression='gzip')
+    except Exception as e:
+        logging.warning(f"[signal-fallback] 读取缓存文件失败 {path}: {e}")
+        return None
+
+
+def _save_signal_cache_file(path: str, df: pd.DataFrame) -> None:
+    try:
+        df.to_pickle(path, compression='gzip')
+    except Exception as e:
+        logging.warning(f"[signal-fallback] 写缓存文件失败 {path}: {e}")
+
+
+def _get_builtin_strategy_func(strategy_table: str):
+    """根据策略表名找到内置 check() 函数。返回 (func, threshold) 或 (None, 60)。"""
+    for s in tbs.TABLE_CN_STOCK_STRATEGIES:
+        if s.get('name') == strategy_table:
+            return s.get('func'), s.get('size', 60)
+    return None, 60
+
+
+def _load_fallback_stock_universe(max_stocks: int):
+    """从 cn_stock_spot 取最近一天的股票列表（限制条数）。返回 [(date, code, name), ...]。"""
+    try:
+        spot_table = tbs.TABLE_CN_STOCK_SPOT['name']
+        if not mdb.checkTableIsExist(spot_table):
+            return []
+        fk_cols = list(tbs.TABLE_CN_STOCK_FOREIGN_KEY['columns'].keys())
+        cols_sql = ', '.join(f'`{c}`' for c in fk_cols)
+        sql = (
+            f"SELECT {cols_sql} FROM `{spot_table}` "
+            f"WHERE `date` = (SELECT MAX(`date`) FROM `{spot_table}`) "
+            f"LIMIT {int(max_stocks)}"
+        )
+        df = pd.read_sql(sql, mdb.engine())
+        if df is None or df.empty:
+            return []
+        return [tuple(x) for x in df[fk_cols].values]
+    except Exception as e:
+        logging.warning(f"[signal-fallback] 读取股票列表失败: {e}")
+        return []
+
+
+def _scan_one_stock_for_signals(stock, strategy_func, threshold, start_ts, end_ts,
+                                 ext_start_str, ext_end_str, rate_cols_all):
+    """单只股票扫描：返回 [{date,code,name,p_change,rate_1..rate_N}, ...]"""
+    code = stock[1]
+    name = stock[2] if len(stock) > 2 else ''
+    try:
+        hist = stf.read_stock_hist_from_cache(code, ext_start_str, ext_end_str)
+    except Exception:
+        return []
+    if hist is None or len(hist) < threshold + 5:
+        return []
+    try:
+        if not pd.api.types.is_datetime64_any_dtype(hist['date']):
+            hist = hist.copy()
+            hist['date'] = pd.to_datetime(hist['date'])
+    except Exception:
+        return []
+
+    in_range = hist[(hist['date'] >= start_ts) & (hist['date'] <= end_ts)]
+    if in_range.empty:
+        return []
+
+    closes = hist['close'].reset_index(drop=True)
+    dates_all = hist['date'].reset_index(drop=True).tolist()
+    date_to_idx = {d: i for i, d in enumerate(dates_all)}
+
+    rows = []
+    for _, row in in_range.iterrows():
+        d = row['date']
+        try:
+            matched = strategy_func(stock, hist, date=d.to_pydatetime())
+        except TypeError:
+            # 个别策略需要 istop 等额外参数；这里 fallback 用 False
+            try:
+                matched = strategy_func(stock, hist, date=d.to_pydatetime(), istop=False)
+            except Exception:
+                continue
+        except Exception:
+            continue
+        if not matched:
+            continue
+        idx = date_to_idx.get(d)
+        if idx is None:
+            continue
+        base = float(row['close']) if row.get('close') is not None else 0.0
+        if base <= 0:
+            continue
+        rec = {
+            'date': d.strftime('%Y-%m-%d'),
+            'code': code,
+            'name': name,
+            'p_change': float(row.get('p_change', 0.0) or 0.0),
+        }
+        for i, col in enumerate(rate_cols_all, start=1):
+            fwd = idx + i
+            if fwd < len(closes):
+                try:
+                    rec[col] = (float(closes.iloc[fwd]) - base) / base * 100
+                except Exception:
+                    rec[col] = None
+            else:
+                rec[col] = None
+        rows.append(rec)
+    return rows
+
+
+def _compute_signals_from_kline_cache(strategy_table: str, start_date, end_date):
+    """DB 无数据时的 fallback：扫 cache/hist/ 跑策略 check() 算信号 + 前向收益。
+
+    1. 优先读 cache/signal/<table>_<start>_<end>.gzip.pickle。
+    2. miss 时扫描 cn_stock_spot 最近一天的前 max_stocks 只股票，逐只调用
+       策略 check() 函数；命中则基于同一份 K 线计算 rate_1..rate_N。
+    3. 完成后写入 gzip.pickle 缓存供下次直接读取。
+    """
+    if not _FALLBACK_ENABLED:
+        return None
+
+    cache_path = _signal_cache_path(strategy_table, start_date, end_date)
+    cached = _load_signal_cache_file(cache_path)
+    if cached is not None and len(cached) > 0:
+        logging.info(
+            f"[signal-fallback] 命中文件缓存 {cache_path}: {len(cached)} rows"
+        )
+        return cached
+
+    strategy_func, threshold = _get_builtin_strategy_func(strategy_table)
+    if strategy_func is None:
+        logging.info(f"[signal-fallback] 策略 {strategy_table} 不在内置注册表，跳过 fallback")
+        return None
+
+    stocks = _load_fallback_stock_universe(_FALLBACK_MAX_STOCKS)
+    if not stocks:
+        logging.info("[signal-fallback] 股票列表为空，跳过 fallback")
+        return None
+
+    total = len(stocks)
+    logging.info(
+        f"[signal-fallback] 开始扫描 {total} 只股票，区间 {start_date}~{end_date}，策略={strategy_table}"
+    )
+
+    ext_start = (start_date - datetime.timedelta(days=_FALLBACK_HIST_BUFFER_DAYS)).strftime('%Y%m%d')
+    ext_end = (end_date + datetime.timedelta(days=_FALLBACK_FORWARD_BUFFER_DAYS)).strftime('%Y%m%d')
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date)
+    rate_cols_all = [f'rate_{i}' for i in range(1, RATE_FIELDS_COUNT + 1)]
+
+    results = []
+    with ThreadPoolExecutor(max_workers=max(1, _FALLBACK_WORKERS),
+                             thread_name_prefix='verify-fallback') as ex:
+        futs = [
+            ex.submit(_scan_one_stock_for_signals, s, strategy_func, threshold,
+                      start_ts, end_ts, ext_start, ext_end, rate_cols_all)
+            for s in stocks
+        ]
+        done = 0
+        for fut in as_completed(futs):
+            done += 1
+            try:
+                rows = fut.result()
+                if rows:
+                    results.extend(rows)
+            except Exception:
+                pass
+            if done % 50 == 0:
+                logging.info(
+                    f"[signal-fallback] 已扫描 {done}/{total}，累计信号 {len(results)} 条"
+                )
+
+    logging.info(
+        f"[signal-fallback] 扫描完成：{strategy_table} 区间 {start_date}~{end_date}，"
+        f"共 {len(results)} 条信号"
+    )
+    if not results:
+        return None
+    df = pd.DataFrame(results)
+    _save_signal_cache_file(cache_path, df)
+    return df
 
 
 def _write_json(handler, data):

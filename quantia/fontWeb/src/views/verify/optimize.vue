@@ -644,15 +644,34 @@ function snapshotAnalysis() {
   })
 }
 
+function isEmptySnapshot(snap: any): boolean {
+  if (!snap) return true
+  const hasHolding = Array.isArray(snap.holdingData) && snap.holdingData.length > 0
+  const hasSignals = Number(snap.totalSignals) > 0
+  const hasCustom = !!snap.customComparePayload
+  return !hasHolding && !hasSignals && !hasCustom
+}
+
 function getCachedAnalysis(key: string) {
   const cached = analysisMemoryCache.get(key)
-  if (cached && Date.now() - cached.savedAt < ANALYSIS_CACHE_TTL) return cloneData(cached)
+  if (cached && Date.now() - cached.savedAt < ANALYSIS_CACHE_TTL) {
+    if (isEmptySnapshot(cached)) {
+      analysisMemoryCache.delete(key)
+      try { sessionStorage.removeItem(`${ANALYSIS_CACHE_PREFIX}${key}`) } catch { /* ignore */ }
+      return null
+    }
+    return cloneData(cached)
+  }
 
   try {
     const raw = sessionStorage.getItem(`${ANALYSIS_CACHE_PREFIX}${key}`)
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (!parsed?.savedAt || Date.now() - parsed.savedAt > ANALYSIS_CACHE_TTL) {
+      sessionStorage.removeItem(`${ANALYSIS_CACHE_PREFIX}${key}`)
+      return null
+    }
+    if (isEmptySnapshot(parsed)) {
       sessionStorage.removeItem(`${ANALYSIS_CACHE_PREFIX}${key}`)
       return null
     }
@@ -828,7 +847,12 @@ async function runAnalysis() {
     hasQueried.value = true
     try {
       await restoreAnalysisFromCache(cached)
-      ElMessage.success('已使用缓存结果')
+      const isEmpty = !(cached.holdingData && cached.holdingData.length) && !cached.totalSignals
+      if (isEmpty) {
+        ElMessage.warning('区间内无信号数据，请调整日期范围或策略')
+      } else {
+        ElMessage.success('已使用缓存结果')
+      }
       return
     } finally {
       loading.value = false
@@ -915,7 +939,13 @@ async function runAnalysis() {
 
     // 信号诊断
     await loadSignalQuality()
-    setCachedAnalysis(cacheKey)
+    // 空结果不缓存，避免二次进入时误导“已使用缓存”但页面全空
+    const hasData = (holdingData.value.length > 0) || (totalSignals.value > 0)
+    if (hasData) {
+      setCachedAnalysis(cacheKey)
+    } else {
+      ElMessage.warning('区间内无信号数据，请调整日期范围或策略')
+    }
   } catch (e: any) {
     ElMessage.error(e.message || '请求失败')
   } finally {
