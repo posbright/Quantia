@@ -20,13 +20,14 @@ Python (run from repo root, venv activated):
 
 Frontend (in [quantia/fontWeb](quantia/fontWeb)):
 - `npm install` then `npm run dev` (or `npm run dev:mock`)
-- Type-check + build: `npm run build`
+- Type-check + build: `npm run build` — 等价于 `vue-tsc --noEmit && vite build`。**绝不**用 `npx vite build` / `vite build` 单跳来绕过 `vue-tsc`（等同 `--no-verify`）。TS6133 / TS2xxx 必须真正修掉，禁止 bypass。
 - Unit tests: `npm test`
 - Production: copy `quantia/fontWeb/dist/**` into [quantia/web/static](quantia/web/static) — Tornado serves from there. Vite build alone is not enough.
 
 Web service:
 - Start: [quantia/bin/run_web.sh](quantia/bin/run_web.sh) / `run_web.bat` → http://localhost:9988
 - After ANY backend Python change, restart `web_service.py` (long-running process; modules are cached). Remote: `/root/Quantia/quantia/bin/restart_web.sh`.
+- **Restart 必须配验证**：commit / push 不等于生效。后端改动后必须 (a) 重启 `web_service.py`，(b) 黑盒调用一个被改动的接口（`Invoke-RestMethod` / curl）确认 200 + 预期字段后再向用户报告完成。Phase 7 commit 后没重启 → `custom_93` 接口仍返回旧白名单 "未知 strategy" 就是教训。
 
 Env: copy `.env` template; required keys are `QUANTIA_DB_HOST/QUANTIA_DB_USER/QUANTIA_DB_PASSWORD/QUANTIA_DB_DATABASE`. AI provider keys (`QUANTIA_AI_PROVIDER_*`) are only needed for AI features. `QUANTIA_LOCAL_MODE=1` enables higher concurrency.
 
@@ -71,6 +72,31 @@ Streaming analysis ([quantia/job/streaming_analysis_job.py]) processes 4900+ sto
 | [quantia/ai_decision/](quantia/ai_decision) | AI assistant + multi-provider LLM integration |
 | [quantia/auth/](quantia/auth), [quantia/notification/](quantia/notification), [quantia/im/](quantia/im) | Auth, notifications, DingTalk/IM |
 | [cron/](cron) | Cron entry scripts (hourly / workdayly / monthly) |
+
+## Subagent / scripted command safety（必须遵循）
+
+调用 `execution_subagent` 或在终端跑脚本时，**严禁**让其执行可倒退用户未提交编辑的命令：
+
+- 禁止：`git checkout <path>` / `git restore <path>` / `git reset --hard` / `git clean -fd` / 任意 `git stash` 后不恢复 / `git rm` 含未提交改动的文件。
+- 禁止用 `vite build` / 跳过 lint 等方式"修复"构建失败——把真实错误回报给主代理，由主代理修代码。
+- 调用 subagent 前，prompt 里要明确写 **Hard rules**：`DO NOT run git checkout/reset/restore/clean. If npm run build fails, paste the verbatim error and STOP.`
+- 调用 subagent 后，若它报告"通过"，要校验 `git status` 没有意外的 "checked out" / "reverted"。曾发生 subagent 为绕过 TS6133 静默 `git checkout src/views/verify/optimize.vue` 倒退本会话编辑的事故。
+
+## Custom-strategy parity（前后端必须遵循）
+
+买卖点优化 / 策略对比 / 策略融合 / 因子实验室 / AI 决策 等"验证中心"页面同时支持内置 `cn_stock_strategy_*` 与用户自定义策略 `custom_<id>`。**每个**后端 handler 与前端 tab 都必须显式处理自定义分支：
+
+- 后端：在 `_handle` 入口判断 `strategy.startswith('custom_')`，路由到 `_handle_custom`，**不要**走 `_resolve_strategy_meta` 白名单（会被拒为"未知 strategy"）。
+- 前端：v-if 不要写 `!isCustomStrategy && ...` 把图表 / 数据直接隐藏掉（Phase 7→8 反复发生）。如果该 tab 暂无自定义数据，让条件只判断数据本身（`data.length > 0`），用占位文案给提示。
+- 自定义策略的统计口径必须与内置一致：
+  - 滚动 NAV 夏普用**非重叠**采样 `nav[::d]`（与 `_calc_rolling_nav_analysis` 一致），`len(samples) < 3` 时返回 None；不要用重叠窗口（会把 std 严重低估，sharpe 飙到 20+ / 胜率 100%）。
+  - 同步过滤 `(date, value)` 数组，不要先 filter 一个再按下标切另一个 — 必然日期错位。
+  - 样本外验证用真实 NAV 70/30 切，禁止用固定系数（`*0.86`、`*0.83`、`*0.94`、`*0.88`）造伪 train/test 数据误导用户。
+- 新增 tab / 新数据流时，要把"内置 vs 自定义"两条路径都跑一遍验证，不能只测一侧。
+
+## ECharts in tabs
+
+切换 tab 后 v-show 重新出现的 ECharts 容器尺寸可能为 0：tab change 时调 `chart.resize()`，或在 `nextTick` 后再 `init`。详见 commit e6d6268。
 
 ## Destructive file ops（必须遵循）
 
@@ -119,8 +145,13 @@ Streaming analysis ([quantia/job/streaming_analysis_job.py]) processes 4900+ sto
 - Don't route index codes through `load_stock_data` (rule 3).
 - Don't `to_pickle` blind-overwrite the index cache (rule 4).
 - Don't omit `chunksize=500` in `to_sql`.
-- Don't forget to restart the web service after backend edits.
+- Don't forget to restart the web service after backend edits — and **verify with a black-box endpoint call** before declaring done.
 - Don't forget to copy Vite `dist/` into `quantia/web/static` for prod.
+- Don't `vite build` past a `vue-tsc` error — fix the TS error.
+- Don't let subagents run `git checkout / reset / restore / clean` (see Subagent safety).
+- Don't gate custom-strategy tabs behind `!isCustomStrategy` (see Custom-strategy parity).
+- Don't compute Sharpe / win-rate on overlapping rolling windows — use non-overlapping `nav[::d]`, return null when `len(samples) < 3`.
+- Don't fabricate OOS train/test metrics with fixed multipliers — split the real NAV.
 - Don't forget to ask about commit & push when a user-facing change is finished (see Commit workflow).
 - Don't delete directories or batch-delete files without listing them and getting user confirmation first (see Destructive file ops).
 - Hard-rule expressions (composite): AST sandbox blocks `__import__`, dunders, lambda, file ops, exec/eval, attribute access on dicts. Don't try to "improve" the sandbox by relaxing these.
