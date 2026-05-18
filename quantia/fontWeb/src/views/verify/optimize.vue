@@ -924,9 +924,15 @@ function _computeRollingStats(navVals: number[], d: number) {
 }
 
 function computeOOSFromHoldingByNav(navSeries: any[]) {
-  const navVals: number[] = (navSeries || [])
-    .map((s: any) => Number(s?.cumulative))
-    .filter((v: number) => Number.isFinite(v) && v > 0)
+  // 同步过滤 (date, cumulative)，避免后续按下标切分时日期与净值错位。
+  const navVals: number[] = []
+  const navDates: string[] = []
+  for (const s of navSeries || []) {
+    const cum = Number(s?.cumulative)
+    if (!Number.isFinite(cum) || cum <= 0) continue
+    navVals.push(cum)
+    navDates.push(String(s?.date || ''))
+  }
   const d = Number(bestHoldingDays.value) || 20
   if (navVals.length < d * 3) {
     oosData.value = { train: null, test: null }
@@ -938,7 +944,7 @@ function computeOOSFromHoldingByNav(navSeries: any[]) {
   const splitIdx = Math.floor(navVals.length * 0.7)
   const trainNav = navVals.slice(0, splitIdx)
   const testNav = navVals.slice(splitIdx - 1) // 共享分界点，保证连续
-  const splitDate = navSeries[splitIdx]?.date || ''
+  const splitDate = navDates[splitIdx] || navDates[navDates.length - 1] || ''
   const train = _computeRollingStats(trainNav, d)
   const test = _computeRollingStats(testNav, d)
   if (!train || !test) {
@@ -949,13 +955,13 @@ function computeOOSFromHoldingByNav(navSeries: any[]) {
     return
   }
   oosData.value = {
-    train: { ...train, period: `${startDate.value} ~ ${splitDate}` },
-    test: { ...test, period: `${splitDate} ~ ${endDate.value}` },
+    train: { ...train, period: `${navDates[0] || startDate.value} ~ ${splitDate}` },
+    test: { ...test, period: `${splitDate} ~ ${navDates[navDates.length - 1] || endDate.value}` },
   }
-  const navDates = (navSeries || []).map((s: any) => s?.date || '')
   const normalize = (vals: number[], dates: string[]) => {
     if (vals.length === 0) return []
     const base = vals[0]
+    if (!(base > 0)) return []
     return vals.map((v, i) => ({ date: dates[i] || '', cumulative: (v / base) * 100 }))
   }
   oosTrainSeries.value = normalize(trainNav, navDates.slice(0, splitIdx))
