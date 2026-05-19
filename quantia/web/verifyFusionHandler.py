@@ -746,6 +746,97 @@ def _load_rate_df(start_date, end_date, holding_days):
     return combined.groupby(['date', 'code'], as_index=False)['rate'].mean()
 
 
+def _supplement_rate_from_kline(rate_df, signal_df, holding_days):
+    """对 signal_df 中存在、但 rate_df 中缺失的 (date, code) 对，从 K 线缓存补算收益。
+
+    主要服务于「custom 维度」—— `cn_stock_strategy_*` 表只覆盖被内置策略选中的
+    (date, code)，自定义回测发现的代码常常缺席，导致 KPI 全部为 None。本函数
+    用 K 线 close 在 (date, date+holding_days) 处的涨跌幅补齐，避免该数据空洞。
+    """
+    if signal_df is None or len(signal_df) == 0 or holding_days <= 0:
+        return rate_df
+
+    # 归一化既有 rate_df，构造索引集合
+    existing = set()
+    if rate_df is not None and len(rate_df) > 0:
+        rdates = pd.to_datetime(rate_df['date']).dt.strftime('%Y-%m-%d').tolist()
+        rcodes = rate_df['code'].astype(str).tolist()
+        existing = set(zip(rdates, rcodes))
+
+    # 收集缺失 (date, code) 对
+    missing_pairs = []
+    sdates = pd.to_datetime(signal_df['date']).dt.strftime('%Y-%m-%d').tolist()
+    scodes = signal_df['code'].astype(str).tolist()
+    for ds, c in zip(sdates, scodes):
+        if (ds, c) not in existing:
+            missing_pairs.append((ds, c))
+    if not missing_pairs:
+        return rate_df
+
+    # 逐 code 拉一次全量 K 线缓存，避免重复 IO
+    try:
+        import quantia.core.stockfetch as _stf  # 局部导入降低模块加载耦合
+    except Exception:
+        logger.warning('_supplement_rate_from_kline: 无法导入 stockfetch，跳过补算')
+        return rate_df
+
+    hist_cache = {}
+    new_rows = []
+    for ds, c in missing_pairs:
+        if c not in hist_cache:
+            try:
+                hist = _stf.read_stock_hist_from_cache(c, '19900101', '20991231')
+            except Exception:
+                hist = None
+            if hist is not None and len(hist) > 0:
+                try:
+                    if not pd.api.types.is_datetime64_any_dtype(hist['date']):
+                        hist = hist.copy()
+                        hist['date'] = pd.to_datetime(hist['date'])
+                except Exception:
+                    hist = None
+            hist_cache[c] = hist
+        hist = hist_cache[c]
+        if hist is None or len(hist) == 0 or 'close' not in getattr(hist, 'columns', []):
+            continue
+        target = pd.Timestamp(ds)
+        date_arr = hist['date'].values
+        idxs = np.where(date_arr >= np.datetime64(target))[0]
+        if len(idxs) == 0:
+            continue
+        i0 = int(idxs[0])
+        i1 = i0 + holding_days
+        if i1 >= len(hist):
+            continue
+        try:
+            p0 = float(hist['close'].iloc[i0])
+            p1 = float(hist['close'].iloc[i1])
+        except (TypeError, ValueError):
+            continue
+        if not (p0 > 0 and np.isfinite(p0) and np.isfinite(p1)):
+            continue
+        rate = (p1 - p0) / p0 * 100.0
+        if not np.isfinite(rate):
+            continue
+        # 使用「实际买入交易日」的 timestamp，与 signal_df 中 normalize 后的 date 对齐
+        actual_ts = pd.Timestamp(hist['date'].iloc[i0]).normalize()
+        new_rows.append({'date': actual_ts, 'code': c, 'rate': rate})
+
+    if not new_rows:
+        return rate_df
+
+    new_df = pd.DataFrame(new_rows)
+    if rate_df is None or len(rate_df) == 0:
+        return new_df
+
+    base = rate_df.copy()
+    if not pd.api.types.is_datetime64_any_dtype(base['date']):
+        base['date'] = pd.to_datetime(base['date'])
+    base['date'] = base['date'].dt.normalize()
+    combined = pd.concat([base, new_df], ignore_index=True)
+    return combined.drop_duplicates(subset=['date', 'code'], keep='first').reset_index(drop=True)
+
+
 def _evaluate(signal_df, rate_df, holding_days):
     """对 (date, code) 集做收益评估。
 
@@ -1063,6 +1154,14 @@ def _handle_v2(handler, body):
 
     # 3. 收益数据
     rate_df = _load_rate_df(spec['start_date'], spec['end_date'], spec['holding_days'])
+    # 3a. 对 custom 维度信号中的缺失 (date, code) 对，从 K 线补算 rate_N，
+    #     避免 cn_stock_strategy_* 不覆盖自定义代码导致 KPI 全为 None。
+    if 'custom' in dim_signals:
+        try:
+            rate_df = _supplement_rate_from_kline(
+                rate_df, dim_signals['custom'], spec['holding_days'])
+        except Exception:
+            logger.warning('custom 维度 rate 补算失败，跳过', exc_info=True)
     if rate_df is None or len(rate_df) == 0:
         warnings.append(f"区间内 rate_{spec['holding_days']} 数据为空，指标可能为空")
 

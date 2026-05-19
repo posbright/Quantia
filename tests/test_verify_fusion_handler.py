@@ -684,6 +684,97 @@ class TestLoadDimSignalsCustom:
         m.assert_called_once()
 
 
+class TestSupplementRateFromKline:
+    """custom 维度 (date, code) 在 cn_stock_strategy_* 表中缺失时，从 K 线补算 rate。"""
+
+    def _make_hist(self, dates, closes):
+        return pd.DataFrame({
+            'date': pd.to_datetime(dates),
+            'close': closes,
+        })
+
+    def test_no_signals_returns_unchanged(self):
+        rate_df = pd.DataFrame({'date': pd.to_datetime(['2026-03-01']),
+                                 'code': ['000001'], 'rate': [1.5]})
+        out = vfh._supplement_rate_from_kline(rate_df, None, 5)
+        assert out is rate_df
+        out2 = vfh._supplement_rate_from_kline(
+            rate_df, pd.DataFrame(columns=['date', 'code']), 5)
+        assert out2 is rate_df
+
+    def test_all_pairs_already_present_returns_unchanged(self):
+        rate_df = pd.DataFrame({
+            'date': pd.to_datetime(['2026-03-01', '2026-03-02']),
+            'code': ['000001', '000002'],
+            'rate': [1.0, 2.0],
+        })
+        sig = pd.DataFrame({
+            'date': pd.to_datetime(['2026-03-01', '2026-03-02']),
+            'code': ['000001', '000002'],
+        })
+        with mock.patch('quantia.core.stockfetch.read_stock_hist_from_cache') as m:
+            out = vfh._supplement_rate_from_kline(rate_df, sig, 5)
+        assert m.call_count == 0
+        assert len(out) == 2
+
+    def test_missing_pair_computed_from_kline(self):
+        """rate_df 缺 ('2026-03-02','000300'), K 线返回 close 涨 10% → rate=10.0。"""
+        rate_df = pd.DataFrame({
+            'date': pd.to_datetime(['2026-03-01']),
+            'code': ['000001'], 'rate': [1.0],
+        })
+        sig = pd.DataFrame({
+            'date': pd.to_datetime(['2026-03-02']),
+            'code': ['000300'],
+        })
+        # i0 落在 2026-03-02 (close=100)，holding_days=5 → i1=index 5 (close=110)
+        hist = self._make_hist(
+            ['2026-03-02', '2026-03-03', '2026-03-04', '2026-03-05',
+             '2026-03-06', '2026-03-09', '2026-03-10'],
+            [100.0, 101.0, 102.0, 103.0, 104.0, 110.0, 115.0],
+        )
+        with mock.patch('quantia.core.stockfetch.read_stock_hist_from_cache',
+                        return_value=hist) as m:
+            out = vfh._supplement_rate_from_kline(rate_df, sig, 5)
+        m.assert_called_once()
+        assert len(out) == 2
+        new_row = out[out['code'] == '000300'].iloc[0]
+        assert abs(float(new_row['rate']) - 10.0) < 1e-6
+
+    def test_skip_when_hist_too_short(self):
+        rate_df = pd.DataFrame(columns=['date', 'code', 'rate'])
+        sig = pd.DataFrame({
+            'date': pd.to_datetime(['2026-03-02']),
+            'code': ['000300'],
+        })
+        # 只有 2 行 K 线 < holding_days=5
+        hist = self._make_hist(['2026-03-02', '2026-03-03'], [100.0, 101.0])
+        with mock.patch('quantia.core.stockfetch.read_stock_hist_from_cache',
+                        return_value=hist):
+            out = vfh._supplement_rate_from_kline(rate_df, sig, 5)
+        assert len(out) == 0
+
+    def test_caches_hist_per_code(self):
+        """同一 code 多次出现时只读取一次 K 线。"""
+        sig = pd.DataFrame({
+            'date': pd.to_datetime(['2026-03-02', '2026-03-03', '2026-03-04']),
+            'code': ['000300', '000300', '000300'],
+        })
+        rate_df = pd.DataFrame(columns=['date', 'code', 'rate'])
+        hist = self._make_hist(
+            ['2026-03-02', '2026-03-03', '2026-03-04', '2026-03-05',
+             '2026-03-06', '2026-03-09', '2026-03-10', '2026-03-11',
+             '2026-03-12'],
+            [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0],
+        )
+        with mock.patch('quantia.core.stockfetch.read_stock_hist_from_cache',
+                        return_value=hist) as m:
+            out = vfh._supplement_rate_from_kline(rate_df, sig, 5)
+        assert m.call_count == 1
+        # 3 个不同 buy 日期 → 3 行
+        assert len(out) == 3
+
+
 # ── OptimizeSuggestHandler 测试 ───────────────────────────────────────
 
 class TestOptimizeSuggestHandler(AsyncHTTPTestCase):
