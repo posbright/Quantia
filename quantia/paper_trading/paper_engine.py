@@ -286,6 +286,25 @@ def run_paper_trading_daily(paper_id, scheduled=False, now=None):
     date_str = None
 
     try:
+        # 盘前窗口窄门：今天是交易日且尚未到 09:30 时，trd.get_trade_date_last()
+        # 会把 run_date_nph 回退到上一个交易日，导致：
+        #   (a) 本次执行的交易被写入"昨日"的 date_str —— 与昨日收盘批次同一天，
+        #       前端 K 线图上呈现"同日卖出 + 同日买入"假象；
+        #   (b) prev_run_date_str == date_str 让 _on_new_day 跳过，T+1 closeable
+        #       不刷新；
+        #   (c) cn_stock_spot 还是昨日收盘价，用陈旧价格撮合次日开盘前的下单。
+        # 解决方法：识别该精确窗口直接 skip，等开盘后由下一次 hourly 调度补跑。
+        # 午休 / 收盘后 / 周末 / 节假日不进入此分支。
+        _now_for_preopen_check = now or datetime.datetime.now()
+        if (trd.is_trade_date(_now_for_preopen_check.date())
+                and not trd.is_open(_now_for_preopen_check)):
+            result = {
+                'status': 'skipped',
+                'message': '盘前不执行（09:30 前会将交易归入上一交易日，'
+                           '导致日期错乱与 T+1 失效），等待开盘后由下一次调度补跑',
+            }
+            return result
+
         # 1. 获取当前交易日
         run_date, run_date_nph = trd.get_trade_date_last()
         if not trd.is_trade_date(run_date_nph):
