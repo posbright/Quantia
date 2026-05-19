@@ -220,6 +220,37 @@ _FUND_FLOW_FACTORS = [
 # 合并所有因子
 FACTOR_CATALOG = _STRATEGY_FACTORS + _INDICATOR_FACTORS + _FUNDAMENTAL_FACTORS + _FUND_FLOW_FACTORS
 
+# 自动补全 description：基于 category / 默认条件 / 预设档位生成统一文案，
+# 让前端因子卡片 tooltip 可以始终展示"含义 + 取值"。已显式写入的 description 不覆盖。
+_CATEGORY_LABEL = {
+    'tech_signal': '技术策略信号', 'tech_indicator': '技术指标',
+    'fundamental': '基本面指标', 'fund_flow': '资金流向指标',
+}
+
+
+def _auto_fill_description(f):
+    if f.get('description'):
+        return
+    parts = []
+    cat = _CATEGORY_LABEL.get(f.get('category', ''), f.get('category', ''))
+    parts.append(f"{cat} · {f.get('name', f.get('id', ''))}")
+    if f.get('type') == 'signal':
+        parts.append('当日被该策略选中视为信号触发')
+    else:
+        op = f.get('default_operator')
+        val = f.get('default_value')
+        if op is not None and val is not None:
+            vs = ('~'.join(str(x) for x in val)) if isinstance(val, (list, tuple)) else val
+            parts.append(f"默认筛选: {op} {vs}")
+        presets = f.get('presets') or []
+        if presets:
+            parts.append('常用阈值: ' + ' / '.join(p.get('label', '') for p in presets[:4]))
+    f['description'] = '；'.join(p for p in parts if p)
+
+
+for _f in FACTOR_CATALOG:
+    _auto_fill_description(_f)
+
 # id -> factor meta 映射
 _FACTOR_MAP = {f['id']: f for f in FACTOR_CATALOG}
 
@@ -393,6 +424,44 @@ def _compute_kpi(rates, holding_days, total_dates=0):
     }
 
 
+# ── 自定义策略动态注入 ────────────────────────────────────────────────
+
+def _load_custom_strategy_factors():
+    """从 cn_stock_strategy_code 读取活跃的自定义策略，注册为 tech_signal 因子。
+
+    每个自定义策略对应一个 id 为 `custom_<strategy_id>` 的因子；其底层数据
+    通过 verifyOptimizeHandler._build_custom_strategy_dataframe 在运行时按
+    (date, code, rate_N) 形态组装，故 table/column 置 None 以示与表型策略不同。
+    """
+    factors = []
+    if not mdb.checkTableIsExist('cn_stock_strategy_code'):
+        return factors
+    try:
+        rows = mdb.executeSqlFetch(
+            "SELECT id, name, description FROM cn_stock_strategy_code "
+            "WHERE status != 'archived' ORDER BY updated_at DESC LIMIT 200")
+    except Exception as e:
+        logger.warning(f"加载自定义策略列表失败: {e}")
+        return factors
+    for r in (rows or []):
+        sid = r[0]
+        name = (r[1] or f'自定义策略 {sid}').strip()
+        desc = (r[2] or '').strip()
+        factors.append({
+            'id': f'custom_{sid}',
+            'name': f'{name}（自定义）',
+            'category': 'tech_signal',
+            'type': 'signal',
+            'table': None,
+            'column': None,
+            'icon': name[0] if name else 'C',
+            'description': (desc or f'用户自定义策略 #{sid}，来自 cn_stock_strategy_code；'
+                            '运行时从组合回测交易日志 + K 线缓存逐笔补算收益'),
+            'is_custom': True,
+        })
+    return factors
+
+
 # ── Handler: 因子目录 ─────────────────────────────────────────────────
 
 class FactorCatalogHandler(webBase.BaseHandler):
@@ -403,9 +472,11 @@ class FactorCatalogHandler(webBase.BaseHandler):
 
     def get(self):
         try:
+            custom_factors = _load_custom_strategy_factors()
+            tech_signals = [f for f in FACTOR_CATALOG if f['category'] == 'tech_signal'] + custom_factors
             categories = [
                 {'key': 'tech_signal', 'name': '技术策略信号', 'icon': '📊',
-                 'factors': [f for f in FACTOR_CATALOG if f['category'] == 'tech_signal']},
+                 'factors': tech_signals},
                 {'key': 'tech_indicator', 'name': '技术指标', 'icon': '📈',
                  'factors': [f for f in FACTOR_CATALOG if f['category'] == 'tech_indicator']},
                 {'key': 'fundamental', 'name': '基本面', 'icon': '📋',
@@ -477,6 +548,27 @@ class FactorLabRunHandler(webBase.BaseHandler):
             if not fc.get('enabled', True):
                 continue
             meta = _FACTOR_MAP.get(fid)
+            if meta is None and fid.startswith('custom_'):
+                # 自定义策略：动态构建 meta（cn_stock_strategy_code）
+                try:
+                    sid = int(fid.split('_', 1)[1])
+                except (ValueError, IndexError):
+                    _write_error(self, f"非法自定义策略 id: '{fid}'")
+                    return
+                name = f'自定义策略 #{sid}'
+                if mdb.checkTableIsExist('cn_stock_strategy_code'):
+                    try:
+                        row = mdb.executeSqlFetch(
+                            "SELECT name FROM cn_stock_strategy_code WHERE id=%s", (sid,))
+                        if row and row[0] and row[0][0]:
+                            name = str(row[0][0])
+                    except Exception:
+                        pass
+                meta = {
+                    'id': fid, 'name': name, 'category': 'tech_signal', 'type': 'signal',
+                    'table': None, 'column': None, 'icon': name[0] if name else 'C',
+                    'is_custom': True, 'strategy_id': sid,
+                }
             if meta is None:
                 _write_error(self, f"未知因子 id: '{fid}'")
                 return
@@ -504,12 +596,19 @@ class FactorLabRunHandler(webBase.BaseHandler):
             _write_error(self, '至少需要 1 个策略信号因子（提供收益率数据）')
             return
 
-        # 加载策略信号数据
+        # 加载策略信号数据（内置策略走表 / 自定义策略走交易日志+K线缓存）
         strategy_dfs = {}
         for sf in signal_factors:
-            table = sf['meta']['table']
-            if table in strategy_dfs:
+            key = self._signal_key(sf)
+            if key in strategy_dfs:
                 continue
+            if sf['meta'].get('is_custom'):
+                df = self._load_custom_signal_df(
+                    sf['meta'], start_date, end_date, holding_days)
+                strategy_dfs[key] = df if df is not None and len(df) > 0 \
+                    else pd.DataFrame(columns=['date', 'code', 'rate'])
+                continue
+            table = sf['meta']['table']
             if not mdb.checkTableIsExist(table):
                 _write_error(self, f"策略表 {table} 不存在")
                 return
@@ -526,7 +625,7 @@ class FactorLabRunHandler(webBase.BaseHandler):
                 logger.error(f"加载 {table}: {e}", exc_info=True)
                 _write_error(self, f'加载策略 {sf["meta"]["name"]} 失败', 500)
                 return
-            strategy_dfs[table] = df if df is not None and len(df) > 0 \
+            strategy_dfs[key] = df if df is not None and len(df) > 0 \
                 else pd.DataFrame(columns=['date', 'code', 'rate'])
 
         # 策略信号融合（得到基础信号池）
@@ -591,21 +690,47 @@ class FactorLabRunHandler(webBase.BaseHandler):
         })
 
     @staticmethod
+    def _signal_key(sf):
+        """返回 strategy_dfs 字典 key：内置走 table 名，自定义走 factor id。"""
+        if sf['meta'].get('is_custom'):
+            return sf['meta']['id']
+        return sf['meta']['table']
+
+    @staticmethod
+    def _load_custom_signal_df(meta, start_date, end_date, holding_days):
+        """自定义策略 → DataFrame[date, code, rate]。复用 verifyOptimize 的逐笔补算。"""
+        from quantia.web.verifyOptimizeHandler import _build_custom_strategy_dataframe
+        strategy_key = meta['id']
+        df, _total, _err = _build_custom_strategy_dataframe(
+            strategy_key, start_date, end_date, holding_days, '000300')
+        if df is None or len(df) == 0:
+            return pd.DataFrame(columns=['date', 'code', 'rate'])
+        rate_col = f'rate_{holding_days}'
+        if rate_col not in df.columns:
+            return pd.DataFrame(columns=['date', 'code', 'rate'])
+        out = df[['date', 'code', rate_col]].rename(columns={rate_col: 'rate'}).copy()
+        out['date'] = pd.to_datetime(out['date']).dt.strftime('%Y-%m-%d')
+        out = out.dropna(subset=['rate'])
+        return out.reset_index(drop=True)
+
+    @staticmethod
     def _fuse_strategy_signals(strategy_dfs, signal_factors, fusion_mode, vote_threshold):
         """融合多策略信号，返回 DataFrame(date, code, rate)。"""
+        def _k(sf):
+            return sf['meta']['id'] if sf['meta'].get('is_custom') else sf['meta']['table']
         if len(signal_factors) == 1:
-            table = signal_factors[0]['meta']['table']
-            return strategy_dfs.get(table, pd.DataFrame(columns=['date', 'code', 'rate']))
+            return strategy_dfs.get(_k(signal_factors[0]),
+                                    pd.DataFrame(columns=['date', 'code', 'rate']))
 
         # 合并所有策略
         dfs = []
-        tables = []
+        keys = []
         for sf in signal_factors:
-            table = sf['meta']['table']
-            if table in tables:
+            key = _k(sf)
+            if key in keys:
                 continue
-            tables.append(table)
-            df = strategy_dfs.get(table)
+            keys.append(key)
+            df = strategy_dfs.get(key)
             if df is not None and len(df) > 0:
                 dfs.append(df[['date', 'code', 'rate']].copy())
         if not dfs:
@@ -615,12 +740,12 @@ class FactorLabRunHandler(webBase.BaseHandler):
 
         if fusion_mode == 'and':
             counts = combined.groupby(['date', 'code']).size().reset_index(name='cnt')
-            valid = counts[counts['cnt'] >= len(tables)][['date', 'code']]
+            valid = counts[counts['cnt'] >= len(keys)][['date', 'code']]
             avg_rate = combined.groupby(['date', 'code'])['rate'].mean().reset_index()
             return valid.merge(avg_rate, on=['date', 'code'], how='inner')
 
         elif fusion_mode == 'vote':
-            threshold = max(2, min(vote_threshold, len(tables)))
+            threshold = max(2, min(vote_threshold, len(keys)))
             counts = combined.groupby(['date', 'code']).size().reset_index(name='cnt')
             valid = counts[counts['cnt'] >= threshold][['date', 'code']]
             avg_rate = combined.groupby(['date', 'code'])['rate'].mean().reset_index()

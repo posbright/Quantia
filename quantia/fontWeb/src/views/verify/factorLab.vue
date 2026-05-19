@@ -103,20 +103,38 @@
               </el-icon>
             </div>
             <div v-show="expandedCats.has(cat.key)" class="cat-items">
-              <div
+              <el-tooltip
                 v-for="f in cat.factors"
                 :key="f.id"
-                class="factor-item"
-                :class="{ added: isFactorAdded(f.id) }"
-                @click="addFactor(f)"
+                placement="right"
+                :show-after="300"
+                :disabled="!f.description"
               >
-                <span class="fi-icon" :style="{ background: categoryColor(f.category) }">
-                  {{ f.icon }}
-                </span>
-                <span class="fi-name">{{ f.name }}</span>
-                <el-icon v-if="!isFactorAdded(f.id)" class="fi-add"><Plus /></el-icon>
-                <el-icon v-else class="fi-check"><Check /></el-icon>
-              </div>
+                <template #content>
+                  <div style="max-width: 280px; line-height: 1.5">
+                    <div style="font-weight: 600; margin-bottom: 4px">{{ f.name }}</div>
+                    <div style="font-size: 12px; color: #ddd">{{ f.description || '暂无说明' }}</div>
+                    <div v-if="f.default_operator || f.default_value != null" style="font-size: 12px; margin-top: 4px; color: #ffd54f">
+                      默认: {{ f.default_operator || '' }} {{ Array.isArray(f.default_value) ? f.default_value.join('~') : (f.default_value ?? '') }}
+                    </div>
+                    <div v-if="f.presets && f.presets.length" style="font-size: 12px; margin-top: 4px; color: #aed581">
+                      常用阈值: {{ f.presets.map(p => p.label).join(' / ') }}
+                    </div>
+                  </div>
+                </template>
+                <div
+                  class="factor-item"
+                  :class="{ added: isFactorAdded(f.id) }"
+                  @click="addFactor(f)"
+                >
+                  <span class="fi-icon" :style="{ background: categoryColor(f.category) }">
+                    {{ f.icon }}
+                  </span>
+                  <span class="fi-name">{{ f.name }}</span>
+                  <el-icon v-if="!isFactorAdded(f.id)" class="fi-add"><Plus /></el-icon>
+                  <el-icon v-else class="fi-check"><Check /></el-icon>
+                </div>
+              </el-tooltip>
             </div>
           </div>
         </div>
@@ -156,6 +174,19 @@
                 <span class="fc-tag" :class="'t-' + af.category">
                   {{ categoryLabel(af.category) }}
                 </span>
+                <el-tooltip v-if="findFactorMeta(af.id)?.description" placement="top" :show-after="300">
+                  <template #content>
+                    <div style="max-width: 280px; line-height: 1.5">
+                      <div style="font-size: 12px">{{ findFactorMeta(af.id)?.description }}</div>
+                      <div v-if="findFactorMeta(af.id)?.presets?.length" style="font-size: 12px; margin-top: 4px; color: #aed581">
+                        常用阈值: {{ findFactorMeta(af.id)?.presets?.map(p => p.label).join(' / ') }}
+                      </div>
+                    </div>
+                  </template>
+                  <el-icon class="fc-info" style="margin-left: 4px; color: #909399; cursor: help; font-size: 13px">
+                    <QuestionFilled />
+                  </el-icon>
+                </el-tooltip>
               </span>
               <span
                 v-if="getContribution(af.id) !== null"
@@ -330,9 +361,21 @@
           <div class="card-b ai-body">
             <div v-if="aiSuggestion" class="ai-msg">
               <div class="ai-msg-text">{{ aiSuggestion }}</div>
+              <div v-if="aiPlan.length" style="font-size: 12px; color: #909399; margin-top: 4px">
+                可应用 {{ aiPlan.length }} 项操作
+              </div>
+              <div v-else style="font-size: 12px; color: #e6a23c; margin-top: 4px">
+                未解析到结构化操作（AI 返回未包含 JSON），无法自动应用
+              </div>
               <div class="ai-actions">
-                <el-button size="small" type="primary" text @click="applyAiSuggestion">✓ 应用建议</el-button>
-                <el-button size="small" text @click="aiSuggestion = ''">忽略</el-button>
+                <el-button
+                  size="small"
+                  type="primary"
+                  text
+                  :disabled="!aiPlan.length"
+                  @click="applyAiSuggestion"
+                >✓ 应用建议</el-button>
+                <el-button size="small" text @click="aiSuggestion = ''; aiPlan = []">忽略</el-button>
               </div>
             </div>
             <div v-else class="ai-empty">点击下方按钮获取 AI 优化建议</div>
@@ -531,7 +574,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, onUnmounted, watch } from 'vue'
-import { ArrowDown, ArrowRight, Plus, Check } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Plus, Check, QuestionFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
@@ -644,29 +687,79 @@ function addLog(text: string, type: LogEntry['type'] = 'mod') {
 const aiModel = ref('')
 const aiInput = ref('')
 const aiSuggestion = ref('')
+// AI 返回的结构化操作清单（与 aiSuggestion 文本同步生成）
+interface AiOp {
+  action: 'add' | 'remove' | 'set_weight' | 'set_condition' | 'set_fusion'
+  factor_id?: string
+  weight?: number
+  operator?: string
+  value?: number | number[]
+  fusion_mode?: 'and' | 'vote' | 'score'
+  vote_threshold?: number
+}
+const aiPlan = ref<AiOp[]>([])
 const aiLoading = ref(false)
+
+function _extractAiPlan(content: string): AiOp[] {
+  // 兼容 ```json ... ``` 或裸 JSON 数组段
+  const m = content.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/i)
+  let raw = m ? m[1] : ''
+  if (!raw) {
+    const lo = content.indexOf('[')
+    const hi = content.lastIndexOf(']')
+    if (lo >= 0 && hi > lo) raw = content.slice(lo, hi + 1)
+  }
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((op: any) => op && typeof op.action === 'string') as AiOp[]
+  } catch {
+    return []
+  }
+}
+
 async function askAi() {
   const userInput = aiInput.value.trim()
   if (!userInput && activeFactors.value.length === 0) return
   aiLoading.value = true
   aiSuggestion.value = ''
+  aiPlan.value = []
 
   // 构建上下文 prompt
   const factorsDesc = activeFactors.value.length > 0
     ? activeFactors.value.map(f => {
         const op = f.operator || '='
         const val = Array.isArray(f.value) ? f.value.join('~') : (f.value ?? '')
-        return `- ${f.name}(${f.category}) ${op} ${val}，权重 ${f.weight}%`
+        return `- ${f.id} (${f.name}, ${f.category}) ${op} ${val}，权重 ${f.weight}%`
       }).join('\n')
     : '（当前未添加任何因子）'
+
+  const availIds = categories.value
+    .flatMap(c => c.factors.map(f => `${f.id}(${f.name})`))
+    .slice(0, 80)
+    .join(', ')
 
   const r = result.value?.kpi
   const kpiDesc = r ? `\n最近一次回测结果：\n- 平均收益 ${r.avg_return?.toFixed(2) ?? '--'}%\n- 夏普比率 ${r.sharpe?.toFixed(2) ?? '--'}\n- 最大回撤 ${r.max_drawdown?.toFixed(2) ?? '--'}%\n- 胜率 ${r.win_rate?.toFixed(2) ?? '--'}%` : ''
 
-  const prompt = `你是一位量化因子策略顾问。请基于以下因子组合给出简洁、可执行的优化建议（不超过 200 字），包括因子权重调整、新增因子或剔除因子的具体建议。\n\n当前因子组合：\n${factorsDesc}\n${kpiDesc}\n\n用户问题：${userInput || '请给出整体优化建议'}`
+  const prompt = `你是量化因子策略顾问。请基于以下因子组合给出简洁建议（不超过 200 字），并在末尾附上一段 \`\`\`json ... \`\`\` 结构化操作清单，前端将据此自动调整：
 
-  // aiModel 下拉对应 provider 名，后端会从 QUANTIA_AI_PROVIDER_<NAME>_*
-  // 加载对应 api_base / api_key / default_model；空值代表使用后端默认 provider
+可选 action：
+- {"action":"add","factor_id":"rsi_6","weight":15,"operator":"<","value":70}
+- {"action":"remove","factor_id":"rsi_12"}
+- {"action":"set_weight","factor_id":"pe9","weight":20}
+- {"action":"set_condition","factor_id":"pe9","operator":"between","value":[0,30]}
+- {"action":"set_fusion","fusion_mode":"score","vote_threshold":3}
+
+factor_id 必须来自可选因子集合（节选）：${availIds} ...
+
+当前因子组合：
+${factorsDesc}
+${kpiDesc}
+
+用户问题：${userInput || '请给出整体优化建议'}`
+
   const providerOverride = aiModel.value || undefined
 
   try {
@@ -681,6 +774,7 @@ async function askAi() {
       return
     }
     aiSuggestion.value = content
+    aiPlan.value = _extractAiPlan(content)
     addLog(`AI建议: ${content.slice(0, 30)}...`, 'ai')
   } catch (e: any) {
     const msg = e?.response?.data?.msg || e?.message || 'AI 请求失败'
@@ -691,9 +785,75 @@ async function askAi() {
   }
 }
 function applyAiSuggestion() {
-  addLog('应用AI建议', 'ai')
-  ElMessage.success('已应用 AI 优化建议')
+  const ops = aiPlan.value
+  if (!ops.length) {
+    ElMessage.warning('AI 未返回可执行的结构化操作（缺少 JSON 操作清单）')
+    return
+  }
+  let applied = 0
+  let skipped = 0
+  for (const op of ops) {
+    try {
+      if (op.action === 'set_fusion') {
+        if (op.fusion_mode && ['and', 'vote', 'score'].includes(op.fusion_mode)) {
+          fusionMode.value = op.fusion_mode
+          applied++
+        }
+        if (typeof op.vote_threshold === 'number') {
+          voteThreshold.value = Math.max(2, Math.min(15, op.vote_threshold))
+        }
+        continue
+      }
+      const fid = op.factor_id
+      if (!fid) { skipped++; continue }
+      if (op.action === 'add') {
+        const meta = findFactorMeta(fid)
+        if (!meta) { skipped++; continue }
+        if (isFactorAdded(fid)) {
+          // 已存在 → 视作 set_weight / set_condition
+          const af = activeFactors.value.find(f => f.id === fid)!
+          if (typeof op.weight === 'number') af.weight = Math.max(0, Math.min(100, op.weight))
+          if (op.operator) af.operator = op.operator
+          if (op.value != null) af.value = Array.isArray(op.value) ? [...op.value] : op.value
+        } else {
+          addFactor(meta)
+          const af = activeFactors.value[activeFactors.value.length - 1]
+          if (typeof op.weight === 'number') af.weight = Math.max(0, Math.min(100, op.weight))
+          if (op.operator) af.operator = op.operator
+          if (op.value != null) af.value = Array.isArray(op.value) ? [...op.value] : op.value
+        }
+        applied++
+      } else if (op.action === 'remove') {
+        const idx = activeFactors.value.findIndex(f => f.id === fid)
+        if (idx >= 0) { removeFactor(idx); applied++ } else skipped++
+      } else if (op.action === 'set_weight') {
+        const af = activeFactors.value.find(f => f.id === fid)
+        if (af && typeof op.weight === 'number') {
+          af.weight = Math.max(0, Math.min(100, op.weight))
+          applied++
+        } else skipped++
+      } else if (op.action === 'set_condition') {
+        const af = activeFactors.value.find(f => f.id === fid)
+        if (af) {
+          if (op.operator) af.operator = op.operator
+          if (op.value != null) af.value = Array.isArray(op.value) ? [...op.value] : op.value
+          applied++
+        } else skipped++
+      } else {
+        skipped++
+      }
+    } catch {
+      skipped++
+    }
+  }
+  addLog(`应用AI建议: ${applied} 项${skipped ? `（跳过 ${skipped}）` : ''}`, 'ai')
+  if (applied > 0) {
+    ElMessage.success(`已应用 ${applied} 项 AI 建议${skipped ? `，跳过 ${skipped} 项` : ''}`)
+  } else {
+    ElMessage.warning(`未生效（${skipped} 项均无法应用）`)
+  }
   aiSuggestion.value = ''
+  aiPlan.value = []
 }
 
 function logBadgeText(type: string): string {
