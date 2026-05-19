@@ -1809,8 +1809,12 @@ class StopLossTakeProfitMatrixHandler(webBase.BaseHandler):
             return
 
         # 构造 rates_matrix: shape (N_trades, max_hold)
+        # 注意：当 max_hold > 当前 RATE_FIELDS_COUNT 实际有数据的列数时（例如用户
+        # 把 max_hold_days 调到极大值），尾部 rate_* 列可能全为 NULL，pandas 会把
+        # 它们推断成 object dtype，后续 np.isfinite 会抛 TypeError。这里强制
+        # 转 float64，None/字符串 → NaN，与下游 NaN 处理路径一致。
         rate_df = df[rate_cols].copy()
-        rates_matrix = rate_df.values  # (N, max_hold)
+        rates_matrix = np.asarray(rate_df.values, dtype=np.float64)  # (N, max_hold)
 
         matrix, best_combo = self._scan_sl_tp_grid(rates_matrix, sl_levels, tp_levels, max_hold)
 
@@ -1928,7 +1932,10 @@ class StopLossTakeProfitMatrixHandler(webBase.BaseHandler):
         返回: 1-D array (N,) 每笔交易的最终收益。
         """
         n_trades = rates_matrix.shape[0]
-        mat = rates_matrix[:, :max_hold].copy()
+        # 显式转 float64：DB 返回的 rate 列可能因全 NULL 而被 pandas 推断为
+        # object dtype，会让 np.isfinite 抛 TypeError。先转 float（None/字符串
+        # → NaN），再做后续矩阵运算。
+        mat = np.array(rates_matrix[:, :max_hold], dtype=np.float64, copy=True)
 
         # 累积有效性掩码: NaN 之后的所有位置视为无效（与逐行循环行为一致）
         valid_mask = np.cumprod(np.isfinite(mat), axis=1).astype(bool)
@@ -2044,7 +2051,19 @@ class MarketRegimeHandler(webBase.BaseHandler):
         extended_start = start_date - datetime.timedelta(days=90)
         bench_df = load_benchmark_data(benchmark, str(extended_start), str(end_date))
         if bench_df is None or len(bench_df) == 0:
-            _write_error(self, f"无法加载基准 {benchmark} 数据")
+            # 基准在该区间无数据（常见于未来日期/极冷门指数）→ 返回 200 + 空结
+            # 果，避免前端把 400 当成"配置错误"。日志保留以便排查缓存问题。
+            logging.info(
+                "market_regime: 基准 %s 在 %s ~ %s 无数据",
+                benchmark, start_date, end_date,
+            )
+            _write_json(self, {
+                'strategy': meta['table'],
+                'strategy_cn': meta['cn'],
+                'benchmark': benchmark,
+                'regimes': [],
+                'message': f'基准 {benchmark} 在该时间范围内无数据',
+            })
             return
 
         # 确保日期排序
@@ -2352,7 +2371,7 @@ class ExitCompareHandler(webBase.BaseHandler):
             })
             return
 
-        rates_matrix = df[rate_cols].values
+        rates_matrix = np.asarray(df[rate_cols].values, dtype=np.float64)
         total_signals = len(df)
         exit_strategies = []
 
