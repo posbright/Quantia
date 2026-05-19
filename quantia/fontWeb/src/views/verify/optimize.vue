@@ -1041,19 +1041,35 @@ async function runAnalysis() {
 
   try {
     if (isCustomStrategy.value) {
-      const payload = await getCustomCompareWithPolling({ ...params, holding_days: normalizedHoldingDays() })
+      const hd = normalizedHoldingDays()
+      const payload = await getCustomCompareWithPolling({ ...params, holding_days: hd })
       if (payload.status === 'failed') throw new Error(payload.message || '自定义策略分析失败')
       customComparePayload.value = payload
       buildCustomFallbackData(payload)
-      // 自定义策略也跑止盈止损矩阵：后端会根据 trades + K 线缓存逐笔模拟
-      try {
-        const sltpRes: any = await getSlTpMatrix({ ...params, max_hold_days: 20 })
+      // 自定义策略：并行调用与内置策略一致的诊断接口（后端已支持 custom_*）
+      const [sltpRes, holdingRes, costRes, exitRes, seriesRes] = await Promise.all([
+        getSlTpMatrix({ ...params, max_hold_days: 20 }).catch(() => null),
+        getHoldingPeriod({ ...params, holding_days: hd }).catch(() => null),
+        getCostSensitivity({ ...params, holding_days: 5 }).catch(() => null),
+        getExitCompare({ ...params, holding_days: 5 }).catch(() => null),
+        getReturnSeries({ ...params, holding_days: 5 }).catch(() => null),
+      ]) as any[]
+      if (sltpRes) {
         sltpMatrix.value = sltpRes.matrix || []
         sltpBest.value = sltpRes.best_combo || null
-      } catch {
-        sltpMatrix.value = []
-        sltpBest.value = null
       }
+      if (holdingRes && Array.isArray(holdingRes.analysis) && holdingRes.analysis.length > 0) {
+        holdingData.value = holdingRes.analysis
+        totalSignals.value = holdingRes.total_signals || 0
+        bestHoldingDays.value = holdingRes.best_holding_days
+      }
+      if (costRes) costData.value = costRes.scenarios || []
+      if (exitRes) {
+        exitData.value = exitRes.exit_strategies || []
+        bestExitStrategy.value = exitRes.best_strategy || ''
+      }
+      if (seriesRes) returnSeries.value = seriesRes.series || []
+      await loadSignalQuality()
       await nextTick()
       renderHoldingChart()
       renderLossChart()
@@ -1061,6 +1077,7 @@ async function runAnalysis() {
       renderScatterChart()
       if (sltpMatrix.value.length > 0) renderSltpChart(sltpMatrix.value)
       if (returnSeries.value.length > 0) renderDrawdownChart()
+      if (normalizedCostData.value.length > 0) renderCostChart()
       if (oosTrainSeries.value.length > 0 || oosTestSeries.value.length > 0) renderOosChart()
       setCachedAnalysis(cacheKey)
       ElMessage.success('自定义策略分析完成')
@@ -1127,7 +1144,7 @@ async function runAnalysis() {
 }
 
 async function loadSignalQuality() {
-  if (!strategy.value || !startDate.value || !endDate.value || isCustomStrategy.value) return
+  if (!strategy.value || !startDate.value || !endDate.value) return
   try {
     const res: any = await getSignalQuality({ strategy: strategy.value, start_date: startDate.value, end_date: endDate.value, indicator: signalIndicator.value, holding_days: 5 })
     signalBuckets.value = res.buckets || []

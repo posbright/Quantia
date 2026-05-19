@@ -17,14 +17,14 @@
 
 | 端点 | 路径 | 空数据 | 异常参数 | 自定义策略 | 静默吞错 | 备注 |
 | --- | --- | --- | --- | --- | --- | --- |
-| holding_period | `verify/holding_period` | ✅ 200+msg | ✅ 400 校验 | ❌ 未支持 | 无 | 前端不触发 custom，影响仅 API 层 |
-| signal_quality | `verify/signal_quality` | ✅ 200+msg | ✅ 400（提示可用 indicator 白名单） | ❌ 未支持 | 无 | indicator 必须 `rsi_6/rsi_12/macd_dif/...`，不接受裸 `rsi` |
+| holding_period | `verify/holding_period` | ✅ 200+msg | ✅ 400 校验 | ✅ `_handle_custom`（P3） | 无 | 前端 + API 全覆盖 |
+| signal_quality | `verify/signal_quality` | ✅ 200+msg | ✅ 400（提示可用 indicator 白名单） | ✅ `_handle_custom`（P3） | 无 | indicator 必须 `rsi_6/rsi_12/macd_dif/...`，不接受裸 `rsi` |
 | sl_tp_matrix | `verify/sl_tp_matrix` | ✅ 200+msg | ✅（含 P1 修复） | ✅ `_handle_custom` | 无 | **P1 修复见 §3.1** |
-| market_regime | `verify/market_regime` | ✅ 200+msg（**P2 修复**） | ✅ 400 | ❌ 未支持 | 无 | **P2 修复见 §3.2** |
-| signal_decay | `verify/signal_decay` | ✅ 200+msg | ✅ 400 | ❌ 未支持 | 无 | |
-| cost_sensitivity | `verify/cost_sensitivity` | ✅ 200+msg | ✅ 400 | ❌ 未支持 | 无 | |
-| exit_compare | `verify/exit_compare` | ✅ 200+msg | ✅ 400 | ❌ 未支持 | 无 | 同步加 float64 强转（§3.1） |
-| return_series | `verify/return_series` | ✅ 200+msg | ✅ 400 | ❌ 未支持 | 无 | |
+| market_regime | `verify/market_regime` | ✅ 200+msg（**P2 修复**） | ✅ 400 | ✅ inline dispatch（P3） | 无 | **P2 修复见 §3.2** |
+| signal_decay | `verify/signal_decay` | ✅ 200+msg | ✅ 400 | ✅ `_handle_custom`（P3） | 无 | |
+| cost_sensitivity | `verify/cost_sensitivity` | ✅ 200+msg | ✅ 400 | ✅ `_handle_custom`（P3） | 无 | |
+| exit_compare | `verify/exit_compare` | ✅ 200+msg | ✅ 400 | ✅ `_handle_custom`（P3） | 无 | 同步加 float64 强转（§3.1） |
+| return_series | `verify/return_series` | ✅ 200+msg | ✅ 400 | ✅ `_handle_custom`（P3） | 无 | |
 | optimize_suggest | `verify/optimize_suggest` | ✅ 200+msg | ✅ 400 | ✅ | 无 | |
 | custom_compare | `verify/custom_compare` | ✅ 202 轮询 / 200+msg | ✅ 400 | ✅ | 无 | Shapley 超时 → warning，非静默 |
 | custom_return_series | `verify/custom_return_series` | ✅ 200+msg | ✅ 400 | ✅ | 无 | |
@@ -108,21 +108,55 @@ GET /quantia/api/verify/market_regime
   [200] market_regime start_date=2030-01-01 → regimes:[], message:"基准 000300 在该时间范围内无数据"
   ```
 
-## 4. 已知差距（不在本次修复内）
+### 3.3 P3：自定义策略在 7 个 verify-optimize 端点 API 与前端全面打通
 
-### 4.1 自定义策略在 6 个 verify-optimize 端点的 API 层未覆盖
+**问题**
 
 `holding_period / signal_quality / market_regime / signal_decay / cost_sensitivity /
 exit_compare / return_series` 七个 handler 的 `_resolve_strategy_meta` 白名单不包含
-`custom_*`，调用时返回 `400 未知 strategy`。
+`custom_*`，调用 `?strategy=custom_<id>` 时统一返回 `400 未知 strategy`，违反
+AGENTS.md「Custom-strategy parity」原则。前端 `optimize.vue` 因此对自定义策略
+只调用 `custom_compare + sl_tp_matrix`，持仓 / 信号衰减 / 成本 / 卖出 / 净值 /
+市场状态 / 信号质量 全部缺失。
 
-- **用户实际影响**：`optimize.vue` 在 `isCustomStrategy=true` 时只调用
-  `custom_compare` 与 `sl_tp_matrix`，**前端不会触发其它端点**，因此当前 UI 无
-  破口；
-- **AGENTS.md 一致性**：违反"自定义策略与 jq 策略黑盒一致"原则，留待后续在
-  `_resolve_strategy_meta` 与 `_load_backtest_data` 中走 K 线补算路径统一处理。
+**修复**
 
-### 4.2 `signal_quality` 必须使用完整 indicator key
+1. `verifyOptimizeHandler.py` 新增共享辅助 `_build_custom_strategy_dataframe(
+   strategy_key, start_date, end_date, max_hold, benchmark)`：
+   - 复用 `_collect_custom_buy_trades`（内存任务缓存 → `cn_stock_backtest_*` 表）；
+   - 对每条买入交易读 `cache/hist/{code}.gzip.pickle`，单次扫描算出
+     `rate_1..rate_{max_hold}`；
+   - 返回 `(df, total_trades, error_msg)`，DataFrame 形态与 `_load_backtest_data`
+     完全一致：`[date, code, name, rate_1, ..., rate_N]`，可直接喂给原诊断函数。
+2. 7 个 handler 的 `_handle` 入口判断 `strategy.startswith('custom_')` → 路由
+   到新的 `_handle_custom`；分析正文抽成共享方法（`_run_holding_analysis`、
+   `_run_decay_analysis`、`_write_cost_scenarios`、`_write_return_series`、
+   `_write_exit_compare`、`_write_buckets`），内置 / 自定义两路调用同一份口径；
+3. `MarketRegimeHandler` 采用 inline dispatch：基准曲线复用 DB 路径，策略回报
+   走自定义辅助；
+4. `SignalQualityHandler` 自定义路径用 `cn_stock_indicators` 按 (date, code) JOIN
+   买入信号，缺失指标时返回 `200 + buckets:[] + message:"无法匹配 indicator"`；
+5. 所有自定义响应统一附 `data_source` 字段：`custom_trades+kline`（持仓/衰减/
+   成本/卖出/净值/市场状态）或 `custom_trades+indicators`（信号质量），便于排查；
+6. 前端 `optimize.vue` 自定义分支与内置分支同步并行拉取 7 个接口；
+   `loadSignalQuality()` 移除 `isCustomStrategy` 早退闸门。
+
+**黑盒验证**（`strategy=custom_101&start_date=2025-06-01&end_date=2025-12-01`）：
+
+```
+[200] holding_period   total_signals=12, analysis 非空
+[200] signal_decay     monthly 非空
+[200] cost_sensitivity scenarios 非空
+[200] exit_compare     exit_strategies 非空
+[200] return_series    series 非空
+[200] market_regime    regimes/strategy_by_regime 非空
+[200] signal_quality   200 + buckets:[] + message（指标无重合，非 400）
+[200] sl_tp_matrix     matrix 非空（先前已支持）
+```
+
+## 4. 已知差距（不在本次修复内）
+
+### 4.1 `signal_quality` 必须使用完整 indicator key
 
 接受 `rsi_6 / rsi_12 / macd_dif / macd_dea / kdj_k / boll_upper / ma5 / ma10 ...`，
 不接受裸 `rsi`。已通过 400 错误体显式列出可选项，**不是静默吞错**。
@@ -147,7 +181,10 @@ exit_compare / return_series` 七个 handler 的 `_resolve_strategy_meta` 白名
   - `StopLossTakeProfitMatrixHandler._handle`：`rates_matrix` 强制 float64
   - `ExitCompareHandler._handle`：同上
   - `StopLossTakeProfitMatrixHandler._simulate_sl_tp`：内部兜底 float64
-  - `MarketRegimeHandler._handle`：基准为空 → 200 + message
+  - `MarketRegimeHandler._handle`：基准为空 → 200 + message；新增 inline `custom_*` 路由
+  - 新增 `_build_custom_strategy_dataframe`（共享辅助）
+  - `HoldingPeriodAnalysisHandler / SignalDecayHandler / CostSensitivityHandler / SignalReturnSeriesHandler / ExitCompareHandler / SignalQualityHandler`：路由 `custom_*` → `_handle_custom`，分析正文抽成共享方法
+- `quantia/fontWeb/src/views/verify/optimize.vue`：custom 分支并行调用 7 个端点；`loadSignalQuality` 移除 custom 早退
 - `document/verify_center_audit_2026Q2.md`（本文件）
 
 ## 7. 复测脚本（保留供后续回归）

@@ -899,6 +899,105 @@ def _build_custom_trade_rate_matrix(buy_trades, max_hold):
     return np.vstack(rows)
 
 
+def _build_custom_strategy_dataframe(strategy_key, start_date, end_date,
+                                     max_hold, benchmark='000300'):
+    """把自定义策略的逐笔 buy 交易 + 后续 K 线收益拼成与 `_load_backtest_data`
+    完全同构的 DataFrame，供 6 个 verify-optimize handler 直接复用其后段分析逻辑。
+
+    Returns:
+      (df, total_trades, error_msg)
+
+      df: 列 [date, code, name, rate_1, rate_2, ..., rate_{max_hold}]；
+          rate_* 单位为百分比；K 线缺失/未来日期 → NaN（与 DB 路径一致）。
+          找不到任何可用 buy 交易时返回 (None, 0, message)；
+          有 buy 但 K 线全部缺失时返回 (empty-df, len(trades), kline_message)。
+
+    备注：max_hold 上限不再被 RATE_FIELDS_COUNT 限制，调用方负责
+    传入合理值；helper 不会调用任何外部 API（仅读 cache/hist/）。
+    """
+    strategy_key = (strategy_key or '').strip()
+    if not strategy_key.startswith('custom_'):
+        return None, 0, '此接口仅支持自定义策略 (custom_*)'
+    try:
+        strategy_id = int(strategy_key.replace('custom_', ''))
+    except ValueError:
+        return None, 0, '无效的策略ID'
+
+    if max_hold <= 0:
+        return None, 0, 'max_hold 必须为正整数'
+
+    trades = _collect_custom_buy_trades(strategy_id, start_date, end_date, benchmark)
+    if not trades:
+        return None, 0, '当前自定义策略在该区间无可复用回测或买入记录，请先运行组合回测/策略对比'
+
+    # 单遍 K 线缓存扫描 + 行级 forward 收益 → 与 _build_custom_trade_rate_matrix
+    # 完全等价，但同时保留 (date, code) 元信息。
+    hist_cache = {}
+    keep_dates = []
+    keep_codes = []
+    keep_rows = []
+    for tr in trades:
+        code = str(tr.get('code') or '').strip()
+        if not code:
+            continue
+        if code not in hist_cache:
+            try:
+                hist = stf.read_stock_hist_from_cache(code, '19900101', '20991231')
+            except Exception:
+                hist = None
+            if hist is not None and len(hist) > 0:
+                try:
+                    if not pd.api.types.is_datetime64_any_dtype(hist['date']):
+                        hist = hist.copy()
+                        hist['date'] = pd.to_datetime(hist['date'])
+                except Exception:
+                    hist = None
+            hist_cache[code] = hist
+        hist = hist_cache[code]
+        if hist is None or len(hist) == 0 or 'close' not in getattr(hist, 'columns', []):
+            continue
+
+        target_ts = pd.Timestamp(tr['date'])
+        date_arr = hist['date'].values
+        idxs = np.where(date_arr >= np.datetime64(target_ts))[0]
+        if len(idxs) == 0:
+            continue
+        idx = int(idxs[0])
+        try:
+            buy_price = float(tr.get('price') or 0)
+        except (TypeError, ValueError):
+            continue
+        if buy_price <= 0:
+            continue
+        closes = hist['close'].values
+        rate_row = np.full(max_hold, np.nan, dtype=np.float64)
+        for d in range(1, max_hold + 1):
+            fwd = idx + d
+            if fwd >= len(closes):
+                break
+            try:
+                close_v = float(closes[fwd])
+                if close_v > 0:
+                    rate_row[d - 1] = (close_v - buy_price) / buy_price * 100
+            except (TypeError, ValueError):
+                continue
+        if not np.isfinite(rate_row).any():
+            continue
+        keep_dates.append(str(tr['date']))
+        keep_codes.append(code)
+        keep_rows.append(rate_row)
+
+    if not keep_rows:
+        return pd.DataFrame(), len(trades), '逐笔 K 线缓存不足，无法构建收益序列'
+
+    rate_cols = [f'rate_{d}' for d in range(1, max_hold + 1)]
+    df = pd.DataFrame(np.vstack(keep_rows), columns=rate_cols)
+    df.insert(0, 'name', '')
+    df.insert(0, 'code', keep_codes)
+    df.insert(0, 'date', pd.to_datetime(keep_dates))
+    return df, len(trades), None
+
+
 def _build_custom_compare_payload(strategy_key, strategy_name, start_date, end_date, result, data_source, holding_days_list=None):
     """把自定义策略回测结果转换为策略对比页统一响应。
 
@@ -1126,6 +1225,11 @@ class HoldingPeriodAnalysisHandler(webBase.BaseHandler):
             _write_error(self, '服务器内部错误', 500)
 
     def _handle(self):
+        strategy_arg = self.get_argument('strategy', default='', strip=True)
+        if strategy_arg.startswith('custom_'):
+            self._handle_custom(strategy_arg)
+            return
+
         meta, start_date, end_date, err = _parse_common_args(self)
         if err:
             _write_error(self, err)
@@ -1161,6 +1265,53 @@ class HoldingPeriodAnalysisHandler(webBase.BaseHandler):
             })
             return
 
+        self._run_holding_analysis(df, meta['table'], meta['cn'],
+                                   start_date, end_date, holding_days_list)
+
+    def _handle_custom(self, strategy_key):
+        """自定义策略持仓扫描：从已完成的回测/对比任务收集 buy 交易 + 后续 K 线
+        forward 收益，构造 (date, code, rate_*) DataFrame 后复用同一分析逻辑。"""
+        strategy_key, strategy_id, start_date, end_date, err = _parse_custom_strategy_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        days_arg = self.get_argument('holding_days', default='', strip=True)
+        if days_arg:
+            holding_days_list = _parse_int_list(
+                days_arg,
+                min_value=1,
+                max_value=MAX_HOLDING_DAYS_EXTENDED,
+                max_items=30,
+            )
+        else:
+            holding_days_list = [1, 3, 5, 10, 20, 40, 60, 120, 180, 240]
+        if not holding_days_list:
+            _write_error(self, 'holding_days 参数无效')
+            return
+
+        max_hold = max(holding_days_list)
+        benchmark = self.get_argument('benchmark', default='000300', strip=True) or '000300'
+        df, total_trades, build_err = _build_custom_strategy_dataframe(
+            strategy_key, start_date, end_date, max_hold, benchmark)
+        if build_err and (df is None or len(df) == 0):
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': '自定义策略',
+                'period': f'{start_date} ~ {end_date}',
+                'total_signals': int(total_trades or 0),
+                'analysis': [],
+                'message': build_err,
+                'data_source': 'custom_trades+kline',
+            })
+            return
+
+        self._run_holding_analysis(df, strategy_key, '自定义策略',
+                                   start_date, end_date, holding_days_list,
+                                   data_source='custom_trades+kline')
+
+    def _run_holding_analysis(self, df, label, cn, start_date, end_date,
+                              holding_days_list, data_source=None):
         total_signals = len(df)
         analysis = []
         best_sharpe = None
@@ -1227,15 +1378,18 @@ class HoldingPeriodAnalysisHandler(webBase.BaseHandler):
                 best_sharpe = sharpe
                 best_holding_days = d
 
-        _write_json(self, {
-            'strategy': meta['table'],
-            'strategy_cn': meta['cn'],
+        payload = {
+            'strategy': label,
+            'strategy_cn': cn,
             'period': f'{start_date} ~ {end_date}',
             'total_signals': total_signals,
             'analysis': analysis,
             'best_holding_days': best_holding_days,
             'best_sharpe': _safe_float(best_sharpe),
-        })
+        }
+        if data_source:
+            payload['data_source'] = data_source
+        _write_json(self, payload)
 
 
 class CustomStrategyCompareHandler(webBase.BaseHandler):
@@ -1572,6 +1726,11 @@ class SignalQualityHandler(webBase.BaseHandler):
             _write_error(self, '服务器内部错误', 500)
 
     def _handle(self):
+        strategy_arg = self.get_argument('strategy', default='', strip=True)
+        if strategy_arg.startswith('custom_'):
+            self._handle_custom(strategy_arg)
+            return
+
         meta, start_date, end_date, err = _parse_common_args(self)
         if err:
             _write_error(self, err)
@@ -1636,6 +1795,88 @@ class SignalQualityHandler(webBase.BaseHandler):
             })
             return
 
+        self._write_buckets(df, meta['table'], meta['cn'], indicator, holding_days,
+                            buckets_arg, data_source='kline_fallback' if used_fallback else 'db')
+
+    def _handle_custom(self, strategy_key):
+        strategy_key, strategy_id, start_date, end_date, err = _parse_custom_strategy_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        indicator = self.get_argument('indicator', default='rsi_6', strip=True).strip()
+        if indicator not in _SIGNAL_QUALITY_INDICATORS:
+            _write_error(self, f"不支持的指标: '{indicator}'，可用: {', '.join(sorted(_SIGNAL_QUALITY_INDICATORS))}")
+            return
+
+        holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        try:
+            holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            holding_days = 5
+
+        buckets_arg = self.get_argument('buckets', default='', strip=True)
+        benchmark = self.get_argument('benchmark', default='000300', strip=True) or '000300'
+
+        rate_df, total_trades, build_err = _build_custom_strategy_dataframe(
+            strategy_key, start_date, end_date, holding_days, benchmark)
+        if build_err and (rate_df is None or len(rate_df) == 0):
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': '自定义策略',
+                'indicator': indicator,
+                'holding_days': holding_days,
+                'buckets': [],
+                'message': build_err,
+                'data_source': 'custom_trades+kline',
+            })
+            return
+
+        rate_col = f'rate_{holding_days}'
+        rate_df = rate_df.copy()
+        rate_df['date_str'] = pd.to_datetime(rate_df['date']).dt.strftime('%Y-%m-%d')
+
+        # 从 cn_stock_indicators 拉取 (date, code) → indicator 值
+        indicators_table = tbs.TABLE_CN_STOCK_INDICATORS['name']
+        ind_map = {}
+        if mdb.checkTableIsExist(indicators_table):
+            try:
+                sql = (
+                    f"SELECT `date`, `code`, `{indicator}` AS ind_val "
+                    f"FROM `{indicators_table}` "
+                    f"WHERE `date` >= %s AND `date` <= %s "
+                    f"AND `{indicator}` IS NOT NULL"
+                )
+                ind_df = pd.read_sql(sql, con=mdb.engine(),
+                                     params=(str(start_date), str(end_date)))
+                if ind_df is not None and len(ind_df) > 0:
+                    ind_df['date'] = pd.to_datetime(ind_df['date']).dt.strftime('%Y-%m-%d')
+                    ind_map = {(r['date'], str(r['code'])): r['ind_val']
+                               for _, r in ind_df.iterrows()}
+            except Exception:
+                logging.warning("[signal-quality custom] 查询指标失败", exc_info=True)
+
+        rate_df['ind_val'] = rate_df.apply(
+            lambda r: ind_map.get((r['date_str'], str(r['code']))), axis=1)
+        rate_df = rate_df.rename(columns={rate_col: 'rate'})
+        merged = rate_df.dropna(subset=['rate', 'ind_val'])[['date', 'code', 'rate', 'ind_val']]
+        if len(merged) == 0:
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': '自定义策略',
+                'indicator': indicator,
+                'holding_days': holding_days,
+                'buckets': [],
+                'message': f'自定义策略在该区间无法匹配 {indicator} 指标值（cn_stock_indicators 缺失或买入日缺指标）',
+                'data_source': 'custom_trades+kline',
+            })
+            return
+
+        self._write_buckets(merged, strategy_key, '自定义策略', indicator, holding_days,
+                            buckets_arg, data_source='custom_trades+indicators')
+
+    def _write_buckets(self, df, label, cn, indicator, holding_days, buckets_arg,
+                       data_source=None):
         # 分桶逻辑
         if buckets_arg:
             # 自定义分桶: "0-30,30-50,50-70,70-100"
@@ -1733,8 +1974,8 @@ class SignalQualityHandler(webBase.BaseHandler):
                         expected_improvement['sharpe_delta'] = _safe_float(avg_kept_sharpe - overall_sharpe)
 
         _write_json(self, {
-            'strategy': meta['table'],
-            'strategy_cn': meta['cn'],
+            'strategy': label,
+            'strategy_cn': cn,
             'indicator': indicator,
             'holding_days': holding_days,
             'total_signals': len(df),
@@ -1744,7 +1985,7 @@ class SignalQualityHandler(webBase.BaseHandler):
                 'golden_ranges': golden_ranges,
                 'expected_improvement': expected_improvement,
             },
-            'data_source': 'kline_fallback' if used_fallback else 'db',
+            'data_source': data_source or 'db',
         })
 
 
@@ -2033,17 +2274,28 @@ class MarketRegimeHandler(webBase.BaseHandler):
             _write_error(self, '服务器内部错误', 500)
 
     def _handle(self):
-        meta, start_date, end_date, err = _parse_common_args(self)
-        if err:
-            _write_error(self, err)
-            return
+        strategy_arg = self.get_argument('strategy', default='', strip=True)
+        is_custom = strategy_arg.startswith('custom_')
 
-        benchmark = self.get_argument('benchmark', default='000300', strip=True).strip()
+        benchmark = self.get_argument('benchmark', default='000300', strip=True).strip() or '000300'
         holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
         try:
             holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
         except (TypeError, ValueError):
             holding_days = 5
+
+        if is_custom:
+            strategy_key, strategy_id, start_date, end_date, err = _parse_custom_strategy_args(self)
+            if err:
+                _write_error(self, err)
+                return
+            label, cn = strategy_key, '自定义策略'
+        else:
+            meta, start_date, end_date, err = _parse_common_args(self)
+            if err:
+                _write_error(self, err)
+                return
+            label, cn = meta['table'], meta['cn']
 
         # 加载基准指数数据 (从缓存/DB，不调用外部 API)
         from quantia.core.backtest.data_feed import load_benchmark_data
@@ -2058,8 +2310,8 @@ class MarketRegimeHandler(webBase.BaseHandler):
                 benchmark, start_date, end_date,
             )
             _write_json(self, {
-                'strategy': meta['table'],
-                'strategy_cn': meta['cn'],
+                'strategy': label,
+                'strategy_cn': cn,
                 'benchmark': benchmark,
                 'regimes': [],
                 'message': f'基准 {benchmark} 在该时间范围内无数据',
@@ -2132,7 +2384,13 @@ class MarketRegimeHandler(webBase.BaseHandler):
 
         # 加载策略数据并按环境统计
         rate_col = f'rate_{holding_days}'
-        df = _load_backtest_data(meta['table'], start_date, end_date, [rate_col])
+        if is_custom:
+            df, _trades_n, _build_err = _build_custom_strategy_dataframe(
+                strategy_arg, start_date, end_date, holding_days, benchmark)
+            data_source = 'custom_trades+kline'
+        else:
+            df = _load_backtest_data(meta['table'], start_date, end_date, [rate_col])
+            data_source = None
         strategy_by_regime = {}
 
         if df is not None and len(df) > 0:
@@ -2157,16 +2415,19 @@ class MarketRegimeHandler(webBase.BaseHandler):
                     'signal_count': int(len(rates)),
                 }
 
-        _write_json(self, {
-            'strategy': meta['table'],
-            'strategy_cn': meta['cn'],
+        payload = {
+            'strategy': label,
+            'strategy_cn': cn,
             'benchmark': benchmark,
             'holding_days': holding_days,
             'period': f'{start_date} ~ {end_date}',
             'regimes': regimes,
             'strategy_by_regime': strategy_by_regime,
             'classification_method': 'MA20/MA60 crossover + ATR median',
-        })
+        }
+        if data_source:
+            payload['data_source'] = data_source
+        _write_json(self, payload)
 
 
 # ── API 5: 信号衰减分析 ──────────────────────────────────────────────
@@ -2185,6 +2446,11 @@ class SignalDecayHandler(webBase.BaseHandler):
             _write_error(self, '服务器内部错误', 500)
 
     def _handle(self):
+        strategy_arg = self.get_argument('strategy', default='', strip=True)
+        if strategy_arg.startswith('custom_'):
+            self._handle_custom(strategy_arg)
+            return
+
         meta, start_date, end_date, err = _parse_common_args(self)
         if err:
             _write_error(self, err)
@@ -2207,6 +2473,43 @@ class SignalDecayHandler(webBase.BaseHandler):
             })
             return
 
+        self._run_decay_analysis(df, meta['table'], meta['cn'],
+                                 start_date, end_date, holding_days)
+
+    def _handle_custom(self, strategy_key):
+        strategy_key, strategy_id, start_date, end_date, err = _parse_custom_strategy_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        try:
+            holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            holding_days = 5
+
+        benchmark = self.get_argument('benchmark', default='000300', strip=True) or '000300'
+        df, total_trades, build_err = _build_custom_strategy_dataframe(
+            strategy_key, start_date, end_date, holding_days, benchmark)
+        if build_err and (df is None or len(df) == 0):
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': '自定义策略',
+                'holding_days': holding_days,
+                'monthly': [],
+                'message': build_err,
+                'data_source': 'custom_trades+kline',
+            })
+            return
+
+        self._run_decay_analysis(df, strategy_key, '自定义策略',
+                                 start_date, end_date, holding_days,
+                                 data_source='custom_trades+kline')
+
+    def _run_decay_analysis(self, df, label, cn, start_date, end_date,
+                            holding_days, data_source=None):
+        rate_col = f'rate_{holding_days}'
+        df = df.copy()
         df['date'] = pd.to_datetime(df['date'])
         df['month'] = df['date'].dt.to_period('M')
 
@@ -2236,14 +2539,17 @@ class SignalDecayHandler(webBase.BaseHandler):
                 if first_avg > 0 and second_avg < first_avg * 0.7:
                     decay_warning = f"夏普从前半段 {first_avg:.2f} 下降到后半段 {second_avg:.2f}，Alpha 可能在衰减"
 
-        _write_json(self, {
-            'strategy': meta['table'],
-            'strategy_cn': meta['cn'],
+        payload = {
+            'strategy': label,
+            'strategy_cn': cn,
             'holding_days': holding_days,
             'period': f'{start_date} ~ {end_date}',
             'monthly': monthly,
             'decay_warning': decay_warning,
-        })
+        }
+        if data_source:
+            payload['data_source'] = data_source
+        _write_json(self, payload)
 
 
 # ── API 7: 交易成本敏感性 ────────────────────────────────────────────
@@ -2262,6 +2568,11 @@ class CostSensitivityHandler(webBase.BaseHandler):
             _write_error(self, '服务器内部错误', 500)
 
     def _handle(self):
+        strategy_arg = self.get_argument('strategy', default='', strip=True)
+        if strategy_arg.startswith('custom_'):
+            self._handle_custom(strategy_arg)
+            return
+
         meta, start_date, end_date, err = _parse_common_args(self)
         if err:
             _write_error(self, err)
@@ -2288,6 +2599,52 @@ class CostSensitivityHandler(webBase.BaseHandler):
             _write_json(self, {'strategy': meta['table'], 'scenarios': [], 'message': '无有效收益数据'})
             return
 
+        self._write_cost_scenarios(rates, meta['table'], meta['cn'],
+                                   start_date, end_date, holding_days)
+
+    def _handle_custom(self, strategy_key):
+        strategy_key, strategy_id, start_date, end_date, err = _parse_custom_strategy_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        try:
+            holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            holding_days = 5
+
+        benchmark = self.get_argument('benchmark', default='000300', strip=True) or '000300'
+        df, total_trades, build_err = _build_custom_strategy_dataframe(
+            strategy_key, start_date, end_date, holding_days, benchmark)
+        if build_err and (df is None or len(df) == 0):
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': '自定义策略',
+                'scenarios': [],
+                'message': build_err,
+                'data_source': 'custom_trades+kline',
+            })
+            return
+
+        rate_col = f'rate_{holding_days}'
+        rates = df[rate_col].dropna().values
+        if len(rates) == 0:
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': '自定义策略',
+                'scenarios': [],
+                'message': '逐笔 K 线缓存不足，无法计算',
+                'data_source': 'custom_trades+kline',
+            })
+            return
+
+        self._write_cost_scenarios(rates, strategy_key, '自定义策略',
+                                   start_date, end_date, holding_days,
+                                   data_source='custom_trades+kline')
+
+    def _write_cost_scenarios(self, rates, label, cn, start_date, end_date,
+                              holding_days, data_source=None):
         # 当前 rate 已包含 ROUND_TRIP_COST_PCT (0.20%) 的交易成本
         # 模拟不同成本: 先还原到毛收益，再减去不同成本
         current_cost = ROUND_TRIP_COST_PCT  # 0.20
@@ -2310,15 +2667,18 @@ class CostSensitivityHandler(webBase.BaseHandler):
                 'is_current': abs(cost - current_cost) < 0.001,
             })
 
-        _write_json(self, {
-            'strategy': meta['table'],
-            'strategy_cn': meta['cn'],
+        payload = {
+            'strategy': label,
+            'strategy_cn': cn,
             'holding_days': holding_days,
             'period': f'{start_date} ~ {end_date}',
             'total_signals': int(len(rates)),
             'current_cost_pct': current_cost,
             'scenarios': scenarios,
-        })
+        }
+        if data_source:
+            payload['data_source'] = data_source
+        _write_json(self, payload)
 
 
 # ── API 6: 卖出方式对比 ──────────────────────────────────────────────
@@ -2337,6 +2697,11 @@ class ExitCompareHandler(webBase.BaseHandler):
             _write_error(self, '服务器内部错误', 500)
 
     def _handle(self):
+        strategy_arg = self.get_argument('strategy', default='', strip=True)
+        if strategy_arg.startswith('custom_'):
+            self._handle_custom(strategy_arg)
+            return
+
         meta, start_date, end_date, err = _parse_common_args(self)
         if err:
             _write_error(self, err)
@@ -2373,6 +2738,55 @@ class ExitCompareHandler(webBase.BaseHandler):
 
         rates_matrix = np.asarray(df[rate_cols].values, dtype=np.float64)
         total_signals = len(df)
+        self._write_exit_compare(rates_matrix, total_signals, meta['table'], meta['cn'],
+                                 start_date, end_date, holding_days, trailing_days_list,
+                                 max_hold)
+
+    def _handle_custom(self, strategy_key):
+        strategy_key, strategy_id, start_date, end_date, err = _parse_custom_strategy_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        try:
+            holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            holding_days = 5
+
+        trailing_days_arg = self.get_argument('trailing_days', default='10,15,20', strip=True)
+        try:
+            trailing_days_list = sorted(set(
+                max(5, min(int(x.strip()), 60))
+                for x in trailing_days_arg.split(',') if x.strip()
+            ))
+        except ValueError:
+            trailing_days_list = [10, 15, 20]
+
+        max_hold = max(holding_days, max(trailing_days_list) + 10)
+        max_hold = min(max_hold, RATE_FIELDS_COUNT)
+        benchmark = self.get_argument('benchmark', default='000300', strip=True) or '000300'
+        df, total_trades, build_err = _build_custom_strategy_dataframe(
+            strategy_key, start_date, end_date, max_hold, benchmark)
+        if build_err and (df is None or len(df) == 0):
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': '自定义策略',
+                'exit_strategies': [],
+                'message': build_err,
+                'data_source': 'custom_trades+kline',
+            })
+            return
+
+        rate_cols = [f'rate_{d}' for d in range(1, max_hold + 1)]
+        rates_matrix = np.asarray(df[rate_cols].values, dtype=np.float64)
+        self._write_exit_compare(rates_matrix, len(df), strategy_key, '自定义策略',
+                                 start_date, end_date, holding_days, trailing_days_list,
+                                 max_hold, data_source='custom_trades+kline')
+
+    def _write_exit_compare(self, rates_matrix, total_signals, label, cn,
+                            start_date, end_date, holding_days, trailing_days_list,
+                            max_hold, data_source=None):
         exit_strategies = []
 
         # 策略 1: 固定持有 N 天
@@ -2464,14 +2878,17 @@ class ExitCompareHandler(webBase.BaseHandler):
                 best_sharpe_val = es['sharpe']
                 best_strategy = es['exit_type']
 
-        _write_json(self, {
-            'strategy': meta['table'],
-            'strategy_cn': meta['cn'],
+        payload = {
+            'strategy': label,
+            'strategy_cn': cn,
             'period': f'{start_date} ~ {end_date}',
             'total_signals': total_signals,
             'exit_strategies': exit_strategies,
             'best_strategy': best_strategy,
-        })
+        }
+        if data_source:
+            payload['data_source'] = data_source
+        _write_json(self, payload)
 
     @staticmethod
     def _simulate_trailing_stop(rates_matrix, trailing_days, max_hold):
@@ -2575,6 +2992,11 @@ class SignalReturnSeriesHandler(webBase.BaseHandler):
             _write_error(self, '服务器内部错误', 500)
 
     def _handle(self):
+        strategy_arg = self.get_argument('strategy', default='', strip=True)
+        if strategy_arg.startswith('custom_'):
+            self._handle_custom(strategy_arg)
+            return
+
         meta, start_date, end_date, err = _parse_common_args(self)
         if err:
             _write_error(self, err)
@@ -2598,6 +3020,43 @@ class SignalReturnSeriesHandler(webBase.BaseHandler):
             })
             return
 
+        self._write_return_series(df, meta['table'], meta['cn'],
+                                  holding_days, benchmark, start_date, end_date)
+
+    def _handle_custom(self, strategy_key):
+        strategy_key, strategy_id, start_date, end_date, err = _parse_custom_strategy_args(self)
+        if err:
+            _write_error(self, err)
+            return
+
+        holding_days_arg = self.get_argument('holding_days', default='5', strip=True)
+        benchmark = self.get_argument('benchmark', default='000300', strip=True) or '000300'
+        try:
+            holding_days = max(1, min(int(holding_days_arg), RATE_FIELDS_COUNT))
+        except (TypeError, ValueError):
+            holding_days = 5
+
+        df, total_trades, build_err = _build_custom_strategy_dataframe(
+            strategy_key, start_date, end_date, holding_days, benchmark)
+        if build_err and (df is None or len(df) == 0):
+            _write_json(self, {
+                'strategy': strategy_key,
+                'strategy_cn': '自定义策略',
+                'series': [],
+                'benchmark_series': _benchmark_return_series(benchmark, start_date, end_date),
+                'message': build_err,
+                'data_source': 'custom_trades+kline',
+            })
+            return
+
+        self._write_return_series(df, strategy_key, '自定义策略',
+                                  holding_days, benchmark, start_date, end_date,
+                                  data_source='custom_trades+kline')
+
+    def _write_return_series(self, df, label, cn, holding_days, benchmark,
+                             start_date, end_date, data_source=None):
+        rate_col = f'rate_{holding_days}'
+        df = df.copy()
         df['date'] = pd.to_datetime(df['date'])
         # 按日计算该日所有信号的平均收益
         daily = df.groupby('date')[rate_col].mean().sort_index()
@@ -2618,10 +3077,13 @@ class SignalReturnSeriesHandler(webBase.BaseHandler):
                 'daily_return': _safe_float(round(float(daily.loc[date]), 2)),
             })
 
-        _write_json(self, {
-            'strategy': meta['table'],
-            'strategy_cn': meta['cn'],
+        payload = {
+            'strategy': label,
+            'strategy_cn': cn,
             'holding_days': holding_days,
             'series': series,
             'benchmark_series': _benchmark_return_series(benchmark, start_date, end_date),
-        })
+        }
+        if data_source:
+            payload['data_source'] = data_source
+        _write_json(self, payload)
