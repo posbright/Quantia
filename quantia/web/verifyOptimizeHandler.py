@@ -899,10 +899,122 @@ def _build_custom_trade_rate_matrix(buy_trades, max_hold):
     return np.vstack(rows)
 
 
+# 自动回测的内存级 single-flight 锁，避免同一策略短时间内并发触发多次回测。
+_AUTO_BACKTEST_INFLIGHT = {}
+
+
+def _auto_run_custom_backtest(strategy_id, start_date, end_date,
+                              benchmark='000300', initial_cash=1000000):
+    """同步运行一次自定义策略回测，结果落 `cn_stock_backtest_portfolio` 并返回。
+
+    被 `_build_custom_strategy_dataframe(auto_run=True)` 调用：当区间内既无内存
+    任务也无 DB 缓存命中时，避免直接对前端报"无可复用回测"。仅复用 DB 中已存的
+    `cn_stock_strategy_code.code`，不接受外部代码注入。
+
+    Returns:
+      (trades, error_msg)。trades 为买入交易列表，与 _collect_custom_buy_trades
+      同构；失败时 trades 为空、error_msg 描述原因。
+    """
+    try:
+        rows = mdb.executeSqlFetch(
+            "SELECT name, code FROM cn_stock_strategy_code WHERE id=%s AND "
+            "(status IS NULL OR status != 'archived')", (strategy_id,))
+    except Exception as exc:
+        logging.error("读取自定义策略代码异常: id=%s", strategy_id, exc_info=True)
+        return [], f'无法读取自定义策略代码: {exc}'
+    if not rows:
+        return [], f'自定义策略 #{strategy_id} 不存在或已归档'
+    strategy_name, strategy_code = rows[0][0] or '', rows[0][1] or ''
+    if not strategy_code or len(strategy_code) < 16:
+        return [], f'自定义策略 #{strategy_id} 缺失策略代码'
+
+    # 同一策略 + 同一区间，多个请求并发时只跑一次
+    lock_key = (int(strategy_id), str(start_date), str(end_date), str(benchmark))
+    if _AUTO_BACKTEST_INFLIGHT.get(lock_key):
+        return [], '该策略正在回测中，请稍后再试'
+    _AUTO_BACKTEST_INFLIGHT[lock_key] = True
+
+    try:
+        from quantia.core.backtest.portfolio_engine import PortfolioBacktestEngine
+        engine = PortfolioBacktestEngine()
+        logging.info(
+            "[auto-backtest] strategy_id=%s name=%s window=%s~%s",
+            strategy_id, strategy_name, start_date, end_date)
+        result = engine.run(
+            strategy_code, str(start_date), str(end_date),
+            initial_cash=initial_cash, benchmark=str(benchmark or '000300'))
+    except Exception as exc:
+        logging.error("[auto-backtest] 引擎运行异常: id=%s", strategy_id, exc_info=True)
+        _AUTO_BACKTEST_INFLIGHT.pop(lock_key, None)
+        return [], f'自动回测失败: {exc}'
+
+    try:
+        if not isinstance(result, dict) or result.get('status') != 'completed':
+            msg = (result or {}).get('message') if isinstance(result, dict) else None
+            return [], f'自动回测未完成: {msg or "unknown"}'
+        # 持久化（与 RunPortfolioBacktestHandler 一致），方便下次直接命中缓存。
+        try:
+            import quantia.web.portfolioBacktestHandler as pbh
+            try:
+                pbh._ensure_backtest_table()
+            except Exception:
+                logging.debug("_ensure_backtest_table 跳过", exc_info=True)
+            m = result.get('metrics', {}) or {}
+            now = datetime.datetime.now()
+            snapshot = dict(result)
+            snapshot['strategy_code_snapshot'] = strategy_code
+            mdb.executeSql(
+                'INSERT INTO cn_stock_backtest_portfolio '
+                '(strategy_id, strategy_name, start_date, end_date, initial_cash, status, '
+                'started_at, completed_at, total_return, annual_return, '
+                'max_drawdown, sharpe_ratio, alpha, beta, win_rate, trade_count, '
+                'benchmark, result_json) '
+                'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+                (strategy_id, strategy_name or None, str(start_date), str(end_date),
+                 initial_cash, 'completed', now, now,
+                 m.get('total_return'), m.get('annual_return'),
+                 m.get('max_drawdown'), m.get('sharpe_ratio'),
+                 m.get('alpha'), m.get('beta'),
+                 m.get('daily_win_rate'), m.get('trade_count'),
+                 str(benchmark or '000300'),
+                 json.dumps(snapshot, ensure_ascii=False, default=str)))
+        except Exception as exc:
+            logging.warning("[auto-backtest] 结果入库失败（不影响本次返回）: %s", exc)
+
+        trades = []
+        s_str, e_str = str(start_date), str(end_date)
+        for t in result.get('trades', []) or []:
+            if t.get('direction') != 'buy':
+                continue
+            d = str(t.get('date', ''))
+            if not d or d < s_str or d > e_str:
+                continue
+            try:
+                price = float(t.get('price', 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if price <= 0:
+                continue
+            code = str(t.get('code', '') or '').strip()
+            if not code:
+                continue
+            trades.append({'date': d, 'code': code, 'price': price})
+        trades.sort(key=lambda x: x['date'])
+        return trades, None
+    finally:
+        _AUTO_BACKTEST_INFLIGHT.pop(lock_key, None)
+
+
 def _build_custom_strategy_dataframe(strategy_key, start_date, end_date,
-                                     max_hold, benchmark='000300'):
+                                     max_hold, benchmark='000300',
+                                     auto_run=False):
     """把自定义策略的逐笔 buy 交易 + 后续 K 线收益拼成与 `_load_backtest_data`
     完全同构的 DataFrame，供 6 个 verify-optimize handler 直接复用其后段分析逻辑。
+
+    Args:
+      auto_run: 当内存任务 / DB 缓存均无 buy 记录时，是否自动调用
+                `_auto_run_custom_backtest` 跑一次。默认 False 以保持旧行为；
+                因子实验室 / 部分前端入口可显式打开。
 
     Returns:
       (df, total_trades, error_msg)
@@ -927,6 +1039,13 @@ def _build_custom_strategy_dataframe(strategy_key, start_date, end_date,
         return None, 0, 'max_hold 必须为正整数'
 
     trades = _collect_custom_buy_trades(strategy_id, start_date, end_date, benchmark)
+    if not trades and auto_run:
+        new_trades, auto_err = _auto_run_custom_backtest(
+            strategy_id, start_date, end_date, benchmark)
+        if new_trades:
+            trades = new_trades
+        elif auto_err:
+            return None, 0, f'当前自定义策略在该区间无买入记录，已尝试自动回测但失败：{auto_err}'
     if not trades:
         return None, 0, '当前自定义策略在该区间无可复用回测或买入记录，请先运行组合回测/策略对比'
 

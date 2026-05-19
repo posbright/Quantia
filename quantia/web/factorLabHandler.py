@@ -633,11 +633,33 @@ class FactorLabRunHandler(webBase.BaseHandler):
             strategy_dfs, signal_factors, fusion_mode, vote_threshold)
 
         if base_df is None or len(base_df) == 0:
+            # 基础池为空 — 区分"自定义策略无买入"与"内置策略表无信号"两种成因
+            empty_per_strategy = {}
+            for sf in signal_factors:
+                key = self._signal_key(sf)
+                df = strategy_dfs.get(key)
+                empty_per_strategy[sf['meta']['name']] = int(0 if df is None else len(df))
+            no_data_names = [n for n, c in empty_per_strategy.items() if c == 0]
+            if no_data_names:
+                hint = (
+                    f"策略「{('、'.join(no_data_names))}」在所选区间无买入信号。"
+                    "若为自定义策略，已尝试自动运行一次回测但仍无买入；"
+                    "请检查策略代码、放宽时间区间或更换基准。"
+                )
+            else:
+                hint = "所有策略信号在该区间均存在，但融合后无交集；尝试切换融合模式为「加权评分(Score)」或减少必选策略数。"
             _write_json(self, {
                 'kpi': _compute_kpi(np.array([]), holding_days),
                 'baseline': _compute_kpi(np.array([]), holding_days),
                 'daily_series': [], 'factor_contributions': [],
                 'signal_sparse_warning': True,
+                'signal_sparse_reason': 'no_base_signal',
+                'signal_sparse_hint': hint,
+                'signal_diagnosis': {
+                    'base_signal_count': 0,
+                    'filtered_signal_count': 0,
+                    'per_strategy_counts': empty_per_strategy,
+                },
             })
             return
 
@@ -675,8 +697,36 @@ class FactorLabRunHandler(webBase.BaseHandler):
             parsed_factors, fusion_mode, vote_threshold,
             start_date, end_date, holding_days, final_kpi)
 
-        # 信号稀疏警告
-        signal_sparse = (final_kpi['daily_signal_avg'] or 0) < 3
+        # ── 信号稀疏诊断（按成因区分）──────────────────────────────
+        base_cnt = int(baseline_kpi.get('signal_count') or 0)
+        final_cnt = int(final_kpi.get('signal_count') or 0)
+        daily_avg = float(final_kpi.get('daily_signal_avg') or 0)
+        signal_sparse = daily_avg < 3
+        signal_sparse_reason = None
+        signal_sparse_hint = None
+        if signal_sparse:
+            if final_cnt == 0 and base_cnt > 0 and filter_factors:
+                signal_sparse_reason = 'filtered_out'
+                filter_names = '、'.join(ff['meta']['name'] for ff in filter_factors)
+                signal_sparse_hint = (
+                    f"基础信号池有 {base_cnt} 条，应用「{filter_names}」后归零。"
+                    "建议：① 放宽过滤阈值（参考因子卡片的常用阈值预设）；"
+                    "② 暂时禁用基本面因子（财报季度披露，与日级信号存在日期错位）；"
+                    "③ 把起始日往后挪到 Q1 报披露完毕之后。"
+                )
+            elif final_cnt == 0 and base_cnt == 0:
+                signal_sparse_reason = 'no_base_signal'
+                signal_sparse_hint = (
+                    "策略信号源在该区间无任何买入记录。若为自定义策略，"
+                    "请先在「策略回测」页跑一次相同区间；或放宽日期范围。"
+                )
+            else:
+                signal_sparse_reason = 'low_density'
+                signal_sparse_hint = (
+                    f"日均信号 {daily_avg:.1f} 偏低（阈值 3）。"
+                    "可尝试：① 减少过滤因子数量；② 切换融合模式为「加权评分(Score)」（取并集而非交集）；"
+                    "③ 检查持仓天数与日期窗口是否过短。"
+                )
 
         _write_json(self, {
             'kpi': final_kpi,
@@ -684,6 +734,13 @@ class FactorLabRunHandler(webBase.BaseHandler):
             'daily_series': daily_series,
             'factor_contributions': factor_contributions,
             'signal_sparse_warning': signal_sparse,
+            'signal_sparse_reason': signal_sparse_reason,
+            'signal_sparse_hint': signal_sparse_hint,
+            'signal_diagnosis': {
+                'base_signal_count': base_cnt,
+                'filtered_signal_count': final_cnt,
+                'filter_factor_count': len(filter_factors),
+            },
             'holding_days': holding_days,
             'period': f'{start_date} ~ {end_date}',
             'fusion_mode': fusion_mode,
@@ -701,8 +758,10 @@ class FactorLabRunHandler(webBase.BaseHandler):
         """自定义策略 → DataFrame[date, code, rate]。复用 verifyOptimize 的逐笔补算。"""
         from quantia.web.verifyOptimizeHandler import _build_custom_strategy_dataframe
         strategy_key = meta['id']
+        # auto_run=True：区间无任何可复用回测时自动跑一次，避免直接归 0
         df, _total, _err = _build_custom_strategy_dataframe(
-            strategy_key, start_date, end_date, holding_days, '000300')
+            strategy_key, start_date, end_date, holding_days, '000300',
+            auto_run=True)
         if df is None or len(df) == 0:
             return pd.DataFrame(columns=['date', 'code', 'rate'])
         rate_col = f'rate_{holding_days}'

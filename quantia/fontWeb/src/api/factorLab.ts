@@ -80,6 +80,14 @@ export interface FactorLabRunResult {
   daily_series: DailyPoint[]
   factor_contributions: FactorContribution[]
   signal_sparse_warning: boolean
+  signal_sparse_reason?: 'no_base_signal' | 'filtered_out' | 'low_density' | null
+  signal_sparse_hint?: string | null
+  signal_diagnosis?: {
+    base_signal_count: number
+    filtered_signal_count: number
+    filter_factor_count?: number
+    per_strategy_counts?: Record<string, number>
+  }
   holding_days: number
   period: string
   fusion_mode: string

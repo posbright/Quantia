@@ -315,7 +315,23 @@
         <!-- 信号稀疏警告 -->
         <div v-if="result && result.signal_sparse_warning" class="signal-warn">
           <span class="sw-icon">⚠</span>
-          <span>日均信号数仅 <b>{{ result.kpi.daily_signal_avg }}</b>，接近稀疏阈值(3)。继续添加过滤因子可能影响回测可靠性。</span>
+          <div class="sw-body">
+            <div class="sw-title">
+              <template v-if="result.signal_sparse_reason === 'filtered_out'">
+                过滤因子把信号全部过滤掉了 — 基础信号 <b>{{ result.signal_diagnosis?.base_signal_count ?? '?' }}</b> 条 → 过滤后 <b>0</b> 条
+              </template>
+              <template v-else-if="result.signal_sparse_reason === 'no_base_signal'">
+                策略本身在该区间无买入信号（基础池 <b>0</b> 条）
+              </template>
+              <template v-else-if="result.signal_sparse_reason === 'low_density'">
+                日均信号 <b>{{ result.kpi.daily_signal_avg }}</b> 偏低，低于稀疏阈值 3
+              </template>
+              <template v-else>
+                日均信号数仅 <b>{{ result.kpi.daily_signal_avg }}</b>，接近稀疏阈值(3)
+              </template>
+            </div>
+            <div v-if="result.signal_sparse_hint" class="sw-hint">{{ result.signal_sparse_hint }}</div>
+          </div>
         </div>
       </div>
 
@@ -1535,17 +1551,22 @@ function downloadExportCode() {
 /* 信号稀疏警告 */
 .signal-warn {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
   margin: 6px 8px;
-  background: #fff2f0;
-  border: 1px solid #ffccc7;
+  background: #fff7e6;
+  border: 1px solid #ffd591;
   border-radius: 4px;
-  font-size: 11px;
-  color: #ff4d4f;
+  font-size: 12px;
+  color: #d46b08;
+  line-height: 1.5;
 }
-.sw-icon { font-size: 14px; }
+.sw-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+.sw-body { flex: 1; min-width: 0; }
+.sw-title { font-weight: 600; }
+.sw-title b { color: #ad4e00; }
+.sw-hint { margin-top: 3px; color: #874d00; font-size: 11px; }
 
 /* 因子卡片 */
 .factor-card {
