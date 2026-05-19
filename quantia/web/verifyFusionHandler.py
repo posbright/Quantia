@@ -585,6 +585,58 @@ def _load_dim_signals_table_filter(table, allowed_cols, items, start_date, end_d
     return df, warnings
 
 
+def _load_dim_signals_custom(items, start_date, end_date):
+    """自定义策略维度：items = ['custom_<id>', ...]，取回测 buy 交易作为信号。
+
+    数据源：cn_stock_backtest_portfolio.result_json -> trades[]（direction=='buy'）。
+    透过 verifyOptimizeHandler._collect_custom_buy_trades 复用现有缓存 / 内存任务通路。
+    同维 OR（多个自定义策略合并去重）。
+    """
+    from quantia.web.verifyOptimizeHandler import _collect_custom_buy_trades
+    warnings = []
+    frames = []
+    seen = set()
+    for item in items:
+        s = str(item).strip()
+        if not s:
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        if not s.startswith('custom_'):
+            warnings.append(f"自定义维度跳过非 custom_<id> 键 {item!r}")
+            continue
+        try:
+            sid = int(s.replace('custom_', '', 1))
+        except ValueError:
+            warnings.append(f"自定义维度无法解析 ID: {item!r}")
+            continue
+        try:
+            trades = _collect_custom_buy_trades(sid, start_date, end_date, '000300')
+        except Exception as e:
+            logger.warning(f"自定义策略 #{sid} 加载 buy 交易失败: {e}")
+            warnings.append(f"自定义策略 #{sid} 加载失败")
+            continue
+        if not trades:
+            warnings.append(f"自定义策略 #{sid} 在该区间无 buy 交易（请先在「策略管理 → 回测」跑完整覆盖此区间的回测）")
+            continue
+        df = pd.DataFrame(trades)
+        if 'date' not in df.columns or 'code' not in df.columns:
+            warnings.append(f"自定义策略 #{sid} 回测结果缺少 date/code 字段")
+            continue
+        # 统一日期类型为 datetime64[ns]，与其他维度（pd.read_sql 的 DATE 列）对齐
+        df['date'] = pd.to_datetime(df['date'], errors='coerce').dt.normalize()
+        df = df.dropna(subset=['date'])
+        df = df[['date', 'code']].drop_duplicates()
+        if len(df) > 0:
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame(columns=['date', 'code']), warnings
+    merged = pd.concat(frames, ignore_index=True).drop_duplicates(
+        subset=['date', 'code']).reset_index(drop=True)
+    return merged, warnings
+
+
 def _load_dim_signals(key, items, start_date, end_date):
     """统一入口：返回 (DataFrame[date, code], warnings)。"""
     if key == 'tech':
@@ -599,8 +651,7 @@ def _load_dim_signals(key, items, start_date, end_date):
         return _load_dim_signals_table_filter(
             'cn_stock_selection', _SENT_ALLOWED_COLS, items, start_date, end_date, '情绪')
     if key == 'custom':
-        # 自定义维度复用 tech 通路（custom_<id> / composite_<id> 经 _resolve_strategy 解析）
-        return _load_dim_signals_tech(items, start_date, end_date)
+        return _load_dim_signals_custom(items, start_date, end_date)
     return pd.DataFrame(columns=['date', 'code']), [f"未知维度 {key}"]
 
 

@@ -621,6 +621,69 @@ class TestStage3Integration(AsyncHTTPTestCase):
         assert data['overlap']['co_occurrence'][0]['jaccard'] == 1.0
 
 
+# ── 自定义维度信号加载 ────────────────────────────────────────────────
+
+class TestLoadDimSignalsCustom:
+    """_load_dim_signals_custom: items 形如 'custom_<id>'，从回测 buy 交易聚合 (date,code)。"""
+
+    def test_skips_non_custom_keys_with_warning(self):
+        df, warns = vfh._load_dim_signals_custom(
+            ['not_a_custom_key', 'cn_stock_strategy_keep_increasing'],
+            '2026-03-01', '2026-05-14')
+        assert df.empty
+        assert any('跳过非 custom_' in w for w in warns)
+
+    def test_invalid_id_warning(self):
+        df, warns = vfh._load_dim_signals_custom(
+            ['custom_abc'], '2026-03-01', '2026-05-14')
+        assert df.empty
+        assert any('无法解析' in w for w in warns)
+
+    def test_empty_trades_warning(self):
+        with mock.patch('quantia.web.verifyOptimizeHandler._collect_custom_buy_trades',
+                        return_value=[]):
+            df, warns = vfh._load_dim_signals_custom(
+                ['custom_42'], '2026-03-01', '2026-05-14')
+        assert df.empty
+        assert any('#42' in w and '无 buy 交易' in w for w in warns)
+
+    def test_loads_buy_trades_to_date_code(self):
+        fake_trades = [
+            {'date': '2026-03-01', 'code': '600001', 'price': 10.0},
+            {'date': '2026-03-02', 'code': '600002', 'price': 11.0},
+            {'date': '2026-03-02', 'code': '600002', 'price': 11.0},  # dup
+        ]
+        with mock.patch('quantia.web.verifyOptimizeHandler._collect_custom_buy_trades',
+                        return_value=fake_trades):
+            df, warns = vfh._load_dim_signals_custom(
+                ['custom_7'], '2026-03-01', '2026-05-14')
+        assert len(df) == 2  # 去重
+        assert set(df['code'].tolist()) == {'600001', '600002'}
+        assert pd.api.types.is_datetime64_any_dtype(df['date'])
+
+    def test_or_merges_multiple_custom_strategies(self):
+        def fake_collect(sid, *_a, **_k):
+            if sid == 1:
+                return [{'date': '2026-03-01', 'code': 'A', 'price': 1.0}]
+            if sid == 2:
+                return [{'date': '2026-03-01', 'code': 'B', 'price': 1.0},
+                        {'date': '2026-03-01', 'code': 'A', 'price': 1.0}]
+            return []
+        with mock.patch('quantia.web.verifyOptimizeHandler._collect_custom_buy_trades',
+                        side_effect=fake_collect):
+            df, _ = vfh._load_dim_signals_custom(
+                ['custom_1', 'custom_2'], '2026-03-01', '2026-05-14')
+        assert len(df) == 2  # A & B（A 去重）
+        assert set(df['code'].tolist()) == {'A', 'B'}
+
+    def test_dispatch_through_load_dim_signals(self):
+        """_load_dim_signals(key='custom', ...) 应路由到 _load_dim_signals_custom。"""
+        with mock.patch.object(vfh, '_load_dim_signals_custom',
+                               return_value=(pd.DataFrame(columns=['date', 'code']), [])) as m:
+            vfh._load_dim_signals('custom', ['custom_1'], '2026-03-01', '2026-05-14')
+        m.assert_called_once()
+
+
 # ── OptimizeSuggestHandler 测试 ───────────────────────────────────────
 
 class TestOptimizeSuggestHandler(AsyncHTTPTestCase):

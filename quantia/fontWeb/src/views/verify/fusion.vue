@@ -283,8 +283,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as echarts from 'echarts'
-import request from '@/api/request'
-import { runFusion as apiFusion, exportFusionCodeApi, saveFusionSchemeApi } from '@/api/verify'
+import { runFusion as apiFusion, exportFusionCodeApi, saveFusionSchemeApi, getVerifyStrategyList } from '@/api/verify'
 import UsageGuide from '@/components/verify/UsageGuide.vue'
 
 const guideSteps = [
@@ -424,25 +423,26 @@ const voteThreshold = ref<number>(2)
 
 // 自定义维度动态加载
 async function loadCustomStrategies() {
+  const customDim = dimensions.value.find(d => d.key === 'custom')
+  if (!customDim) return
   try {
-    const res: any = await request({ url: '/api/strategy/list', method: 'get' })
-    const list = Array.isArray(res) ? res : (res?.data || res?.strategies || [])
-    const customDim = dimensions.value.find(d => d.key === 'custom')
-    if (!customDim) return
+    const res: any = await getVerifyStrategyList()
+    const groups: any[] = (res && res.groups) || []
+    const customGroup = groups.find(g => g && g.category === 'custom')
     const items: DimItem[] = []
-    for (const s of list) {
-      const id = s.id ?? s.strategy_id ?? s.name
-      const label = s.name || s.title || `策略#${id}`
-      if (id == null) continue
-      items.push({ id: `cn_stock_strategy_custom_${id}`, label: `自定义: ${label}`, checked: false })
+    for (const s of (customGroup?.items || [])) {
+      const value = s.value || (s.custom_id != null ? `custom_${s.custom_id}` : null)
+      const label = s.label || s.name || `策略#${s.custom_id ?? '?'}`
+      if (!value) continue
+      items.push({ id: value, label: `自定义: ${label}`, checked: false })
     }
     customDim.items = items
     customDim.tip = items.length
-      ? `共 ${items.length} 个用户自定义策略（同维度内 OR）`
-      : '尚无自定义策略，请先在「策略管理」创建'
+      ? `共 ${items.length} 个有已完成回测的自定义策略（同维 OR，取 buy 交易作为信号）`
+      : '尚无已完成回测的自定义策略（请先在「策略管理 → 回测」跑一次）'
   } catch (e) {
-    const customDim = dimensions.value.find(d => d.key === 'custom')
-    if (customDim) customDim.tip = '自定义策略列表加载失败（接口不可用，跳过）'
+    customDim.items = []
+    customDim.tip = '自定义策略列表加载失败（/verify/strategy_list 不可用）'
   }
 }
 onMounted(() => { loadCustomStrategies() })

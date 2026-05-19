@@ -56,9 +56,16 @@ const runFusionMock = vi.fn().mockResolvedValue({
 })
 vi.mock('@/api/verify', () => ({
   runFusion: (...args: any[]) => runFusionMock(...args),
+  getVerifyStrategyList: (...args: any[]) => getStrategyListMock(...args),
+  exportFusionCodeApi: (...args: any[]) => exportFusionCodeMock(...args),
+  saveFusionSchemeApi: (...args: any[]) => saveFusionSchemeMock(...args),
 }))
 
-// Mock for @/api/request (custom strategy list loader)
+const getStrategyListMock = vi.fn().mockResolvedValue({ groups: [] })
+const exportFusionCodeMock = vi.fn().mockResolvedValue({ code: '# fake', length: 6 })
+const saveFusionSchemeMock = vi.fn().mockResolvedValue({ id: 1, message: '已保存' })
+
+// Mock for @/api/request (legacy; no longer used by fusion.vue but kept to avoid import errors)
 const requestMock = vi.fn().mockResolvedValue([])
 vi.mock('@/api/request', () => ({
   default: (...args: any[]) => requestMock(...args),
@@ -82,6 +89,10 @@ describe('fusion.vue v2', () => {
     runFusionMock.mockClear()
     requestMock.mockClear()
     requestMock.mockResolvedValue([])
+    getStrategyListMock.mockClear()
+    getStrategyListMock.mockResolvedValue({ groups: [] })
+    exportFusionCodeMock.mockClear()
+    saveFusionSchemeMock.mockClear()
     localStorage.clear()
   })
 
@@ -107,17 +118,26 @@ describe('fusion.vue v2', () => {
     expect(wrapper.html()).toContain('持仓天数')
   })
 
-  it('loads custom strategies on mount via /api/strategy/list', async () => {
-    requestMock.mockResolvedValueOnce([
-      { id: 7, name: '我的均线' },
-      { id: 9, name: '我的动量' },
-    ])
+  it('loads custom strategies on mount via /verify/strategy_list', async () => {
+    getStrategyListMock.mockResolvedValueOnce({
+      groups: [
+        { label: '技术指标', category: 'tech', items: [] },
+        {
+          label: '用户自定义', category: 'custom',
+          items: [
+            { value: 'custom_7', label: '我的均线', custom_id: 7, backtest_count: 3 },
+            { value: 'custom_9', label: '我的动量', custom_id: 9, backtest_count: 1 },
+          ],
+        },
+      ],
+    })
     const wrapper = factory()
     await flushPromises()
     const vm = wrapper.vm as any
     const customDim = vm.dimensions.find((d: any) => d.key === 'custom')
     expect(customDim.items.length).toBe(2)
-    expect(customDim.items[0].id).toBe('cn_stock_strategy_custom_7')
+    expect(customDim.items[0].id).toBe('custom_7')
+    expect(customDim.items[0].label).toContain('我的均线')
   })
 
   it('runFusionBacktest sends v2 payload with all 5 dimensions', async () => {
@@ -236,6 +256,24 @@ describe('fusion.vue v2', () => {
     expect(parsed.mode).toBeDefined()
     expect(parsed.dimensions.length).toBe(5)
     expect(parsed.start_date).toBeDefined()
+  })
+
+  it('exportFusionCode calls backend export API and writes to clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    exportFusionCodeMock.mockResolvedValueOnce({ code: '# generated fusion code', length: 24 })
+    const wrapper = factory()
+    await flushPromises()
+    const buttons = wrapper.findAll('button')
+    const exportBtn = buttons.find(b => b.text().includes('导出代码'))
+    expect(exportBtn).toBeDefined()
+    await exportBtn!.trigger('click')
+    await flushPromises()
+    expect(exportFusionCodeMock).toHaveBeenCalledTimes(1)
+    const payload = exportFusionCodeMock.mock.calls[0][0]
+    expect(payload.version).toBe(2)
+    expect(payload.dimensions).toBeDefined()
+    expect(writeText).toHaveBeenCalledWith('# generated fusion code')
   })
 
   it('weight warning appears when total != 100', async () => {
