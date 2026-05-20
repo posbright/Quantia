@@ -8,12 +8,6 @@ export interface StockDataParams {
   keyword?: string
 }
 
-export interface StockIndicatorParams {
-  code: string
-  date: string
-  name?: string
-}
-
 export interface AttentionParams {
   code: string
   otype: '0' | '1'  // 0: 添加关注, 1: 取消关注
@@ -26,20 +20,6 @@ export interface AttentionParams {
 export function getStockData(params: StockDataParams) {
   return request({
     url: '/api_data',
-    method: 'get',
-    params
-  })
-}
-
-/**
- * 获取股票指标详情（备用：通过后端 HTML 接口获取指标数据）
- * 注意：当前前端使用 getKlineData + indicator/index.vue 渲染指标详情，
- * 此函数保留以兼容未来可能的 JSON 格式指标 API。
- * @param params 
- */
-export function getStockIndicators(params: StockIndicatorParams) {
-  return request({
-    url: '/data/indicators',
     method: 'get',
     params
   })
@@ -234,11 +214,6 @@ export function saveStrategyCode(data: {
   ai_repair_count?: number
 }) {
   return request({ url: '/api/strategy/code', method: 'post', data })
-}
-
-/** 删除策略 */
-export function deleteStrategyCode(id: number) {
-  return request({ url: '/api/strategy/code/delete', method: 'post', data: { id } })
 }
 
 /** 重命名策略 */
