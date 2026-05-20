@@ -68,7 +68,7 @@ const handleUserMgmt = () => router.push('/settings/users')
       <!-- 面包屑 -->
       <el-breadcrumb separator="/">
         <el-breadcrumb-item :to="{ path: '/' }">首页</el-breadcrumb-item>
-        <el-breadcrumb-item v-for="item in breadcrumbs" :key="item.path">
+        <el-breadcrumb-item v-for="item in breadcrumbs" :key="item.path" :to="{ path: item.path }">
           {{ item.title }}
         </el-breadcrumb-item>
       </el-breadcrumb>

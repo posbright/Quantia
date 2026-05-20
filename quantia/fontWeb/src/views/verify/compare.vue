@@ -1,5 +1,11 @@
 <template>
   <div class="verify-compare">
+    <div class="feature-tabs">
+      <router-link class="feature-tab" to="/verify/compare">策略对比</router-link>
+      <router-link class="feature-tab" to="/verify/optimize">买卖点优化</router-link>
+      <router-link class="feature-tab" to="/verify/fusion">多维融合</router-link>
+      <router-link class="feature-tab" to="/verify/factor-lab">因子实验室</router-link>
+    </div>
     <!-- 使用说明 -->
     <UsageGuide
       title="📖 策略对比 使用说明（点击展开）"
@@ -689,6 +695,9 @@ function renderNavChart() {
 
 <style scoped>
 .verify-compare { padding: 16px; }
+.feature-tabs { display: flex; align-items: center; gap: 0; height: 42px; padding: 0 12px; margin-bottom: 12px; background: #fff; border: 1px solid #ebeef5; border-radius: 4px; }
+.feature-tab { height: 42px; display: inline-flex; align-items: center; padding: 0 18px; font-size: 13px; color: #606266; border-bottom: 2px solid transparent; cursor: pointer; text-decoration: none; }
+.feature-tab.router-link-exact-active { color: #1890ff; border-bottom-color: #1890ff; font-weight: 600; }
 
 /* ── 工具栏 ── */
 .toolbar { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 16px; padding: 12px 16px; background: #fafafa; border-radius: 6px; border: 1px solid #ebeef5; }

@@ -1,27 +1,98 @@
-# Quantia 前端移动端适配方案 v1.5.2
+# Quantia 前端移动端适配方案 v2.0
 
-> 文档版本：v1.5.2 ｜ 修订日期：2026-05-11 ｜ 适用分支：`backTest_dev`
-> 范围：`quantia/fontWeb/`（Vue 3 + Element Plus 2.6.1 + Vite 5）
+> 文档版本：v2.0 ｜ 修订日期：2026-05-20 ｜ 适用分支：`backTest_dev`
+> 范围：`quantia/fontWeb/`（Vue 3.4.21 + Element Plus 2.6.1 + Vite 5.1.6 + echarts 5.5.0）
 > 目标设备：手机（≥360px）/ 平板（≥768px）/ 横竖屏自适应；零桌面端回归
 >
-> **v1.1–1.4 历史修订**（总计 R1–R57 / §1.10–1.16）请参阅下方正文。
+> **v2.0 修订要点（第六轮：实施状态追踪 / 新功能覆盖 / 依赖规划 / 优先级重排）**：
+> - 新增 §0.1 **实施状态追踪表**：截至 2026-05-20，零实施进展，全部 14 PR 仍处于规划阶段
+> - 新增 §1.18 **第六轮审查补遗**（8 项）：覆盖验证中心 4 页面（compare/factorLab/fusion/optimize）+ AI Agent 管理页、AI 聊天抽屉、首页响应式已有断点修正（1100px/600px 而非文档前述 768px）、Playwright 已入 devDeps 但未配置、新增 utils 文件对移动适配的影响
+> - 更新 §1.6 媒体查询审计结论：**6 处** @media 跨 5 文件（home 1100/600、optimize 1200、factorLab 960、fusion 960、paper-trading 900）
+> - 新增 §3.1 **阶段 2.5 — 验证中心适配**（新增 PR-08b，覆盖 5 页面含 agent-manager）
+> - 更新 §7 文件清单：补充已存在的 `utils/columnTooltips.ts`、`utils/backtestDashboardLinks.ts`、`composables/useCustomIndicatorOverlay.ts`
+> - 更新 §12 **依赖安装计划**：明确各 PR 需安装的 npm 包及版本约束
+> - 更新 §13 **实施优先级矩阵**：基于用户价值 × 技术风险重排 PR 顺序
+> - 修正 AI 抽屉 `size="55%"` 百分比宽度（非硬编码 px）+ 220px sidebar 溢出问题
+> - 移动端可用度上调至 **22%**（factorLab/fusion/paper-trading 已有初步断点）
+> - 风险登记册扩展至 R75（+6 项新风险覆盖验证中心/AI 抽屉/首页已有断点冲突）
 >
-> **v1.5 修订要点（第五轮：时区 / 调度 / 并发 / 上传下载 / 性能预算 / 合规）**：新增 §1.17（12 项）——Asia/Shanghai 交易时钟、rAF 统一调度器防后台补帧、useLatest seq+Abort 防请求覆盖、useLock+useIdle 防重复交易、HEIC 转码+canvas 压缩上传、iOS Safari 下载兼容、size-limit + web-vitals 性能预算、CLS aspect-ratio 占位、INP lazyUpdate+Worker、ICP备案+风险提示、PIPL 隐私同意、广告过滤/静默代理防御；R 风险扩到 R69；DoD 再增 9 项；新增 6 composables / 3 utils / 2 组件。
->
-> **v1.5.2 二次勘误**（同日）：再次审查 v1.5.1 之后残留的约 35 处中文错别字与语病，覆盖正文 §1.10 / §1.11 / §1.13 / §1.14–§1.17、§5 兼容矩阵、§6 风险登记册 R4 / R20 / R21 / R22 / R26 / R30 / R33 / R38 / R40 / R47 / R49 / R55 / R66 / R67、§7 文件清单、§9 DoD 等位置；并把代码标识错误 `ulpDirtyRect` 更正为 `useDirtyRect`，把「刹海」「抵音」「奇坏习惯」「退进手势」「打定」「迷向」「接锐」「取衔」「重变 Tab」「傅后」「头中后台」「金额质誓」「色表誓」「环口」「眺晕」「大隐火」「点刷」「越限」「越界」「下取」「不要入」「被振出」「兄弟」「身位」「打定」「粘贴提示」「手感年」「默位符」「测试选项」「代码清单型浏览器」「UI 营造」「P3 色域 + 表示色提供丝质调」「裁取」「不需需」「重出」「含视频」「超超时」「涯检测」「ulpDirtyRect」「echartss」「动调」等全部更正。
->
-> **v1.5.1 勘误**（同日）：修复前几轮起草中引入的 14 处问题 —— useVirtualKeyboard / useFoldable / useAdaptivePolling 缺失的 import；useFoldable 中 `'windowSegments' in (...) ?? {}` 运算符优先级错误且键名拼错；useAdaptivePolling 未在卸载时清理定时器；ChunkLoadError dead-code；HEIC 顶层静态 import 与动态 import 冲突；aria-label 模板字串语法不合法；引用了不存在的 `isSameDay` import；以及多处中文错别字（"偊返""遽漏""补补""代以轮逻""坏习""帺费"）。
+> **v1.1–1.5.2 历史修订摘要**（总计 R1–R69 / §1.10–1.17）：
+> - v1.1–1.4：字号系统、国产浏览器碎片化、安全区、软键盘、弱网、ChunkLoadError 等
+> - v1.5：时区交易时钟、rAF 调度、并发竞态、HEIC 上传、性能预算、合规
+> - v1.5.1–1.5.2：代码勘误与错别字修正
 
 ---
 
 ## 0. TL;DR（执行摘要）
 
-- **可行性**：✅ 可行。技术栈 Vue 3 + Element Plus 2.6.1 + Vite 5 + echarts 5.5 全部原生支持响应式，路由已 100% 动态 import，前端测试基础设施（Vitest + jsdom）已就位。
-- **当前移动端可用度**：约 **15%**。仅 viewport meta 与 Element Plus 内置响应能力可用，没有任何媒体查询/断点系统/响应式表格/触屏优化。
-- **改造规模**：5 个阶段、约 **12 个 PR**、影响 **40+ 文件**、新增 **10 个文件**。
+- **可行性**：✅ 可行。技术栈 Vue 3.4.21 + Element Plus 2.6.1 + Vite 5.1.6 + echarts 5.5.0 全部原生支持响应式，路由已 100% 动态 import，前端测试基础设施（Vitest 1.3 + Playwright 1.59）已就位。
+- **当前移动端可用度**：约 **22%**（v2.0 二次上调）。viewport meta 可用、Element Plus 内置响应能力可用、首页已有 1100px/600px 断点、验证中心 3 页已有 960px/1200px 断点（grid 单列化）、模拟盘已有 900px 断点。其余页面无断点系统/响应式表格/触屏优化。
+- **改造规模**：6 个阶段、约 **14 个 PR**、影响 **50+ 文件**、新增 **40+ 文件**。
+- **实施进展**（截至 2026-05-20）：⚠️ **0/14 PR 已完成，0% 实施率**。全部仍处于规划阶段。
 - **零桌面端回归保证**：通过「断点门禁 + CSS 媒体查询包裹 + Playwright 视觉回归」三重锁实现。
-- **预期收益**：手机端可完成 70% 高频操作（看盘、回测列表、模拟盘持仓、登录注册）；平板端可达 95%。
+- **预期收益**：手机端可完成 70% 高频操作（看盘、回测列表、模拟盘持仓、登录注册、验证中心）；平板端可达 95%。
 - **目标设备基线**（**v1.1 收紧**）：iOS 16+（含 Safari / WKWebView）、Android 11+（含 Chrome / 微信 X5 / 各国产浏览器，统一基于 Chromium 90+）。**不再支持** iOS ≤ 15、Android ≤ 10。
+
+---
+
+## 0.1 实施状态追踪（**v2.0 新增**）
+
+> 上次更新：2026-05-20
+
+### 总体进度
+
+```
+已完成: ░░░░░░░░░░░░░░░░░░░░ 0%
+进行中: ░░░░░░░░░░░░░░░░░░░░ 0%
+未开始: ████████████████████ 100%
+```
+
+### 各 PR 状态
+
+| PR | 标题 | 阶段 | 状态 | 阻塞项 |
+|---|---|---|---|---|
+| PR-01 | 响应式基础（composables + SCSS） | 0 | ❌ 未开始 | 需先安装 `@vueuse/core` |
+| PR-02 | Element Plus 按需引入 | 0 | ❌ 未开始 | 需安装 `unplugin-auto-import` + `unplugin-vue-components` |
+| PR-03 | Layout / Sidebar / Navbar 响应式 | 1 | ❌ 未开始 | 依赖 PR-01 |
+| PR-04 | 全局 ConfigProvider + dvh + 字号系统 | 1 | ❌ 未开始 | 依赖 PR-01 |
+| PR-05 | StockData.vue 卡片视图 | 2 | ❌ 未开始 | 依赖 PR-01/03 |
+| PR-06 | 回测列表与 Dashboard | 2 | ❌ 未开始 | 依赖 PR-01/03 |
+| PR-07 | 模拟盘 | 2 | ❌ 未开始 | 依赖 PR-01/03 |
+| PR-08 | 设置页面 | 2 | ❌ 未开始 | 依赖 PR-01/03 |
+| **PR-08b** | **验证中心 4 页面**（v2.0 新增） | 2.5 | ❌ 未开始 | 依赖 PR-01/03 |
+| PR-09 | K 线与指标图表 | 3 | ❌ 未开始 | 依赖 PR-01 |
+| PR-10 | 回测详情 / Compare / Edit | 3 | ❌ 未开始 | 依赖 PR-01/09 |
+| PR-11 | 弹窗与表单统一 | 4 | ❌ 未开始 | 依赖 PR-01 |
+| **PR-11b** | **AI 聊天抽屉移动适配**（v2.0 新增） | 4 | ❌ 未开始 | 依赖 PR-01/03 |
+| PR-12 | 性能 / 测试 / 文档收尾 | 5 | ❌ 未开始 | 依赖所有前置 PR |
+
+### 依赖安装状态
+
+| 包名 | 计划版本 | 已安装 | 所需 PR |
+|---|---|---|---|
+| `@vueuse/core` | ^10.9+ | ❌ | PR-01 |
+| `unplugin-auto-import` | ^0.17+ | ❌ | PR-02 |
+| `unplugin-vue-components` | ^0.27+ | ❌ | PR-02 |
+| `decimal.js-light` | ^2.5+ | ❌ | PR-05 |
+| `@vitejs/plugin-legacy` | ^5.3+ | ❌ | PR-12 |
+| `size-limit` | ^11+ | ❌ | PR-12 |
+| `web-vitals` | ^4+ | ❌ | PR-12 |
+| `vue-virtual-scroller` 或 `@tanstack/vue-virtual` | latest | ❌ | PR-05（可选） |
+| `heic2any` | ^0.0.4 | ❌ | PR-11（可选） |
+
+### 已有基础设施（可直接利用）
+
+| 资产 | 状态 | 说明 |
+|---|---|---|
+| Playwright | ✅ devDeps `^1.59.1` | 已安装但无 `playwright.config.ts`，无测试文件 |
+| Vitest | ✅ `^1.3.1` | 已有 8 个测试文件，可扩展移动端测试 |
+| 首页响应式 CSS | ✅ 部分 | `home/index.vue` 已有 1100px/600px 断点（网格适配） |
+| 验证中心 optimize.vue | ✅ 部分 | 已有 1200px 断点（侧面板折叠） |
+| 验证中心 factorLab.vue | ✅ 部分 | 已有 960px 断点（grid→单列） |
+| 验证中心 fusion.vue | ✅ 部分 | 已有 960px 断点（dim-grid + kpi 两列） |
+| 路由懒加载 | ✅ 100% | 所有路由已 `() => import(...)` |
+| TypeScript strict | ✅ | `tsconfig.json` target ES2020 |
+| MSW (Mock Service Worker) | ✅ devDeps `^2.2.3` | 可用于移动端集成测试 mock |
 
 ---
 
@@ -262,12 +333,20 @@ plugins: [
 
 预估减重：JS ~600KB（gzip 后 ~180KB）。
 
-### 1.6 既有媒体查询不一致（**新发现，仅 2 处**）
+### 1.6 既有媒体查询不一致（**v2.0 修正审计结论**）
 
-- [home/index.vue#L271](quantia/fontWeb/src/views/home/index.vue#L271): `@media (max-width: 768px)`
-- [paper-trading/index.vue#L1975](quantia/fontWeb/src/views/paper-trading/index.vue#L1975): `@media (max-width: 900px)`
+经 v2.0 重新扫描，当前项目实际有 **3 处** 媒体查询（前版本遗漏了 verify/optimize.vue）：
 
-**风险**：900px 与 768px 不同源，未来扩展将分裂。**全部统一到 Element Plus 官方断点**：
+- [home/index.vue](quantia/fontWeb/src/views/home/index.vue#L982): `@media (max-width: 1100px)` + `@media (max-width: 600px)` — 网格布局 4→2→1 列适配
+- [verify/optimize.vue](quantia/fontWeb/src/views/verify/optimize.vue): `@media (max-width: 1200px)` — 侧面板折叠
+- [paper-trading/index.vue#L1975](quantia/fontWeb/src/views/paper-trading/index.vue#L1975): `@media (max-width: 900px)` — 表格简化
+
+**评估**：
+- ✅ `home/index.vue` 的 1100px/600px 断点实际上已提供了基础移动适配（首页可用度 ~40%），这是项目中**唯一一个**在手机上基本可用的页面
+- ⚠️ 三处断点来源不统一（600/900/1100/1200px），各自独立定义，无法复用
+- ❌ 11 个其他路由区域（algo/backtest/customIndicator/indicator/paper-trading/settings/stock/strategy/verify 其他 3 页/login/register）完全无断点
+
+**全部统一到 Element Plus 官方断点**：
 
 | Breakpoint | 范围 | 设备 |
 |---|---|---|
@@ -1771,6 +1850,149 @@ if (!localStorage.getItem('privacyConsentVersion=2026-05')) {
 
 ---
 
+### 1.18 第六轮审查补遗（**v2.0 新增**）
+
+本轮针对 2026-05-11 至 2026-05-20 期间新增的功能模块、已有响应式代码的评估修正、以及被前五轮遗漏的技术债务进行扫描。
+
+#### 1.18.1 验证中心 4 页面 + AI Agent 管理移动端适配需求
+
+[quantia/fontWeb/src/views/verify/](quantia/fontWeb/src/views/verify/) 目录包含 4 个高复杂度分析页面，均为近期新增。其中 **3 个已有初步响应式 CSS**（grid 单列化），但仍不足以支撑完整移动端体验；另有 [algo/agent-manager.vue](quantia/fontWeb/src/views/algo/agent-manager.vue) 是 AI Agent CRUD 管理页（7 列表格），完全无响应式：
+
+| 页面 | 文件 | 核心布局 | 已有响应式 | 移动问题 |
+|---|---|---|---|---|
+| 策略对比 | `verify/compare.vue` | 多策略并排表 + echarts NAV 对比图 | ❌ 无 | 并排列数溢出；图表硬编码高度 |
+| 因子实验室 | `verify/factorLab.vue` | 3 维参数面板 + 收益热力图 + Shapley 柱图 | ✅ 960px grid→单列 | 参数面板折叠后仍 400px 高；热力图方块过小 |
+| 策略融合 | `verify/fusion.vue` | 5 维选择 + 4 模式切换 + co_occurrence 矩阵 | ✅ 960px dim-grid→单列 + kpi 两列 | 5 维选择器文字溢出；矩阵不可横向滑动 |
+| 买卖点优化 | `verify/optimize.vue` | 左右分栏（参数+结果） + echarts 滚动 NAV | ✅ 1200px 侧面板折叠 | echarts 未接入 responsive hook |
+| AI Agent 管理 | `algo/agent-manager.vue` | 7 列表格 + CRUD 弹窗 | ❌ 无 | 表格在 <768px 完全溢出 |
+
+**修正策略**：
+
+1. **optimize.vue**：已有 `@media (max-width: 1200px)` 将左侧面板折叠为顶部 collapse，✅ 方向正确。移动端追加：
+   - 参数表单单列化（`<el-col :xs="24">`）
+   - echarts 图表接入 `useChartResponsive`
+
+2. **compare.vue**：
+   - `xs`/`sm` 下策略对比改为**上下堆叠**（而非左右）
+   - NAV 对比图接入响应式高度
+   - 使用 `<el-tabs>` 切换不同策略指标，而非全部平铺
+
+3. **factorLab.vue**：
+   - ✅ 已有 960px grid→单列，保留并迁移到 `@include md-down` mixin
+   - 但 `max-height: 400px` 在手机竖屏（667px）仍过高——改为 `max-height: min(400px, 50vh)`
+   - 参数面板改 `<el-collapse>` 折叠（默认展开第一组）
+   - 热力图在 `xs` 下切到 **数据表格视图**（热力图在 360px 下不可读）
+   - Shapley 柱图高度跟 `useChartResponsive`
+
+4. **fusion.vue**：
+   - ✅ 已有 960px dim-grid 单列 + kpi 两列，保留并迁移到 mixin
+   - 5 维选择器改为 `<el-steps :direction="isMobile? 'vertical' : 'horizontal'">` 分步引导
+   - co_occurrence 矩阵在 `xs` 下支持 `overflow-x: auto` 横向滚动
+   - 4 模式切换从 `<el-radio-group>` 改 `<el-segmented>` 防溢出
+
+5. **agent-manager.vue**（v2.0 新增覆盖）：
+   - 7 列 el-table 在 <768px 完全溢出
+   - 改为 `<ResponsiveDataView>`：`primary=['name','display_name']`、`secondary=['provider','model','enabled']`
+   - CRUD 弹窗改 `<ResponsiveDialog>`
+
+#### 1.18.2 AI 聊天抽屉移动适配
+
+[quantia/fontWeb/src/components/AiChatDrawer.vue](quantia/fontWeb/src/components/AiChatDrawer.vue) 是全局 AI 助手抽屉，从右侧滑出。当前配置 `size="55%"`（百分比宽度），含 220px 固定左侧会话列表。**移动端问题**：
+
+| 问题 | 严重度 | 修正 |
+|---|---|---|
+| 抽屉 55% 宽度 + 220px sidebar 在手机上无法并排 | 🔴 高 | 移动端：`size="100%"` + sidebar 改为顶部 collapse 或 sheet |
+| 内部 sidebar 220px 在 <400px 设备占满无留余内容区 | 🔴 高 | xs 下隐藏 sidebar，改为顶部 `<el-button>` 切换会话列表 |
+| 输入框在键盘弹起后被遮挡 | 🟡 中 | 接入 `useVirtualKeyboard`，键盘弹起时 sticky 底部 |
+| 消息列表滚动穿透到背景 | 🟡 中 | 接入 `useBodyScrollLock` |
+| 长代码块不换行导致横向溢出 | 🟡 中 | `pre { white-space: pre-wrap; word-break: break-all; max-width: 100%; }` |
+| AI 推荐股票列表不可点击跳转 | 🟠 低 | 点击股票代码跳 StockData 路由 |
+
+**修正**：PR-11b 新增，专门处理 AI 抽屉 + `AiAgentPicker.vue` + `AiModelPicker.vue` 在移动端的交互。
+
+#### 1.18.3 首页响应式代码评估（v2.0 修正）
+
+前版本认为「首页无任何移动端适配」，实际 [home/index.vue](quantia/fontWeb/src/views/home/index.vue) 已有较完善的网格自适应：
+
+```scss
+@media (max-width: 1100px) { /* 4-col → 2-col grids */ }
+@media (max-width: 600px)  { /* 2-col → 1-col; hero padding shrink */ }
+```
+
+**评估**：
+- ✅ 首页是项目中移动端可用度最高的页面（~40%）
+- ⚠️ 断点值（1100/600）与计划使用的 Element Plus 官方断点（768/992/1200）不对齐
+- ⚠️ 仅处理了网格布局，未处理字号、间距、图表高度
+- ❌ 首页大盘指数 echarts 卡片未做响应式高度
+
+**决策**：PR-04 统一断点时**不要破坏**首页已有的适配——而是将 1100px 迁移到最近的官方断点 `992px (md)`，600px 迁移到 `768px (sm)`。迁移后做视觉回归确认。
+
+#### 1.18.4 现有 composables/utils 对适配计划的影响
+
+当前已存在的代码资产：
+
+| 文件 | 作用 | 对移动适配的影响 |
+|---|---|---|
+| `composables/useCustomIndicatorOverlay.ts` | K 线图上叠加自定义指标信号 | 需与 `useChartResponsive` 协同——移动端 overlay 标记应缩小/简化 |
+| `utils/columnTooltips.ts` | 表格列 tooltip 文案 | 移动端 `show-overflow-tooltip` 不触发 hover → 需改 click-to-expand |
+| `utils/backtestDashboardLinks.ts` | 仪表盘跳转链接工具 | 无影响 |
+| `utils/index.ts` | 通用工具函数 | 可在此扩展 `fmtMoneyCn` / `fmtPct` 等格式化函数 |
+
+#### 1.18.5 Playwright 已安装但未配置
+
+`playwright` 已在 `devDependencies`（`^1.59.1`），但项目中：
+- ❌ 无 `playwright.config.ts`
+- ❌ 无 `tests/visual/` 目录
+- ❌ 未运行过 `npx playwright install`（浏览器二进制可能未下载）
+
+**PR-01 前置步骤**（新增）：
+```bash
+cd quantia/fontWeb
+npx playwright install chromium webkit  # 仅安装需要的引擎
+```
+
+并在 PR-01 中创建 `playwright.config.ts` + 桌面 baseline 截图，而非等到 PR-12。**提前建立 baseline 是零回归保障的前提**。
+
+#### 1.18.6 Vite 配置极简——缺失的构建优化
+
+当前 `vite.config.ts` 仅有：
+- `@vitejs/plugin-vue` 插件
+- `@` 别名
+- dev 代理
+- `outDir` / `assetsDir`
+
+**缺失项**（按 PR 补充）：
+
+| 缺失配置 | 影响 | 补充 PR |
+|---|---|---|
+| `build.target` 未指定 | 默认 `modules`（ES2020），可能包含不必要的转译 | PR-01 |
+| `manualChunks` 未配置 | echarts 1.2MB 与业务代码打在同一 chunk | PR-01 |
+| `chunkSizeWarningLimit` 默认 500KB | 超大 chunk 无警告 | PR-01 |
+| `css.preprocessorOptions` 无全局注入 | SCSS mixin 需每个文件手动 import | PR-01 |
+| 无 PostCSS / autoprefixer | 低版本浏览器 CSS 兼容性不保证 | PR-04 |
+| 无 `build.modulePreload.polyfill` | 老 X5 不支持 modulepreload | PR-12 |
+
+#### 1.18.7 路由无 scrollBehavior 与错误处理
+
+[quantia/fontWeb/src/router/index.ts](quantia/fontWeb/src/router/index.ts) 当前配置：
+- ✅ 有 Phase 8 auth guard（`beforeEach`）
+- ✅ 有 404 catch-all route
+- ❌ **无 `scrollBehavior`** — 路由切换后不回顶
+- ❌ **无 `router.onError`** — ChunkLoadError 未捕获
+
+这两项在 PR-04 中必须一并补上。
+
+#### 1.18.8 全局 Icon 注册的移动端体积影响
+
+[main.ts](quantia/fontWeb/src/main.ts) 中循环注册了**全部** `@element-plus/icons-vue`（约 280+ 图标组件），即使大部分页面只用 5-10 个。在桌面端不敏感（~50KB gzip），但在移动 4G 下构成**首屏 JS 增量**。
+
+**修正**（PR-02 一并处理）：
+- 改为按需 import：`import { Refresh, Search, Plus } from '@element-plus/icons-vue'`
+- 或使用 `unplugin-icons` 自动按需加载
+- 预估减重：gzip -15KB
+
+---
+
 ## 2. 平板与手机的差异点（横竖屏 × DPR × 字号）
 
 ### 2.1 设备矩阵（**v1.1 扩充**）
@@ -1821,7 +2043,7 @@ if (!localStorage.getItem('privacyConsentVersion=2026-05')) {
 
 ---
 
-## 3. 改造方案（5 阶段 / 12 PR）
+## 3. 改造方案（6 阶段 / 14 PR）
 
 ### 阶段 0 — 基础设施（**先决条件**，2 PR）
 
@@ -1956,6 +2178,35 @@ export const currentBp = computed<'xs' | 'sm' | 'md' | 'lg'>(() =>
 - [settings/notification.vue](quantia/fontWeb/src/views/settings/notification.vue)
 - [settings/live-trading.vue](quantia/fontWeb/src/views/settings/live-trading.vue)
 
+### 阶段 2.5 — 验证中心适配（**v2.0 新增**，1 PR）
+
+#### PR-08b：验证中心 4 页面（**v2.0 新增**）
+
+验证中心是 Phase 7–8 新增的高价值区域，需单独 PR 确保覆盖。
+
+- [verify/optimize.vue](quantia/fontWeb/src/views/verify/optimize.vue)：
+  - 保留已有 1200px 断点；统一迁移到 `@include md-down` mixin
+  - 参数表单 `<el-col :xs="24" :sm="12">`
+  - 结果 echarts 接入 `useChartResponsive`
+- [verify/compare.vue](quantia/fontWeb/src/views/verify/compare.vue)：
+  - 策略对比表：`xs` 下用 `<el-tabs>` 切换不同策略（而非并排）
+  - NAV 对比图：移动高度 220px、桌面 400px
+  - 统计指标卡改 `<el-row :gutter="8"><el-col :xs="12" :sm="6">`
+- [verify/factorLab.vue](quantia/fontWeb/src/views/verify/factorLab.vue)：
+  - 已有 960px grid→单列，保留并迁移到 `@include md-down` mixin
+  - 参数三组（tech/fund/flow）改 `<el-collapse>`，移动端默认折叠
+  - 热力图：`xs` 下切到排序表格视图（热力图 <360px 不可读）
+  - Shapley 柱图高度 `xs:180 / sm:260 / lg:360`
+- [verify/fusion.vue](quantia/fontWeb/src/views/verify/fusion.vue)：
+  - 已有 960px dim-grid/kpi 响应式，保留并迁移到 mixin
+  - 5 维选择器 `xs` 下改 `<el-steps direction="vertical">` 分步填写
+- [algo/agent-manager.vue](quantia/fontWeb/src/views/algo/agent-manager.vue)：
+  - 7 列表格无任何响应式，`xs` 下改 `<ResponsiveDataView>`
+  - CRUD 弹窗宽度统一为 `min(桌面宽, 92vw)`
+  - 4 模式切换改 `<el-segmented>`
+  - co_occurrence 热力图容器加 `overflow-x: auto; -webkit-overflow-scrolling: touch;`
+  - vote_threshold 等参数表单单列化
+
 ### 阶段 3 — 图表与详情页（2 PR）
 
 #### PR-09：K 线与指标（**v1.1 深化**）
@@ -1988,6 +2239,18 @@ export const currentBp = computed<'xs' | 'sm' | 'md' | 'lg'>(() =>
 - 所有 `label-width="..."` 在移动端 `label-position="top"` 后自动失效（无需逐个改）
 - 登录页 / 注册页 padding 调整
 
+#### PR-11b：AI 聊天抽屉移动适配（**v2.0 新增**）
+- [components/AiChatDrawer.vue](quantia/fontWeb/src/components/AiChatDrawer.vue)：
+  - 抽屉宽度：`min(480px, 100vw)`（手机全屏展开）
+  - 消息列表 `max-height: calc(100dvh - 140px)`
+  - 输入框接入 `useVirtualKeyboard`，键盘弹起时 sticky 定位
+  - 代码块 `pre { white-space: pre-wrap; overflow-x: auto; }`
+  - 接入 `useBodyScrollLock` 防背景穿透
+- [components/AiAgentPicker.vue](quantia/fontWeb/src/components/AiAgentPicker.vue)：
+  - `xs` 下改为底部 sheet（`<el-drawer direction="btt" :size="'60%'">`）
+- [components/AiModelPicker.vue](quantia/fontWeb/src/components/AiModelPicker.vue)：
+  - 同上，底部 sheet 展示模型列表
+
 ### 阶段 5 — 性能 / 测试 / 文档（1 PR）
 
 #### PR-12：收尾
@@ -2000,17 +2263,24 @@ export const currentBp = computed<'xs' | 'sm' | 'md' | 'lg'>(() =>
     'vendor-utils': ['axios', 'dayjs', '@vueuse/core'],
   }
   ```
-- 新增 [quantia/fontWeb/playwright.config.ts](quantia/fontWeb/playwright.config.ts)
+- ~~新增 [quantia/fontWeb/playwright.config.ts](quantia/fontWeb/playwright.config.ts)~~ → **已提前至 PR-01**
 - 新增 `tests/visual/desktop.spec.ts`、`tests/visual/mobile.spec.ts`、`tests/visual/tablet.spec.ts`
 - 视觉回归 baseline：1920×1080 / 1024×768 / 768×1024 / 375×667 / 667×375
 - [README.md](README.md) 增加移动端使用说明
+- `@vitejs/plugin-legacy` 配置老 X5 兼容
+- `size-limit` + `web-vitals` 性能预算集成
 
 ---
 
 ## 4. 零桌面端回归保障（**三重锁**）
 
 ### 锁 1：CSS 媒体查询「只增不改」
-- 全项目当前仅 2 处 `@media`（[home/index.vue#L271](quantia/fontWeb/src/views/home/index.vue#L271)、[paper-trading/index.vue#L1975](quantia/fontWeb/src/views/paper-trading/index.vue#L1975)），将统一替换为 `@include mobile-only { ... }` mixin。
+- 全项目当前有 **6 处** `@media`（跨 5 个文件），将统一替换为 `@include mobile-only { ... }` mixin：
+  - `home/index.vue`：1100px / 600px（网格 4→2→1 列）
+  - `verify/optimize.vue`：1200px（侧面板折叠）
+  - `verify/factorLab.vue`：960px（grid → 单列）
+  - `verify/fusion.vue`：960px（dim-grid 单列 + kpi 两列）
+  - `paper-trading/index.vue`：900px（布局简化）
 - 所有新增样式必须包裹在 `@include xs-only / sm-only / md-down / lg-up` 中。
 - ESLint stylelint 规则禁止直接写 `@media (max-width: xxx)`，强制走 mixin。
 
@@ -2140,12 +2410,31 @@ export const currentBp = computed<'xs' | 'sm' | 'md' | 'lg'>(() =>
 | R67 | 未显示 ICP 备案 / 风险提示违反金融合规 | 🔴 高 | 法律风险 | AppFooter 置底固定 + 抽屉内永久可见 |
 | R68 | PIPL 未同意之前上报设备指纹 | 🟡 中 | 合规风险 | PrivacyConsent 控 RUM/指纹 开关 |
 | R69 | 广告过滤 / 静默代理隐藏 .price / 压住底部 | 🟠 低 | 股价丢 / 按钮被压 | hash CSS 名 + 底部哨兵 + --proxy-pad 动态 |
+| **R70** | **验证中心 fusion.vue 5 维选择器在 360px 下完全溢出** | 🔴 高 | 策略融合不可用 | 手机改垂直 steps 分步（§1.18.1）|
+| **R71** | **验证中心 factorLab 热力图在小屏不可读** | 🟡 中 | 因子分析体验差 | xs 切到数据表格视图 |
+| **R72** | **AI 聊天抽屉宽度超出手机屏** | 🟡 中 | 抽屉无法关闭 | min(480px, 100vw) |
+| **R73** | **首页已有 1100px/600px 断点与新 mixin 断点冲突** | 🟡 中 | 首页回归 | 迁移到 992px/768px 后视觉回归验证 |
+| **R74** | **全量 icons 注册 +50KB gzip 拖慢首屏** | 🟠 低 | 移动首屏多 0.3s | PR-02 改按需 import |
+| **R75** | **路由无 scrollBehavior + 无 onError** | 🟡 中 | 手机切页不回顶 + ChunkLoadError 白屏 | PR-04 补上 |
 
 ---
 
-## 7. 文件清单（**完整改动面**）
+## 7. 文件清单（**完整改动面，v2.0 更新**）
 
-### 新增（10 个，**v1.1 修订**）
+### 已存在的资产（可直接利用）
+
+```
+quantia/fontWeb/src/composables/useCustomIndicatorOverlay.ts  # K 线叠加层（需与 useChartResponsive 协同）
+quantia/fontWeb/src/utils/index.ts                            # 通用工具（可扩展格式化函数）
+quantia/fontWeb/src/utils/columnTooltips.ts                   # 表格列 tooltip（移动端需改 click 展开）
+quantia/fontWeb/src/utils/backtestDashboardLinks.ts           # 仪表盘链接
+quantia/fontWeb/src/views/verify/optimize.vue                 # 已有 1200px 断点 ✅
+quantia/fontWeb/src/views/verify/factorLab.vue                # 已有 960px 断点 ✅
+quantia/fontWeb/src/views/verify/fusion.vue                   # 已有 960px 断点 ✅
+quantia/fontWeb/src/views/home/index.vue                      # 已有 1100px/600px 断点 ✅
+```
+
+### 新增（40+ 个，v2.0 扩展）
 
 ```
 quantia/fontWeb/src/composables/useResponsive.ts          # 断点 hook（含 DPR 信号）
@@ -2206,6 +2495,7 @@ quantia/fontWeb/tests/visual/tablet.spec.ts
 | PR-05 | `views/stock/StockData.vue` |
 | PR-06 | `views/algo/backtest-list.vue`、`views/backtest/dashboard.vue` |
 | PR-07 | `views/paper-trading/index.vue` |
+| PR-08b | `views/verify/compare.vue`、`views/verify/factorLab.vue`、`views/verify/fusion.vue`、`views/verify/optimize.vue`、`views/algo/agent-manager.vue` |
 | PR-08 | `views/settings/*.vue`（7 个） |
 | PR-09 | `views/indicator/index.vue` |
 | PR-10 | `views/algo/backtest-detail.vue`、`views/algo/edit.vue`、`views/algo/backtest-compare.vue` |
@@ -2217,20 +2507,25 @@ quantia/fontWeb/tests/visual/tablet.spec.ts
 ## 8. 实施排期（仅作参考，无时间承诺）
 
 ```
-PR-01  →  PR-02  →  PR-03  →  PR-04  →  Baseline 视觉回归
-                                  ↓
-            PR-05 (StockData)  +  PR-06  +  PR-07  +  PR-08  ← 可并行
-                                  ↓
-                            PR-09  →  PR-10
-                                  ↓
-                            PR-11  →  PR-12 (收尾)
+PR-01 → PR-04 → PR-03 → Baseline 视觉回归
+                  ↓
+      PR-09  +  PR-05  +  PR-07  ← 高优先并行
+                  ↓
+      PR-02  +  PR-06  +  PR-08b  +  PR-10  ← 中优先并行
+                  ↓
+      PR-11  +  PR-11b  +  PR-08  ← 收尾并行
+                  ↓
+              PR-12 (收尾)
 ```
+
+> **v2.0 修订**：PR-02（按需引入）从阻塞路径移出——它不阻塞任何功能 PR，可在后期并行做。PR-04 提前到 PR-03 之前（安全区/字号是最小可见效果）。Playwright baseline 从 PR-12 提前到 PR-01（零回归保障前提）。
 
 每个 PR 必须满足：
 - ✅ Vitest 全绿（现有 + 新增）
 - ✅ Playwright 桌面端视觉回归 diff ≤ 1%
 - ✅ Playwright 移动端 / 平板端截图入库（不验收 diff，仅作 baseline）
 - ✅ 手工三机型走查（小米 / iPhone / iPad）
+- ✅ `npm run build`（`vue-tsc --noEmit && vite build`）必须通过
 
 ---
 
@@ -2291,6 +2586,19 @@ PR-01  →  PR-02  →  PR-03  →  PR-04  →  Baseline 视觉回归
 - [ ] AppFooter 「投资有风险」与 ICP 备案在手机 / 桌面都可见
 - [ ] 首次访问未同意隐私前，不发送 RUM / 设备指纹
 
+### 验证中心（**v2.0 新增**）
+- [ ] 策略对比页在 360px 手机上不溢出，策略指标通过 tabs 切换可见
+- [ ] 因子实验室参数面板在手机上可折叠展开，热力图在 xs 切到表格视图
+- [ ] 策略融合 5 维选择器在手机上以垂直步骤方式展示，不超出屏幕
+- [ ] co_occurrence 矩阵支持横向滚动查看
+- [ ] 买卖点优化已有侧面板折叠在 1200px 下生效，手机上参数表单单列显示
+
+### AI 功能（**v2.0 新增**）
+- [ ] AI 聊天抽屉在手机上全屏展开（宽度 100vw），消息列表可正常滚动
+- [ ] AI 输入框在键盘弹起时不被遮挡
+- [ ] 长代码块不导致抽屉横向溢出
+- [ ] Agent/Model 选择器在手机上以底部 sheet 方式展示
+
 ### 性能
 - [ ] Lighthouse Mobile Performance ≥ 70（首页）
 - [ ] 首屏 JS（gzip）≤ 250 KB
@@ -2330,24 +2638,166 @@ PR-01  →  PR-02  →  PR-03  →  PR-04  →  Baseline 视觉回归
 |---|---|---|
 | **A** | 仅 PR-01 + PR-02（基础设施）| 2 |
 | **B** | A + PR-03 + PR-04（Layout 完成）| 4 |
-| **C** | 完整执行至阶段 2（表格卡片化）| 8 |
-| **D** | 全 12 PR 一次性完成（不推荐，回归面太大）| 12 |
+| **C** | 完整执行至阶段 2.5（表格卡片化 + 验证中心）| 10 |
+| **D** | 全 14 PR 一次性完成（不推荐，回归面太大）| 14 |
 
 **强烈推荐方案 B 起步**：可以让用户在手机上"看到效果"，但还没触及业务表格，回滚成本最低。
+
+**v2.0 调整建议**：鉴于 9 天过去仍无实施进展，如果资源有限，建议**最小可行路径（MVP）**：
+
+| MVP 步骤 | 内容 | 用户感知 |
+|---|---|---|
+| Step 1 | PR-01 中仅 `useResponsive.ts` + `_breakpoints.scss` + `.browserslistrc` + `playwright.config.ts` | 零用户感知，但解锁后续所有 PR |
+| Step 2 | PR-04 中仅 `100vh→100dvh` + `viewport-fit=cover` + 字号 ≥16px | iOS 用户不再被键盘顶破、不再自动缩放 |
+| Step 3 | PR-03 Layout 响应式 | 手机可打开导航 |
+
+以上 3 步可在 **1 个合并 PR** 内完成，作为最小可交付成果。
+
+---
+
+## 12. 依赖安装计划（**v2.0 新增**）
+
+### PR-01 必装
+
+```bash
+cd quantia/fontWeb
+npm install @vueuse/core@^10.9.0
+# devDeps
+npm install -D autoprefixer postcss
+```
+
+### PR-02 必装
+
+```bash
+npm install -D unplugin-auto-import@^0.17.5 unplugin-vue-components@^0.27.0
+```
+
+### PR-05 可选（金融精度）
+
+```bash
+npm install decimal.js-light@^2.5.1
+```
+
+### PR-12 必装（性能监控 + 兼容）
+
+```bash
+npm install -D @vitejs/plugin-legacy@^5.3.0 size-limit@^11.0.0 @size-limit/preset-app@^11.0.0
+npm install web-vitals@^4.0.0
+```
+
+### 按需安装（功能相关）
+
+```bash
+# 虚拟滚动（如果 StockData 列表 > 500 行需要）
+npm install @tanstack/vue-virtual@^3.2.0
+# HEIC 转码（如果有头像/证件上传）
+npm install heic2any@^0.0.4
+# 日期时区（如果需要跨时区支持）
+npm install date-fns-tz@^3.1.0
+```
+
+### 版本约束
+
+| 依赖 | 最低版本 | 原因 |
+|---|---|---|
+| `@vueuse/core` | 10.9+ | 需要 `useBreakpoints` + `useNetwork` + `useDocumentVisibility` |
+| `unplugin-auto-import` | 0.17+ | 支持 Element Plus 2.6 resolver |
+| `autoprefixer` | 10.4+ | 支持 `:has()` / `dvh` / `@container` |
+| `@vitejs/plugin-legacy` | 5.3+ | 兼容 Vite 5.1 |
+| `web-vitals` | 4.0+ | 支持 INP 指标（替代 FID） |
+
+---
+
+## 13. 实施优先级矩阵（**v2.0 新增**）
+
+基于「用户价值 × 技术风险 × 依赖关系」重新排序实施优先级：
+
+### Tier 1：基础解锁（必须先做，其他 PR 全部依赖）
+
+| PR | 用户价值 | 技术风险 | 说明 |
+|---|---|---|---|
+| PR-01 | ⭐ | 🟢 低 | 零用户感知但解锁一切 |
+
+### Tier 2：立即可见效果（用户最先感知）
+
+| PR | 用户价值 | 技术风险 | 说明 |
+|---|---|---|---|
+| PR-04 | ⭐⭐⭐ | 🟢 低 | dvh + safe-area + 字号 = iOS 不再破布局 |
+| PR-03 | ⭐⭐⭐⭐ | 🟡 中 | 手机能打开导航 = 从不可用→可用的质变 |
+
+### Tier 3：核心体验提升（高频页面）
+
+| PR | 用户价值 | 技术风险 | 说明 |
+|---|---|---|---|
+| PR-09 | ⭐⭐⭐⭐ | 🟡 中 | K 线是看盘核心 |
+| PR-05 | ⭐⭐⭐ | 🟡 中 | 选股列表高频 |
+| PR-07 | ⭐⭐⭐ | 🟡 中 | 模拟盘操作页 |
+
+### Tier 4：完善覆盖
+
+| PR | 用户价值 | 技术风险 | 说明 |
+|---|---|---|---|
+| PR-06 | ⭐⭐ | 🟢 低 | 回测列表 |
+| PR-08b | ⭐⭐ | 🟢 低 | 验证中心（高级用户使用） |
+| PR-10 | ⭐⭐ | 🟡 中 | 回测详情 |
+| PR-11 | ⭐⭐ | 🟢 低 | 弹窗统一 |
+| PR-11b | ⭐ | 🟢 低 | AI 抽屉 |
+
+### Tier 5：优化与兜底
+
+| PR | 用户价值 | 技术风险 | 说明 |
+|---|---|---|---|
+| PR-02 | ⭐⭐ | 🟡 中 | bundle 减重（体感加速但非功能） |
+| PR-08 | ⭐ | 🟢 低 | 设置页面（低频） |
+| PR-12 | ⭐ | 🟢 低 | 性能预算 + 测试 + 文档 |
+
+### 推荐实施顺序（v2.0 修订）
+
+```
+PR-01 → PR-04 → PR-03 → PR-09 → PR-05 → PR-07
+  → PR-02 → PR-06 → PR-08b → PR-10 → PR-11 → PR-11b → PR-08 → PR-12
+```
+
+---
+
+## 14. 变更日志（**v2.0 新增**）
+
+| 版本 | 日期 | 变更要点 |
+|---|---|---|
+| v1.0 | 2026-05-11 | 初始深度审计 + 5 阶段 12 PR 方案 |
+| v1.1 | 2026-05-11 | DPR 截断、国产浏览器、字号系统、软键盘 |
+| v1.2 | 2026-05-11 | 安全区、暗黑模式、IME、折叠屏、弱网 |
+| v1.3 | 2026-05-11 | ChunkLoadError、WebSocket、a11y、骨架屏 |
+| v1.4 | 2026-05-11 | 内存泄漏、金融精度、色盲、打印 |
+| v1.5 | 2026-05-11 | 时区、调度器、并发竞态、上传下载、性能预算、合规 |
+| v1.5.1–1.5.2 | 2026-05-11 | 代码勘误 + 错别字修正 |
+| **v2.0** | **2026-05-20** | 实施状态追踪；验证中心/AI Agent 管理/AI 抽屉覆盖；媒体查询审计修正（6 处@media 跨 5 文件）；AI 抽屉 size=55% 问题定位；factorLab/fusion 已有 960px 断点纳入；依赖安装计划；优先级重排；MVP 路径；移动端可用度 22% |
 
 ---
 
 > **附：实施期间常用命令速查**
 >
 > ```powershell
+> # 安装基础依赖（PR-01 前置）
+> cd quantia\fontWeb
+> npm install @vueuse/core
+> npx playwright install chromium webkit
+>
 > # 启动 dev + Playwright 录制
-> cd quantia\fontWeb; npm run dev
+> npm run dev
 > npx playwright codegen http://localhost:3000
 >
 > # 视觉回归
 > npx playwright test --update-snapshots   # 更新 baseline（谨慎）
 > npx playwright test tests\visual         # 跑回归
 >
+> # Bundle 分析
+> npx vite-bundle-visualizer
+>
 > # 三视口快速预览
 > # Chrome DevTools → Toggle device toolbar → iPhone SE / iPad / Desktop
+>
+> # 移动端真机调试
+> # Android: chrome://inspect → USB debugging
+> # iOS: Safari → Develop → <device>
 > ```

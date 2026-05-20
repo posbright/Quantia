@@ -2,8 +2,8 @@
   <div class="verify-optimize">
     <div class="feature-tabs">
       <router-link class="feature-tab" to="/verify/compare">策略对比</router-link>
-      <router-link class="feature-tab active" to="/verify/optimize">买卖点优化</router-link>
-      <router-link class="feature-tab" to="/verify/fusion">策略融合</router-link>
+      <router-link class="feature-tab" to="/verify/optimize">买卖点优化</router-link>
+      <router-link class="feature-tab" to="/verify/fusion">多维融合</router-link>
       <router-link class="feature-tab" to="/verify/factor-lab">因子实验室</router-link>
     </div>
 
@@ -1599,7 +1599,7 @@ async function computeOOS() {
 .verify-optimize { padding: 16px; background: #f4f7fb; min-height: calc(100vh - 80px); color: #303133; }
 .feature-tabs { display: flex; align-items: center; gap: 0; height: 42px; padding: 0 12px; margin-bottom: 12px; background: #fff; border: 1px solid #ebeef5; border-radius: 4px; }
 .feature-tab { height: 42px; display: inline-flex; align-items: center; padding: 0 18px; font-size: 13px; color: #606266; border-bottom: 2px solid transparent; cursor: pointer; text-decoration: none; }
-.feature-tab.active { color: #1890ff; border-bottom-color: #1890ff; font-weight: 600; }
+.feature-tab.router-link-exact-active { color: #1890ff; border-bottom-color: #1890ff; font-weight: 600; }
 .toolbar { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 16px; padding: 14px 16px; margin-top: 12px; background: #fff; border: 1px solid #ebeef5; border-radius: 4px; }
 .toolbar-group { display: flex; flex-direction: column; gap: 5px; }
 .toolbar-label { font-size: 12px; color: #909399; font-weight: 500; }
