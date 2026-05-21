@@ -655,7 +655,8 @@ class GetPaperTradingDetailHandler(webBase.BaseHandler, ABC):
                 'pt.current_cash, pt.current_value, pt.status, '
                 'pt.started_at, pt.last_run_date, pt.run_frequency, '
                 'pt.start_at, pt.backtest_id, bp.total_return, '
-                'bp.strategy_name as backtest_name, bp.benchmark '
+                'bp.strategy_name as backtest_name, bp.benchmark, '
+                'pt.strategy_id '
                 'FROM cn_stock_paper_trading pt '
                 'LEFT JOIN cn_stock_strategy_code sc ON pt.strategy_id = sc.id '
                 'LEFT JOIN cn_stock_backtest_portfolio bp ON pt.backtest_id = bp.id '
@@ -694,6 +695,7 @@ class GetPaperTradingDetailHandler(webBase.BaseHandler, ABC):
                 'benchmark_start_mode_label': '首次成交' if benchmark_start_mode == 'first_trade' else '模拟开始',
                 'benchmark_start_date': '',
                 'first_trade_date': '',
+                'strategy_id': _json_int(r[15]),
             }
 
             # 当前持仓（支持按日期查询历史持仓）

@@ -466,11 +466,73 @@
               <!-- ──── 代码 ──── -->
               <el-tab-pane name="code">
                 <template #label><span class="code-tab-icon">&lt;/&gt;</span><span>代码</span></template>
-                <div class="jq-section" style="text-align: center; padding: 60px 20px;">
-                  <el-icon :size="48" color="#c0c4cc"><EditPen /></el-icon>
-                  <p style="color: #909399; margin-top: 12px;">
-                    请在 <router-link to="/algo/list" style="color: #409eff;">策略列表</router-link> 中查看和编辑策略代码
-                  </p>
+                <div class="jq-section code-section">
+                  <div class="code-toolbar">
+                    <div class="code-toolbar-left">
+                      <span class="code-strategy-name">{{ detailData?.info?.strategy_name || '策略代码' }}</span>
+                      <el-tag v-if="codeStrategyId" size="small" type="info">ID: {{ codeStrategyId }}</el-tag>
+                      <span v-if="codeDirty" class="code-dirty-hint">● 未保存</span>
+                    </div>
+                    <div class="code-toolbar-right">
+                      <el-button size="small" @click="doCodeSave" :loading="codeSaving" :disabled="!codeDirty">
+                        保存
+                      </el-button>
+                      <el-button size="small" @click="goEditPage" :disabled="!codeStrategyId">
+                        在编辑器中打开
+                      </el-button>
+                      <el-divider direction="vertical" />
+                      <el-date-picker v-model="codeBtStart" type="date" size="small"
+                                      placeholder="开始日期" value-format="YYYY-MM-DD" style="width: 125px;" />
+                      <span style="margin: 0 4px; color: #909399;">至</span>
+                      <el-date-picker v-model="codeBtEnd" type="date" size="small"
+                                      placeholder="结束日期" value-format="YYYY-MM-DD" style="width: 125px;" />
+                      <el-button size="small" type="primary" @click="doCodeBacktest" :loading="codeRunning"
+                                 :disabled="!strategyCodeText">
+                        运行回测
+                      </el-button>
+                    </div>
+                  </div>
+                  <div v-if="codeLoading" class="code-loading" v-loading="true" style="height: 400px;"></div>
+                  <template v-else-if="strategyCodeText !== null">
+                    <textarea v-model="strategyCodeText" class="paper-code-editor" spellcheck="false" wrap="off"
+                              @input="codeDirty = true" @keydown.ctrl.s.prevent="doCodeSave" />
+                  </template>
+                  <div v-else class="code-empty">
+                    <el-icon :size="48" color="#c0c4cc"><EditPen /></el-icon>
+                    <p style="color: #909399; margin-top: 12px;">该模拟盘未关联策略</p>
+                  </div>
+                  <!-- 回测结果 -->
+                  <div v-if="codeBtResult" class="code-bt-result">
+                    <div class="code-bt-header">
+                      <span class="code-bt-title">回测结果</span>
+                      <el-button size="small" text @click="codeBtResult = null">关闭</el-button>
+                    </div>
+                    <div class="code-bt-metrics">
+                      <div class="code-bt-metric">
+                        <span class="label">总收益</span>
+                        <span class="value" :class="retCls(codeBtResult.total_return)">{{ fmtPct(codeBtResult.total_return) }}</span>
+                      </div>
+                      <div class="code-bt-metric">
+                        <span class="label">年化收益</span>
+                        <span class="value" :class="retCls(codeBtResult.annual_return)">{{ fmtPctDash(codeBtResult.annual_return) }}</span>
+                      </div>
+                      <div class="code-bt-metric">
+                        <span class="label">最大回撤</span>
+                        <span class="value val-green">{{ codeBtResult.max_drawdown != null ? '-' + codeBtResult.max_drawdown.toFixed(2) + '%' : '--' }}</span>
+                      </div>
+                      <div class="code-bt-metric">
+                        <span class="label">夏普比率</span>
+                        <span class="value">{{ codeBtResult.sharpe_ratio != null ? codeBtResult.sharpe_ratio.toFixed(2) : '--' }}</span>
+                      </div>
+                      <div class="code-bt-metric">
+                        <span class="label">交易次数</span>
+                        <span class="value">{{ codeBtResult.trade_count ?? '--' }}</span>
+                      </div>
+                    </div>
+                    <div v-if="codeBtLogs.length" class="code-bt-logs">
+                      <div class="code-bt-log" v-for="(l, i) in codeBtLogs.slice(-30)" :key="i">{{ l }}</div>
+                    </div>
+                  </div>
                 </div>
               </el-tab-pane>
 
@@ -775,6 +837,7 @@ import {
   getPaperTradingList, getPaperTradingDetail, createPaperTrading,
   paperTradingAction, runPaperTrading, getStrategyCodeList, getPaperCompare,
   deletePaperTrading, getPortfolioBacktestList, getKlineData, updatePaperTrading,
+  getStrategyCodeDetail, saveStrategyCode, startPortfolioBacktest,
 } from '@/api/stock'
 import request from '@/api/request'
 import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverlay'
@@ -843,6 +906,19 @@ const paperHasStarted = computed(() => {
   const info = detailData.value?.info || {}
   return Boolean(info.last_run_date || detailData.value?.nav?.length || detailData.value?.trades?.length)
 })
+
+// ── 代码 tab 状态 ──
+const strategyCodeText = ref<string | null>(null)
+const codeStrategyId = ref<number | null>(null)
+const codeDirty = ref(false)
+const codeLoading = ref(false)
+const codeSaving = ref(false)
+const codeRunning = ref(false)
+const codeBtStart = ref('')
+const codeBtEnd = ref('')
+const codeBtResult = ref<any>(null)
+const codeBtLogs = ref<string[]>([])
+
 const navChartRef = ref<HTMLElement | null>(null)
 const compareChartRef = ref<HTMLElement | null>(null)
 const stockDailyEl = ref<HTMLElement | null>(null)
@@ -1559,6 +1635,154 @@ function openCreateDialog() {
   showCreateDialog.value = true
 }
 
+// ── 代码 tab 加载/保存/回测 ──
+async function loadStrategyCode() {
+  const info = detailData.value?.info
+  const sid = info?.strategy_id
+  if (!sid) {
+    strategyCodeText.value = null
+    codeStrategyId.value = null
+    return
+  }
+  codeStrategyId.value = sid
+  codeLoading.value = true
+  codeDirty.value = false
+  codeBtResult.value = null
+  codeBtLogs.value = []
+  try {
+    const res = await getStrategyCodeDetail(sid) as any
+    const body = res?.code !== undefined ? res : res.data
+    if (body?.code === 0) {
+      strategyCodeText.value = body.data?.code || ''
+      // 设置默认回测日期
+      if (!codeBtStart.value) codeBtStart.value = '2024-01-01'
+      if (!codeBtEnd.value) {
+        const now = new Date()
+        codeBtEnd.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      }
+    } else {
+      strategyCodeText.value = null
+    }
+  } catch (e) {
+    console.error('加载策略代码失败', e)
+    strategyCodeText.value = null
+  } finally {
+    codeLoading.value = false
+  }
+}
+
+async function doCodeSave() {
+  if (!codeStrategyId.value || !codeDirty.value) return
+  codeSaving.value = true
+  try {
+    const res = await saveStrategyCode({
+      id: codeStrategyId.value,
+      name: detailData.value?.info?.strategy_name || '未命名',
+      code: strategyCodeText.value || '',
+    }) as any
+    const body = res?.code !== undefined ? res : res.data
+    if (body?.code === 0) {
+      codeDirty.value = false
+      ElMessage.success('策略代码已保存')
+    } else {
+      ElMessage.error(body?.message || '保存失败')
+    }
+  } catch (e: any) {
+    ElMessage.error('保存失败: ' + (e.message || e))
+  } finally {
+    codeSaving.value = false
+  }
+}
+
+async function doCodeBacktest() {
+  if (!strategyCodeText.value || !codeStrategyId.value) return
+  if (codeDirty.value) await doCodeSave()
+  codeRunning.value = true
+  codeBtResult.value = null
+  codeBtLogs.value = []
+  try {
+    const res = await startPortfolioBacktest({
+      code: strategyCodeText.value,
+      strategy_id: codeStrategyId.value,
+      start_date: codeBtStart.value || '2024-01-01',
+      end_date: codeBtEnd.value || new Date().toISOString().slice(0, 10),
+      initial_cash: detailData.value?.info?.initial_cash || 1000000,
+    }) as any
+    const body = res?.code !== undefined ? res : res.data
+    if (body?.code === 0 && body.data?.task_id) {
+      const taskId = body.data.task_id
+      // SSE log stream
+      const evtUrl = `/quantia/api/backtest/portfolio/log_stream?task_id=${taskId}`
+      const evtSource = new EventSource(evtUrl)
+      evtSource.onmessage = (event) => {
+        if (event.data) codeBtLogs.value.push(event.data)
+      }
+      evtSource.addEventListener('done', () => {
+        evtSource.close()
+        fetchCodeBtResult(taskId)
+      })
+      evtSource.addEventListener('error_msg', (e: any) => {
+        codeBtLogs.value.push('[错误] ' + (e.data || '回测异常'))
+        evtSource.close()
+        codeRunning.value = false
+      })
+      evtSource.onerror = () => {
+        evtSource.close()
+        // fallback: poll
+        pollCodeBtResult(taskId)
+      }
+    } else {
+      ElMessage.error(body?.message || '启动回测失败')
+      codeRunning.value = false
+    }
+  } catch (e: any) {
+    ElMessage.error('启动回测失败: ' + (e.message || e))
+    codeRunning.value = false
+  }
+}
+
+async function fetchCodeBtResult(taskId: string) {
+  try {
+    const res = await request({ url: '/api/backtest/portfolio/task_result', method: 'get', params: { task_id: taskId } }) as any
+    const body = res?.code !== undefined ? res : res.data
+    if (body?.code === 0 && body.data) {
+      codeBtResult.value = body.data
+    } else {
+      codeBtLogs.value.push('[完成] 回测结束，但未获取到结果')
+    }
+  } catch (e) {
+    codeBtLogs.value.push('[错误] 获取回测结果失败')
+  } finally {
+    codeRunning.value = false
+  }
+}
+
+async function pollCodeBtResult(taskId: string, attempt = 0) {
+  if (attempt > 120) { codeRunning.value = false; return }
+  await new Promise(r => setTimeout(r, 2000))
+  try {
+    const res = await request({ url: '/api/backtest/portfolio/task_result', method: 'get', params: { task_id: taskId } }) as any
+    const body = res?.code !== undefined ? res : res.data
+    if (body?.code === 0 && body.data?.status === 'completed') {
+      codeBtResult.value = body.data
+      codeRunning.value = false
+    } else if (body?.data?.status === 'failed') {
+      codeBtLogs.value.push('[失败] ' + (body.data.error || '回测执行失败'))
+      codeRunning.value = false
+    } else {
+      pollCodeBtResult(taskId, attempt + 1)
+    }
+  } catch {
+    pollCodeBtResult(taskId, attempt + 1)
+  }
+}
+
+function goEditPage() {
+  if (codeStrategyId.value) {
+    router.push(`/algo/edit/${codeStrategyId.value}`)
+  }
+}
+
 function resetSettingsForm() {
   const info = detailData.value?.info
   if (!info) return
@@ -1581,6 +1805,12 @@ async function loadDetailData(id: number, resetView = true) {
     sideTab.value = 'overview'
     chartTab.value = 'returns'
     detailData.value = null
+    // 重置代码 tab 状态
+    strategyCodeText.value = null
+    codeStrategyId.value = null
+    codeDirty.value = false
+    codeBtResult.value = null
+    codeBtLogs.value = []
   }
   try {
     const res = await getPaperTradingDetail(id, undefined, benchmarkStartMode.value)
@@ -1759,6 +1989,9 @@ watch(sideTab, async (tab) => {
   if (tab === 'overview' && detailData.value?.nav?.length) {
     await nextTick()
     setTimeout(initNavChart, 80)
+  }
+  if (tab === 'code' && strategyCodeText.value === null && !codeLoading.value) {
+    loadStrategyCode()
   }
 })
 
@@ -1996,4 +2229,46 @@ onUnmounted(() => {
   .stock-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .summary-item.wide { grid-column: span 2; }
 }
+
+/* ── 代码 tab ── */
+.code-section { padding: 0 !important; }
+.code-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-bottom: 1px solid #ebeef5; background: #fafafa;
+  flex-wrap: wrap; gap: 6px;
+}
+.code-toolbar-left { display: flex; align-items: center; gap: 8px; }
+.code-toolbar-right { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.code-strategy-name { font-size: 13px; font-weight: 600; color: #303133; }
+.code-dirty-hint { color: #e6a23c; font-size: 12px; margin-left: 4px; }
+.code-loading { display: flex; align-items: center; justify-content: center; }
+.code-empty { text-align: center; padding: 60px 20px; }
+.paper-code-editor {
+  display: block; width: 100%; min-height: 420px; max-height: 65vh;
+  padding: 12px 14px; margin: 0; border: none; outline: none; resize: vertical;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 13px; line-height: 1.6; tab-size: 4;
+  background: #1e1e1e; color: #d4d4d4;
+  overflow: auto; white-space: pre;
+}
+.paper-code-editor:focus { box-shadow: inset 0 0 0 1px #409eff; }
+.code-bt-result {
+  border-top: 1px solid #ebeef5; padding: 12px 14px;
+}
+.code-bt-header {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+}
+.code-bt-title { font-size: 13px; font-weight: 600; color: #303133; }
+.code-bt-metrics {
+  display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.code-bt-metric { display: flex; flex-direction: column; gap: 2px; }
+.code-bt-metric .label { font-size: 11px; color: #909399; }
+.code-bt-metric .value { font-size: 14px; font-weight: 600; color: #303133; }
+.code-bt-logs {
+  max-height: 180px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4;
+  font-family: 'Consolas', monospace; font-size: 11px; line-height: 1.5;
+  padding: 8px 10px; border-radius: 4px; margin-top: 8px;
+}
+.code-bt-log { white-space: pre-wrap; word-break: break-all; }
 </style>
