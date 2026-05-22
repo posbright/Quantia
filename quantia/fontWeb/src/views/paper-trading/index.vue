@@ -1655,7 +1655,7 @@ async function loadStrategyCode() {
     if (body?.code === 0) {
       strategyCodeText.value = body.data?.code || ''
       // 设置默认回测日期
-      if (!codeBtStart.value) codeBtStart.value = '2024-01-01'
+      if (!codeBtStart.value) codeBtStart.value = '2026-03-01'
       if (!codeBtEnd.value) {
         const now = new Date()
         codeBtEnd.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`

@@ -11,6 +11,9 @@ cron/
 │   ├── run_fetch                   ← Phase 1: API 数据获取
 │   ├── run_kline_cache             ← Phase 2: K线缓存增量更新
 │   ├── run_analysis                ← Phase 3: 本地数据分析
+│   ├── run_paper_trading           ← 模拟交易执行
+│   ├── refresh_composite_universe  ← Phase 9: 综合指标股票池刷新
+│   ├── refresh_ai_kb               ← M9: AI 知识库索引
 │   └── run_workdayly               ← 编排器：串行执行 Phase 1→2→3
 └── cron.monthly/
     └── run_monthly                 ← 月度缓存清理
@@ -28,8 +31,11 @@ cron/
 | `run_fetch` | 工作日 | `fetch_daily_job.py` | API 数据采集（行情+选股+资金流向） |
 | `run_kline_cache` | 工作日 | `kline_cache_daily_job.py` | K线缓存增量更新（~5000只股票） |
 | `run_analysis` | 工作日 | `analysis_daily_job.py` | 本地分析（GPT+指标+策略+回测） |
-| `run_workdayly` | 工作日 | — | 编排器：串行调用上述三个脚本 |
-| `run_monthly` | 每月1日 | — | 智能清理退市/除权缓存 |
+| `run_paper_trading` | 工作日 | `paper_trading_daily_job.py` | 模拟交易每日执行 |
+| `refresh_composite_universe` | 工作日 | `composite.dynamic_universe` | 综合指标股票池刷新（开盘前） |
+| `refresh_ai_kb` | 工作日 | `ai.retrieval.indexer` | AI 知识库 FULLTEXT 索引刷新 |
+| `run_workdayly` | 工作日 | — | 编排器：串行调用 fetch→kline→analysis |
+| `run_monthly` | 每月1日 | — | 智能清理退市/除权缓存 + 财务数据更新 |
 
 ---
 
@@ -74,20 +80,28 @@ source /etc/cron/_common.sh
 
 ## 每日流水线
 
-三阶段独立运行，互不阻塞：
+各阶段独立运行，互不阻塞：
 
 ```
-  18:00          20:00              22:00          04:00(月初)
-    │              │                  │              │
-    ▼              ▼                  ▼              ▼
-┌─────────┐  ┌──────────────┐  ┌──────────┐  ┌──────────┐
-│run_fetch │→│run_kline_cache│→│run_analysis│  │run_monthly│
-│(API调用) │  │(缓存更新)     │  │(本地计算)  │  │(缓存清理) │
-│~5-15min  │  │~20-60min     │  │~10min     │  │           │
-└─────────┘  └──────────────┘  └──────────┘  └──────────┘
-     ↓
- cn_job_status
-  (完成标记)─────→ kline_cache 前置检查
+  09:30~14:55       17:55(+23:55重试)      23:00           04:30        05:00
+    │                    │                   │               │            │
+    ▼                    ▼                   ▼               ▼            ▼
+┌──────────┐      ┌─────────┐      ┌──────────────┐  ┌──────────┐  ┌────────────┐
+│run_hourly│      │run_fetch │      │run_kline_cache│  │run_analysis│ │paper_trading│
+│(盘中快照) │      │(API调用) │      │(缓存更新)     │  │(本地计算)  │  │(模拟交易)   │
+│6次/交易日 │      │~5-15min  │      │~20-60min     │  │~10min     │  │            │
+└──────────┘      └─────────┘      └──────────────┘  └──────────┘  └────────────┘
+                       ↓
+                  cn_job_status
+                   (完成标记)─────→ kline_cache 前置检查
+
+  06:00          08:30                              04:00(月初)
+    │              │                                   │
+    ▼              ▼                                   ▼
+┌───────────┐  ┌───────────────────────┐         ┌──────────┐
+│refresh_ai_kb│ │refresh_composite_universe│        │run_monthly│
+│(知识库索引) │  │(综合指标股票池)          │         │(缓存清理) │
+└───────────┘  └───────────────────────┘         └──────────┘
 ```
 
 **阶段间依赖**：
@@ -106,25 +120,36 @@ source /etc/cron/_common.sh
 ```bash
 crontab -e
 
-# 假设项目在 /root/Quantia
-# ── 盘中行情快照 ──
-30 12 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
-18 15 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
+# === quantia crontab (managed) ===
+# 盘中行情快照（hourly：交易时段每小时 + 收盘前一刻）
+30  9 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
+30 10 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
+25 11 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
+30 13 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
+30 14 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
+55 14 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
 
-# ── 数据获取 + 凌晨重试 ──
-0  18 * * 1-5  flock -xn /tmp/quantia_fetch.lock    /root/Quantia/cron/cron.workdayly/run_fetch
-0  1  * * 2-6  flock -xn /tmp/quantia_fetch.lock    /root/Quantia/cron/cron.workdayly/run_fetch
+# 数据获取 + 夜间重试
+55 17 * * 1-5  flock -xn /tmp/quantia_fetch.lock    /root/Quantia/cron/cron.workdayly/run_fetch
+55 23 * * 1-5  flock -xn /tmp/quantia_fetch.lock    /root/Quantia/cron/cron.workdayly/run_fetch
 
-# ── K线缓存更新 + 凌晨重试 ──
-0  20 * * 1-5  flock -xn /tmp/quantia_kline.lock    /root/Quantia/cron/cron.workdayly/run_kline_cache
-30 1  * * 2-6  flock -xn /tmp/quantia_kline.lock    /root/Quantia/cron/cron.workdayly/run_kline_cache
+# K线缓存更新（当日夜间）
+0  23 * * 2-6  flock -xn /tmp/quantia_kline.lock    /root/Quantia/cron/cron.workdayly/run_kline_cache
 
-# ── 数据分析 + 凌晨重试 ──
-0  22 * * 1-5  flock -xn /tmp/quantia_analysis.lock /root/Quantia/cron/cron.workdayly/run_analysis
-30 2  * * 2-6  flock -xn /tmp/quantia_analysis.lock /root/Quantia/cron/cron.workdayly/run_analysis
+# 数据分析（次日凌晨）
+30  4 * * 2-6  flock -xn /tmp/quantia_analysis.lock /root/Quantia/cron/cron.workdayly/run_analysis
 
-# ── 月度缓存清理 ──
-0  4  1 * *    /root/Quantia/cron/cron.monthly/run_monthly
+# 模拟交易（分析完成后执行）
+0   5 * * 2-6  flock -xn /tmp/quantia_paper.lock   /root/Quantia/cron/cron.workdayly/run_paper_trading
+
+# 综合指标股票池刷新（开盘前）
+30  8 * * 1-5  flock -xn /tmp/quantia_composite.lock /root/Quantia/cron/cron.workdayly/refresh_composite_universe
+
+# AI 知识库索引刷新
+0   6 * * 1-5  /root/Quantia/cron/cron.workdayly/refresh_ai_kb
+
+# 月度缓存清理
+0   4 1 * *    /root/Quantia/cron/cron.monthly/run_monthly
 ```
 
 > **flock 说明**：`-x` 排他锁 + `-n` 非阻塞，同类任务只能有一个在运行，后来者立即退出。
@@ -183,24 +208,24 @@ chmod +x cron/_common.sh cron/cron.hourly/* cron/cron.workdayly/* cron/cron.mont
 日志格式示例：
 
 ```
-[2026-01-15 18:00:02] [INFO]  ────── 数据获取 (fetch_daily_job) 开始 ──────
-[2026-01-15 18:12:35] [INFO]  ────── 数据获取 (fetch_daily_job) 完成 ✓ (12m33s) ──────
-[2026-01-15 20:00:01] [INFO]  ────── K线缓存增量更新 (kline_cache_daily_job) 开始 ──────
-[2026-01-15 20:45:18] [INFO]  ────── K线缓存增量更新 (kline_cache_daily_job) 完成 ✓ (45m17s) ──────
-[2026-01-15 22:00:01] [INFO]  ────── 数据分析 (analysis_daily_job) 开始 ──────
-[2026-01-15 22:08:44] [INFO]  ────── 数据分析 (analysis_daily_job) 完成 ✓ (8m43s) ──────
+[2026-01-15 17:55:02] [INFO]  ────── 数据获取 (fetch_daily_job) 开始 ──────
+[2026-01-15 18:07:35] [INFO]  ────── 数据获取 (fetch_daily_job) 完成 ✓ (12m33s) ──────
+[2026-01-15 23:00:01] [INFO]  ────── K线缓存增量更新 (kline_cache_daily_job) 开始 ──────
+[2026-01-15 23:45:18] [INFO]  ────── K线缓存增量更新 (kline_cache_daily_job) 完成 ✓ (45m17s) ──────
+[2026-01-16 04:30:01] [INFO]  ────── 数据分析 (analysis_daily_job) 开始 ──────
+[2026-01-16 04:38:44] [INFO]  ────── 数据分析 (analysis_daily_job) 完成 ✓ (8m43s) ──────
 ```
 
 `run_workdayly` 编排模式下，额外输出阶段分隔符：
 
 ```
-[2026-01-15 18:00:01] [INFO]  ============ 每日完整任务开始 ============
-[2026-01-15 18:00:01] [INFO]  ══════ Phase 1: 数据获取 开始 ══════
-[2026-01-15 18:00:02] [INFO]  ────── 数据获取 (fetch_daily_job) 开始 ──────
+[2026-01-15 17:55:01] [INFO]  ============ 每日完整任务开始 ============
+[2026-01-15 17:55:01] [INFO]  ══════ Phase 1: 数据获取 开始 ══════
+[2026-01-15 17:55:02] [INFO]  ────── 数据获取 (fetch_daily_job) 开始 ──────
 ...
-[2026-01-15 18:12:35] [INFO]  ────── 数据获取 (fetch_daily_job) 完成 ✓ (12m33s) ──────
-[2026-01-15 18:12:35] [INFO]  ══════ Phase 1: 数据获取 完成 ✓ (12m34s) ══════
-[2026-01-15 18:12:35] [INFO]  ══════ Phase 2: K线缓存更新 开始 ══════
+[2026-01-15 18:07:35] [INFO]  ────── 数据获取 (fetch_daily_job) 完成 ✓ (12m33s) ──────
+[2026-01-15 18:07:35] [INFO]  ══════ Phase 1: 数据获取 完成 ✓ (12m34s) ══════
+[2026-01-15 18:07:35] [INFO]  ══════ Phase 2: K线缓存更新 开始 ══════
 ...
 [2026-01-15 19:58:10] [INFO]  ============ 每日完整任务结束 ✓ (全部成功, 1h58m09s) ============
 ```
