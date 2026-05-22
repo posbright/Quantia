@@ -14,7 +14,7 @@ cron/
 │   ├── run_paper_trading           ← 模拟交易执行
 │   ├── refresh_composite_universe  ← Phase 9: 综合指标股票池刷新
 │   ├── refresh_ai_kb               ← M9: AI 知识库索引
-│   └── run_workdayly               ← 编排器：串行执行 Phase 1→2→3
+│   └── run_workdayly               ← 编排器：串行执行 Phase 1→2→3→4
 └── cron.monthly/
     └── run_monthly                 ← 月度缓存清理
 ```
@@ -33,8 +33,8 @@ cron/
 | `run_analysis` | 工作日 | `analysis_daily_job.py` | 本地分析（GPT+指标+策略+回测） |
 | `run_paper_trading` | 工作日 | `paper_trading_daily_job.py` | 模拟交易每日执行 |
 | `refresh_composite_universe` | 工作日 | `composite.dynamic_universe` | 综合指标股票池刷新（开盘前） |
-| `refresh_ai_kb` | 工作日 | `ai.retrieval.indexer` | AI 知识库 FULLTEXT 索引刷新 |
-| `run_workdayly` | 工作日 | — | 编排器：串行调用 fetch→kline→analysis |
+| `refresh_ai_kb` | 工作日 | `quantia.lib.ai.retrieval.indexer` | AI 知识库 FULLTEXT 索引刷新 |
+| `run_workdayly` | 工作日 | — | 编排器：串行调用 fetch→kline→analysis→paper |
 | `run_monthly` | 每月1日 | — | 智能清理退市/除权缓存 + 财务数据更新 |
 
 ---
@@ -109,7 +109,7 @@ source /etc/cron/_common.sh
 - `run_analysis` 无硬依赖，即使缓存未更新也能用历史数据运行
 - 每个阶段失败不影响后续阶段继续执行
 
-**`run_workdayly` 编排器**：适合单机一键运行，串行调用 `run_fetch → run_kline_cache → run_analysis`，等价于分别调度。
+**`run_workdayly` 编排器**：适合单机一键运行，串行调用 `run_fetch → run_kline_cache → run_analysis → run_paper_trading`，含自动 OOM 防护。
 
 ---
 
@@ -202,7 +202,9 @@ chmod +x cron/_common.sh cron/cron.hourly/* cron/cron.workdayly/* cron/cron.mont
 | 文件 | 来源 |
 |------|------|
 | `hourly.log` | `run_hourly` |
-| `workdayly.log` | `run_fetch` / `run_kline_cache` / `run_analysis` / `run_workdayly` |
+| `workdayly.log` | `run_fetch` / `run_kline_cache` / `run_analysis` / `run_paper_trading` / `run_workdayly` |
+| `refresh_composite_universe.log` | `refresh_composite_universe` |
+| `refresh_ai_kb.log` | `refresh_ai_kb` |
 | `monthly.log` | `run_monthly` |
 
 日志格式示例：
@@ -314,6 +316,8 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 | `QUANTIA_STOP_SERVICES` | nginx | 内存密集任务前停止的系统服务（空格分隔） |
 | `QUANTIA_NO_SERVICE_STOP` | 0 | 设为 `1` 禁用自动停止/恢复服务 |
 | `QUANTIA_SETTLEMENT_HOUR` | 18 | API 数据结算时间（小时） |
+| `QUANTIA_FETCH_TIMEOUT` | 7200 | `run_fetch` 超时秒数（默认 2 小时） |
+| `PYTHON_BIN` | python3 | Python 解释器路径（`refresh_*` 脚本使用） |
 
 可通过 `.env` 文件或系统环境变量设置，`_common.sh` 的 `init_env` 会自动加载 `.env` 文件。
 
@@ -322,13 +326,14 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 ## OOM 防护（低内存服务器）
 
 1.6GB 服务器同时运行 MySQL + nginx + Quantia Web + Python 分析任务时容易 OOM。
-`run_workdayly` 在 Phase 2/3（K线缓存 + 数据分析）前自动停止 nginx 和 Quantia Web 服务，
+`run_workdayly` 和 `run_fetch`（独立调度时）都会在执行前自动停止 nginx 和 Quantia Web 服务，
 完成后自动恢复。
 
 ### 工作流程
 
+**`run_workdayly` 编排模式**（推荐）：
 ```
-Phase 1: 数据获取（低内存，服务照常运行）
+◆ Phase 1: run_fetch（自带停止/恢复服务）
     ↓
 ◆ 停止 nginx + Quantia Web（释放 ~200MB）
     ↓
@@ -336,7 +341,13 @@ Phase 2: K线缓存更新（内存密集）
 Phase 3: 数据分析（内存密集）
     ↓
 ◆ 恢复 nginx + Quantia Web
+    ↓
+Phase 4: 模拟交易（低内存）
 ```
+
+**独立调度模式**（crontab 拆分）：
+`run_fetch` 独立运行时自行停止/恢复服务；`run_kline_cache` 和 `run_analysis` 不含 OOM 逻辑，
+需手动管理或通过 `run_workdayly` 包裹。
 
 ### 配置
 
