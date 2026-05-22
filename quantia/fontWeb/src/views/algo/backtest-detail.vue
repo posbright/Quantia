@@ -1211,8 +1211,8 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
       ...(ext.subPanel ? [{ left: 58, right: 62, top: 550, height: 60 }] : []),
     ],
     dataZoom: [
-      { type: 'inside', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end },
-      { type: 'slider', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, bottom: 4, height: 20 },
+      { type: 'inside', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, minSpan: Math.max(5, Math.round(150 / dates.length * 100)) },
+      { type: 'slider', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, bottom: 4, height: 20, minSpan: Math.max(5, Math.round(150 / dates.length * 100)) },
     ],
     xAxis: [
       { type: 'category', data: dates, boundaryGap: true, axisLabel: { fontSize: 10 } },
@@ -1228,7 +1228,7 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
       ...(ext.subPanel ? [{ scale: true, gridIndex: 3, min: 0, max: 100, splitNumber: 3, axisLabel: { fontSize: 10 } }] : []),
     ],
     series: [
-      { name: 'K线', type: 'candlestick', data: ohlc, itemStyle: { color: '#f56c6c', color0: '#67c23a', borderColor: '#f56c6c', borderColor0: '#67c23a' } },
+      { name: 'K线', type: 'candlestick', data: ohlc, barMaxWidth: 20, barMinWidth: 1, large: true, largeThreshold: 300, itemStyle: { color: '#f56c6c', color0: '#67c23a', borderColor: '#f56c6c', borderColor0: '#67c23a' } },
       ...overlaySeries,
       ...(benchmarkOverlay ? [benchmarkOverlay] : []),
       { name: '买入', type: 'scatter', data: tradeMarkers.buy, symbol: 'triangle', symbolSize: 18, itemStyle: { color: '#f56c6c', borderColor: '#8a1f11', borderWidth: 1 }, label: tradeMarkerLabel('buy'), emphasis: { scale: 1.5 } },
@@ -1312,6 +1312,10 @@ function buildBenchmarkOverlay(period: string, dates: string[]) {
       borderColor0: 'rgba(64, 158, 255, 0.65)',
     },
     barWidth: '45%',
+    barMaxWidth: 20,
+    barMinWidth: 1,
+    large: true,
+    largeThreshold: 300,
     barGap: '-55%',
     z: 1,
   }
