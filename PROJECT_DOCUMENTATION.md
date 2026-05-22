@@ -35,16 +35,16 @@
 
 ### 技术特点
 
-- **多数据源支持**：东方财富 → 腾讯财经 → 新浪财经，自动容错切换
+- **多数据源支持**：东方财富 → 腾讯财经 → 新浪财经（22 个爬虫模块），自动容错切换
 - **AKShare财务数据**：通过AKShare获取东方财富个股财务分析指标，为回测提供真实基本面数据
 - **数据源健康度追踪**：连续失败自动降级，渐进退避（300s→3600s），恢复后自动提升
-- **增量缓存**：历史数据以天为单位增量更新，提高效率
+- **增量缓存**：历史数据以天为单位增量更新，~5000 只股票本地 K 线缓存
 - **多线程处理**：采用并发处理，提高数据抓取和计算效率
 - **流式分析**：单次遍历4900只股票完成指标+K线+策略分析，峰值内存<100MB（替代旧版~1670MB）
 - **数据采集/分析分离**：Fetch管道负责API调用，Analysis/Web管道零API调用，仅读DB/缓存
-- **代理池管理**：12个免费代理源自动抓取、验证、刷新，支持紧急补充机制
-- **Web可视化**：Tornado + Bootstrap实现的Web界面
-- **前端Vue版本**：提供现代化的Vue 3 + TypeScript前端
+- **128 个后端 API**：18 个 Handler 模块覆盖数据、指标、策略、回测、交易、AI、IM、鉴权
+- **60 个前端路由**：Vue 3 + TypeScript + Element Plus，完整覆盖所有业务场景
+- **81 个测试文件**：1700+ 测试用例，覆盖核心逻辑与 API
 - **Docker支持**：提供Docker镜像，一键部署
 
 ---
@@ -58,7 +58,7 @@
 │                         用户界面层                                │
 ├─────────────────────────────────────────────────────────────────┤
 │   Web Service (Tornado)    │    Vue Frontend (TypeScript)       │
-│   端口: 9988               │    开发端口: 5173                   │
+│   端口: 9988               │    开发端口: 3000                   │
 └─────────────────────────────────────────────────────────────────┘
                                     │
 ┌─────────────────────────────────────────────────────────────────┐
@@ -421,17 +421,30 @@ Quantia/
 
 ### 5. Web服务 (web/)
 
-基于Tornado的Web服务，端口9988：
+基于Tornado的Web服务，端口9988，共 128 个 API 路由、18 个 Handler 模块：
 
-- **首页路由**: `/quantia/`
-- **数据API**: `/quantia/api_data`
-- **页面渲染**: `/quantia/data`
-- **指标图表**: `/quantia/data/indicators`
-- **关注管理**: `/quantia/control/attention`
-- **策略参数查询**: `/quantia/api/strategy/params`
-- **策略参数保存**: `/quantia/api/strategy/params/save`
-- **策略参数重置**: `/quantia/api/strategy/params/reset`
-- **动态筛选**: `/quantia/api/strategy/filter`
+| Handler 模块 | 路由数 | 功能 |
+|-------------|--------|------|
+| `dataTableHandler` | 2 | 股票数据表 + 交易日 |
+| `dataIndicatorsHandler` | 2 | 指标图表 + 关注 |
+| `strategyParamsHandler` | 6 | 策略参数 CRUD + 动态筛选 |
+| `klineHandler` | 1 | K线数据 |
+| `backtestHandler` | 3 | 回测配置/运行/批量 |
+| `backtestDashboardHandler` | 5 | 回测看板（总览/序列/分布/配对） |
+| `portfolioBacktestHandler` | 21 | 组合回测 + 策略管理 + 文件夹 + 模板同步 |
+| `paperTradingHandler` | 9 | 模拟交易（创建/运行/信号/历史/代码） |
+| `tradeSignalHandler` | 2 | 交易信号 |
+| `notificationAdminHandler` | 2 | 通知事件查看 |
+| `notificationConfigHandler` | 6 | 通知配置 CRUD |
+| `aiDecisionConfigHandler` | 4 | AI 决策配置 |
+| `aiAssistantHandler` | 12 | AI 助手（生成/优化/chat/Agent/会话/KB） |
+| `imCommandHandler` | 7 | IM 指令系统（钉钉回调） |
+| `liveTradingHandler` | 2 | 实盘交易 |
+| `authHandler` | 9 | 鉴权/注册/用户管理/审计 |
+| `customIndicatorHandler` | 7 | 自定义综合指标 CRUD + 回测 |
+| `verifyOptimizeHandler` | 11 | 选股验证优化（对比/优化/样本外） |
+| `verifyFusionHandler` | 6 | 策略融合（v2 五维 × 4 模式） |
+| `factorLabHandler` | 8 | 因子实验室 |
 
 ### 6. 策略参数配置模块 (web/strategyParamsHandler.py)
 
@@ -565,6 +578,78 @@ Quantia/
 - **代理池**: `singleton_proxy` 使用 `RLock` 保护所有共享状态
 - **HTTP会话**: `eastmoney_fetcher` 使用 `threading.local()` 为每个线程提供独立的 requests.Session
 - **K线缓存文件**: 每只股票独立文件，多线程并行写入无冲突
+
+### 10. 自定义综合指标 (core/composite/)
+
+Phase 9 多维因子打分系统，支持用户自定义选股指标：
+
+| 模块 | 功能 |
+|------|------|
+| `composite_engine.py` | 主打分引擎（多因子加权聚合） |
+| `normalizers.py` | 6 种归一化器（n_lin/n_wr/n_rank/n_supertrend/n_pctb/n_cci） |
+| `hard_rules_engine.py` | AST 沙箱硬规则表达式（安全求值，阻止危险代码） |
+| `risk_simulator.py` | 风险模拟器（止损/止盈/最大持有天数 + 基本面退出） |
+| `dynamic_universe.py` | 动态股票池过滤（开盘前刷新候选） |
+| `builtins.py` | 内置指标预设模板 |
+| `indicators_enrich.py` | 指标数据丰富管道 |
+
+### 11. 选股验证中心 (web/verify*)
+
+提供策略验证、优化和研究工具：
+
+| Handler | 路由数 | 功能 |
+|---------|--------|------|
+| `verifyOptimizeHandler` | 11 | 策略对比、买卖点优化、样本外验证 |
+| `verifyFusionHandler` | 6 | 策略融合 v2（tech/fund/flow/sent/custom × weighted/vote/tree/rotation） |
+| `factorLabHandler` | 8 | 因子实验室（IC/IR 分析、因子有效性验证） |
+
+策略融合 v2 支持五维信号源 × 四种融合模式，内含 Shapley 值归因分析。
+
+### 12. AI 策略助手 (ai_decision/)
+
+多 Provider LLM 集成，支持策略生成、优化、修复和对话：
+
+| 模块 | 功能 |
+|------|------|
+| `service.py` | AI 服务主入口（策略生成/优化/修复） |
+| `config.py` | 多 Provider 配置（OpenAI-compatible） |
+| `context_builder.py` | 上下文组装（市场数据 + 策略代码 + 错误信息） |
+| `prompt_renderer.py` | Prompt 模板渲染 |
+| `schema.py` | 请求/响应数据模型 |
+| `providers/openai_compatible.py` | OpenAI 兼容 Provider |
+
+配套知识库：`quantia/lib/ai/retrieval/indexer.py` 将策略模板、文档、用户策略写入 `cn_stock_ai_kb`（MySQL FULLTEXT），供检索增强。
+
+### 13. 通知与 IM (notification/ + im/)
+
+| 模块 | 功能 |
+|------|------|
+| `notification/service.py` | 通知分发服务（事件驱动） |
+| `notification/templates.py` | 消息模板（模拟交易信号、系统告警） |
+| `notification/channels/dingtalk.py` | 钉钉机器人 Webhook 通道 |
+| `im/service.py` | IM 指令处理（钉钉回调 → 确认/拒绝交易信号） |
+| `im/signature.py` | Webhook 签名验证 |
+
+### 14. 用户鉴权 (auth/)
+
+| 模块 | 功能 |
+|------|------|
+| `decorators.py` | `@require_login`、`@require_role` 装饰器 |
+| `email_code.py` | 注册邮箱验证码 |
+| `users.py` | 用户 CRUD、角色管理 |
+
+支持开关控制：`QUANTIA_AUTH_ENABLED=true` 时全局鉴权生效，否则匿名访问。
+
+### 15. 模拟交易 (paper_trading/)
+
+| 模块 | 功能 |
+|------|------|
+| `paper_engine.py` | 模拟交易执行引擎（每日定时驱动，真实行情数据） |
+| `scheduler.py` | 执行调度器 |
+| `state_manager.py` | 持仓/现金/NAV 状态持久化 |
+
+核心原则：除账户资金为虚拟外，所有行情、基本面数据均为实盘数据。
+每日 NAV 写入 `cn_stock_paper_nav`，为权威净值曲线数据源。
 
 ---
 

@@ -746,6 +746,115 @@ GET /quantia/api/trade_date
 
 ---
 
+## 模拟交易 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/quantia/api/paper/list` | 获取所有模拟账户列表 |
+| POST | `/quantia/api/paper/create` | 创建模拟账户（指定策略+初始资金） |
+| POST | `/quantia/api/paper/start` | 启动模拟交易 |
+| POST | `/quantia/api/paper/stop` | 停止模拟交易 |
+| GET | `/quantia/api/paper/detail` | 账户详情（持仓+NAV+收益） |
+| GET | `/quantia/api/paper/history` | 历史交易记录 |
+| GET | `/quantia/api/paper/nav` | 净值曲线数据 |
+| POST | `/quantia/api/paper/code` | 获取/保存策略代码 |
+| POST | `/quantia/api/paper/backtest` | 对当前策略代码运行回测 |
+
+---
+
+## 自定义综合指标 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/quantia/api/custom_indicator/list` | 指标列表 |
+| POST | `/quantia/api/custom_indicator/save` | 创建/更新指标 |
+| DELETE | `/quantia/api/custom_indicator/delete` | 删除指标 |
+| GET | `/quantia/api/custom_indicator/detail` | 指标详情（含配置） |
+| POST | `/quantia/api/custom_indicator/backtest` | 指标回测 |
+| GET | `/quantia/api/custom_indicator/universe` | 当前股票池结果 |
+| GET | `/quantia/api/custom_indicator/watchlist` | 关注榜 |
+
+---
+
+## 因子实验室 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/quantia/api/factor/ic_analysis` | IC/IR 因子有效性分析 |
+| POST | `/quantia/api/factor/decay` | 因子衰减分析 |
+| POST | `/quantia/api/factor/group_return` | 分组回测收益 |
+| POST | `/quantia/api/factor/correlation` | 因子相关性矩阵 |
+| POST | `/quantia/api/factor/turnover` | 换手率分析 |
+| POST | `/quantia/api/factor/composite` | 复合因子构建 |
+| GET | `/quantia/api/factor/available_factors` | 可用因子列表 |
+| GET | `/quantia/api/factor/presets` | 预设因子组合 |
+
+---
+
+## AI 策略助手 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/quantia/api/ai/generate` | AI 策略生成 |
+| POST | `/quantia/api/ai/optimize` | 策略优化建议 |
+| POST | `/quantia/api/ai/repair` | 策略错误修复 |
+| POST | `/quantia/api/ai/chat` | 对话（支持工具调用） |
+| GET | `/quantia/api/ai/conversations` | 会话列表 |
+| GET | `/quantia/api/ai/conversation/:id` | 会话历史 |
+| DELETE | `/quantia/api/ai/conversation/:id` | 删除会话 |
+| GET | `/quantia/api/ai/agents` | Agent 列表 |
+| POST | `/quantia/api/ai/agent` | 创建/更新 Agent |
+| DELETE | `/quantia/api/ai/agent/:id` | 删除 Agent |
+| GET | `/quantia/api/ai/config` | AI 配置（模型列表） |
+| POST | `/quantia/api/ai/kb/search` | 知识库检索 |
+
+---
+
+## 通知配置 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/quantia/api/notification/config` | 获取通知配置 |
+| POST | `/quantia/api/notification/config` | 保存通知配置 |
+| POST | `/quantia/api/notification/test` | 发送测试通知 |
+| GET | `/quantia/api/notification/channels` | 通道列表 |
+| POST | `/quantia/api/notification/channel` | 创建/更新通道 |
+| DELETE | `/quantia/api/notification/channel/:id` | 删除通道 |
+| GET | `/quantia/api/notification/events` | 通知事件列表 |
+| GET | `/quantia/api/notification/event/:id` | 事件详情 |
+
+---
+
+## 鉴权 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/quantia/api/auth/me` | 当前用户信息（未启用鉴权返回 enabled=false） |
+| POST | `/quantia/api/auth/login` | 登录（用户名/邮箱/昵称） |
+| POST | `/quantia/api/auth/logout` | 退出 |
+| POST | `/quantia/api/auth/register` | 自助注册 |
+| POST | `/quantia/api/auth/send_code` | 发送邮箱验证码 |
+| GET | `/quantia/api/auth/users` | 用户列表（admin） |
+| PUT | `/quantia/api/auth/user/:id` | 更新用户角色/状态 |
+| DELETE | `/quantia/api/auth/user/:id` | 删除用户 |
+| GET | `/quantia/api/auth/audit` | 操作审计日志 |
+
+---
+
+## IM 指令 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/quantia/api/im/callback` | 钉钉回调入口 |
+| GET | `/quantia/api/im/operators` | 操作人白名单 |
+| POST | `/quantia/api/im/operator` | 添加操作人 |
+| DELETE | `/quantia/api/im/operator/:id` | 删除操作人 |
+| GET | `/quantia/api/im/commands` | 指令记录 |
+| POST | `/quantia/api/im/confirm` | 手动确认指令 |
+| POST | `/quantia/api/im/reject` | 手动拒绝指令 |
+
+---
+
 ## 组合回测 API
 
 > 聚宽风格的组合回测引擎，支持多股票持仓、T+1交易、基本面选股。

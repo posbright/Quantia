@@ -38,8 +38,6 @@ QUANTIA_DB_DATABASE=quantiadb
 QUANTIA_DB_PORT=3306
 ```
 
-新环境统一使用 `QUANTIA_DB_*` 配置数据库连接。
-
 ### 3. 运行数据作业
 
 ```bash
@@ -47,7 +45,7 @@ cd quantia/job
 python execute_daily_job.py
 ```
 
-### 4. 启动Web服务
+### 4. 启动 Web 服务
 
 ```bash
 cd quantia/bin
@@ -57,9 +55,22 @@ run_web.bat
 ./run_web.sh
 ```
 
-### 5. 访问系统
+### 5. 启动前端开发服务（可选）
 
-打开浏览器访问: http://localhost:9988
+```bash
+cd quantia/fontWeb
+npm install
+npm run dev
+```
+
+### 6. 访问系统
+
+| 入口 | 地址 | 说明 |
+|------|------|------|
+| 后端直连 | http://localhost:9988 | Tornado 服务（生产环境） |
+| 前端开发 | http://localhost:3000 | Vite dev server（开发时用） |
+
+前端开发模式通过 `.env.development` 中 `VITE_API_TARGET` 配置 API 代理目标。
 
 ---
 
