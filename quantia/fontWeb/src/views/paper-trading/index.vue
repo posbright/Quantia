@@ -1002,7 +1002,7 @@ async function openTradeDecision(row: any) {
   if (!row?.signal_id) return
   tradeDecisionLoading.value = true
   try {
-    const r: any = await request.get('/quantia/api/trade/signal/detail', { params: { signal_id: row.signal_id } })
+    const r: any = await request.get('/api/trade/signal/detail', { params: { signal_id: row.signal_id } })
     if (r && r.code === 0) tradeDecisionDetail.value = r.data
     else ElMessage.warning(r?.msg || '决策详情加载失败')
   } catch (e: any) {
