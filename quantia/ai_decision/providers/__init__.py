@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 
 class BaseProvider:
-    """所有 provider 子类需实现 ``generate`` 返回原始响应字符串。"""
+    """所有 provider 子类需实现 ``generate`` 返回 (content, usage_dict)。"""
 
     name = "base"
 
@@ -20,5 +20,6 @@ class BaseProvider:
         temperature: float = 0.2,
         max_tokens: int = 2048,
         timeout_seconds: int = 20,
-    ) -> str:
+    ) -> tuple:
+        """返回 (content: str, usage: dict|None)。"""
         raise NotImplementedError

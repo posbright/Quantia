@@ -67,7 +67,12 @@ class OpenAICompatibleProvider(BaseProvider):
             content = choices[0].get("message", {}).get("content")
             if not content:
                 raise RuntimeError("AI 返回 content 为空")
-            return content
+            usage = obj.get("usage") or {}
+            return content, {
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+            }
         except Exception as exc:
             logging.warning("[ai_decision] 解析 OpenAI 兼容响应失败: %s", exc)
             raise RuntimeError(f"AI 响应解析失败: {exc}") from exc

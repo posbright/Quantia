@@ -286,3 +286,90 @@ export async function aiGenerateStrategyStream(
     }
   }
 }
+
+// ── Token 用量统计 + 功能开关 ──────────────────────────────────
+export interface TokenSummary {
+  today_tokens: number
+  today_calls: number
+  month_tokens: number
+  hour_calls: number
+  hour_tokens: number
+  hour_limit_calls: number
+  hour_limit_tokens: number
+}
+
+export interface TokenByModel {
+  model: string
+  total_tokens: number
+  call_count: number
+}
+
+export interface TokenByScene {
+  scene: string
+  total_tokens: number
+  call_count: number
+}
+
+export interface TokenDailyTrend {
+  date: string
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  call_count: number
+}
+
+export interface TokenFeatureStatus {
+  feature: string
+  enabled: boolean
+  daily_budget: number | null
+  used_today: number
+  remaining: number | null
+  modified_by?: string
+  updated_at?: string
+}
+
+export interface TokenRecentCall {
+  id: number
+  scene: string
+  model: string
+  provider: string
+  total_tokens: number | null
+  latency_ms: number | null
+  ok: boolean
+  created_at: string
+}
+
+export function aiTokenSummary() {
+  return request({ url: '/api/ai/token/summary', method: 'get' }) as
+    Promise<{ ok: boolean; data?: TokenSummary; error?: string }>
+}
+
+export function aiTokenByModel(days = 30) {
+  return request({ url: '/api/ai/token/by_model', method: 'get', params: { days } }) as
+    Promise<{ ok: boolean; data?: TokenByModel[]; error?: string }>
+}
+
+export function aiTokenByScene(days = 30) {
+  return request({ url: '/api/ai/token/by_scene', method: 'get', params: { days } }) as
+    Promise<{ ok: boolean; data?: TokenByScene[]; error?: string }>
+}
+
+export function aiTokenDailyTrend(days = 30) {
+  return request({ url: '/api/ai/token/daily_trend', method: 'get', params: { days } }) as
+    Promise<{ ok: boolean; data?: TokenDailyTrend[]; error?: string }>
+}
+
+export function aiTokenFeatureStatus() {
+  return request({ url: '/api/ai/token/feature_status', method: 'get' }) as
+    Promise<{ ok: boolean; data?: TokenFeatureStatus[]; error?: string }>
+}
+
+export function aiTokenRecentCalls(limit = 50) {
+  return request({ url: '/api/ai/token/recent_calls', method: 'get', params: { limit } }) as
+    Promise<{ ok: boolean; data?: TokenRecentCall[]; error?: string }>
+}
+
+export function aiTokenUpdateFeature(feature: string, params: { enabled?: boolean; daily_token_budget?: number | null }) {
+  return request({ url: '/api/ai/token/update_feature', method: 'post', data: { feature, ...params } }) as
+    Promise<{ ok: boolean; error?: string }>
+}

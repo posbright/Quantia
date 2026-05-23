@@ -46,6 +46,7 @@ import quantia.web.notificationAdminHandler as notificationAdminHandler
 import quantia.web.notificationConfigHandler as notificationConfigHandler
 import quantia.web.aiDecisionConfigHandler as aiDecisionConfigHandler
 import quantia.web.aiAssistantHandler as aiAssistantHandler
+import quantia.web.aiTokenUsageHandler as aiTokenUsageHandler
 import quantia.web.imCommandHandler as imCommandHandler
 import quantia.web.liveTradingHandler as liveTradingHandler
 import quantia.web.customIndicatorHandler as customIndicatorHandler
@@ -163,6 +164,14 @@ class Application(tornado.web.Application):
             (r"/quantia/api/ai/conversations", aiAssistantHandler.AiConversationsHandler),
             (r"/quantia/api/ai/conversations/detail", aiAssistantHandler.AiConversationDetailHandler),
             (r"/quantia/api/ai/conversations/rename", aiAssistantHandler.AiConversationRenameHandler),
+            # Token 用量统计 + 功能开关
+            (r"/quantia/api/ai/token/summary", aiTokenUsageHandler.TokenSummaryHandler),
+            (r"/quantia/api/ai/token/by_model", aiTokenUsageHandler.TokenByModelHandler),
+            (r"/quantia/api/ai/token/by_scene", aiTokenUsageHandler.TokenBySceneHandler),
+            (r"/quantia/api/ai/token/daily_trend", aiTokenUsageHandler.TokenDailyTrendHandler),
+            (r"/quantia/api/ai/token/feature_status", aiTokenUsageHandler.TokenFeatureStatusHandler),
+            (r"/quantia/api/ai/token/recent_calls", aiTokenUsageHandler.TokenRecentCallsHandler),
+            (r"/quantia/api/ai/token/update_feature", aiTokenUsageHandler.TokenUpdateFeatureHandler),
             # Phase 6: IM 指令确认（默认关闭，由 QUANTIA_IM_COMMAND_ENABLED=1 启用；仅落库 trade_command，不直接调券商）
             (r"/quantia/api/im/status", imCommandHandler.IMStatusHandler),
             (r"/quantia/api/im/dingtalk/callback", imCommandHandler.DingtalkCallbackHandler),

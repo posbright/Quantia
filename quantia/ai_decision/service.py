@@ -177,6 +177,17 @@ def score_trade(
             "ai_gate_result": GATE_NOT_ENABLED, "status": STATUS_SKIPPED,
         }
 
+    # 0) Feature switch: 检查 trade_gate 是否被禁用/超日预算
+    try:
+        from quantia.lib.ai.feature_switch import is_feature_enabled
+        if not is_feature_enabled('trade_gate'):
+            return {
+                "ai_score_id": None, "ai_score": None, "ai_action": None,
+                "ai_gate_result": GATE_NOT_ENABLED, "status": STATUS_SKIPPED,
+            }
+    except Exception:
+        pass  # fail-open
+
     # 1) 输入摘要 + hash
     input_summary = build_input_summary(
         code=code, name=name, decision_date=decision_date,
@@ -199,9 +210,10 @@ def score_trade(
     factory = provider_factory or _make_provider
     started = time.monotonic()
     result: AIDecisionResult
+    usage_info: Optional[Dict[str, Any]] = None
     try:
         provider = factory(cfg.provider or "openai_compatible")
-        raw = provider.generate(
+        raw, usage_info = provider.generate(
             messages=messages, model_name=cfg.model_name,
             base_url=cfg.base_url, api_key=cfg.resolve_api_key(),
             temperature=float(cfg.temperature or 0.2),
@@ -227,6 +239,26 @@ def score_trade(
             status=STATUS_TIMEOUT if is_timeout else STATUS_FAILED,
             error_message=msg[:1000], latency_ms=latency_ms,
         )
+
+    # 3.1) 审计桥接：写入 cn_stock_ai_call_log，让 token 统计页可见
+    try:
+        from quantia.lib.ai.audit import record_call as _audit_record
+        _audit_record(
+            scene='trade_gate',
+            provider=cfg.provider or 'openai_compatible',
+            model=cfg.model_name or '',
+            user_id=f'paper_{source_id}',
+            prompt=json.dumps(messages, ensure_ascii=False)[:4000],
+            response=(result.raw_response or '')[:4000],
+            ok=(result.status == STATUS_SUCCEEDED),
+            prompt_tokens=(usage_info or {}).get('prompt_tokens'),
+            completion_tokens=(usage_info or {}).get('completion_tokens'),
+            total_tokens=(usage_info or {}).get('total_tokens'),
+            latency_ms=latency_ms,
+            error=result.error_message,
+        )
+    except Exception:
+        pass  # 审计失败不影响业务
 
     # 4) 应用 gate
     result.gate_result = _apply_gate(result, cfg, direction)

@@ -430,6 +430,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: 'AI 研判配置' }
       },
       {
+        path: 'token-usage',
+        name: 'TokenUsage',
+        component: () => import('@/views/settings/token-usage.vue'),
+        meta: { title: 'Token 用量' }
+      },
+      {
         path: 'im-operator',
         name: 'IMOperatorWhitelist',
         component: () => import('@/views/settings/im-operator.vue'),

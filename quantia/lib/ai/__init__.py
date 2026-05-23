@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from quantia.lib.ai import audit
 from quantia.lib.ai import rate_limiter
+from quantia.lib.ai import feature_switch as _fs
 from quantia.lib.ai.config import AIConfig, load_config
 from quantia.lib.ai.exceptions import AIError, ProviderError, RateLimitError, ValidationError
 from quantia.lib.ai.providers.base import ChatMessage, ChatResult, Provider, ToolCall
@@ -102,6 +103,9 @@ def run_chat(
     tools_used.rate_limit_loop=true，供 rate_limiter 后续查询排除。
     """
     cfg = load_config(overrides)
+    # Feature switch: 功能级日预算检查（fail-open）
+    if not rate_limit_loop:
+        _fs.check_feature(scene)
     # spec §16.5：在 provider 调用前检查滑窗配额（fail-open）
     rate_limiter.check_quota(
         user_id=user_id, scene=scene, rate_limit_loop=rate_limit_loop)
@@ -158,6 +162,9 @@ def stream_chat(
 ) -> Iterator[str]:
     """流式聊天，yield 文本片段；结束后写一条审计记录（response 为完整拼接）。"""
     cfg = load_config(overrides)
+    # Feature switch: 功能级日预算检查
+    if not rate_limit_loop:
+        _fs.check_feature(scene)
     rate_limiter.check_quota(
         user_id=user_id, scene=scene, rate_limit_loop=rate_limit_loop)
     provider = get_provider(cfg)

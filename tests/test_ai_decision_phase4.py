@@ -199,7 +199,7 @@ class _StubProvider:
         self.calls.append(kw)
         if self.raise_exc:
             raise self.raise_exc
-        return self.response
+        return self.response, {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}
 
 
 @pytest.fixture
