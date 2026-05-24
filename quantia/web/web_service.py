@@ -176,9 +176,11 @@ class Application(tornado.web.Application):
             # AI 个股分析报告
             (r"/quantia/api/ai/report/generate", stockReportHandler.StockReportGenerateHandler),
             (r"/quantia/api/ai/report/followup", stockReportHandler.StockReportFollowupHandler),
+            (r"/quantia/api/ai/report/feedback", stockReportHandler.StockReportFeedbackHandler),
             (r"/quantia/api/ai/report/history", stockReportHandler.StockReportHistoryHandler),
             (r"/quantia/api/ai/report/detail", stockReportHandler.StockReportDetailHandler),
             (r"/quantia/api/ai/report/search_stock", stockReportHandler.StockSearchHandler),
+            (r"/quantia/api/ai/report/stock_data", stockReportHandler.StockDataFallbackHandler),
             # Phase 6: IM 指令确认（默认关闭，由 QUANTIA_IM_COMMAND_ENABLED=1 启用；仅落库 trade_command，不直接调券商）
             (r"/quantia/api/im/status", imCommandHandler.IMStatusHandler),
             (r"/quantia/api/im/dingtalk/callback", imCommandHandler.DingtalkCallbackHandler),

@@ -37,7 +37,7 @@ export interface ReportStreamEvent {
   status?: string
   elapsed_ms?: number
   text?: string
-  report?: ReportDetail
+  report?: ReportDetail & { data_updated?: boolean; update_reason?: string }
   report_id?: number
   tokens_used?: number
   latency_ms?: number
@@ -48,6 +48,32 @@ export interface FollowupStreamEvent {
   type: 'chunk' | 'done' | 'error'
   text?: string
   msg?: string
+}
+
+export interface StockFallbackData {
+  code: string
+  name?: string
+  spot?: {
+    name: string
+    close: number
+    change_pct: number
+    pe: number
+    pb: number
+    roe: number
+    bps: number
+    eps: number
+    market_cap: number
+    turnover: number
+  }
+  fund_flow?: { date: string; main: number; super: number; big: number }[]
+  indicators?: {
+    macd: number
+    macd_signal: number
+    kdj_k: number
+    kdj_d: number
+    kdj_j: number
+    rsi_6: number
+  }
 }
 
 // ---- API functions ----
@@ -161,4 +187,22 @@ export async function followupReportStream(
       }
     }
   }
+}
+
+/**
+ * 提交报告反馈 (👍/👎)
+ */
+export function submitReportFeedback(reportId: number, feedback: 1 | -1, reason?: string) {
+  return request.post('/api/ai/report/feedback', {
+    report_id: reportId,
+    feedback,
+    reason: reason || '',
+  })
+}
+
+/**
+ * 获取快速结构化数据（AI 不可用时的 fallback 面板）
+ */
+export function getStockFallbackData(code: string) {
+  return request.get<StockFallbackData>('/api/ai/report/stock_data', { params: { code } })
 }

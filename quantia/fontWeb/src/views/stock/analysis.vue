@@ -45,8 +45,10 @@
       </div>
     </div>
 
-    <!-- K线图面板 -->
-    <div v-if="currentCode && klineLoaded" class="kline-panel">
+    <!-- 主内容区域（宽屏并排） -->
+    <div class="main-content">
+      <!-- K线图面板 -->
+      <div v-if="currentCode && klineLoaded" class="kline-panel">
       <div class="kline-header" @click="klineCollapsed = !klineCollapsed">
         <span class="kline-title">📈 K线走势 · {{ currentCode }} {{ currentName }}</span>
         <el-icon class="kline-toggle" :class="{ collapsed: klineCollapsed }"><ArrowDown /></el-icon>
@@ -56,7 +58,7 @@
       </div>
     </div>
 
-    <!-- 错误降级面板 -->
+    <!-- 错误降级面板：展示结构化数据 -->
     <div v-if="errorMsg && !reportContent" class="fallback-panel">
       <el-alert type="warning" :closable="false" show-icon>
         <template #title>AI 分析服务暂时不可用</template>
@@ -65,6 +67,50 @@
           <el-button size="small" type="primary" @click="handleGenerate">重试生成报告</el-button>
         </template>
       </el-alert>
+      <!-- 结构化数据面板 -->
+      <div v-if="fallbackData" class="fallback-data">
+        <h4>📊 核心指标</h4>
+        <div v-if="fallbackData.spot" class="fallback-metrics">
+          <div class="metric-item">
+            <span class="metric-label">最新价</span>
+            <span class="metric-value" :class="{ up: fallbackData.spot.change_pct > 0, down: fallbackData.spot.change_pct < 0 }">
+              {{ fallbackData.spot.close }} ({{ fallbackData.spot.change_pct > 0 ? '+' : '' }}{{ fallbackData.spot.change_pct?.toFixed(2) }}%)
+            </span>
+          </div>
+          <div class="metric-item"><span class="metric-label">PE</span><span class="metric-value">{{ fallbackData.spot.pe?.toFixed(1) || '-' }}</span></div>
+          <div class="metric-item"><span class="metric-label">PB</span><span class="metric-value">{{ fallbackData.spot.pb?.toFixed(2) || '-' }}</span></div>
+          <div class="metric-item"><span class="metric-label">ROE</span><span class="metric-value">{{ fallbackData.spot.roe?.toFixed(1) || '-' }}%</span></div>
+          <div class="metric-item"><span class="metric-label">总市值</span><span class="metric-value">{{ formatCap(fallbackData.spot.market_cap) }}</span></div>
+          <div class="metric-item"><span class="metric-label">换手率</span><span class="metric-value">{{ fallbackData.spot.turnover?.toFixed(2) || '-' }}%</span></div>
+        </div>
+        <div v-if="fallbackData.indicators" class="fallback-section">
+          <h4>📈 技术面</h4>
+          <div class="fallback-metrics">
+            <div class="metric-item">
+              <span class="metric-label">MACD</span>
+              <span class="metric-value" :class="{ up: fallbackData.indicators.macd > fallbackData.indicators.macd_signal, down: fallbackData.indicators.macd < fallbackData.indicators.macd_signal }">
+                {{ fallbackData.indicators.macd > fallbackData.indicators.macd_signal ? '金叉' : '死叉' }}
+              </span>
+            </div>
+            <div class="metric-item">
+              <span class="metric-label">KDJ</span>
+              <span class="metric-value" :class="{ up: fallbackData.indicators.kdj_k > 80, down: fallbackData.indicators.kdj_k < 20 }">
+                K={{ fallbackData.indicators.kdj_k?.toFixed(0) }}
+                {{ fallbackData.indicators.kdj_k > 80 ? '(超买)' : fallbackData.indicators.kdj_k < 20 ? '(超卖)' : '' }}
+              </span>
+            </div>
+            <div class="metric-item"><span class="metric-label">RSI(6)</span><span class="metric-value">{{ fallbackData.indicators.rsi_6?.toFixed(1) || '-' }}</span></div>
+          </div>
+        </div>
+        <div v-if="fallbackData.fund_flow?.length" class="fallback-section">
+          <h4>💰 资金面（近5日主力净流入）</h4>
+          <div class="fallback-flow">
+            <span v-for="f in fallbackData.fund_flow" :key="f.date" class="flow-tag" :class="{ up: f.main > 0, down: f.main < 0 }">
+              {{ f.date.slice(5) }}: {{ f.main > 0 ? '+' : '' }}{{ (f.main / 10000).toFixed(0) }}万
+            </span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 报告内容 -->
@@ -121,7 +167,26 @@
           追问
         </el-button>
       </div>
+
+      <!-- 报告反馈 -->
+      <div v-if="reportMeta.report_id" class="feedback-bar">
+        <span class="feedback-label">这份报告有帮助吗？</span>
+        <el-button
+          :type="feedbackSubmitted === 1 ? 'success' : 'default'"
+          size="small"
+          :disabled="feedbackSubmitted !== 0"
+          @click="handleFeedback(1)"
+        >👍</el-button>
+        <el-button
+          :type="feedbackSubmitted === -1 ? 'danger' : 'default'"
+          size="small"
+          :disabled="feedbackSubmitted !== 0"
+          @click="handleFeedback(-1)"
+        >👎</el-button>
+        <span v-if="feedbackSubmitted !== 0" class="feedback-done">感谢反馈！</span>
+      </div>
     </div>
+    </div><!-- /main-content -->
 
     <!-- 空状态 -->
     <div v-if="!generating && !reportContent && !errorMsg" class="empty-state">
@@ -141,9 +206,9 @@ import {
   VideoPlay, CopyDocument, Loading, CircleCheckFilled, Clock, DataAnalysis, ArrowDown
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { searchStock, generateReportStream, followupReportStream } from '@/api/report'
+import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData } from '@/api/report'
 import { getKlineData } from '@/api/stock'
-import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent } from '@/api/report'
+import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent, StockFallbackData } from '@/api/report'
 import * as echarts from 'echarts'
 
 // ---- markdown-it setup (dynamic import for code-split) ----
@@ -195,12 +260,19 @@ const progressSteps = ref<ProgressStep[]>([
 ])
 
 interface ReportMeta {
+  report_id?: number
   created_at?: string
   tokens_used?: number
   latency_ms?: number
   model?: string
 }
 const reportMeta = ref<ReportMeta>({})
+
+// ---- Feedback State ----
+const feedbackSubmitted = ref<0 | 1 | -1>(0)
+
+// ---- Fallback Data State ----
+const fallbackData = ref<StockFallbackData | null>(null)
 
 const renderedHtml = computed(() => {
   if (!reportContent.value || !mdInstance.value) return ''
@@ -251,6 +323,8 @@ async function handleGenerate(force?: boolean | MouseEvent) {
   dataUpdateReason.value = ''
   reportMeta.value = {}
   followupAnswers.value = []
+  feedbackSubmitted.value = 0
+  fallbackData.value = null
   progressSteps.value = progressSteps.value.map(s => ({ ...s, status: 'pending' as const, elapsed: undefined }))
 
   // Init markdown-it
@@ -271,6 +345,7 @@ async function handleGenerate(force?: boolean | MouseEvent) {
   } catch (e: unknown) {
     if (e instanceof Error && e.name !== 'AbortError') {
       errorMsg.value = e.message || '生成报告失败'
+      loadFallbackData(currentCode.value)
     }
   } finally {
     generating.value = false
@@ -312,6 +387,7 @@ function handleStreamEvent(ev: ReportStreamEvent) {
     case 'done':
       if (ev.tokens_used) reportMeta.value.tokens_used = ev.tokens_used
       if (ev.latency_ms) reportMeta.value.latency_ms = ev.latency_ms
+      if (ev.report_id) reportMeta.value.report_id = ev.report_id
       if (!reportMeta.value.created_at) {
         reportMeta.value.created_at = new Date().toLocaleString()
       }
@@ -320,6 +396,7 @@ function handleStreamEvent(ev: ReportStreamEvent) {
     case 'error':
       errorMsg.value = ev.msg || '生成失败'
       generating.value = false
+      loadFallbackData(currentCode.value)
       break
   }
 }
@@ -339,6 +416,34 @@ async function handleCopy() {
   } catch {
     ElMessage.error('复制失败')
   }
+}
+
+async function handleFeedback(value: 1 | -1) {
+  const reportId = reportMeta.value.report_id
+  if (!reportId) return
+  try {
+    await submitReportFeedback(reportId, value)
+    feedbackSubmitted.value = value
+  } catch {
+    ElMessage.error('反馈提交失败')
+  }
+}
+
+async function loadFallbackData(code: string) {
+  if (!code) return
+  try {
+    const res = await getStockFallbackData(code) as any
+    fallbackData.value = res?.data || res || null
+  } catch {
+    // silent — fallback data is best-effort
+  }
+}
+
+function formatCap(v: number | undefined | null): string {
+  if (!v) return '-'
+  if (v >= 100000000) return (v / 100000000).toFixed(0) + '亿'
+  if (v >= 10000) return (v / 10000).toFixed(0) + '万'
+  return String(v)
 }
 
 // ---- Follow-up ----
@@ -680,6 +785,85 @@ watch(klineCollapsed, (collapsed) => {
   margin-top: 80px;
 }
 
+/* ---- Fallback Data Panel ---- */
+.fallback-data {
+  margin-top: 16px;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.fallback-data h4 {
+  font-size: 14px;
+  margin: 0 0 12px;
+  color: var(--el-text-color-primary);
+}
+
+.fallback-section {
+  margin-top: 16px;
+}
+
+.fallback-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+}
+
+.metric-item {
+  display: flex;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.metric-label {
+  color: var(--el-text-color-secondary);
+}
+
+.metric-value {
+  font-weight: 500;
+}
+
+.metric-value.up { color: #f56c6c; }
+.metric-value.down { color: #67c23a; }
+
+.fallback-flow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.flow-tag {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+}
+
+.flow-tag.up { color: #f56c6c; background: #fef0f0; }
+.flow-tag.down { color: #67c23a; background: #f0f9eb; }
+
+/* ---- Feedback Bar ---- */
+.feedback-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+}
+
+.feedback-label {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.feedback-done {
+  font-size: 12px;
+  color: var(--el-color-success);
+  margin-left: 4px;
+}
+
 .kline-panel {
   background: var(--el-bg-color);
   border: 1px solid var(--el-border-color-lighter);
@@ -773,6 +957,27 @@ watch(klineCollapsed, (collapsed) => {
   }
   .followup-bar {
     flex-direction: column;
+  }
+}
+
+@media (min-width: 1100px) {
+  .stock-analysis {
+    max-width: 1200px;
+  }
+  .stock-analysis .main-content {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+  }
+  .stock-analysis .main-content .kline-panel {
+    flex: 0 0 45%;
+    position: sticky;
+    top: 20px;
+    margin-bottom: 0;
+  }
+  .stock-analysis .main-content .report-container {
+    flex: 1;
+    max-height: 80vh;
   }
 }
 </style>

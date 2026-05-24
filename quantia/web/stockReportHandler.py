@@ -5,9 +5,12 @@
 路由（web_service.py 中注册）::
 
     POST /quantia/api/ai/report/generate      → SSE 流式生成报告
+    POST /quantia/api/ai/report/followup      → SSE 追问
+    POST /quantia/api/ai/report/feedback      → 提交报告反馈 (👍/👎)
     GET  /quantia/api/ai/report/history        → 历史报告列表
     GET  /quantia/api/ai/report/detail         → 单条报告详情
     GET  /quantia/api/ai/report/search_stock   → 股票搜索 autocomplete
+    GET  /quantia/api/ai/report/stock_data     → 快速结构化数据（fallback 面板）
 """
 from __future__ import annotations
 
@@ -636,3 +639,107 @@ class StockReportFollowupHandler(webBase.BaseHandler, ABC):
             yield self.flush()
         except Exception:
             pass
+
+
+class StockReportFeedbackHandler(webBase.BaseHandler, ABC):
+    """POST /quantia/api/ai/report/feedback — 提交报告反馈。"""
+
+    @gen.coroutine
+    def post(self):
+        try:
+            body = json.loads(self.request.body or '{}')
+        except (json.JSONDecodeError, TypeError):
+            body = {}
+        report_id = body.get('report_id')
+        feedback = body.get('feedback')  # 1=满意, -1=不满意
+        reason = (body.get('reason') or '')[:200]
+
+        if not report_id or feedback not in (1, -1):
+            _write_json(self, {'error': 'report_id 和 feedback(1/-1) 必填'}, 400)
+            return
+
+        _lazy_ensure_table()
+        sql = f"""
+            UPDATE `{_REPORT_TABLE}`
+            SET user_feedback = %s, feedback_reason = %s
+            WHERE id = %s
+        """
+        try:
+            mdb.executeSql(sql, (feedback, reason or None, report_id))
+            _write_json(self, {'ok': True})
+        except Exception as exc:
+            _logger.warning(f'[stockReport] 反馈写入失败: {exc}', exc_info=True)
+            _write_json(self, {'error': '写入失败'}, 500)
+
+
+class StockDataFallbackHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/ai/report/stock_data — 快速结构化数据（AI不可用时展示）。"""
+
+    @gen.coroutine
+    def get(self):
+        code = (self.get_argument('code', '') or '').strip()
+        if not code or len(code) != 6:
+            _write_json(self, {'error': 'code 必须是6位'}, 400)
+            return
+
+        result: Dict[str, Any] = {'code': code}
+
+        # 基础行情
+        try:
+            sql = """
+                SELECT name, close, changepercent, pe9, pb, roe,
+                       mgjzc, mgsy, total_market_cap, turnoverratio
+                FROM cn_stock_spot
+                WHERE code = %s
+                ORDER BY date DESC LIMIT 1
+            """
+            rows = mdb.executeSqlFetch(sql, (code,))
+            if rows:
+                r = rows[0]
+                result['spot'] = {
+                    'name': r[0], 'close': r[1], 'change_pct': r[2],
+                    'pe': r[3], 'pb': r[4], 'roe': r[5],
+                    'bps': r[6], 'eps': r[7],
+                    'market_cap': r[8], 'turnover': r[9],
+                }
+                result['name'] = r[0]
+        except Exception as exc:
+            _logger.debug(f'[stockReport] fallback spot 查询异常: {exc}')
+
+        # 资金流向
+        try:
+            sql = """
+                SELECT date, main_net_inflow, super_net_inflow, big_net_inflow
+                FROM cn_stock_fund_flow
+                WHERE code = %s
+                ORDER BY date DESC LIMIT 5
+            """
+            rows = mdb.executeSqlFetch(sql, (code,))
+            if rows:
+                result['fund_flow'] = [
+                    {'date': str(r[0]), 'main': r[1], 'super': r[2], 'big': r[3]}
+                    for r in rows
+                ]
+        except Exception as exc:
+            _logger.debug(f'[stockReport] fallback fund_flow 查询异常: {exc}')
+
+        # 技术指标
+        try:
+            sql = """
+                SELECT macd, macd_signal, kdj_k, kdj_d, kdj_j, rsi_6
+                FROM cn_stock_indicators
+                WHERE code = %s
+                ORDER BY date DESC LIMIT 1
+            """
+            rows = mdb.executeSqlFetch(sql, (code,))
+            if rows:
+                r = rows[0]
+                result['indicators'] = {
+                    'macd': r[0], 'macd_signal': r[1],
+                    'kdj_k': r[2], 'kdj_d': r[3], 'kdj_j': r[4],
+                    'rsi_6': r[5],
+                }
+        except Exception as exc:
+            _logger.debug(f'[stockReport] fallback indicators 查询异常: {exc}')
+
+        _write_json(self, result)
