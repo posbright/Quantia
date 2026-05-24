@@ -171,7 +171,8 @@ async function queryStock(queryString: string, cb: (items: { value: string; code
       industry: item.industry || '',
     }))
     cb(items)
-  } catch {
+  } catch (e) {
+    console.warn('[analysis] 股票搜索失败:', e)
     cb([])
   }
 }
@@ -258,7 +259,9 @@ function handleStreamEvent(ev: ReportStreamEvent) {
     case 'done':
       if (ev.tokens_used) reportMeta.value.tokens_used = ev.tokens_used
       if (ev.latency_ms) reportMeta.value.latency_ms = ev.latency_ms
-      reportMeta.value.created_at = new Date().toLocaleString()
+      if (!reportMeta.value.created_at) {
+        reportMeta.value.created_at = new Date().toLocaleString()
+      }
       generating.value = false
       break
     case 'error':

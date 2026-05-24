@@ -71,7 +71,7 @@ def _ensure_report_table():
     try:
         mdb.executeSql(ddl)
     except Exception as exc:
-        _logger.warning(f'[stockReport] 建表失败（可能已存在）: {exc}')
+        _logger.warning(f'[stockReport] 建表失败（可能已存在）: {exc}', exc_info=True)
 
 
 _table_ensured = False
@@ -147,7 +147,7 @@ def _has_data_update(code: str, last_report_time: str) -> tuple:
             if latest_spot > last_report_time[:10]:
                 return True, f"行情数据更新至{latest_spot}"
     except Exception as exc:
-        _logger.debug(f'[stockReport] 数据变更检测失败: {exc}')
+        _logger.warning(f'[stockReport] 数据变更检测失败: {exc}', exc_info=True)
 
     return False, ""
 
@@ -309,13 +309,14 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
             try:
                 return q_out.get(block=True, timeout=120)
             except _q.Empty:
+                _logger.warning(f'[stockReport] 队列读取超时(120s)，Agent 可能卡死 (code={code})')
                 return (_STREAM_SENTINEL, None)
 
         while True:
             try:
                 item = yield loop.run_in_executor(_executor, _queue_get)
-            except Exception:
-                # Connection closed or other error
+            except Exception as exc:
+                _logger.debug(f'[stockReport] executor 异常: {type(exc).__name__}: {exc}')
                 cancel_event.set()
                 break
             kind, payload = item
@@ -338,8 +339,9 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
                         {'type': 'error', 'msg': payload.get('msg', '生成失败')},
                         ensure_ascii=False) + '\n\n')
                     yield self.flush()
-            except Exception:
+            except Exception as exc:
                 # Client disconnected during write/flush
+                _logger.debug(f'[stockReport] SSE 写入失败（客户端可能已断开）: {type(exc).__name__}: {exc}')
                 cancel_event.set()
                 break
 
@@ -359,7 +361,7 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
                     latency_ms=meta_info.get('latency_ms', 0),
                 )
             except Exception as exc:
-                _logger.warning(f'[stockReport] 保存报告失败: {exc}')
+                _logger.warning(f'[stockReport] 保存报告失败: {exc}', exc_info=True)
 
         # 发送 done (best effort — client may already be gone)
         try:
@@ -370,8 +372,8 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
                 'latency_ms': meta_info.get('latency_ms', 0),
             }, ensure_ascii=False) + '\n\n')
             yield self.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug(f'[stockReport] 发送 done 事件失败（客户端已断开）: {exc}')
 
 
 class StockReportHistoryHandler(webBase.BaseHandler, ABC):
@@ -381,8 +383,11 @@ class StockReportHistoryHandler(webBase.BaseHandler, ABC):
     def get(self):
         _lazy_ensure_table()
         code = self.get_argument('code', '')
-        limit = min(50, max(1, int(self.get_argument('limit', '20'))))
-        offset = max(0, int(self.get_argument('offset', '0')))
+        try:
+            limit = min(50, max(1, int(self.get_argument('limit', '20'))))
+            offset = max(0, int(self.get_argument('offset', '0')))
+        except (ValueError, TypeError):
+            limit, offset = 20, 0
 
         where = ''
         params: List[Any] = []
@@ -472,7 +477,5 @@ class StockSearchHandler(webBase.BaseHandler, ABC):
                 elif not seen[code_val]['industry'] and r[2]:
                     # 补充之前为空的 industry
                     seen[code_val]['industry'] = r[2]
-                if len(seen) >= 8:
-                    break
-            items = list(seen.values())
+            items = list(seen.values())[:8]
         _write_json(self, {'items': items})

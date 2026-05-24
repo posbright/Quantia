@@ -85,7 +85,8 @@ async function loadHistory() {
     } else {
       total.value = (currentPage.value - 1) * pageSize + historyList.value.length
     }
-  } catch {
+  } catch (e) {
+    console.warn('[report-history] 加载历史失败:', e)
     historyList.value = []
   } finally {
     loading.value = false

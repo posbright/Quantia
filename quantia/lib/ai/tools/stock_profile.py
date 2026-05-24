@@ -244,12 +244,15 @@ def _query_kline_30d(code: str) -> List[Dict[str, Any]]:
                     bar[k] = str(v)[:10]  # date only, no time component
                 elif isinstance(v, float):
                     bar[k] = round(v, 4)
+                elif hasattr(v, 'item'):
+                    # numpy scalar → native Python (int64→int, float64→float)
+                    bar[k] = v.item()
                 else:
                     bar[k] = v
             result.append(bar)
         return result
     except Exception as exc:
-        _logger.warning(f'[stock_profile] 加载 K 线失败 ({code}): {exc}')
+        _logger.warning(f'[stock_profile] 加载 K 线失败 ({code}): {exc}', exc_info=True)
         return []
 
 
