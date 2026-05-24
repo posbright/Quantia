@@ -577,8 +577,9 @@ class StockReportFollowupHandler(webBase.BaseHandler, ABC):
         if not report_md:
             _write_json(self, {'error': '缺少报告上下文 report_md'}, 400)
             return
-        # 限制报告上下文长度（防止 token 爆炸）
+        # 限制长度（防止 token 爆炸）
         report_md = report_md[:4000]
+        question = question[:500]
 
         self.set_header('Content-Type', 'text/event-stream; charset=utf-8')
         self.set_header('Cache-Control', 'no-cache')

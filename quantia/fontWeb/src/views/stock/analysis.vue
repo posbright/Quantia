@@ -386,6 +386,7 @@ async function handleFollowup() {
 
 // ---- K-line Chart ----
 async function loadKlineChart(code: string) {
+  klineLoaded.value = false
   try {
     const res = await getKlineData({ code, days: 90 }) as any
     const data = res?.data || res
@@ -405,8 +406,8 @@ async function loadKlineChart(code: string) {
     const boll = data.boll || {}
     const macd = data.macd || {}
 
-    // Show last ~60% of data by default
-    const startPercent = Math.max(0, 100 - Math.floor(60 / dates.length * 100 + 40))
+    // Show last ~60 data points by default
+    const startPercent = dates.length > 60 ? Math.round((1 - 60 / dates.length) * 100) : 0
 
     const option: echarts.EChartsOption = {
       tooltip: {
@@ -511,6 +512,15 @@ onBeforeUnmount(() => {
 watch(currentCode, (code) => {
   if (code && code.length === 6) {
     loadKlineChart(code)
+  } else {
+    klineLoaded.value = false
+  }
+})
+
+// Resize chart after expand (v-show → ECharts container size may be 0)
+watch(klineCollapsed, (collapsed) => {
+  if (!collapsed && chartInstance) {
+    nextTick(() => chartInstance?.resize())
   }
 })
 </script>
