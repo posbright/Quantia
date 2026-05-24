@@ -302,6 +302,7 @@ export interface TokenByModel {
   model: string
   total_tokens: number
   call_count: number
+  avg_tokens_per_call: number
 }
 
 export interface TokenByScene {

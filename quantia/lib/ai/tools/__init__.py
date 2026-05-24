@@ -91,6 +91,7 @@ def _autoload(reg: ToolRegistry) -> None:
         ('quantia.lib.ai.tools.backtest_run', 'BacktestRunTool'),
         ('quantia.lib.ai.tools.web_search', 'WebSearchTool'),
         ('quantia.lib.ai.tools.kb_search', 'KbSearchTool'),
+        ('quantia.lib.ai.tools.stock_profile', 'StockProfileTool'),
     ]
     for mod_path, cls_name in pairs:
         try:

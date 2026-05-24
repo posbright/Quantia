@@ -188,6 +188,20 @@ const routes: RouteRecordRaw[] = [
     ]
   },
   {
+    path: '/ai-report',
+    component: Layout,
+    redirect: '/ai-report/analysis',
+    meta: { title: 'AI 分析', icon: 'ChatDotRound' },
+    children: [
+      {
+        path: 'analysis',
+        name: 'StockAnalysis',
+        component: () => import('@/views/stock/analysis.vue'),
+        meta: { title: '个股分析' }
+      }
+    ]
+  },
+  {
     path: '/strategy',
     component: Layout,
     redirect: '/strategy/enter',

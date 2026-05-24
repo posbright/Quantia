@@ -33,6 +33,7 @@ _FEATURE_SCENE_PREFIX: Dict[str, str] = {
     'strategy_repair': 'strategy_repair',
     'chat': 'chat',
     'trade_gate': 'trade_gate',
+    'stock_report': 'stock_report',
     'report_generate': 'report_generate',
     'report_cron_pregenerate': 'report_cron',
 }
@@ -72,6 +73,7 @@ INSERT IGNORE INTO `{_TABLE}` (feature, enabled, daily_token_budget) VALUES
 ('strategy_repair', 1, NULL),
 ('chat', 1, NULL),
 ('trade_gate', 1, 100000),
+('stock_report', 1, 150000),
 ('report_generate', 1, 150000),
 ('report_cron_pregenerate', 0, 200000)
 """.strip()

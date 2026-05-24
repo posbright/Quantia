@@ -125,6 +125,12 @@ _BUILTIN_AGENTS = [
         'description': '把回测指标或行情数据解读成简洁中文摘要（IM / 复盘文案）。',
         'is_builtin': True,
     },
+    {
+        'name': 'stock_analyst',
+        'display_name': '个股分析师',
+        'description': '基于多维数据为 A 股个股生成结构化分析报告。',
+        'is_builtin': True,
+    },
 ]
 
 
