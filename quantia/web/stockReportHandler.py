@@ -137,13 +137,12 @@ def _check_cache(code: str) -> Optional[Dict[str, Any]]:
     now = datetime.now()
     hour = now.hour
     # 盘中 (09:30-15:00): TTL = 30 分钟
-    # 收盘后: TTL = 当日有效
+    # 收盘后: TTL = 当日剩余时间（限制为同一自然日）
     if 9 <= hour < 15:
-        ttl_minutes = 30
+        cutoff = now - timedelta(minutes=30)
     else:
-        ttl_minutes = 60 * 24  # effectively same day
-
-    cutoff = now - timedelta(minutes=ttl_minutes)
+        # 使用当天 00:00 作为下界，确保不会命中昨天的报告
+        cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
     sql = f"""
         SELECT id, code, name, report_md, model, provider, tools_used,
                tokens_used, latency_ms, created_at
@@ -312,31 +311,45 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
         full_text_parts: List[str] = []
         meta_info: Dict[str, Any] = {}
 
+        def _queue_get():
+            """Blocking queue get with timeout (runs in executor thread)."""
+            import queue as _q
+            try:
+                return q_out.get(block=True, timeout=120)
+            except _q.Empty:
+                return (_STREAM_SENTINEL, None)
+
         while True:
             try:
-                item = yield loop.run_in_executor(_executor, q_out.get, True, 60)
+                item = yield loop.run_in_executor(_executor, _queue_get)
             except Exception:
-                # Timeout or error
+                # Connection closed or other error
+                cancel_event.set()
                 break
             kind, payload = item
             if kind is _STREAM_SENTINEL:
                 break
-            if kind == 'progress':
-                self.write('data: ' + json.dumps(
-                    {'type': 'progress', **payload}, ensure_ascii=False) + '\n\n')
-                yield self.flush()
-            elif kind == 'chunk':
-                full_text_parts.append(payload)
-                self.write('data: ' + json.dumps(
-                    {'type': 'chunk', 'text': payload}, ensure_ascii=False) + '\n\n')
-                yield self.flush()
-            elif kind == 'meta':
-                meta_info = payload
-            elif kind == 'error':
-                self.write('data: ' + json.dumps(
-                    {'type': 'error', 'msg': payload.get('msg', '生成失败')},
-                    ensure_ascii=False) + '\n\n')
-                yield self.flush()
+            try:
+                if kind == 'progress':
+                    self.write('data: ' + json.dumps(
+                        {'type': 'progress', **payload}, ensure_ascii=False) + '\n\n')
+                    yield self.flush()
+                elif kind == 'chunk':
+                    full_text_parts.append(payload)
+                    self.write('data: ' + json.dumps(
+                        {'type': 'chunk', 'text': payload}, ensure_ascii=False) + '\n\n')
+                    yield self.flush()
+                elif kind == 'meta':
+                    meta_info = payload
+                elif kind == 'error':
+                    self.write('data: ' + json.dumps(
+                        {'type': 'error', 'msg': payload.get('msg', '生成失败')},
+                        ensure_ascii=False) + '\n\n')
+                    yield self.flush()
+            except Exception:
+                # Client disconnected during write/flush
+                cancel_event.set()
+                break
 
         # 保存报告
         full_text = ''.join(full_text_parts)
@@ -356,14 +369,17 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
             except Exception as exc:
                 _logger.warning(f'[stockReport] 保存报告失败: {exc}')
 
-        # 发送 done
-        self.write('data: ' + json.dumps({
-            'type': 'done',
-            'report_id': report_id,
-            'tokens_used': meta_info.get('tokens_used', 0),
-            'latency_ms': meta_info.get('latency_ms', 0),
-        }, ensure_ascii=False) + '\n\n')
-        yield self.flush()
+        # 发送 done (best effort — client may already be gone)
+        try:
+            self.write('data: ' + json.dumps({
+                'type': 'done',
+                'report_id': report_id,
+                'tokens_used': meta_info.get('tokens_used', 0),
+                'latency_ms': meta_info.get('latency_ms', 0),
+            }, ensure_ascii=False) + '\n\n')
+            yield self.flush()
+        except Exception:
+            pass
 
 
 class StockReportHistoryHandler(webBase.BaseHandler, ABC):
@@ -443,6 +459,8 @@ class StockSearchHandler(webBase.BaseHandler, ABC):
             return
 
         # 搜索代码或名称（LIKE 匹配，返回 top 8）
+        # 转义 SQL LIKE 通配符
+        escaped_q = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
         sql = """
             SELECT code, name
             FROM cn_stock_spot
@@ -450,7 +468,7 @@ class StockSearchHandler(webBase.BaseHandler, ABC):
             ORDER BY total_market_cap DESC
             LIMIT 8
         """
-        pattern = f'%{q}%'
+        pattern = f'%{escaped_q}%'
         rows = mdb.executeSqlFetch(sql, (pattern, pattern))
         items = []
         if rows:

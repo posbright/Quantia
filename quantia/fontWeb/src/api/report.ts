@@ -50,7 +50,7 @@ export interface ReportStreamEvent {
  */
 export function searchStock(q: string) {
   return request.get<{ items: StockSearchItem[] }>(
-    '/quantia/api/ai/report/search_stock', { params: { q } }
+    '/api/ai/report/search_stock', { params: { q } }
   )
 }
 
@@ -59,7 +59,7 @@ export function searchStock(q: string) {
  */
 export function getReportHistory(params: { code?: string; limit?: number; offset?: number }) {
   return request.get<{ items: ReportHistoryItem[] }>(
-    '/quantia/api/ai/report/history', { params }
+    '/api/ai/report/history', { params }
   )
 }
 
@@ -68,7 +68,7 @@ export function getReportHistory(params: { code?: string; limit?: number; offset
  */
 export function getReportDetail(id: number) {
   return request.get<ReportDetail>(
-    '/quantia/api/ai/report/detail', { params: { id } }
+    '/api/ai/report/detail', { params: { id } }
   )
 }
 

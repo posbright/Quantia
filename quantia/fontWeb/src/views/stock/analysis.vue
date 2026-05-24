@@ -94,12 +94,12 @@ import { searchStock, generateReportStream } from '@/api/report'
 import type { ReportStreamEvent, StockSearchItem } from '@/api/report'
 
 // ---- markdown-it setup (dynamic import for code-split) ----
-let md: { render: (src: string) => string } | null = null
+const mdInstance = ref<{ render: (src: string) => string } | null>(null)
 async function ensureMarkdownIt() {
-  if (md) return md
+  if (mdInstance.value) return mdInstance.value
   const MarkdownIt = (await import('markdown-it')).default
-  md = new MarkdownIt({ html: false, linkify: true, typographer: true })
-  return md
+  mdInstance.value = new MarkdownIt({ html: false, linkify: true, typographer: true })
+  return mdInstance.value
 }
 
 // ---- State ----
@@ -137,8 +137,8 @@ interface ReportMeta {
 const reportMeta = ref<ReportMeta>({})
 
 const renderedHtml = computed(() => {
-  if (!reportContent.value || !md) return ''
-  return md.render(reportContent.value)
+  if (!reportContent.value || !mdInstance.value) return ''
+  return mdInstance.value.render(reportContent.value)
 })
 
 // ---- Methods ----
@@ -148,8 +148,9 @@ async function queryStock(queryString: string, cb: (items: { value: string; code
     return
   }
   try {
-    const res = await searchStock(queryString)
-    const items = (res.data?.items || []).map((item: StockSearchItem) => ({
+    const res = await searchStock(queryString) as any
+    const data = res?.items || res?.data?.items || []
+    const items = data.map((item: StockSearchItem) => ({
       value: `${item.code} ${item.name}`,
       code: item.code,
       name: item.name,
@@ -166,11 +167,13 @@ function handleSelect(item: { code: string; name: string }) {
   searchText.value = `${item.code} ${item.name}`
 }
 
-async function handleGenerate(force = false) {
+async function handleGenerate(force?: boolean | MouseEvent) {
   if (!currentCode.value) {
     ElMessage.warning('请先选择股票')
     return
   }
+  // @click passes MouseEvent as first arg; normalize to boolean
+  const forceRefresh = force === true
 
   // Reset state
   generating.value = true
@@ -193,7 +196,7 @@ async function handleGenerate(force = false) {
     await generateReportStream(
       currentCode.value,
       (ev: ReportStreamEvent) => handleStreamEvent(ev),
-      { force: force === true, signal: abortController.value!.signal }
+      { force: forceRefresh, signal: abortController.value!.signal }
     )
   } catch (e: unknown) {
     if (e instanceof Error && e.name !== 'AbortError') {
