@@ -206,3 +206,71 @@ export function submitReportFeedback(reportId: number, feedback: 1 | -1, reason?
 export function getStockFallbackData(code: string) {
   return request.get<StockFallbackData>('/api/ai/report/stock_data', { params: { code } })
 }
+
+// ---- Batch Analysis (§10.6) ----
+
+export interface AttentionListItem {
+  code: string
+  name: string
+}
+
+export interface BatchSummaryEvent {
+  type: 'start' | 'item' | 'done'
+  total?: number
+  code?: string
+  name?: string
+  summary?: string
+  tokens_used?: number
+  latency_ms?: number
+  error?: boolean
+}
+
+/**
+ * 获取关注列表
+ */
+export function getAttentionList() {
+  return request.get<{ items: AttentionListItem[]; count: number }>(
+    '/api/ai/report/attention_list'
+  )
+}
+
+/**
+ * SSE 批量摘要生成（关注列表）
+ */
+export async function batchSummaryStream(
+  codes: string[],
+  onEvent: (ev: BatchSummaryEvent) => void,
+  options?: { signal?: AbortSignal }
+): Promise<void> {
+  const resp = await fetch('/quantia/api/ai/report/batch_summary', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ codes }),
+    signal: options?.signal,
+  })
+  if (!resp.ok) {
+    const text = await resp.text()
+    onEvent({ type: 'done' })
+    throw new Error(text || `HTTP ${resp.status}`)
+  }
+  const reader = resp.body!.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const raw = buf.slice(0, idx).trim()
+      buf = buf.slice(idx + 2)
+      if (!raw.startsWith('data:')) continue
+      try {
+        const ev: BatchSummaryEvent = JSON.parse(raw.slice(5).trim())
+        onEvent(ev)
+      } catch {
+        // skip malformed
+      }
+    }
+  }
+}

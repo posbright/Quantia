@@ -672,6 +672,153 @@ class StockReportFeedbackHandler(webBase.BaseHandler, ABC):
             _write_json(self, {'error': '写入失败'}, 500)
 
 
+class StockReportAttentionListHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/ai/report/attention_list — 获取关注列表(code+name)。"""
+
+    @gen.coroutine
+    def get(self):
+        import quantia.core.tablestructure as tbs
+        table_name = tbs.TABLE_CN_STOCK_ATTENTION['name']
+        sql = f"""
+            SELECT a.code, COALESCE(s.name, '') as name
+            FROM `{table_name}` a
+            LEFT JOIN cn_stock_spot s ON a.code = s.code
+            GROUP BY a.code
+            ORDER BY MAX(a.datetime) DESC
+            LIMIT 50
+        """
+        try:
+            rows = mdb.executeSqlFetch(sql)
+            items = [{'code': r[0], 'name': r[1]} for r in rows] if rows else []
+            _write_json(self, {'items': items, 'count': len(items)})
+        except Exception as exc:
+            _logger.warning(f'[stockReport] 获取关注列表失败: {exc}', exc_info=True)
+            _write_json(self, {'items': [], 'count': 0})
+
+
+def _run_batch_summary(codes: List[str], q: queue.Queue, cancel: threading.Event):
+    """在线程中依次为多只股票生成简短摘要（300字以内）。"""
+    for code in codes:
+        if cancel.is_set():
+            break
+        try:
+            from quantia.lib.ai import run_agent
+            from quantia.lib.ai.feature_switch import check_feature
+            check_feature('stock_report')
+
+            started = time.time()
+            result = run_agent(
+                user_message=(
+                    f"请为 A 股 {code} 生成一段简短的投资分析摘要，不超过300字。"
+                    f"包含：1）当前走势概括 2）主要技术信号 3）资金动向 4）综合评级（看多/看空/中性）"
+                ),
+                scene='stock_report',
+                agent='stock_analyst',
+                system=(
+                    '你是 Quantia AI 股票分析师。请生成极简摘要卡片，'
+                    '严格控制在300字以内。格式：一段文字概述 + 评级。'
+                    '不要使用 markdown 标题，仅纯文本段落。'
+                ),
+                allowed_tools=_ALLOWED_TOOLS,
+            )
+            elapsed_ms = int((time.time() - started) * 1000)
+
+            # 提取股票名称
+            stock_name = ''
+            for tc in (result.tool_calls or []):
+                if tc.get('name') == 'stock_profile' and tc.get('ok'):
+                    stock_name = tc.get('result', {}).get('name', '')
+                    break
+
+            content = (result.content or '')[:500]  # 硬截断防溢出
+            q.put(('item', {
+                'code': code,
+                'name': stock_name,
+                'summary': content,
+                'tokens_used': result.total_tokens or 0,
+                'latency_ms': elapsed_ms,
+            }))
+        except Exception as exc:
+            _logger.warning(f'[stockReport] 批量摘要生成失败 {code}: {exc}')
+            q.put(('item', {
+                'code': code,
+                'name': '',
+                'summary': f'生成失败: {exc}',
+                'error': True,
+            }))
+    q.put((_STREAM_SENTINEL, None))
+
+
+class StockReportBatchHandler(webBase.BaseHandler, ABC):
+    """POST /quantia/api/ai/report/batch_summary — SSE 批量摘要（关注列表）。"""
+
+    @gen.coroutine
+    def post(self):
+        try:
+            body = json.loads(self.request.body or '{}')
+        except (json.JSONDecodeError, TypeError):
+            body = {}
+        codes = body.get('codes', [])
+        if not codes or not isinstance(codes, list):
+            _write_json(self, {'error': 'codes 必须是非空数组'}, 400)
+            return
+        # 限制最多 20 只
+        codes = [c for c in codes[:20] if isinstance(c, str) and len(c) == 6]
+        if not codes:
+            _write_json(self, {'error': '无有效的6位股票代码'}, 400)
+            return
+
+        self.set_header('Content-Type', 'text/event-stream; charset=utf-8')
+        self.set_header('Cache-Control', 'no-cache')
+        self.set_header('X-Accel-Buffering', 'no')
+
+        # 发送开始事件
+        self.write('data: ' + json.dumps(
+            {'type': 'start', 'total': len(codes)}, ensure_ascii=False) + '\n\n')
+        yield self.flush()
+
+        q_out = queue.Queue(maxsize=64)
+        cancel_event = threading.Event()
+
+        t = threading.Thread(
+            target=_run_batch_summary, args=(codes, q_out, cancel_event), daemon=True)
+        t.start()
+
+        loop = IOLoop.current()
+
+        def _queue_get():
+            import queue as _q
+            try:
+                return q_out.get(block=True, timeout=180)
+            except _q.Empty:
+                return (_STREAM_SENTINEL, None)
+
+        while True:
+            try:
+                item = yield loop.run_in_executor(_executor, _queue_get)
+            except Exception:
+                cancel_event.set()
+                break
+            kind, payload = item
+            if kind is _STREAM_SENTINEL:
+                break
+            try:
+                if kind == 'item':
+                    self.write('data: ' + json.dumps(
+                        {'type': 'item', **payload}, ensure_ascii=False) + '\n\n')
+                    yield self.flush()
+            except Exception:
+                cancel_event.set()
+                break
+
+        # done
+        try:
+            self.write('data: ' + json.dumps({'type': 'done'}) + '\n\n')
+            yield self.flush()
+        except Exception:
+            pass
+
+
 class StockDataFallbackHandler(webBase.BaseHandler, ABC):
     """GET /quantia/api/ai/report/stock_data — 快速结构化数据（AI不可用时展示）。"""
 
