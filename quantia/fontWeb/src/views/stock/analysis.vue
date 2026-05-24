@@ -45,6 +45,17 @@
       </div>
     </div>
 
+    <!-- K线图面板 -->
+    <div v-if="currentCode && klineLoaded" class="kline-panel">
+      <div class="kline-header" @click="klineCollapsed = !klineCollapsed">
+        <span class="kline-title">📈 K线走势 · {{ currentCode }} {{ currentName }}</span>
+        <el-icon class="kline-toggle" :class="{ collapsed: klineCollapsed }"><ArrowDown /></el-icon>
+      </div>
+      <div v-show="!klineCollapsed" class="kline-chart-wrap">
+        <div ref="klineChartRef" class="kline-chart"></div>
+      </div>
+    </div>
+
     <!-- 错误降级面板 -->
     <div v-if="errorMsg && !reportContent" class="fallback-panel">
       <el-alert type="warning" :closable="false" show-icon>
@@ -83,6 +94,33 @@
         </span>
       </div>
       <div class="report-body markdown-body" v-html="renderedHtml"></div>
+
+      <!-- 追问回答区域 -->
+      <div v-if="followupAnswers.length" class="followup-answers">
+        <div v-for="(fa, idx) in followupAnswers" :key="idx" class="followup-item">
+          <div class="followup-question">💬 {{ fa.question }}</div>
+          <div class="followup-answer markdown-body" v-html="renderFollowup(fa.answer)"></div>
+        </div>
+      </div>
+
+      <!-- 追问输入框 -->
+      <div class="followup-bar">
+        <el-input
+          v-model="followupText"
+          placeholder="对报告有疑问？输入追问..."
+          :disabled="followupLoading"
+          clearable
+          @keyup.enter="handleFollowup"
+        />
+        <el-button
+          type="primary"
+          :loading="followupLoading"
+          :disabled="!followupText.trim()"
+          @click="handleFollowup"
+        >
+          追问
+        </el-button>
+      </div>
     </div>
 
     <!-- 空状态 -->
@@ -97,14 +135,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  VideoPlay, CopyDocument, Loading, CircleCheckFilled, Clock, DataAnalysis
+  VideoPlay, CopyDocument, Loading, CircleCheckFilled, Clock, DataAnalysis, ArrowDown
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { searchStock, generateReportStream } from '@/api/report'
-import type { ReportStreamEvent, StockSearchItem } from '@/api/report'
+import { searchStock, generateReportStream, followupReportStream } from '@/api/report'
+import { getKlineData } from '@/api/stock'
+import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent } from '@/api/report'
+import * as echarts from 'echarts'
 
 // ---- markdown-it setup (dynamic import for code-split) ----
 const mdInstance = ref<{ render: (src: string) => string } | null>(null)
@@ -127,6 +167,18 @@ const fromCache = ref(false)
 const dataUpdateReason = ref('')
 const reportRef = ref<HTMLElement | null>(null)
 const abortController = ref<AbortController | null>(null)
+
+// ---- K-line Chart State ----
+const klineChartRef = ref<HTMLElement | null>(null)
+const klineLoaded = ref(false)
+const klineCollapsed = ref(false)
+let chartInstance: echarts.ECharts | null = null
+
+// ---- Follow-up State ----
+const followupText = ref('')
+const followupLoading = ref(false)
+interface FollowupEntry { question: string; answer: string }
+const followupAnswers = ref<FollowupEntry[]>([])
 
 interface ProgressStep {
   name: string
@@ -198,6 +250,7 @@ async function handleGenerate(force?: boolean | MouseEvent) {
   fromCache.value = false
   dataUpdateReason.value = ''
   reportMeta.value = {}
+  followupAnswers.value = []
   progressSteps.value = progressSteps.value.map(s => ({ ...s, status: 'pending' as const, elapsed: undefined }))
 
   // Init markdown-it
@@ -288,15 +341,176 @@ async function handleCopy() {
   }
 }
 
+// ---- Follow-up ----
+function renderFollowup(md: string): string {
+  if (!mdInstance.value) return md
+  return mdInstance.value.render(md)
+}
+
+async function handleFollowup() {
+  const question = followupText.value.trim()
+  if (!question || !reportContent.value) return
+
+  followupLoading.value = true
+  const entry: FollowupEntry = { question, answer: '' }
+  followupAnswers.value.push(entry)
+  followupText.value = ''
+
+  try {
+    await followupReportStream(
+      currentCode.value,
+      question,
+      reportContent.value,
+      (ev: FollowupStreamEvent) => {
+        if (ev.type === 'chunk' && ev.text) {
+          entry.answer += ev.text
+        } else if (ev.type === 'error') {
+          entry.answer = `⚠️ ${ev.msg || '追问失败'}`
+        }
+      },
+    )
+  } catch (e: unknown) {
+    if (e instanceof Error && e.name !== 'AbortError') {
+      entry.answer = `⚠️ ${e.message || '追问失败'}`
+    }
+  } finally {
+    followupLoading.value = false
+    // Scroll to bottom
+    nextTick(() => {
+      if (reportRef.value) {
+        reportRef.value.scrollTop = reportRef.value.scrollHeight
+      }
+    })
+  }
+}
+
+// ---- K-line Chart ----
+async function loadKlineChart(code: string) {
+  try {
+    const res = await getKlineData({ code, days: 90 }) as any
+    const data = res?.data || res
+    if (!data?.dates?.length) return
+
+    klineLoaded.value = true
+    await nextTick()
+
+    if (!klineChartRef.value) return
+    if (chartInstance) chartInstance.dispose()
+    chartInstance = echarts.init(klineChartRef.value)
+
+    const dates: string[] = data.dates
+    const ohlc: number[][] = data.ohlc || []
+    const volumes: number[] = data.volumes || []
+    const ma = data.ma || {}
+    const boll = data.boll || {}
+    const macd = data.macd || {}
+
+    // Show last ~60% of data by default
+    const startPercent = Math.max(0, 100 - Math.floor(60 / dates.length * 100 + 40))
+
+    const option: echarts.EChartsOption = {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'cross' },
+        backgroundColor: 'rgba(255,255,255,0.95)',
+        borderColor: '#eee',
+        textStyle: { fontSize: 12 },
+      },
+      legend: {
+        data: ['MA5', 'MA20', 'MA60', 'BOLL上轨', 'BOLL下轨'],
+        top: 4,
+        textStyle: { fontSize: 11 },
+        itemWidth: 14,
+        itemHeight: 8,
+      },
+      grid: [
+        { left: 56, right: 20, top: 40, height: 200 },
+        { left: 56, right: 20, top: 280, height: 50 },
+        { left: 56, right: 20, top: 360, height: 50 },
+      ],
+      dataZoom: [
+        { type: 'inside', xAxisIndex: [0, 1, 2], start: startPercent, end: 100 },
+        { type: 'slider', xAxisIndex: [0, 1, 2], start: startPercent, end: 100, bottom: 4, height: 16 },
+      ],
+      xAxis: [
+        { type: 'category', data: dates, boundaryGap: true, axisLabel: { fontSize: 10 } },
+        { type: 'category', data: dates, gridIndex: 1, axisLabel: { show: false } },
+        { type: 'category', data: dates, gridIndex: 2, axisLabel: { fontSize: 10 } },
+      ],
+      yAxis: [
+        { scale: true, axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: 'dashed', color: '#eee' } } },
+        { scale: true, gridIndex: 1, axisLabel: { fontSize: 10 }, splitLine: { show: false } },
+        { scale: true, gridIndex: 2, axisLabel: { fontSize: 10 }, splitLine: { show: false } },
+      ],
+      series: [
+        {
+          name: 'K线',
+          type: 'candlestick',
+          data: ohlc,
+          itemStyle: {
+            color: '#f56c6c',
+            color0: '#67c23a',
+            borderColor: '#f56c6c',
+            borderColor0: '#67c23a',
+          },
+        },
+        { name: 'MA5', type: 'line', data: ma.ma5 || [], symbol: 'none', lineStyle: { width: 1, color: '#e6a23c' } },
+        { name: 'MA20', type: 'line', data: ma.ma20 || [], symbol: 'none', lineStyle: { width: 1, color: '#409eff' } },
+        { name: 'MA60', type: 'line', data: ma.ma60 || [], symbol: 'none', lineStyle: { width: 1, color: '#909399' } },
+        { name: 'BOLL上轨', type: 'line', data: boll.upper || [], symbol: 'none', lineStyle: { width: 1, type: 'dashed', color: '#c45656' } },
+        { name: 'BOLL下轨', type: 'line', data: boll.lower || [], symbol: 'none', lineStyle: { width: 1, type: 'dashed', color: '#529b2e' } },
+        {
+          name: '成交量',
+          type: 'bar',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          data: volumes.map((v, i) => ({
+            value: v,
+            itemStyle: { color: ohlc[i] && Number(ohlc[i][1]) >= Number(ohlc[i][0]) ? '#f56c6c' : '#67c23a' },
+          })),
+          barMaxWidth: 6,
+        },
+        { name: 'MACD柱', type: 'bar', xAxisIndex: 2, yAxisIndex: 2, data: (macd.histogram || []).map((v: number) => ({ value: v, itemStyle: { color: v >= 0 ? '#f56c6c' : '#67c23a' } })), barMaxWidth: 6 },
+        { name: 'DIF', type: 'line', xAxisIndex: 2, yAxisIndex: 2, data: macd.dif || [], symbol: 'none', lineStyle: { width: 1, color: '#e6a23c' } },
+        { name: 'DEA', type: 'line', xAxisIndex: 2, yAxisIndex: 2, data: macd.dea || [], symbol: 'none', lineStyle: { width: 1, color: '#409eff' } },
+      ],
+    }
+
+    chartInstance.setOption(option)
+  } catch (e) {
+    console.warn('[analysis] K线数据加载失败:', e)
+  }
+}
+
+function handleChartResize() {
+  chartInstance?.resize()
+}
+
 // ---- Lifecycle ----
 onMounted(async () => {
   await ensureMarkdownIt()
+  window.addEventListener('resize', handleChartResize)
   // 支持从 URL query 参数传入 code
   const code = route.query.code as string
   if (code && code.length === 6) {
     currentCode.value = code
     searchText.value = code
     handleGenerate()
+  }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleChartResize)
+  if (chartInstance) {
+    chartInstance.dispose()
+    chartInstance = null
+  }
+})
+
+// Watch code changes to load kline
+watch(currentCode, (code) => {
+  if (code && code.length === 6) {
+    loadKlineChart(code)
   }
 })
 </script>
@@ -453,6 +667,83 @@ onMounted(async () => {
   margin-top: 80px;
 }
 
+.kline-panel {
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+
+.kline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  background: var(--el-fill-color-light);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.kline-header:hover {
+  background: var(--el-fill-color);
+}
+
+.kline-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.kline-toggle {
+  transition: transform 0.2s;
+}
+
+.kline-toggle.collapsed {
+  transform: rotate(-90deg);
+}
+
+.kline-chart-wrap {
+  padding: 8px 0;
+}
+
+.kline-chart {
+  width: 100%;
+  height: 440px;
+}
+
+.followup-answers {
+  margin-top: 20px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  padding-top: 16px;
+}
+
+.followup-item {
+  margin-bottom: 16px;
+}
+
+.followup-question {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--el-color-primary);
+  margin-bottom: 6px;
+}
+
+.followup-answer {
+  font-size: 13px;
+  line-height: 1.6;
+  padding-left: 12px;
+  border-left: 3px solid var(--el-color-primary-light-5);
+}
+
+.followup-bar {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+}
+
 @media (max-width: 600px) {
   .search-bar {
     flex-wrap: wrap;
@@ -462,6 +753,13 @@ onMounted(async () => {
   }
   .report-container {
     max-height: none;
+    padding: 12px;
+  }
+  .kline-chart {
+    height: 320px;
+  }
+  .followup-bar {
+    flex-direction: column;
   }
 }
 </style>

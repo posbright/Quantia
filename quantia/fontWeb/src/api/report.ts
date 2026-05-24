@@ -44,6 +44,12 @@ export interface ReportStreamEvent {
   msg?: string
 }
 
+export interface FollowupStreamEvent {
+  type: 'chunk' | 'done' | 'error'
+  text?: string
+  msg?: string
+}
+
 // ---- API functions ----
 
 /**
@@ -106,6 +112,49 @@ export async function generateReportStream(
       if (!raw.startsWith('data:')) continue
       try {
         const ev: ReportStreamEvent = JSON.parse(raw.slice(5).trim())
+        onEvent(ev)
+      } catch {
+        // skip malformed events
+      }
+    }
+  }
+}
+
+/**
+ * SSE 流式追问
+ */
+export async function followupReportStream(
+  code: string,
+  question: string,
+  reportMd: string,
+  onEvent: (ev: FollowupStreamEvent) => void,
+  options?: { signal?: AbortSignal }
+): Promise<void> {
+  const resp = await fetch('/quantia/api/ai/report/followup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ code, question, report_md: reportMd }),
+    signal: options?.signal,
+  })
+  if (!resp.ok) {
+    const text = await resp.text()
+    onEvent({ type: 'error', msg: text || `HTTP ${resp.status}` })
+    return
+  }
+  const reader = resp.body!.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const raw = buf.slice(0, idx).trim()
+      buf = buf.slice(idx + 2)
+      if (!raw.startsWith('data:')) continue
+      try {
+        const ev: FollowupStreamEvent = JSON.parse(raw.slice(5).trim())
         onEvent(ev)
       } catch {
         // skip malformed events

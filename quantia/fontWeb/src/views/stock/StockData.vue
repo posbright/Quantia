@@ -178,6 +178,13 @@ const goBacktestDetail = (row: any) => {
   })
 }
 
+const goAnalysis = (row: any) => {
+  router.push({
+    path: '/ai-report/analysis',
+    query: { code: row.code }
+  })
+}
+
 // 关注/取消关注
 const handleAttention = async (row: any) => {
   const isCurrentlyAttention = !!row.cdatetime
@@ -595,7 +602,7 @@ onMounted(async () => {
         </template>
         
         <!-- 固定列：操作 -->
-        <el-table-column v-if="hasCodeField || isBacktestSummary" label="操作" width="140" fixed="right" align="center">
+        <el-table-column v-if="hasCodeField || isBacktestSummary" label="操作" width="160" fixed="right" align="center">
           <template #default="{ row }">
             <el-button
               v-if="hasCodeField"
@@ -609,6 +616,16 @@ onMounted(async () => {
                 <Star v-else />
               </el-icon>
               {{ row.cdatetime ? '取消' : '关注' }}
+            </el-button>
+
+            <el-button
+              v-if="hasCodeField"
+              type="success"
+              size="small"
+              text
+              @click="goAnalysis(row)"
+            >
+              分析
             </el-button>
 
             <el-button

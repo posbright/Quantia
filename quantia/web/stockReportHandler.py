@@ -177,7 +177,31 @@ def _write_json(handler, data: Dict[str, Any], status: int = 200):
     handler.write(json.dumps(data, ensure_ascii=False, default=str))
 
 
-def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event):
+def _get_previous_report_summary(code: str) -> Optional[str]:
+    """获取上一次报告的摘要（用于增量对比提示），仅取前600字。"""
+    try:
+        sql = f"""
+            SELECT report_md, created_at
+            FROM `{_REPORT_TABLE}`
+            WHERE code = %s
+            ORDER BY created_at DESC LIMIT 1
+        """
+        rows = mdb.executeSqlFetch(sql, (code,))
+        if rows and rows[0][0]:
+            report_md = rows[0][0]
+            created_at = str(rows[0][1])
+            # 提取摘要（前600字 + 截止日期）
+            summary = report_md[:600]
+            if len(report_md) > 600:
+                summary += '...(截断)'
+            return f"[上次报告 {created_at}]\n{summary}"
+    except Exception:
+        pass
+    return None
+
+
+def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
+                      prev_summary: Optional[str] = None):
     """在线程中运行 Agent 生成报告，通过 queue 推送进度和文本。"""
     try:
         from quantia.lib.ai import run_agent
@@ -190,6 +214,12 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event):
         q.put(('progress', {'step': 'stock_profile', 'status': 'running'}))
 
         user_message = f"请为 A 股 {code} 生成分析报告。"
+        if prev_summary:
+            user_message += (
+                f"\n\n【增量对比参考】以下是上次分析报告的摘要，"
+                f"如发现关键变化（如趋势反转、指标突破、资金流向逆转）请在报告中简要提及：\n"
+                f"{prev_summary}"
+            )
         started = time.time()
 
         result = run_agent(
@@ -291,12 +321,15 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
         self.set_header('Cache-Control', 'no-cache')
         self.set_header('X-Accel-Buffering', 'no')
 
+        # 获取上次报告摘要用于增量对比
+        prev_summary = _get_previous_report_summary(code)
+
         q_out = queue.Queue(maxsize=128)
         cancel_event = threading.Event()
 
         # Start producer
         t = threading.Thread(
-            target=_run_agent_report, args=(code, q_out, cancel_event), daemon=True)
+            target=_run_agent_report, args=(code, q_out, cancel_event, prev_summary), daemon=True)
         t.start()
 
         loop = IOLoop.current()
@@ -479,3 +512,126 @@ class StockSearchHandler(webBase.BaseHandler, ABC):
                     seen[code_val]['industry'] = r[2]
             items = list(seen.values())[:8]
         _write_json(self, {'items': items})
+
+
+def _run_followup(code: str, report_md: str, question: str,
+                  q: queue.Queue, cancel: threading.Event):
+    """在线程中运行追问 Agent，复用报告上下文，不重调 Tools。"""
+    try:
+        from quantia.lib.ai import run_agent
+        from quantia.lib.ai.feature_switch import check_feature
+
+        check_feature('stock_report')
+
+        # 构造上下文：将原报告作为 assistant 历史 + 用户追问
+        context_msg = (
+            f"以下是之前为 {code} 生成的分析报告：\n\n{report_md}\n\n"
+            f"---\n\n用户追问：{question}\n\n"
+            "请基于已有报告数据回答，无需重新调用工具。回答简洁明了，200字以内。"
+        )
+
+        started = time.time()
+        result = run_agent(
+            user_message=context_msg,
+            scene='stock_report',
+            agent='stock_analyst',
+            system='你是 Quantia AI 股票分析师。用户已生成了一份分析报告，现在有追问。基于已有报告中的数据作答，保持简洁专业。',
+            allowed_tools=[],  # 不允许调工具，纯问答
+        )
+        elapsed_ms = int((time.time() - started) * 1000)
+
+        content = result.content or ''
+        chunk_size = 80
+        for i in range(0, len(content), chunk_size):
+            if cancel.is_set():
+                break
+            q.put(('chunk', content[i:i + chunk_size]))
+
+        q.put(('meta', {
+            'tokens_used': result.total_tokens or 0,
+            'latency_ms': elapsed_ms,
+        }))
+    except Exception as exc:
+        _logger.exception(f'[stockReport] 追问失败: {exc}')
+        q.put(('error', {'msg': str(exc)}))
+    finally:
+        q.put((_STREAM_SENTINEL, None))
+
+
+class StockReportFollowupHandler(webBase.BaseHandler, ABC):
+    """POST /quantia/api/ai/report/followup — SSE 流式追问。"""
+
+    @gen.coroutine
+    def post(self):
+        try:
+            body = json.loads(self.request.body or '{}')
+        except (json.JSONDecodeError, TypeError):
+            body = {}
+        code = (body.get('code') or '').strip()
+        question = (body.get('question') or '').strip()
+        report_md = (body.get('report_md') or '').strip()
+
+        if not code or not question:
+            _write_json(self, {'error': 'code 和 question 必填'}, 400)
+            return
+        if not report_md:
+            _write_json(self, {'error': '缺少报告上下文 report_md'}, 400)
+            return
+        # 限制报告上下文长度（防止 token 爆炸）
+        report_md = report_md[:4000]
+
+        self.set_header('Content-Type', 'text/event-stream; charset=utf-8')
+        self.set_header('Cache-Control', 'no-cache')
+        self.set_header('X-Accel-Buffering', 'no')
+
+        q_out = queue.Queue(maxsize=64)
+        cancel_event = threading.Event()
+
+        t = threading.Thread(
+            target=_run_followup,
+            args=(code, report_md, question, q_out, cancel_event),
+            daemon=True,
+        )
+        t.start()
+
+        loop = IOLoop.current()
+
+        def _queue_get():
+            import queue as _q
+            try:
+                return q_out.get(block=True, timeout=60)
+            except _q.Empty:
+                _logger.warning(f'[stockReport] 追问队列超时 (code={code})')
+                return (_STREAM_SENTINEL, None)
+
+        while True:
+            try:
+                item = yield loop.run_in_executor(_executor, _queue_get)
+            except Exception:
+                cancel_event.set()
+                break
+            kind, payload = item
+            if kind is _STREAM_SENTINEL:
+                break
+            try:
+                if kind == 'chunk':
+                    self.write('data: ' + json.dumps(
+                        {'type': 'chunk', 'text': payload}, ensure_ascii=False) + '\n\n')
+                    yield self.flush()
+                elif kind == 'error':
+                    self.write('data: ' + json.dumps(
+                        {'type': 'error', 'msg': payload.get('msg', '追问失败')},
+                        ensure_ascii=False) + '\n\n')
+                    yield self.flush()
+                elif kind == 'meta':
+                    pass  # meta sent in done
+            except Exception:
+                cancel_event.set()
+                break
+
+        # done event
+        try:
+            self.write('data: ' + json.dumps({'type': 'done'}) + '\n\n')
+            yield self.flush()
+        except Exception:
+            pass

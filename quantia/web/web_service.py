@@ -175,6 +175,7 @@ class Application(tornado.web.Application):
             (r"/quantia/api/ai/token/update_feature", aiTokenUsageHandler.TokenUpdateFeatureHandler),
             # AI 个股分析报告
             (r"/quantia/api/ai/report/generate", stockReportHandler.StockReportGenerateHandler),
+            (r"/quantia/api/ai/report/followup", stockReportHandler.StockReportFollowupHandler),
             (r"/quantia/api/ai/report/history", stockReportHandler.StockReportHistoryHandler),
             (r"/quantia/api/ai/report/detail", stockReportHandler.StockReportDetailHandler),
             (r"/quantia/api/ai/report/search_stock", stockReportHandler.StockSearchHandler),
