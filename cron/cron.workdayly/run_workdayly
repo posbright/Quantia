@@ -25,6 +25,16 @@ run_sub "Phase 1: 数据获取" "$SCRIPT_DIR/run_fetch" || FAILED=$((FAILED + 1)
 
 # ── OOM 防护：停止非关键服务，释放内存 ──
 SERVICES_STOPPED=0
+
+# 信号安全：确保异常退出时也恢复服务
+_cleanup_services() {
+    if [ $SERVICES_STOPPED -eq 1 ]; then
+        SERVICES_STOPPED=0
+        start_services_after_memory
+    fi
+}
+trap _cleanup_services EXIT
+
 if [ "${QUANTIA_NO_SERVICE_STOP:-0}" != "1" ]; then
     stop_services_for_memory "Phase 2/3 内存密集型任务"
     SERVICES_STOPPED=1
@@ -36,8 +46,9 @@ run_sub "Phase 2: K线缓存更新" "$SCRIPT_DIR/run_kline_cache" || FAILED=$((F
 # Phase 3: 数据分析（零 API，纯本地计算）
 run_sub "Phase 3: 数据分析" "$SCRIPT_DIR/run_analysis" || FAILED=$((FAILED + 1))
 
-# ── 恢复服务 ──
+# 主动恢复服务（trap 也会兜底）
 if [ $SERVICES_STOPPED -eq 1 ]; then
+    SERVICES_STOPPED=0
     start_services_after_memory
 fi
 

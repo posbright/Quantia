@@ -17,6 +17,9 @@ init_env() {
         set -a; source "$PROJECT_ROOT/.env"; set +a
     fi
 
+    # Python 解释器（可通过 .env 的 PYTHON_BIN 覆盖）
+    export PYTHON_BIN="${PYTHON_BIN:-python3}"
+
     # 日志目录
     LOG_DIR=$PROJECT_ROOT/quantia/log
     mkdir -p "$LOG_DIR"
