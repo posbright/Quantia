@@ -50,7 +50,7 @@ elapsed_fmt() {
 check_trade_day() {
     local task_name="${1:-任务}"
     local is_trade
-    is_trade=$(python3 -c "
+    is_trade=$("$PYTHON_BIN" -c "
 import sys; sys.path.insert(0, '$PROJECT_ROOT')
 try:
     import quantia.lib.trade_time as trd
@@ -78,9 +78,9 @@ run_job() {
     log_info "────── ${label} 开始 ──────"
 
     if [ "$timeout" -gt 0 ] 2>/dev/null; then
-        timeout "$timeout" python3 "$PROJECT_ROOT/$script" >> "$LOG_FILE" 2>&1
+        timeout "$timeout" "$PYTHON_BIN" "$PROJECT_ROOT/$script" >> "$LOG_FILE" 2>&1
     else
-        python3 "$PROJECT_ROOT/$script" >> "$LOG_FILE" 2>&1
+        "$PYTHON_BIN" "$PROJECT_ROOT/$script" >> "$LOG_FILE" 2>&1
     fi
     rc=$?
 
