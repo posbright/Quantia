@@ -36,61 +36,13 @@ _REPORT_TABLE = 'cn_stock_ai_report'
 _STREAM_SENTINEL = object()
 _executor = ThreadPoolExecutor(max_workers=2)
 
-# Agent system prompt for stock analysis
-_ANALYST_SYSTEM_PROMPT = """你是 Quantia 平台的 AI 股票分析师。基于用户指定的 A 股代码，使用工具获取数据后生成结构化分析报告。
-
-## 报告结构（严格遵循）
-
-### 📊 {name} ({code}) 分析报告
-
-#### 一、核心数据
-- 当前价格、今日涨跌（来自 stock_profile）
-- 市值、PE、PB
-- 近期资金流向趋势
-
-#### 二、技术面分析
-- K线趋势判断（上涨/下跌/震荡/突破）
-- 关键指标信号（MACD金叉/死叉、KDJ超买超卖、RSI状态）
-- K线形态信号（如有）
-- 支撑位/压力位估算
-
-#### 三、资金面
-- 近5日主力净流入/流出趋势
-- 大单/特大单方向
-
-#### 四、近期事件（如 web_search 可用）
-- 近期重大新闻/公告（仅直接相关的）
-
-#### 五、多空对比
-
-| 🟢 看多因素 | 🔴 看空因素 |
-|------------|------------|
-| (具体事实+数据支撑) | (具体事实+数据支撑) |
-
-#### 六、综合判断与操作建议
-- **评级**: 🟢买入 / 🟡观望 / 🔴回避（一句话理由）
-- **已持仓**: 建议操作
-- **观望者**: 入场条件
-- **短线**: 机会与风险
-
-#### 七、风险提示
-- 核心风险因素（1-3条）
-
-## 工具使用规则
-1. 必须先调用 `stock_profile` 获取基础数据
-2. 如需更长K线历史，调用 `kline_fetch`（limit=120）
-3. `web_search` 用于搜索新闻（若不可用则跳过第四节，不要编造）
-4. 所有数据结论必须标注来源工具，禁止编造价格/事件
-5. 对高估值成长股保持中立，不因 PE 高就看空
-
-## 输出格式
-- 使用 Markdown
-- 表格用标准 Markdown 语法
-- 数字精确到小数点后 2 位
-- 总长度 800-1500 字
-"""
-
 _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search']
+
+
+def _load_analyst_prompt() -> str:
+    """加载 stock_analyst agent 的 system prompt（从 prompt 文件读取，避免硬编码冗余）。"""
+    from quantia.lib.ai.prompt_loader import load
+    return load('stock_analyst')
 
 
 def _ensure_report_table():
@@ -106,9 +58,14 @@ def _ensure_report_table():
         tools_used JSON DEFAULT NULL,
         tokens_used INT DEFAULT 0,
         latency_ms INT DEFAULT 0,
+        quality_score TINYINT DEFAULT NULL COMMENT '结构校验: 100=通过, 50=部分, 0=失败',
+        user_feedback TINYINT DEFAULT NULL COMMENT '1=满意, -1=不满意, NULL=未评',
+        feedback_reason VARCHAR(200) DEFAULT NULL,
         data_cutoff_date DATE DEFAULT NULL COMMENT '报告依据的最新数据日期',
+        source ENUM('user','cron','batch') DEFAULT 'user' COMMENT '生成来源',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_code_date (code, created_at DESC)
+        INDEX idx_code_date (code, created_at DESC),
+        INDEX idx_source (source, created_at DESC)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """
     try:
@@ -168,6 +125,33 @@ def _check_cache(code: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def _has_data_update(code: str, last_report_time: str) -> tuple:
+    """检测自上次报告后是否有新数据更新。
+
+    Returns: (has_update: bool, reason: str)
+    """
+    try:
+        # 检查资金流向最新日期
+        rows = mdb.executeSqlFetch(
+            "SELECT MAX(date) FROM cn_stock_fund_flow WHERE code = %s", (code,))
+        if rows and rows[0][0]:
+            latest_flow = str(rows[0][0])
+            if latest_flow > last_report_time[:10]:
+                return True, f"资金面数据已更新至{latest_flow}"
+
+        # 检查行情数据最新日期
+        rows = mdb.executeSqlFetch(
+            "SELECT MAX(date) FROM cn_stock_spot WHERE code = %s", (code,))
+        if rows and rows[0][0]:
+            latest_spot = str(rows[0][0])
+            if latest_spot > last_report_time[:10]:
+                return True, f"行情数据更新至{latest_spot}"
+    except Exception as exc:
+        _logger.debug(f'[stockReport] 数据变更检测失败: {exc}')
+
+    return False, ""
+
+
 def _save_report(code: str, name: str, report_md: str, model: str,
                  provider: str, tools_used: List[str],
                  tokens_used: int, latency_ms: int) -> int:
@@ -202,7 +186,7 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event):
         # 检查功能开关
         check_feature('stock_report')
 
-        # 发送进度：开始
+        # 发送进度：开始获取数据
         q.put(('progress', {'step': 'stock_profile', 'status': 'running'}))
 
         user_message = f"请为 A 股 {code} 生成分析报告。"
@@ -212,19 +196,20 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event):
             user_message=user_message,
             scene='stock_report',
             agent='stock_analyst',
-            system=_ANALYST_SYSTEM_PROMPT,
+            system=_load_analyst_prompt(),
             allowed_tools=_ALLOWED_TOOLS,
         )
 
         elapsed_ms = int((time.time() - started) * 1000)
 
-        # 从 tool_calls 构建进度事件
+        # 从 tool_calls 构建进度事件（逐工具回报 done）
         tools_used = []
         for tc in (result.tool_calls or []):
             name = tc.get('name', 'unknown')
             tools_used.append(name)
+            q.put(('progress', {'step': name, 'status': 'done'}))
 
-        # 发送完成进度
+        # 发送报告生成完成进度
         q.put(('progress', {'step': 'report', 'status': 'done', 'elapsed_ms': elapsed_ms}))
 
         # 获取股票名称
@@ -281,7 +266,14 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
         if not force:
             cached = _check_cache(code)
             if cached:
-                # 返回缓存报告 (非 SSE，直接 JSON)
+                # 检查数据是否有更新
+                has_update, update_reason = _has_data_update(
+                    code, cached.get('created_at', ''))
+                if has_update:
+                    # 数据已更新，标记但仍返回旧报告 + 提示刷新
+                    cached['data_updated'] = True
+                    cached['update_reason'] = update_reason
+                # 返回缓存报告 (SSE 格式)
                 self.set_header('Content-Type', 'text/event-stream; charset=utf-8')
                 self.set_header('Cache-Control', 'no-cache')
                 self.set_header('X-Accel-Buffering', 'no')
@@ -462,19 +454,25 @@ class StockSearchHandler(webBase.BaseHandler, ABC):
         # 转义 SQL LIKE 通配符
         escaped_q = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
         sql = """
-            SELECT code, name
+            SELECT code, name, industry
             FROM cn_stock_spot
             WHERE (code LIKE %s OR name LIKE %s)
             ORDER BY total_market_cap DESC
-            LIMIT 8
+            LIMIT 50
         """
         pattern = f'%{escaped_q}%'
         rows = mdb.executeSqlFetch(sql, (pattern, pattern))
         items = []
         if rows:
-            seen = set()
+            seen: dict = {}  # code -> {'code':..., 'name':..., 'industry':...}
             for r in rows:
-                if r[0] not in seen:
-                    seen.add(r[0])
-                    items.append({'code': r[0], 'name': r[1] or ''})
+                code_val = r[0]
+                if code_val not in seen:
+                    seen[code_val] = {'code': code_val, 'name': r[1] or '', 'industry': r[2] or ''}
+                elif not seen[code_val]['industry'] and r[2]:
+                    # 补充之前为空的 industry
+                    seen[code_val]['industry'] = r[2]
+                if len(seen) >= 8:
+                    break
+            items = list(seen.values())
         _write_json(self, {'items': items})

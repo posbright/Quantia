@@ -5,6 +5,7 @@ import request from './request'
 export interface StockSearchItem {
   code: string
   name: string
+  industry?: string
 }
 
 export interface ReportHistoryItem {

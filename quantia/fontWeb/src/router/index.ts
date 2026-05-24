@@ -198,6 +198,12 @@ const routes: RouteRecordRaw[] = [
         name: 'StockAnalysis',
         component: () => import('@/views/stock/analysis.vue'),
         meta: { title: '个股分析' }
+      },
+      {
+        path: 'history',
+        name: 'ReportHistory',
+        component: () => import('@/views/stock/report-history.vue'),
+        meta: { title: '历史报告' }
       }
     ]
   },

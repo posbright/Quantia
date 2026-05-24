@@ -15,6 +15,7 @@
         <template #default="{ item }">
           <span class="suggestion-code">{{ item.code }}</span>
           <span class="suggestion-name">{{ item.name }}</span>
+          <span v-if="item.industry" class="suggestion-industry">{{ item.industry }}</span>
         </template>
       </el-autocomplete>
       <el-button type="primary" :loading="generating" :disabled="!currentCode" @click="handleGenerate">
@@ -57,6 +58,18 @@
 
     <!-- 报告内容 -->
     <div v-if="reportContent" class="report-container" ref="reportRef">
+      <!-- 数据更新提示横幅 -->
+      <el-alert
+        v-if="dataUpdateReason"
+        type="info"
+        :closable="false"
+        class="data-update-banner"
+      >
+        <template #title>
+          ⚠️ {{ dataUpdateReason }}，本报告基于缓存数据
+          <el-button size="small" type="primary" link @click="handleGenerate(true)">刷新分析</el-button>
+        </template>
+      </el-alert>
       <div class="report-header">
         <el-tag v-if="fromCache" type="info" size="small">缓存</el-tag>
         <span class="report-meta" v-if="reportMeta.created_at">
@@ -111,6 +124,7 @@ const generating = ref(false)
 const reportContent = ref('')
 const errorMsg = ref('')
 const fromCache = ref(false)
+const dataUpdateReason = ref('')
 const reportRef = ref<HTMLElement | null>(null)
 const abortController = ref<AbortController | null>(null)
 
@@ -154,6 +168,7 @@ async function queryStock(queryString: string, cb: (items: { value: string; code
       value: `${item.code} ${item.name}`,
       code: item.code,
       name: item.name,
+      industry: item.industry || '',
     }))
     cb(items)
   } catch {
@@ -180,6 +195,7 @@ async function handleGenerate(force?: boolean | MouseEvent) {
   reportContent.value = ''
   errorMsg.value = ''
   fromCache.value = false
+  dataUpdateReason.value = ''
   reportMeta.value = {}
   progressSteps.value = progressSteps.value.map(s => ({ ...s, status: 'pending' as const, elapsed: undefined }))
 
@@ -231,6 +247,10 @@ function handleStreamEvent(ev: ReportStreamEvent) {
           tokens_used: ev.report.tokens_used,
           latency_ms: ev.report.latency_ms,
           model: ev.report.model,
+        }
+        // 数据已更新提示
+        if ((ev.report as any).data_updated) {
+          dataUpdateReason.value = (ev.report as any).update_reason || '数据已更新'
         }
       }
       generating.value = false
@@ -305,6 +325,12 @@ onMounted(async () => {
 
 .suggestion-name {
   color: var(--el-text-color-regular);
+}
+
+.suggestion-industry {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .progress-panel {
