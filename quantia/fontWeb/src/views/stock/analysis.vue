@@ -352,8 +352,8 @@ async function handleFollowup() {
   if (!question || !reportContent.value) return
 
   followupLoading.value = true
-  const entry: FollowupEntry = { question, answer: '' }
-  followupAnswers.value.push(entry)
+  followupAnswers.value.push({ question, answer: '' })
+  const entryIndex = followupAnswers.value.length - 1
   followupText.value = ''
 
   try {
@@ -363,15 +363,16 @@ async function handleFollowup() {
       reportContent.value,
       (ev: FollowupStreamEvent) => {
         if (ev.type === 'chunk' && ev.text) {
-          entry.answer += ev.text
+          // Access through reactive array so Vue detects the change
+          followupAnswers.value[entryIndex].answer += ev.text
         } else if (ev.type === 'error') {
-          entry.answer = `⚠️ ${ev.msg || '追问失败'}`
+          followupAnswers.value[entryIndex].answer = `⚠️ ${ev.msg || '追问失败'}`
         }
       },
     )
   } catch (e: unknown) {
     if (e instanceof Error && e.name !== 'AbortError') {
-      entry.answer = `⚠️ ${e.message || '追问失败'}`
+      followupAnswers.value[entryIndex].answer = `⚠️ ${e.message || '追问失败'}`
     }
   } finally {
     followupLoading.value = false
@@ -389,6 +390,8 @@ async function loadKlineChart(code: string) {
   klineLoaded.value = false
   try {
     const res = await getKlineData({ code, days: 90 }) as any
+    // Guard: discard stale response if user already switched to another stock
+    if (currentCode.value !== code) return
     const data = res?.data || res
     if (!data?.dates?.length) return
 
