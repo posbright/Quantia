@@ -13,6 +13,16 @@ check_trade_day "数据获取"
 
 # ── OOM 防护：停止非关键服务，释放内存 ──
 SERVICES_STOPPED=0
+
+# 信号安全：确保异常退出（SIGTERM/SIGINT/OOM kill）时也恢复服务
+_cleanup_services() {
+    if [ $SERVICES_STOPPED -eq 1 ]; then
+        SERVICES_STOPPED=0
+        start_services_after_memory
+    fi
+}
+trap _cleanup_services EXIT
+
 if [ "${QUANTIA_NO_SERVICE_STOP:-0}" != "1" ]; then
     stop_services_for_memory "数据获取任务"
     SERVICES_STOPPED=1
@@ -21,9 +31,5 @@ fi
 run_job "数据获取 (fetch_daily_job)" "quantia/job/fetch_daily_job.py" "${QUANTIA_FETCH_TIMEOUT:-7200}"
 RC=$?
 
-# ── 恢复服务 ──
-if [ $SERVICES_STOPPED -eq 1 ]; then
-    start_services_after_memory
-fi
-
+# EXIT trap 会自动恢复服务
 exit $RC
