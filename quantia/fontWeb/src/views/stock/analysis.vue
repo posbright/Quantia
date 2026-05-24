@@ -26,6 +26,44 @@
         <el-icon><CopyDocument /></el-icon>
         复制
       </el-button>
+      <el-button
+        v-if="attentionCount > 0"
+        :loading="batchGenerating"
+        @click="handleBatchAnalysis"
+      >
+        📋 批量分析({{ attentionCount }})
+      </el-button>
+    </div>
+
+    <!-- 批量分析结果卡片网格 -->
+    <div v-if="batchResults.length > 0" class="batch-panel">
+      <div class="batch-header">
+        <span class="batch-title">📋 关注列表分析摘要</span>
+        <el-button size="small" text @click="batchResults = []">关闭</el-button>
+      </div>
+      <div class="batch-grid">
+        <div
+          v-for="item in batchResults"
+          :key="item.code"
+          class="batch-card"
+          :class="{ 'batch-card--error': item.error }"
+          @click="handleBatchCardClick(item)"
+        >
+          <div class="batch-card-header">
+            <span class="batch-card-code">{{ item.code }}</span>
+            <span class="batch-card-name">{{ item.name }}</span>
+          </div>
+          <p class="batch-card-summary">{{ item.summary }}</p>
+          <div v-if="item.latency_ms" class="batch-card-meta">
+            {{ item.latency_ms }}ms
+          </div>
+        </div>
+        <!-- 生成中占位卡片 -->
+        <div v-if="batchGenerating" class="batch-card batch-card--loading">
+          <el-icon class="is-loading"><Loading /></el-icon>
+          <span>生成中... ({{ batchResults.length }}/{{ batchTotal }})</span>
+        </div>
+      </div>
     </div>
 
     <!-- 进度可视化 -->
@@ -206,9 +244,9 @@ import {
   VideoPlay, CopyDocument, Loading, CircleCheckFilled, Clock, DataAnalysis, ArrowDown
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData } from '@/api/report'
+import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData, getAttentionList, batchSummaryStream } from '@/api/report'
 import { getKlineData } from '@/api/stock'
-import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent, StockFallbackData } from '@/api/report'
+import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent, StockFallbackData, BatchSummaryEvent } from '@/api/report'
 import * as echarts from 'echarts'
 
 // ---- markdown-it setup (dynamic import for code-split) ----
@@ -273,6 +311,14 @@ const feedbackSubmitted = ref<0 | 1 | -1>(0)
 
 // ---- Fallback Data State ----
 const fallbackData = ref<StockFallbackData | null>(null)
+
+// ---- Batch Analysis State ----
+const attentionCount = ref(0)
+const attentionCodes = ref<string[]>([])
+const batchGenerating = ref(false)
+const batchTotal = ref(0)
+interface BatchItem { code: string; name: string; summary: string; error?: boolean; latency_ms?: number }
+const batchResults = ref<BatchItem[]>([])
 
 const renderedHtml = computed(() => {
   if (!reportContent.value || !mdInstance.value) return ''
@@ -372,14 +418,15 @@ function handleStreamEvent(ev: ReportStreamEvent) {
         reportContent.value = ev.report.report_md || ''
         currentName.value = ev.report.name || currentName.value
         reportMeta.value = {
+          report_id: ev.report.id,
           created_at: ev.report.created_at,
           tokens_used: ev.report.tokens_used,
           latency_ms: ev.report.latency_ms,
           model: ev.report.model,
         }
         // 数据已更新提示
-        if ((ev.report as any).data_updated) {
-          dataUpdateReason.value = (ev.report as any).update_reason || '数据已更新'
+        if (ev.report.data_updated) {
+          dataUpdateReason.value = ev.report.update_reason || '数据已更新'
         }
       }
       generating.value = false
@@ -444,6 +491,69 @@ function formatCap(v: number | undefined | null): string {
   if (v >= 100000000) return (v / 100000000).toFixed(0) + '亿'
   if (v >= 10000) return (v / 10000).toFixed(0) + '万'
   return String(v)
+}
+
+// ---- Batch Analysis ----
+async function loadAttentionList() {
+  try {
+    const res = await getAttentionList() as any
+    const items = res?.data?.items || res?.items || []
+    attentionCount.value = items.length
+    attentionCodes.value = items.map((i: { code: string }) => i.code)
+  } catch {
+    attentionCount.value = 0
+    attentionCodes.value = []
+  }
+}
+
+async function handleBatchAnalysis() {
+  if (!attentionCodes.value.length) {
+    ElMessage.warning('关注列表为空')
+    return
+  }
+  batchGenerating.value = true
+  batchResults.value = []
+  batchTotal.value = attentionCodes.value.length
+
+  try {
+    await batchSummaryStream(
+      attentionCodes.value,
+      (ev: BatchSummaryEvent) => {
+        switch (ev.type) {
+          case 'start':
+            batchTotal.value = ev.total || attentionCodes.value.length
+            break
+          case 'item':
+            batchResults.value.push({
+              code: ev.code || '',
+              name: ev.name || '',
+              summary: ev.summary || '',
+              error: ev.error,
+              latency_ms: ev.latency_ms,
+            })
+            break
+          case 'done':
+            batchGenerating.value = false
+            break
+        }
+      }
+    )
+  } catch (e: unknown) {
+    if (e instanceof Error && e.name !== 'AbortError') {
+      ElMessage.error(e.message || '批量分析失败')
+    }
+  } finally {
+    batchGenerating.value = false
+  }
+}
+
+function handleBatchCardClick(item: BatchItem) {
+  if (item.error) return
+  // Navigate to generate full report for this stock
+  currentCode.value = item.code
+  currentName.value = item.name
+  searchText.value = `${item.code} ${item.name}`
+  handleGenerate()
 }
 
 // ---- Follow-up ----
@@ -599,6 +709,7 @@ function handleChartResize() {
 onMounted(async () => {
   await ensureMarkdownIt()
   window.addEventListener('resize', handleChartResize)
+  loadAttentionList()
   // 支持从 URL query 参数传入 code
   const code = route.query.code as string
   if (code && code.length === 6) {
@@ -960,6 +1071,100 @@ watch(klineCollapsed, (collapsed) => {
   }
 }
 
+/* Batch analysis panel */
+.batch-panel {
+  margin: 16px 0;
+  padding: 16px;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+
+.batch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.batch-title {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.batch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.batch-card {
+  padding: 14px;
+  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+
+.batch-card:hover {
+  border-color: var(--el-color-primary-light-5);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.batch-card--error {
+  border-color: var(--el-color-danger-light-5);
+  opacity: 0.7;
+  cursor: default;
+}
+
+.batch-card--loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--el-text-color-secondary);
+  min-height: 80px;
+  cursor: default;
+}
+
+.batch-card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.batch-card-code {
+  font-family: monospace;
+  font-size: 13px;
+  color: var(--el-color-primary);
+  font-weight: 600;
+}
+
+.batch-card-name {
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+
+.batch-card-summary {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.batch-card-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--el-text-color-placeholder);
+  text-align: right;
+}
+
 @media (min-width: 1100px) {
   .stock-analysis {
     max-width: 1200px;
@@ -978,6 +1183,9 @@ watch(klineCollapsed, (collapsed) => {
   .stock-analysis .main-content .report-container {
     flex: 1;
     max-height: 80vh;
+  }
+  .stock-analysis .main-content .fallback-panel {
+    flex: 1;
   }
 }
 </style>
