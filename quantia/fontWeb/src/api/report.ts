@@ -220,6 +220,7 @@ export interface BatchSummaryEvent {
   code?: string
   name?: string
   summary?: string
+  rating?: string
   tokens_used?: number
   latency_ms?: number
   error?: boolean

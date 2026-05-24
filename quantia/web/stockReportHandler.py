@@ -680,7 +680,7 @@ class StockReportAttentionListHandler(webBase.BaseHandler, ABC):
         import quantia.core.tablestructure as tbs
         table_name = tbs.TABLE_CN_STOCK_ATTENTION['name']
         sql = f"""
-            SELECT a.code, COALESCE(s.name, '') as name
+            SELECT a.code, COALESCE(MAX(s.name), '') as name
             FROM `{table_name}` a
             LEFT JOIN cn_stock_spot s ON a.code = s.code
             GROUP BY a.code
@@ -731,10 +731,19 @@ def _run_batch_summary(codes: List[str], q: queue.Queue, cancel: threading.Event
                     break
 
             content = (result.content or '')[:500]  # 硬截断防溢出
+
+            # 从摘要中提取评级
+            rating = 'neutral'
+            if any(kw in content for kw in ('看多', '偏多', '看涨', '积极')):
+                rating = 'bullish'
+            elif any(kw in content for kw in ('看空', '偏空', '看跌', '谨慎', '回避')):
+                rating = 'bearish'
+
             q.put(('item', {
                 'code': code,
                 'name': stock_name,
                 'summary': content,
+                'rating': rating,
                 'tokens_used': result.total_tokens or 0,
                 'latency_ms': elapsed_ms,
             }))

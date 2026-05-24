@@ -78,7 +78,7 @@ async function loadHistory() {
       limit: pageSize,
       offset: (currentPage.value - 1) * pageSize,
     }) as any
-    historyList.value = res?.items || res?.data?.items || []
+    historyList.value = res?.items || []
     // Approximate total (API doesn't return count, use items.length heuristic)
     if (historyList.value.length === pageSize) {
       total.value = currentPage.value * pageSize + 1
@@ -102,7 +102,7 @@ async function viewReport(row: ReportHistoryItem) {
   try {
     const md = await ensureMd()
     const res = await getReportDetail(row.id) as any
-    const reportMd = res?.report_md || res?.data?.report_md || ''
+    const reportMd = res?.report_md || ''
     detailHtml.value = md.render(reportMd)
     dialogVisible.value = true
   } catch {

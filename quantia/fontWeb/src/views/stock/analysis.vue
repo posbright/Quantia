@@ -52,6 +52,9 @@
           <div class="batch-card-header">
             <span class="batch-card-code">{{ item.code }}</span>
             <span class="batch-card-name">{{ item.name }}</span>
+            <span v-if="item.rating" class="batch-card-rating" :class="`rating-${item.rating}`">
+              {{ item.rating === 'bullish' ? '🟢 看多' : item.rating === 'bearish' ? '🔴 看空' : '🟡 中性' }}
+            </span>
           </div>
           <p class="batch-card-summary">{{ item.summary }}</p>
           <div v-if="item.latency_ms" class="batch-card-meta">
@@ -317,7 +320,7 @@ const attentionCount = ref(0)
 const attentionCodes = ref<string[]>([])
 const batchGenerating = ref(false)
 const batchTotal = ref(0)
-interface BatchItem { code: string; name: string; summary: string; error?: boolean; latency_ms?: number }
+interface BatchItem { code: string; name: string; summary: string; rating?: string; error?: boolean; latency_ms?: number }
 const batchResults = ref<BatchItem[]>([])
 
 const renderedHtml = computed(() => {
@@ -497,7 +500,7 @@ function formatCap(v: number | undefined | null): string {
 async function loadAttentionList() {
   try {
     const res = await getAttentionList() as any
-    const items = res?.data?.items || res?.items || []
+    const items = res?.items || []
     attentionCount.value = items.length
     attentionCodes.value = items.map((i: { code: string }) => i.code)
   } catch {
@@ -528,6 +531,7 @@ async function handleBatchAnalysis() {
               code: ev.code || '',
               name: ev.name || '',
               summary: ev.summary || '',
+              rating: ev.rating,
               error: ev.error,
               latency_ms: ev.latency_ms,
             })
@@ -1146,6 +1150,15 @@ watch(klineCollapsed, (collapsed) => {
   font-size: 13px;
   color: var(--el-text-color-regular);
 }
+
+.batch-card-rating {
+  margin-left: auto;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.rating-bullish { color: #67c23a; }
+.rating-bearish { color: #f56c6c; }
+.rating-neutral { color: #e6a23c; }
 
 .batch-card-summary {
   font-size: 12px;
