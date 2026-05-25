@@ -39,10 +39,14 @@ def run_with_args(run_fun, *args):
 
     if len(sys.argv) == 3:
         # 区间作业 python xxx.py 2023-03-01 2023-03-21
-        tmp_year, tmp_month, tmp_day = sys.argv[1].split("-")
-        start_date = datetime.datetime(int(tmp_year), int(tmp_month), int(tmp_day)).date()
-        tmp_year, tmp_month, tmp_day = sys.argv[2].split("-")
-        end_date = datetime.datetime(int(tmp_year), int(tmp_month), int(tmp_day)).date()
+        try:
+            tmp_year, tmp_month, tmp_day = sys.argv[1].split("-")
+            start_date = datetime.datetime(int(tmp_year), int(tmp_month), int(tmp_day)).date()
+            tmp_year, tmp_month, tmp_day = sys.argv[2].split("-")
+            end_date = datetime.datetime(int(tmp_year), int(tmp_month), int(tmp_day)).date()
+        except (ValueError, TypeError) as e:
+            logging.error(f"run_template: 日期参数格式错误，期望 YYYY-MM-DD，实际 sys.argv={sys.argv}: {e}")
+            sys.exit(1)
         run_date = start_date
         try:
             futures = []
