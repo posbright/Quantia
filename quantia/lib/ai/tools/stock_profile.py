@@ -314,6 +314,55 @@ def _query_financials(code: str) -> Dict[str, Any]:
     return {}
 
 
+def _query_patent_info(code: str) -> Dict[str, Any]:
+    """近期专利公告摘要：总数、分类统计、最新5条。"""
+    from quantia.lib.database import executeSqlFetch
+    # 统计近1年专利总数和分类（patent_count可能为NULL，此时按1计）
+    sql_count = """
+        SELECT patent_type, SUM(COALESCE(patent_count, 1)) as cnt
+        FROM cn_stock_patent_info
+        WHERE code = %s AND announcement_date >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
+        GROUP BY patent_type
+    """
+    sql_recent = """
+        SELECT title, announcement_date, patent_type, patent_count
+        FROM cn_stock_patent_info
+        WHERE code = %s
+        ORDER BY announcement_date DESC LIMIT 5
+    """
+    try:
+        count_rows = executeSqlFetch(sql_count, (code,))
+        recent_rows = executeSqlFetch(sql_recent, (code,))
+    except Exception:
+        return {}
+
+    if not count_rows and not recent_rows:
+        return {}
+
+    type_stats = {}
+    total = 0
+    for row in (count_rows or []):
+        ptype = row[0] or '未分类'
+        cnt = int(row[1] or 0)
+        type_stats[ptype] = cnt
+        total += cnt
+
+    recent = []
+    for row in (recent_rows or []):
+        recent.append({
+            'title': row[0],
+            'date': str(row[1]) if row[1] else '',
+            'type': row[2] or '未分类',
+            'count': int(row[3] or 1),
+        })
+
+    return {
+        'total_year': total,
+        'by_type': type_stats,
+        'recent': recent,
+    }
+
+
 class StockProfileTool(Tool):
     name = 'stock_profile'
     description = '获取个股综合画像：最新行情+近期指标+资金流向+K线形态信号+近30日K线。'
@@ -344,8 +393,9 @@ class StockProfileTool(Tool):
         patterns = _query_patterns(code)
         kline_30d = _query_kline_30d(code)
         financials = _query_financials(code)
+        patent_info = _query_patent_info(code)
 
-        return {
+        result = {
             'code': code,
             'name': spot.get('name', ''),
             'spot': spot,
@@ -355,3 +405,6 @@ class StockProfileTool(Tool):
             'kline_30d': kline_30d,
             'financials': financials,
         }
+        if patent_info:
+            result['patent_info'] = patent_info
+        return result

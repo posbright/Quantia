@@ -125,8 +125,8 @@ def fetch_patent_announcements(
                 'searchkey': keyword,
                 'isHLtitle': 'true',
             }
-            if stock_code:
-                params['stock'] = stock_code
+            # NOTE: CNINFO stock param requires orgId which we don't have,
+            # so we filter by secCode in the response instead.
 
             try:
                 resp = requests.post(
@@ -143,6 +143,11 @@ def fetch_patent_announcements(
                     break
 
                 for ann in announcements:
+                    code = (ann.get('secCode') or '').strip()
+                    # 如果指定了股票代码，只保留匹配的
+                    if stock_code and code != stock_code:
+                        continue
+
                     title = (ann.get('announcementTitle') or '').replace('<em>', '').replace('</em>', '')
                     # 只保留确实与专利/知识产权相关的
                     if not any(kw in title for kw in _PATENT_KEYWORDS):
@@ -155,7 +160,6 @@ def fetch_patent_announcements(
                     else:
                         ann_date = end_date
 
-                    code = (ann.get('secCode') or '').strip()
                     name = (ann.get('secName') or '').strip()
 
                     results.append({
@@ -255,4 +259,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     result = run_patent_crawler(code=args.code, days=args.days)
+    import sys
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     print(f'结果: {result}')

@@ -29,6 +29,10 @@ log_info "开始采集今日公告事件"
 cd "$PROJECT_ROOT"
 "$PYTHON_BIN" -m quantia.job.stock_announcement_em --days 1 >> "$LOG_FILE" 2>&1 || log_warn "公告采集异常"
 
+# Phase 1.6: 专利数据采集（从巨潮公告挖掘专利信息）
+log_info "开始采集专利数据"
+"$PYTHON_BIN" -m quantia.job.stock_patent_crawler --days 7 >> "$LOG_FILE" 2>&1 || log_warn "专利采集异常"
+
 # ── OOM 防护：停止非关键服务，释放内存 ──
 SERVICES_STOPPED=0
 
