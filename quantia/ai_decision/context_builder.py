@@ -90,8 +90,13 @@ def build_input_summary(
         }
     if market_context:
         summary["market"] = market_context
-    if event_context:
-        summary["event_context"] = event_context
+    # 始终包含 event_context 键（即使为空），避免 prompt 模板中残留 {{ event_context.xxx }} 原文
+    summary["event_context"] = event_context if event_context else {
+        'recent_announcements': [],
+        'risk_events': [],
+        'opportunity_events': [],
+        'news_sentiment': 'neutral',
+    }
     if extra:
         summary["extra"] = extra
     return summary

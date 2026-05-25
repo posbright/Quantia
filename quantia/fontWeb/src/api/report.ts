@@ -223,6 +223,8 @@ export interface ReportTimelineItem {
   model: string
   tokens_used: number
   latency_ms: number
+  rating?: string
+  summary?: string
 }
 
 /**

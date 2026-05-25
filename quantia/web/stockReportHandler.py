@@ -147,10 +147,19 @@ def _check_cache(code: str) -> Optional[Dict[str, Any]]:
 def _has_data_update(code: str, last_report_time: str) -> tuple:
     """检测自上次报告后是否有新数据更新。
 
+    优先级：财报更新 > 资金流向 > 行情数据。
     Returns: (has_update: bool, reason: str)
     """
     try:
-        # 检查资金流向最新日期
+        # 1. 检查财报更新（最重要：新季报 = 新结论）
+        rows = mdb.executeSqlFetch(
+            "SELECT MAX(report_date) FROM cn_stock_financial WHERE code = %s", (code,))
+        if rows and rows[0][0]:
+            latest_financial = str(rows[0][0])
+            if latest_financial > last_report_time[:10]:
+                return True, f"新财报数据({latest_financial})"
+
+        # 2. 检查资金流向最新日期
         rows = mdb.executeSqlFetch(
             "SELECT MAX(date) FROM cn_stock_fund_flow WHERE code = %s", (code,))
         if rows and rows[0][0]:
@@ -158,13 +167,13 @@ def _has_data_update(code: str, last_report_time: str) -> tuple:
             if latest_flow > last_report_time[:10]:
                 return True, f"资金面数据已更新至{latest_flow}"
 
-        # 检查行情数据最新日期
+        # 3. 检查行情数据最新日期
         rows = mdb.executeSqlFetch(
-            "SELECT MAX(date) FROM cn_stock_spot WHERE code = %s", (code,))
+            "SELECT MAX(date) FROM cn_stock_selection WHERE code = %s", (code,))
         if rows and rows[0][0]:
-            latest_spot = str(rows[0][0])
-            if latest_spot > last_report_time[:10]:
-                return True, f"行情数据更新至{latest_spot}"
+            latest_sel = str(rows[0][0])
+            if latest_sel > last_report_time[:10]:
+                return True, f"行情数据更新至{latest_sel}"
     except Exception as exc:
         _logger.warning(f'[stockReport] 数据变更检测失败: {exc}', exc_info=True)
 
@@ -987,7 +996,7 @@ class StockScoreHistoryHandler(webBase.BaseHandler, ABC):
 class StockReportTimelineHandler(webBase.BaseHandler, ABC):
     """GET /quantia/api/ai/report/timeline — 同股票评级变化轨迹。
 
-    返回同一股票多次报告的评分/评级变化时间线。
+    返回同一股票多次报告的评分/评级变化时间线（含摘要）。
     """
 
     @gen.coroutine
@@ -999,7 +1008,8 @@ class StockReportTimelineHandler(webBase.BaseHandler, ABC):
             return
 
         sql = f"""
-            SELECT id, created_at, model, tokens_used, latency_ms
+            SELECT id, created_at, model, tokens_used, latency_ms,
+                   LEFT(report_md, 300) AS summary_excerpt
             FROM `{_REPORT_TABLE}`
             WHERE code = %s
             ORDER BY created_at DESC
@@ -1009,12 +1019,21 @@ class StockReportTimelineHandler(webBase.BaseHandler, ABC):
         items = []
         if rows:
             for r in rows:
+                excerpt = r[5] or ''
+                # 提取评级关键词
+                rating = ''
+                for tag in ['🟢买入', '🟡观望', '🔴回避', '买入', '观望', '回避']:
+                    if tag in excerpt:
+                        rating = tag
+                        break
                 items.append({
                     'id': r[0],
                     'created_at': str(r[1]) if r[1] else '',
                     'model': r[2] or '',
                     'tokens_used': r[3],
                     'latency_ms': r[4],
+                    'rating': rating,
+                    'summary': excerpt[:80].replace('\n', ' ').strip(),
                 })
         _write_json(self, {'items': items, 'code': code})
 

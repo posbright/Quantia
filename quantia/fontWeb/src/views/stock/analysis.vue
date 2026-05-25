@@ -254,6 +254,7 @@
             @click="loadTimelineReport(t.id)"
           >
             <span class="timeline-date">{{ t.created_at?.slice(0, 16) }}</span>
+            <span v-if="t.rating" class="timeline-rating">{{ t.rating }}</span>
             <span class="timeline-model">{{ t.model }}</span>
             <span v-if="idx === 0" class="timeline-badge">最新</span>
           </div>
@@ -563,7 +564,7 @@ async function handleShare() {
   if (!reportId) return
   try {
     const res = await createShareLink(reportId) as any
-    const shareUrl = `${window.location.origin}/quantia${res.share_url}`
+    const shareUrl = `${window.location.origin}${res.share_url}`
     await navigator.clipboard.writeText(shareUrl)
     ElMessage.success('分享链接已复制到剪贴板')
   } catch {
@@ -854,12 +855,16 @@ function renderScoreTrendChart() {
     scoreTrendChart.dispose()
   }
   scoreTrendChart = echarts.init(scoreTrendChartRef.value)
-  const dates = scoreHistory.value.map(i => i.date.slice(5))
-  const scores = scoreHistory.value.map(i => i.score)
+  // 过滤掉 null 评分的记录
+  const validItems = scoreHistory.value.filter(i => i.score != null)
+  if (validItems.length === 0) return
+  const dates = validItems.map(i => i.date.slice(5))
+  const scores = validItems.map(i => i.score)
   scoreTrendChart.setOption({
     tooltip: { trigger: 'axis', formatter: (params: any) => {
       const p = params[0]
-      const item = scoreHistory.value[p.dataIndex]
+      if (!p) return ''
+      const item = validItems[p.dataIndex]
       return `${item.date}<br/>评分: ${item.score}<br/>动作: ${item.action}<br/>${item.reason}`
     }},
     grid: { left: 40, right: 20, top: 20, bottom: 30 },
@@ -877,6 +882,7 @@ function renderScoreTrendChart() {
       },
       itemStyle: { color: (params: any) => {
         const v = params.value
+        if (v == null) return '#909399'
         return v >= 70 ? '#67c23a' : v >= 50 ? '#e6a23c' : '#f56c6c'
       }},
     }],
@@ -1448,6 +1454,11 @@ watch(klineCollapsed, (collapsed) => {
 .timeline-model {
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+
+.timeline-rating {
+  font-size: 12px;
+  margin-left: 4px;
 }
 
 .timeline-badge {

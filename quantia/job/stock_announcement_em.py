@@ -168,18 +168,31 @@ def save_announcements(df: pd.DataFrame) -> int:
             str(row.get('url', ''))[:300],
         ))
 
-    # 批量插入 (INSERT IGNORE 去重)
+    # 批量 INSERT IGNORE（每批最多 200 条，一条 SQL 语句）
     count = 0
     batch_size = 200
     for i in range(0, len(rows), batch_size):
         batch = rows[i:i + batch_size]
-        for r in batch:
-            try:
-                mdb.executeSql(_UPSERT_SQL, r)
-                count += 1
-            except Exception as e:
-                if 'Duplicate' not in str(e):
-                    log.debug(f"插入公告失败: {e}")
+        placeholders = ', '.join(['(%s, %s, %s, %s, %s, %s)'] * len(batch))
+        flat_params = [v for r in batch for v in r]
+        batch_sql = (
+            "INSERT IGNORE INTO cn_stock_announcement "
+            "(code, ann_date, title, ann_type, tag, url) VALUES "
+            + placeholders
+        )
+        try:
+            mdb.executeSql(batch_sql, flat_params)
+            count += len(batch)
+        except Exception as e:
+            log.warning(f"批量插入公告失败(batch={len(batch)}): {e}")
+            # 降级为逐条插入
+            for r in batch:
+                try:
+                    mdb.executeSql(_UPSERT_SQL, r)
+                    count += 1
+                except Exception as e2:
+                    if 'Duplicate' not in str(e2):
+                        log.debug(f"插入公告失败: {e2}")
     return count
 
 
