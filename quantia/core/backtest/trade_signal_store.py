@@ -426,6 +426,24 @@ def fetch_signal_with_decision(signal_id: int) -> Dict[str, Any]:
                 "ma": i[8], "boll": i[9], "rsi": i[10], "macd": i[11],
                 "kdj": i[12], "extra": i[13],
             }
+        # JOIN cn_stock_trade_ai_score 获取 AI Gate 详细理由
+        ai_reason = None
+        ai_score_id = s[16]
+        if ai_score_id:
+            try:
+                ai_rows = mdb.executeSqlFetch(
+                    "SELECT reason_summary, evidence, risk_flags "
+                    "FROM `cn_stock_trade_ai_score` WHERE id=%s",
+                    (int(ai_score_id),),
+                ) or []
+                if ai_rows:
+                    ai_reason = {
+                        "reason_summary": ai_rows[0][0] or "",
+                        "evidence": ai_rows[0][1] or "",
+                        "risk_flags": ai_rows[0][2] or "",
+                    }
+            except Exception:
+                pass
         return {
             "signal_id": int(s[0]),
             "reason": s[1] or "",
@@ -437,6 +455,7 @@ def fetch_signal_with_decision(signal_id: int) -> Dict[str, Any]:
             "order_api": s[11],
             "source_type": s[12], "source_id": s[13], "run_id": s[14], "trade_id": s[15],
             "ai_score_id": s[16], "ai_score": s[17], "ai_action": s[18], "ai_gate_result": s[19],
+            "ai_reason": ai_reason,
             "rules": [
                 {
                     "rule_group": r[0], "rule_name": r[1], "threshold_expr": r[2],

@@ -171,6 +171,16 @@
 
     <!-- 报告内容 -->
     <div v-if="reportContent" class="report-container" ref="reportRef">
+      <!-- TOC 目录侧栏 -->
+      <div v-if="tocItems.length && !generating" class="report-toc">
+        <div class="toc-title">目录</div>
+        <div
+          v-for="(item, idx) in tocItems"
+          :key="item.id"
+          class="toc-item"
+          @click="scrollToSection(idx)"
+        >{{ item.title }}</div>
+      </div>
       <!-- 数据更新提示横幅 -->
       <el-alert
         v-if="dataUpdateReason"
@@ -372,6 +382,30 @@ const renderedHtml = computed(() => {
   if (!reportContent.value || !mdInstance.value) return ''
   return mdInstance.value.render(reportContent.value)
 })
+
+// ---- TOC 目录锚点 (§10.8) ----
+interface TocItem { id: string; title: string }
+const tocItems = computed<TocItem[]>(() => {
+  if (!reportContent.value) return []
+  const headingRegex = /^#{4}\s+(.+)$/gm
+  const items: TocItem[] = []
+  let match: RegExpExecArray | null
+  while ((match = headingRegex.exec(reportContent.value)) !== null) {
+    const title = match[1].trim()
+    const id = 'toc-' + items.length
+    items.push({ id, title })
+  }
+  return items
+})
+
+function scrollToSection(idx: number) {
+  const container = reportRef.value
+  if (!container) return
+  const headings = container.querySelectorAll('.report-body h4')
+  if (headings[idx]) {
+    headings[idx].scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
 
 // ---- Methods ----
 async function queryStock(queryString: string, cb: (items: { value: string; code: string; name: string }[]) => void) {
@@ -1124,6 +1158,38 @@ watch(klineCollapsed, (collapsed) => {
   padding: 20px;
   max-height: 70vh;
   overflow-y: auto;
+  position: relative;
+}
+
+.report-toc {
+  position: sticky;
+  top: 0;
+  float: right;
+  width: 160px;
+  margin-left: 12px;
+  padding: 10px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 6px;
+  font-size: 12px;
+  z-index: 10;
+}
+.toc-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--el-text-color-primary);
+}
+.toc-item {
+  padding: 3px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+  color: var(--el-text-color-regular);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toc-item:hover {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
 }
 
 .report-header {

@@ -39,7 +39,7 @@ _NOTIFICATION_CONFIG_TABLE = 'cn_stock_notification_config'
 DEFAULT_SCORE_THRESHOLD = 50  # 评分跌破此值触发预警
 DEFAULT_ALERT_COOLDOWN_HOURS = 24  # 同一股票同一方向预警冷却时间
 
-_ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search']
+_ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
 
 
 # ─── 工具函数 ──────────────────────────────────────────────────────
@@ -417,6 +417,84 @@ def push_report_summary_to_dingtalk(code: str, name: str, summary: str, rating: 
         return False
 
 
+# ─── 功能 4: 热门股票预生成 (optimization_review §13) ──────────────
+
+def pregenerate_hot_stocks(top_n: int = 50) -> Dict[str, Any]:
+    """收盘后对今日成交额 Top N 股票预生成报告，命中缓存时毫秒级响应。
+
+    - 受 feature_switch 'report_cron_pregenerate' 开关控制
+    - 跳过今日已有报告的股票
+    - 结果标记 source='batch'
+    """
+    try:
+        from quantia.lib.ai.feature_switch import check_feature
+        check_feature('report_cron_pregenerate')
+    except Exception as exc:
+        _logger.info(f'[热门预生成] 功能未启用: {exc}')
+        return {'generated': 0, 'skipped': 0, 'failed': 0, 'reason': 'disabled'}
+
+    # 查询今日成交额 Top N
+    sql = """
+        SELECT code, name FROM cn_stock_spot
+        WHERE amount IS NOT NULL AND amount > 0
+        ORDER BY amount DESC LIMIT %s
+    """
+    rows = mdb.executeSqlFetch(sql, (top_n,)) or []
+    if not rows:
+        _logger.info('[热门预生成] 无行情数据')
+        return {'generated': 0, 'skipped': 0, 'failed': 0}
+
+    today = datetime.date.today().isoformat()
+    stats = {'generated': 0, 'skipped': 0, 'failed': 0, 'total': len(rows)}
+
+    for code, name in rows:
+        if not code or len(code) != 6:
+            continue
+        # 跳过今日已有报告
+        try:
+            exist_rows = mdb.executeSqlFetch(
+                f"SELECT COUNT(*) FROM `{_REPORT_TABLE}` WHERE code = %s AND DATE(created_at) = %s",
+                (code, today),
+            )
+            if exist_rows and exist_rows[0][0] > 0:
+                stats['skipped'] += 1
+                continue
+        except Exception:
+            pass
+
+        try:
+            from quantia.lib.ai import run_agent
+            result = run_agent(
+                user_message=f"请为 A 股 {code} 生成分析报告。",
+                scene='report_cron',
+                agent='stock_analyst',
+                allowed_tools=_ALLOWED_TOOLS,
+            )
+            content = (result.content or '')[:10000]
+            mdb.executeSql(
+                f"""INSERT INTO `{_REPORT_TABLE}`
+                    (code, name, report_md, model, provider, tools_used,
+                     tokens_used, latency_ms, source, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'batch', NOW())""",
+                (
+                    code, name or '', content,
+                    result.model or '', result.provider or '',
+                    json.dumps([tc.get('name') for tc in (result.tool_calls or [])]),
+                    result.total_tokens or 0, 0,
+                ),
+            )
+            stats['generated'] += 1
+            _logger.info(f'[热门预生成] {code} {name} 完成')
+        except Exception as exc:
+            stats['failed'] += 1
+            _logger.warning(f'[热门预生成] {code} 失败: {exc}')
+
+        time.sleep(3)  # 限速，避免 API 过载
+
+    _logger.info(f'[热门预生成] 完成: {stats}')
+    return stats
+
+
 # ─── 入口 ─────────────────────────────────────────────────────────
 
 def run_all():
@@ -443,15 +521,19 @@ if __name__ == '__main__':
     )
 
     parser = argparse.ArgumentParser(description='Quantia 定时分析 + 评分预警')
-    parser.add_argument('--mode', choices=['report', 'alert', 'all'], default='all',
-                        help='执行模式: report=仅定时分析, alert=仅评分预警, all=全部')
+    parser.add_argument('--mode', choices=['report', 'alert', 'pregenerate', 'all'], default='all',
+                        help='执行模式: report=仅定时分析, alert=仅评分预警, pregenerate=热门预生成, all=全部')
     parser.add_argument('--max-stocks', type=int, default=10,
                         help='定时分析最大股票数')
+    parser.add_argument('--top-n', type=int, default=50,
+                        help='热门预生成 Top N')
     args = parser.parse_args()
 
     if args.mode == 'report':
         scheduled_report_analysis(max_stocks=args.max_stocks)
     elif args.mode == 'alert':
         score_alert_check()
+    elif args.mode == 'pregenerate':
+        pregenerate_hot_stocks(top_n=args.top_n)
     else:
         run_all()

@@ -779,6 +779,20 @@
             <span v-if="tradeDecisionAi.score != null"> · {{ Number(tradeDecisionAi.score).toFixed(2) }}</span>
             <span v-if="tradeDecisionAi.gate"> · gate: {{ tradeDecisionAi.gate }}</span>
           </el-tag>
+          <div v-if="tradeDecisionAi.reason" class="td-ai-reason">
+            <div v-if="tradeDecisionAi.reason.reason_summary" class="ai-reason-summary">
+              <strong>理由：</strong>{{ tradeDecisionAi.reason.reason_summary }}
+            </div>
+            <div v-if="tradeDecisionAi.reason.evidence" class="ai-reason-evidence">
+              <strong>证据：</strong>{{ tradeDecisionAi.reason.evidence }}
+            </div>
+            <div v-if="tradeDecisionAi.reason.risk_flags" class="ai-reason-risk">
+              <strong>风险标记：</strong>
+              <el-tag type="danger" size="small" effect="plain" style="margin-left: 4px;">
+                {{ tradeDecisionAi.reason.risk_flags }}
+              </el-tag>
+            </div>
+          </div>
         </div>
         <div class="td-block">
           <span class="td-block-title">决策规则对比</span>
@@ -1030,6 +1044,7 @@ const tradeDecisionAi = computed(() => {
     score: s.ai_score,
     action: s.ai_action || '',
     gate: s.ai_gate_result || '',
+    reason: s.ai_reason || null,
   }
 })
 
@@ -2024,7 +2039,20 @@ onUnmounted(() => {
 .trade-decision-dialog .td-block { display: flex; flex-direction: column; gap: 6px; }
 .trade-decision-dialog .td-block-title { font-size: 13px; font-weight: 600; color: #303133; }
 .trade-decision-dialog .td-rules-table { font-size: 12px; }
-.trade-decision-dialog .td-ai { display: flex; align-items: center; gap: 10px; }
+.trade-decision-dialog .td-ai { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.trade-decision-dialog .td-ai-reason {
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 12px;
+  background: var(--el-fill-color-lighter, #f5f7fa);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.td-ai-reason .ai-reason-summary,
+.td-ai-reason .ai-reason-evidence,
+.td-ai-reason .ai-reason-risk { margin-bottom: 4px; }
+.td-ai-reason .ai-reason-risk:last-child { margin-bottom: 0; }
 
 /* ── 页面头部 ── */
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }

@@ -40,7 +40,11 @@ _REPORT_TABLE = 'cn_stock_ai_report'
 _STREAM_SENTINEL = object()
 _executor = ThreadPoolExecutor(max_workers=2)
 
-_ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search']
+_ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
+
+# ─── 并发请求合并（同一 code 生成中时，后续请求等待缓存）─────────
+_generating_codes: Dict[str, threading.Event] = {}
+_generating_lock = threading.Lock()
 
 
 def _load_analyst_prompt() -> str:
@@ -180,20 +184,41 @@ def _has_data_update(code: str, last_report_time: str) -> tuple:
     return False, ""
 
 
+def _validate_report_structure(report_md: str) -> int:
+    """校验报告结构完整性，返回 quality_score (0/50/100)。
+
+    100 = 包含全部 7 节标题 + 多空对比表
+     50 = 包含 >= 4 节标题
+      0 = 不足 4 节标题
+    """
+    import re
+    # 检查 7 节标题
+    required_headings = ['一、', '二、', '三、', '四、', '五、', '六、', '七、']
+    found_headings = sum(1 for h in required_headings if h in report_md)
+    # 检查多空对比表
+    has_table = bool(re.search(r'看多因素.*看空因素|看空因素.*看多因素', report_md, re.DOTALL))
+    if found_headings >= 7 and has_table:
+        return 100
+    elif found_headings >= 4:
+        return 50
+    return 0
+
+
 def _save_report(code: str, name: str, report_md: str, model: str,
                  provider: str, tools_used: List[str],
                  tokens_used: int, latency_ms: int) -> int:
     """持久化报告到 DB。"""
     _lazy_ensure_table()
+    quality_score = _validate_report_structure(report_md)
     sql = f"""
         INSERT INTO `{_REPORT_TABLE}`
             (code, name, report_md, model, provider, tools_used,
-             tokens_used, latency_ms, data_cutoff_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURDATE())
+             tokens_used, latency_ms, quality_score, data_cutoff_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURDATE())
     """
     tools_json = json.dumps(tools_used, ensure_ascii=False)
     mdb.executeSql(sql, (code, name, report_md, model, provider,
-                         tools_json, tokens_used, latency_ms))
+                         tools_json, tokens_used, latency_ms, quality_score))
     # Get last insert id
     rows = mdb.executeSqlFetch("SELECT LAST_INSERT_ID()")
     return rows[0][0] if rows else 0
@@ -353,6 +378,32 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
                 yield self.flush()
                 return
 
+            # 并发请求合并：如果同一 code 正在生成中，等待其完成后返回缓存
+            with _generating_lock:
+                event = _generating_codes.get(code)
+            if event:
+                # 等待正在生成的请求完成（最多 120s）
+                yield IOLoop.current().run_in_executor(
+                    _executor, lambda: event.wait(timeout=120))
+                # 再次检查缓存
+                cached = _check_cache(code)
+                if cached:
+                    self.set_header('Content-Type', 'text/event-stream; charset=utf-8')
+                    self.set_header('Cache-Control', 'no-cache')
+                    self.set_header('X-Accel-Buffering', 'no')
+                    self.write('data: ' + json.dumps(
+                        {'type': 'cached', 'report': cached}, ensure_ascii=False, default=str
+                    ) + '\n\n')
+                    yield self.flush()
+                    self.write('data: ' + json.dumps({'type': 'done'}) + '\n\n')
+                    yield self.flush()
+                    return
+
+        # 注册正在生成的 code
+        gen_event = threading.Event()
+        with _generating_lock:
+            _generating_codes[code] = gen_event
+
         # SSE streaming
         self.set_header('Content-Type', 'text/event-stream; charset=utf-8')
         self.set_header('Cache-Control', 'no-cache')
@@ -454,6 +505,12 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
             yield self.flush()
         except Exception as exc:
             _logger.debug(f'[stockReport] 发送 done 事件失败（客户端已断开）: {exc}')
+        finally:
+            # 释放并发锁，通知等待的请求
+            with _generating_lock:
+                ev = _generating_codes.pop(code, None)
+            if ev:
+                ev.set()
 
 
 class StockReportHistoryHandler(webBase.BaseHandler, ABC):
