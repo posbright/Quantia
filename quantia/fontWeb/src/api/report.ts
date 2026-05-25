@@ -451,3 +451,33 @@ export interface SpeechTextResult {
 export function getSpeechText(params: { report_id?: number; report_md?: string }) {
   return request.post<SpeechTextResult>('/api/ai/report/speech_text', params)
 }
+
+// ---- Phase 2: Industry Percentile Tooltip (§10.4) ----
+
+export interface MetricPercentile {
+  value: number
+  percentile: number | null
+  industry_median: number | null
+  peer_count: number
+}
+
+export interface IndustryPercentileResult {
+  code: string
+  name: string
+  industry: string | null
+  peer_count: number
+  metrics: {
+    pe?: MetricPercentile
+    pb?: MetricPercentile
+    roe?: MetricPercentile
+  }
+}
+
+/**
+ * 获取个股 PE/PB/ROE 行业分位数（用于报告内数字 Tooltip）
+ */
+export function getIndustryPercentile(code: string) {
+  return request.get<IndustryPercentileResult>(
+    '/api/ai/report/industry_percentile', { params: { code } }
+  )
+}

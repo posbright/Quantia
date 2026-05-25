@@ -296,9 +296,9 @@ import {
   VideoPlay, CopyDocument, Loading, CircleCheckFilled, Clock, DataAnalysis, ArrowDown
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData, getAttentionList, batchSummaryStream, getScoreHistory, getReportTimeline, getReportDetail, createShareLink, translateReport, getSpeechText, getReportPreference } from '@/api/report'
+import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData, getAttentionList, batchSummaryStream, getScoreHistory, getReportTimeline, getReportDetail, createShareLink, translateReport, getSpeechText, getReportPreference, getIndustryPercentile } from '@/api/report'
 import { getKlineData } from '@/api/stock'
-import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent, StockFallbackData, BatchSummaryEvent, ScoreHistoryItem, ReportTimelineItem } from '@/api/report'
+import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent, StockFallbackData, BatchSummaryEvent, ScoreHistoryItem, ReportTimelineItem, IndustryPercentileResult } from '@/api/report'
 import * as echarts from 'echarts'
 
 // ---- markdown-it setup (dynamic import for code-split) ----
@@ -377,9 +377,49 @@ const scoreHistory = ref<ScoreHistoryItem[]>([])
 const reportTimeline = ref<ReportTimelineItem[]>([])
 const scoreTrendChartRef = ref<HTMLElement | null>(null)
 let scoreTrendChart: echarts.ECharts | null = null
+
+// ---- Industry Percentile State (§10.4) ----
+const industryPercentile = ref<IndustryPercentileResult | null>(null)
+
+async function loadIndustryPercentile(code: string) {
+  try {
+    const res = await getIndustryPercentile(code) as any
+    industryPercentile.value = res
+  } catch {
+    industryPercentile.value = null
+  }
+}
+
+/**
+ * 在渲染后的 HTML 中，为 PE/PB/ROE 数字注入行业分位数 Tooltip。
+ * 匹配模式：PE: 12.3 / PB: 1.8 / ROE: 18.5% 等形式。
+ */
+function _injectMetricTooltips(html: string): string {
+  const p = industryPercentile.value
+  if (!p || !p.metrics || !p.industry) return html
+
+  const replacements: Array<{ pattern: RegExp; metric: 'pe' | 'pb' | 'roe'; suffix: string }> = [
+    { pattern: /\bPE[：:]\s*([\d.]+)/g, metric: 'pe', suffix: '' },
+    { pattern: /\bPB[：:]\s*([\d.]+)/g, metric: 'pb', suffix: '' },
+    { pattern: /\bROE[：:]\s*([\d.]+)%?/g, metric: 'roe', suffix: '%' },
+  ]
+
+  for (const { pattern, metric, suffix } of replacements) {
+    const m = p.metrics[metric]
+    if (!m || m.percentile === null) continue
+    const tip = `${p.industry}行业 Top ${m.percentile}% · 中位数 ${m.industry_median}${suffix} · 共${m.peer_count}家`
+    html = html.replace(pattern, (match, _val) => {
+      return `<span class="metric-tooltip" data-tip="${tip}">${match}</span>`
+    })
+  }
+  return html
+}
+
 const renderedHtml = computed(() => {
   if (!reportContent.value || !mdInstance.value) return ''
-  return mdInstance.value.render(reportContent.value)
+  let html = mdInstance.value.render(reportContent.value)
+  html = _injectMetricTooltips(html)
+  return html
 })
 
 // ---- TOC 目录锚点 (§10.8) ----
@@ -515,6 +555,7 @@ function handleStreamEvent(ev: ReportStreamEvent) {
       generating.value = false
       loadScoreHistory(currentCode.value)
       loadReportTimeline(currentCode.value)
+      loadIndustryPercentile(currentCode.value)
       // 偏好设置：自动语音播报
       if (userVoiceEnabled.value && reportContent.value && !isSpeaking.value) {
         nextTick(() => handleVoice())
@@ -530,6 +571,7 @@ function handleStreamEvent(ev: ReportStreamEvent) {
       generating.value = false
       loadScoreHistory(currentCode.value)
       loadReportTimeline(currentCode.value)
+      loadIndustryPercentile(currentCode.value)
       // 偏好设置：自动语音播报
       if (userVoiceEnabled.value && reportContent.value && !isSpeaking.value) {
         nextTick(() => handleVoice())
@@ -1716,5 +1758,86 @@ watch(klineCollapsed, (collapsed) => {
   border-radius: 4px;
   background: var(--el-color-primary-light-8);
   color: var(--el-color-primary);
+}
+
+/* ---- §10.4 数字可交互 Tooltip ---- */
+.metric-tooltip {
+  position: relative;
+  border-bottom: 1px dashed var(--el-color-primary-light-3);
+  cursor: help;
+}
+.metric-tooltip:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--el-bg-color-overlay, #303133);
+  color: #fff;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  white-space: nowrap;
+  z-index: 999;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+.metric-tooltip:hover::before {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(100%);
+  border: 5px solid transparent;
+  border-top-color: var(--el-bg-color-overlay, #303133);
+  z-index: 999;
+}
+
+/* ---- §10.9 响应式 600px 断点 ---- */
+@media (max-width: 600px) {
+  .stock-analysis {
+    padding: 8px;
+  }
+  .search-bar {
+    padding: 8px;
+  }
+  .search-row {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .toolbar-row {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .kline-panel {
+    margin: 0 -8px;
+    border-radius: 0;
+  }
+  .kline-chart {
+    height: 260px;
+  }
+  .report-container {
+    padding: 12px;
+    max-height: none;
+  }
+  .report-toc {
+    display: none;
+  }
+  .followup-bar {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .feedback-bar {
+    flex-wrap: wrap;
+  }
+  .batch-grid {
+    grid-template-columns: 1fr;
+  }
+  .timeline-items {
+    font-size: 12px;
+  }
+  .empty-state {
+    padding: 40px 12px;
+  }
 }
 </style>

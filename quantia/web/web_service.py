@@ -191,6 +191,7 @@ class Application(tornado.web.Application):
             (r"/quantia/api/ai/report/preference", stockReportHandler.StockReportPreferenceHandler),
             (r"/quantia/api/ai/report/translate", stockReportHandler.StockReportTranslateHandler),
             (r"/quantia/api/ai/report/speech_text", stockReportHandler.StockReportSpeechTextHandler),
+            (r"/quantia/api/ai/report/industry_percentile", stockReportHandler.StockIndustryPercentileHandler),
             # Phase 6: IM 指令确认（默认关闭，由 QUANTIA_IM_COMMAND_ENABLED=1 启用；仅落库 trade_command，不直接调券商）
             (r"/quantia/api/im/status", imCommandHandler.IMStatusHandler),
             (r"/quantia/api/im/dingtalk/callback", imCommandHandler.DingtalkCallbackHandler),

@@ -1671,3 +1671,118 @@ class StockReportSpeechTextHandler(webBase.BaseHandler, ABC):
             'char_count': char_count,
         })
 
+
+class StockIndustryPercentileHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/ai/report/industry_percentile?code=xxx
+
+    返回个股 PE/PB/ROE 在所属行业中的分位数排名。
+    用于报告内关键数字的交互式 Tooltip（§10.4）。
+    """
+
+    @gen.coroutine
+    def get(self):
+        code = self.get_argument('code', '').strip()
+        if not code or len(code) != 6 or not code.isdigit():
+            _write_json(self, {'error': 'code 必须是6位数字'}, 400)
+            return
+
+        try:
+            result = yield IOLoop.current().run_in_executor(
+                _executor, self._compute_percentile, code)
+            _write_json(self, result)
+        except Exception as exc:
+            _logger.warning(f'[industry_percentile] 计算失败 code={code}: {exc}')
+            _write_json(self, {'error': '计算行业分位数失败'}, 500)
+
+    @staticmethod
+    def _compute_percentile(code: str) -> Dict[str, Any]:
+        """计算 PE/PB/ROE 在同行业中的百分位排名。"""
+        import math
+
+        # 1. 获取该股票的行业分类
+        sql_industry = """
+            SELECT industry, pe9, pbnewmrq, roe_weight, name
+            FROM cn_stock_spot
+            WHERE code = %s
+            ORDER BY date DESC LIMIT 1
+        """
+        rows = mdb.executeSqlFetch(sql_industry, (code,))
+        if not rows:
+            return {'code': code, 'industry': None, 'metrics': {}}
+
+        industry = rows[0][0]
+        my_pe = rows[0][1]
+        my_pb = rows[0][2]
+        my_roe = rows[0][3]
+        name = rows[0][4] or ''
+
+        if not industry:
+            return {'code': code, 'name': name, 'industry': None, 'metrics': {}}
+
+        # 2. 获取同行业所有股票的 PE/PB/ROE（最新交易日）
+        sql_peers = """
+            SELECT pe9, pbnewmrq, roe_weight
+            FROM cn_stock_spot
+            WHERE industry = %s
+              AND date = (SELECT MAX(date) FROM cn_stock_spot WHERE code = %s)
+        """
+        peers = mdb.executeSqlFetch(sql_peers, (industry, code))
+        if not peers:
+            return {'code': code, 'name': name, 'industry': industry, 'metrics': {}}
+
+        def _percentile(my_val, all_vals):
+            """计算百分位排名（0~100），越低表示越便宜/越低。"""
+            if my_val is None:
+                return None
+            valid = [v for v in all_vals if v is not None
+                     and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v)))]
+            if len(valid) < 3:
+                return None
+            valid.sort()
+            count_below = sum(1 for v in valid if v < my_val)
+            return round(count_below / len(valid) * 100, 1)
+
+        def _median(vals):
+            valid = sorted(v for v in vals if v is not None
+                           and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v))))
+            if not valid:
+                return None
+            n = len(valid)
+            if n % 2 == 1:
+                return round(valid[n // 2], 2)
+            return round((valid[n // 2 - 1] + valid[n // 2]) / 2, 2)
+
+        pe_vals = [r[0] for r in peers if r[0] is not None and r[0] > 0]
+        pb_vals = [r[1] for r in peers if r[1] is not None and r[1] > 0]
+        roe_vals = [r[2] for r in peers if r[2] is not None]
+
+        metrics = {}
+        if my_pe is not None and my_pe > 0:
+            metrics['pe'] = {
+                'value': round(float(my_pe), 2),
+                'percentile': _percentile(my_pe, pe_vals),
+                'industry_median': _median(pe_vals),
+                'peer_count': len(pe_vals),
+            }
+        if my_pb is not None and my_pb > 0:
+            metrics['pb'] = {
+                'value': round(float(my_pb), 2),
+                'percentile': _percentile(my_pb, pb_vals),
+                'industry_median': _median(pb_vals),
+                'peer_count': len(pb_vals),
+            }
+        if my_roe is not None:
+            metrics['roe'] = {
+                'value': round(float(my_roe), 2),
+                'percentile': _percentile(my_roe, roe_vals),
+                'industry_median': _median(roe_vals),
+                'peer_count': len(roe_vals),
+            }
+
+        return {
+            'code': code,
+            'name': name,
+            'industry': industry,
+            'peer_count': len(peers),
+            'metrics': metrics,
+        }
