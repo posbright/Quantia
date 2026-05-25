@@ -54,7 +54,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onActivated } from 'vue'
 import { getReportHistory, getReportDetail } from '@/api/report'
 import type { ReportHistoryItem } from '@/api/report'
 
@@ -133,6 +133,10 @@ async function viewReport(row: ReportHistoryItem) {
 }
 
 onMounted(() => {
+  loadHistory()
+})
+
+onActivated(() => {
   loadHistory()
 })
 </script>

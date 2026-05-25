@@ -53,7 +53,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onActivated } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getReportPreference, saveReportPreference } from '@/api/report'
 
@@ -106,6 +106,10 @@ async function handleSave() {
 }
 
 onMounted(() => {
+  loadPreference()
+})
+
+onActivated(() => {
   loadPreference()
 })
 </script>

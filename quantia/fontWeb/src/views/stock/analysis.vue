@@ -290,7 +290,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onActivated, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   VideoPlay, CopyDocument, Loading, CircleCheckFilled, Clock, DataAnalysis, ArrowDown
@@ -1046,6 +1046,19 @@ onMounted(async () => {
     searchText.value = code
     handleGenerate()
   }
+})
+
+onActivated(() => {
+  // keep-alive 切回时刷新关注列表 + 处理新 query 参数
+  loadAttentionList()
+  const code = route.query.code as string
+  if (code && code.length === 6 && code !== currentCode.value) {
+    currentCode.value = code
+    searchText.value = code
+    handleGenerate()
+  }
+  // ECharts 容器尺寸可能在隐藏期变化
+  nextTick(() => handleChartResize())
 })
 
 onBeforeUnmount(() => {
