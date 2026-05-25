@@ -26,11 +26,14 @@ class _FakeUserDB:
             return None
         if s.startswith("insert into cn_stock_admin_user"):
             self._auto_id += 1
-            username, pw_hash, role, enabled = params
+            username, pw_hash, role, enabled = params[0], params[1], params[2], params[3]
+            email = params[4] if len(params) > 4 else None
+            nickname = params[5] if len(params) > 5 else None
             self.rows.append({
                 "id": self._auto_id, "username": username,
                 "password_bcrypt": pw_hash, "role": role,
                 "enabled": int(enabled), "last_login_at": None,
+                "email": email, "nickname": nickname,
                 "created_at": "2026-05-10 00:00:00",
                 "updated_at": "2026-05-10 00:00:00",
             })
@@ -182,7 +185,7 @@ def test_delete_user(fake_db):
 def test_authenticate_db_success(fake_db):
     users_mod.create_user("alice", "longpass", role="operator")
     res = users_mod.authenticate("alice", "longpass")
-    assert res == {"username": "alice", "role": "operator", "source": "db"}
+    assert res == {"username": "alice", "role": "operator", "email": None, "nickname": None, "source": "db"}
 
 
 def test_authenticate_db_wrong_password_no_env_fallback(
