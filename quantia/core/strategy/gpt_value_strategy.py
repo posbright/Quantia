@@ -53,6 +53,24 @@ def _load_params():
         return _DEFAULT_PARAMS.copy()
 
 
+def _get_roe_season_factor():
+    """根据季报披露周期返回 ROE 年化因子。
+
+    东方财富 roe_weight 字段在季报披露后更新为单报告期累计 ROE，
+    而非年化值。5~8月为 Q1 报表（约为全年 1/4），需对阈值做等比缩放。
+    """
+    import datetime
+    month = datetime.date.today().month
+    if 5 <= month <= 8:
+        return 4.0
+    elif 9 <= month <= 10:
+        return 2.0
+    elif month >= 11:
+        return 4.0 / 3.0
+    else:
+        return 1.0
+
+
 def check_gpt_value(code_name, data, date=None, threshold=60):
     """
     GPT综合选股策略检查函数
@@ -115,8 +133,11 @@ def check_gpt_value_from_selection(stock_row, params=None):
 
         # ===== 第二层：盈利能力筛选 =====
         roe = stock_row.get('roe_weight', None)
-        if _is_valid_number(roe) and roe < params["roe_weight_min"]:
-            return False
+        if _is_valid_number(roe):
+            # 根据季报周期调整阈值：Q1报表后 roe_weight 为单季度值
+            roe_min = params["roe_weight_min"] / _get_roe_season_factor()
+            if roe < roe_min:
+                return False
 
         gpr = stock_row.get('sale_gpr', None)
         if _is_valid_number(gpr) and gpr < params["sale_gpr_min"]:
@@ -127,8 +148,10 @@ def check_gpt_value_from_selection(stock_row, params=None):
             return False
 
         roa = stock_row.get('jroa', None)
-        if _is_valid_number(roa) and roa < params.get("jroa_min", 3):
-            return False
+        if _is_valid_number(roa):
+            roa_min = params.get("jroa_min", 3) / _get_roe_season_factor()
+            if roa < roa_min:
+                return False
 
         # ===== 第三层：成长质量筛选 =====
         revenue_growth = stock_row.get('income_growthrate_3y', None)
