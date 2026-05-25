@@ -489,6 +489,11 @@ def pregenerate_hot_stocks(top_n: int = 50) -> Dict[str, Any]:
             stats['failed'] += 1
             _logger.warning(f'[热门预生成] {code} 失败: {exc}')
 
+        # 熔断：连续失败 5 次则提前终止
+        if stats['failed'] >= 5 and stats['generated'] == 0:
+            _logger.error('[热门预生成] 连续失败过多，熔断终止')
+            break
+
         time.sleep(3)  # 限速，避免 API 过载
 
     _logger.info(f'[热门预生成] 完成: {stats}')

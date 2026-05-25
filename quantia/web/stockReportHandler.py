@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import threading
 import time
 import uuid
@@ -38,11 +39,12 @@ _logger = logging.getLogger(__name__)
 
 _REPORT_TABLE = 'cn_stock_ai_report'
 _STREAM_SENTINEL = object()
-_executor = ThreadPoolExecutor(max_workers=2)
+_executor = ThreadPoolExecutor(max_workers=4)
 
 _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
 
 # ─── 并发请求合并（同一 code 生成中时，后续请求等待缓存）─────────
+# 每个 Event 关联到注册它的请求；pop 时只删除自己注册的 event
 _generating_codes: Dict[str, threading.Event] = {}
 _generating_lock = threading.Lock()
 
@@ -184,13 +186,15 @@ def _has_data_update(code: str, last_report_time: str) -> tuple:
     return False, ""
 
 
-def _validate_report_structure(report_md: str) -> int:
+def _validate_report_structure(report_md: Optional[str]) -> int:
     """校验报告结构完整性，返回 quality_score (0/50/100)。
 
     100 = 包含全部 7 节标题 + 多空对比表
      50 = 包含 >= 4 节标题
       0 = 不足 4 节标题
     """
+    if not report_md:
+        return 0
     import re
     # 检查 7 节标题
     required_headings = ['一、', '二、', '三、', '四、', '五、', '六、', '七、']
@@ -217,11 +221,12 @@ def _save_report(code: str, name: str, report_md: str, model: str,
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURDATE())
     """
     tools_json = json.dumps(tools_used, ensure_ascii=False)
-    mdb.executeSql(sql, (code, name, report_md, model, provider,
-                         tools_json, tokens_used, latency_ms, quality_score))
-    # Get last insert id
-    rows = mdb.executeSqlFetch("SELECT LAST_INSERT_ID()")
-    return rows[0][0] if rows else 0
+    # 使用同一 cursor 获取 lastrowid（线程本地连接，autocommit=True）
+    with mdb.get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (code, name, report_md, model, provider,
+                                 tools_json, tokens_used, latency_ms, quality_score))
+            return cursor.lastrowid or 0
 
 
 def _write_json(handler, data: Dict[str, Any], status: int = 200):
@@ -334,7 +339,7 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
 
     except Exception as exc:
         _logger.exception(f'[stockReport] Agent 报告生成失败: {exc}')
-        q.put(('error', {'msg': str(exc)}))
+        q.put(('error', {'msg': '报告生成失败，请稍后重试'}))
     finally:
         q.put((_STREAM_SENTINEL, None))
 
@@ -349,8 +354,8 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
         except (json.JSONDecodeError, TypeError):
             body = {}
         code = (body.get('code') or '').strip()
-        if not code or len(code) != 6:
-            _write_json(self, {'error': 'code 必须是6位股票代码'}, 400)
+        if not code or len(code) != 6 or not code.isdigit():
+            _write_json(self, {'error': 'code 必须是6位数字股票代码'}, 400)
             return
 
         # 缓存检查
@@ -506,11 +511,11 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
         except Exception as exc:
             _logger.debug(f'[stockReport] 发送 done 事件失败（客户端已断开）: {exc}')
         finally:
-            # 释放并发锁，通知等待的请求
+            # 释放并发锁，只释放自己注册的 event（避免 force=True 请求覆盖后的竞态）
             with _generating_lock:
-                ev = _generating_codes.pop(code, None)
-            if ev:
-                ev.set()
+                if _generating_codes.get(code) is gen_event:
+                    _generating_codes.pop(code, None)
+            gen_event.set()
 
 
 class StockReportHistoryHandler(webBase.BaseHandler, ABC):
@@ -587,7 +592,7 @@ class StockSearchHandler(webBase.BaseHandler, ABC):
 
     @gen.coroutine
     def get(self):
-        q = (self.get_argument('q', '') or '').strip()
+        q = (self.get_argument('q', '') or '').strip()[:20]
         if not q or len(q) < 1:
             _write_json(self, {'items': []})
             return
@@ -754,6 +759,17 @@ class StockReportFeedbackHandler(webBase.BaseHandler, ABC):
         report_id = body.get('report_id')
         feedback = body.get('feedback')  # 1=满意, -1=不满意
         reason = (body.get('reason') or '')[:200]
+
+        # 类型规范化
+        try:
+            report_id = int(report_id)
+        except (TypeError, ValueError):
+            _write_json(self, {'error': 'report_id 必须是整数'}, 400)
+            return
+        try:
+            feedback = int(feedback)
+        except (TypeError, ValueError):
+            feedback = None
 
         if not report_id or feedback not in (1, -1):
             _write_json(self, {'error': 'report_id 和 feedback(1/-1) 必填'}, 400)
@@ -1161,10 +1177,12 @@ class StockReportShareHandler(webBase.BaseHandler, ABC):
 class StockReportSharedViewHandler(webBase.BaseHandler, ABC):
     """GET /quantia/api/ai/report/shared/<token> — 只读公开报告（无需登录）。"""
 
+    _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+
     @gen.coroutine
     def get(self, token: str):
         _lazy_ensure_table()
-        if not token or len(token) != 36:
+        if not token or not self._UUID_RE.match(token):
             _write_json(self, {'error': '无效链接'}, 400)
             return
 
@@ -1326,7 +1344,9 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
     @gen.coroutine
     def get(self):
         _ensure_preference_table()
-        user_id = self.get_argument('user_id', 'default')
+        user_id = (self.get_argument('user_id', 'default') or 'default')[:64]
+        if not user_id.replace('_', '').replace('-', '').isalnum():
+            user_id = 'default'
         sql = f"""
             SELECT focus_dimensions, language, voice_enabled, alert_threshold,
                    auto_report, push_enabled
@@ -1367,7 +1387,9 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
             _write_json(self, {'error': '无效请求体'}, 400)
             return
 
-        user_id = body.get('user_id', 'default')
+        user_id = (body.get('user_id') or 'default')[:64]
+        if not user_id.replace('_', '').replace('-', '').isalnum():
+            user_id = 'default'
         allowed_dims = ['technical', 'fundamental', 'fund_flow', 'event', 'ai_gate']
         dims = body.get('focus_dimensions', ['technical', 'fundamental', 'fund_flow'])
         dims = [d for d in dims if d in allowed_dims]
@@ -1405,7 +1427,7 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
             _write_json(self, {'ok': True})
         except Exception as exc:
             _logger.warning(f'[preference] 保存失败: {exc}')
-            _write_json(self, {'error': str(exc)}, 500)
+            _write_json(self, {'error': '保存失败'}, 500)
 
 
 # ═══════════════════════════════════════════════════════════════════
