@@ -378,6 +378,174 @@ def link_signal_to_trade(signal_id: int, trade_id: int) -> bool:
         return False
 
 
+def _query_indicators_fallback(mdb, code: str, signal_date) -> Optional[Dict[str, Any]]:
+    """当 cn_stock_trade_indicator_snapshot 没有该 signal 的数据时，
+    从 cn_stock_indicators + cn_stock_spot 合成"信号发生当日（或最近交易日）"的
+    OHLCV + 主要指标快照，使前端"指标快照"面板始终能展示真实数据。
+    任何异常 → 返回 None，不影响主流程。
+    """
+    if not code or signal_date is None:
+        return None
+    try:
+        # 指标行：取 signal_date 当日，否则最近 14 个交易日内最新一条。
+        ind_rows = mdb.executeSqlFetch(
+            "SELECT date, close, rsi, macd, macds, macdh, boll, boll_ub, boll_lb, "
+            " kdjk, kdjd, kdjj, atr, cci, mfi, obv, vr "
+            "FROM cn_stock_indicators "
+            "WHERE code=%s AND date<=%s ORDER BY date DESC LIMIT 1",
+            (str(code), signal_date),
+        ) or []
+        spot_rows = mdb.executeSqlFetch(
+            "SELECT date, open_price, high_price, low_price, new_price, volume, deal_amount "
+            "FROM cn_stock_spot "
+            "WHERE code=%s AND date<=%s ORDER BY date DESC LIMIT 1",
+            (str(code), signal_date),
+        ) or []
+        if not ind_rows and not spot_rows:
+            return None
+        kline_date = (ind_rows[0][0] if ind_rows else None) or (spot_rows[0][0] if spot_rows else None)
+        result: Dict[str, Any] = {
+            "period": "daily",
+            "kline_date": kline_date,
+            "open": None, "high": None, "low": None, "close": None,
+            "volume": None, "amount": None,
+            "ma": None, "boll": None, "rsi": None, "macd": None, "kdj": None,
+            "extra": {"source": "synthesized_from_indicators_table"},
+        }
+        if spot_rows:
+            sp = spot_rows[0]
+            result["open"] = sp[1]
+            result["high"] = sp[2]
+            result["low"] = sp[3]
+            result["close"] = sp[4]
+            result["volume"] = sp[5]
+            result["amount"] = sp[6]
+        if ind_rows:
+            ir = ind_rows[0]
+            if result["close"] is None:
+                result["close"] = ir[1]
+            result["rsi"] = {"rsi14": ir[2]} if ir[2] is not None else None
+            if ir[3] is not None or ir[4] is not None or ir[5] is not None:
+                result["macd"] = {"dif": ir[3], "dea": ir[4], "hist": ir[5]}
+            if ir[6] is not None or ir[7] is not None or ir[8] is not None:
+                result["boll"] = {"mid": ir[6], "upper": ir[7], "lower": ir[8]}
+            if ir[9] is not None or ir[10] is not None or ir[11] is not None:
+                result["kdj"] = {"k": ir[9], "d": ir[10], "j": ir[11]}
+            extra = result["extra"]
+            for k, idx in (("atr", 12), ("cci", 13), ("mfi", 14), ("obv", 15), ("vr", 16)):
+                if ir[idx] is not None:
+                    extra[k] = ir[idx]
+        return result
+    except Exception as exc:
+        logging.debug("[trade_signal_store] _query_indicators_fallback 失败 code=%s date=%s: %s",
+                      code, signal_date, exc)
+        return None
+
+
+def _synthesize_fallback_rules(reason: str, reason_source: str, direction: str,
+                                indicators: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """当 cn_stock_trade_decision 为空时（多数内置策略不显式写决策规则），
+    根据 reason 文本 + 真实指标快照合成"事实型"规则行，让用户看到决策时的真实数据。
+    与 algo/backtest-detail.vue::decisionRowsForTrade 思路保持一致：
+    - 第 1 行：策略决策（说明 reason 的来源）。
+    - 后续行：仅在 reason 文本提到对应指标时追加（不硬塞通用阈值）。
+    """
+    import re
+    rows: List[Dict[str, Any]] = []
+    text = str(reason or "")
+    is_buy = (direction or "").lower() == "buy"
+
+    if reason_source == "strategy":
+        source_label = "策略显式说明（reason=）"
+    elif reason_source == "derived":
+        source_label = "从策略当日 log.info 派生"
+    elif reason_source == "generated":
+        source_label = "系统兜底文案"
+    else:
+        source_label = f"reason_source={reason_source or '--'}"
+    rows.append({
+        "rule_group": "summary",
+        "rule_name": "策略决策",
+        "threshold_expr": "本笔买入/建仓的策略说明" if is_buy else "本笔卖出/调仓/风控的策略说明",
+        "threshold_value": None,
+        "actual_value": text or "--",
+        "passed": None,
+        "note": source_label,
+        "sort_order": 0,
+    })
+
+    if not indicators:
+        return rows
+
+    def _add(name: str, threshold: str, actual: str, note: str):
+        rows.append({
+            "rule_group": "indicator_snapshot",
+            "rule_name": name,
+            "threshold_expr": threshold,
+            "threshold_value": None,
+            "actual_value": actual,
+            "passed": None,
+            "note": note,
+            "sort_order": len(rows),
+        })
+
+    def _fmt(v):
+        if v is None: return "--"
+        try:
+            f = float(v)
+            return f"{f:.4f}" if abs(f) < 100 else f"{f:.2f}"
+        except Exception:
+            return str(v)
+
+    has_ma = bool(re.search(r"MA\d|均线|金叉|死叉|上穿|下穿", text, re.I))
+    has_boll = bool(re.search(r"BOLL|布林|上轨|下轨|中轨", text, re.I))
+    has_rsi = bool(re.search(r"RSI", text, re.I))
+    has_macd = bool(re.search(r"MACD|DIF|DEA|柱", text, re.I))
+    has_vol = bool(re.search(r"成交量|量能|放量|缩量|换手", text, re.I))
+    has_risk = bool(re.search(r"止损|止盈|风控|超时|最大持有|max[_ ]?hold|海龟|突破|入场", text, re.I))
+
+    close = indicators.get("close")
+    if has_ma and indicators.get("ma"):
+        ma = indicators["ma"]
+        if isinstance(ma, dict):
+            parts = [f"{k.upper()} {_fmt(v)}" for k, v in ma.items() if v is not None]
+            _add("均线快照", "策略提及均线 / 金叉死叉，列出当前实际值",
+                 " / ".join(parts) if parts else "--", "事实数据，仅供核对")
+    if has_boll and indicators.get("boll"):
+        b = indicators["boll"]
+        if isinstance(b, dict):
+            _add("BOLL 快照", "策略提及布林通道，列出当前实际值",
+                 f"收盘 {_fmt(close)} / 下轨 {_fmt(b.get('lower'))} / 中轨 {_fmt(b.get('mid'))} / 上轨 {_fmt(b.get('upper'))}",
+                 "事实数据，仅供核对")
+    if has_rsi and indicators.get("rsi"):
+        r = indicators["rsi"]
+        if isinstance(r, dict):
+            parts = [f"{k.upper()} {_fmt(v)}" for k, v in r.items() if v is not None]
+            _add("RSI 快照", "策略提及 RSI，列出当前实际值",
+                 " / ".join(parts) if parts else "--", "事实数据，仅供核对")
+    if has_macd and indicators.get("macd"):
+        m = indicators["macd"]
+        if isinstance(m, dict):
+            _add("MACD 快照", "策略提及 MACD，列出当前实际值",
+                 f"DIF {_fmt(m.get('dif'))} / DEA {_fmt(m.get('dea'))} / 柱 {_fmt(m.get('hist'))}",
+                 "事实数据，仅供核对")
+    if has_vol and indicators.get("volume") is not None:
+        _add("量能快照", "策略提及量能，列出当前实际值",
+             f"成交量 {_fmt(indicators.get('volume'))} / 成交额 {_fmt(indicators.get('amount'))}",
+             "事实数据，仅供核对")
+    if has_risk:
+        _add("风控触发", "策略提及止盈 / 止损 / 风控 / 突破 / 海龟入场",
+             text, "由策略自身的入场/风控规则触发，详见左列说明")
+
+    if len(rows) == 1:
+        # reason 未点名具体指标 → 仍把 K 线/收盘价兜底列一行
+        _add("当日 K 线", "未识别到具体指标关键词，列出当日 OHLCV 供核对",
+             f"开 {_fmt(indicators.get('open'))} / 高 {_fmt(indicators.get('high'))} / "
+             f"低 {_fmt(indicators.get('low'))} / 收 {_fmt(close)} / 量 {_fmt(indicators.get('volume'))}",
+             "事实数据，仅供核对")
+    return rows
+
+
 def fetch_signal_with_decision(signal_id: int) -> Dict[str, Any]:
     """供通知模板/详情接口读取。失败返回空 dict。
 
@@ -426,6 +594,20 @@ def fetch_signal_with_decision(signal_id: int) -> Dict[str, Any]:
                 "ma": i[8], "boll": i[9], "rsi": i[10], "macd": i[11],
                 "kdj": i[12], "extra": i[13],
             }
+        # 兜底：snapshot 表无数据时，从 cn_stock_indicators + cn_stock_spot 合成。
+        if not indicators:
+            indicators = _query_indicators_fallback(mdb, s[3], s[6])
+        # 决策规则兜底：rules 表为空时，按 reason+indicators 合成事实型规则。
+        rules_out: List[Dict[str, Any]] = [
+            {
+                "rule_group": r[0], "rule_name": r[1], "threshold_expr": r[2],
+                "threshold_value": r[3], "actual_value": r[4],
+                "passed": r[5], "note": r[6],
+            }
+            for r in rules
+        ]
+        if not rules_out:
+            rules_out = _synthesize_fallback_rules(s[1] or "", s[2] or "strategy", s[5] or "", indicators)
         # JOIN cn_stock_trade_ai_score 获取 AI Gate 详细理由
         ai_reason = None
         ai_score_id = s[16]
@@ -456,14 +638,7 @@ def fetch_signal_with_decision(signal_id: int) -> Dict[str, Any]:
             "source_type": s[12], "source_id": s[13], "run_id": s[14], "trade_id": s[15],
             "ai_score_id": s[16], "ai_score": s[17], "ai_action": s[18], "ai_gate_result": s[19],
             "ai_reason": ai_reason,
-            "rules": [
-                {
-                    "rule_group": r[0], "rule_name": r[1], "threshold_expr": r[2],
-                    "threshold_value": r[3], "actual_value": r[4],
-                    "passed": r[5], "note": r[6],
-                }
-                for r in rules
-            ],
+            "rules": rules_out,
             "indicators": indicators,
             "selection": [
                 {

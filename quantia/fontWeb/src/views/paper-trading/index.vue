@@ -796,7 +796,7 @@
         </div>
         <div class="td-block">
           <span class="td-block-title">决策规则对比</span>
-          <el-table :data="tradeDecisionRules" size="small" border empty-text="该信号未提供决策规则数据"
+          <el-table :data="tradeDecisionRules" size="small" border empty-text="该策略未输出结构化决策规则（仅有理由文本，请参见上方'策略理由'与下方'指标快照'）"
                     class="td-rules-table">
             <el-table-column prop="name" label="指标/规则" min-width="160" show-overflow-tooltip />
             <el-table-column prop="threshold" label="阈值/判定" min-width="160" show-overflow-tooltip />
@@ -813,9 +813,9 @@
             </el-table-column>
           </el-table>
         </div>
-        <div v-if="tradeDecisionDetail?.indicators?.length" class="td-block">
+        <div v-if="tradeDecisionIndicators.length" class="td-block">
           <span class="td-block-title">指标快照</span>
-          <el-table :data="tradeDecisionDetail.indicators" size="small" border max-height="220">
+          <el-table :data="tradeDecisionIndicators" size="small" border max-height="220">
             <el-table-column prop="trade_date" label="日期" width="100" />
             <el-table-column prop="open_price" label="开" width="70" align="right" />
             <el-table-column prop="close_price" label="收" width="70" align="right" />
@@ -1025,27 +1025,52 @@ async function openTradeDecision(row: any) {
     tradeDecisionLoading.value = false
   }
 }
+function _fmtVal(v: any) {
+  if (v == null || v === '') return '--'
+  if (typeof v === 'object') {
+    try { return JSON.stringify(v) } catch { return String(v) }
+  }
+  return String(v)
+}
 const tradeDecisionRules = computed(() => {
   const d = tradeDecisionDetail.value
-  if (!d || !Array.isArray(d.decision)) return []
-  return d.decision.map((r: any) => ({
+  if (!d || !Array.isArray(d.rules)) return []
+  return d.rules.map((r: any) => ({
     name: r.rule_name || r.name || '--',
-    threshold: r.rule_threshold ?? r.threshold ?? '--',
-    actual: r.actual_value ?? r.actual ?? '--',
+    threshold: _fmtVal(r.threshold_expr ?? r.threshold_value ?? r.threshold),
+    actual: _fmtVal(r.actual_value ?? r.actual),
     pass: r.passed === 1 || r.passed === true,
     weight: r.weight ?? null,
+    note: r.note || '',
   }))
 })
 const tradeDecisionAi = computed(() => {
-  const s = tradeDecisionDetail.value?.signal
-  if (!s) return null
-  if (s.ai_score == null && !s.ai_action && !s.ai_gate_result) return null
+  const d = tradeDecisionDetail.value
+  if (!d) return null
+  if (d.ai_score == null && !d.ai_action && !d.ai_gate_result) return null
   return {
-    score: s.ai_score,
-    action: s.ai_action || '',
-    gate: s.ai_gate_result || '',
-    reason: s.ai_reason || null,
+    score: d.ai_score,
+    action: d.ai_action || '',
+    gate: d.ai_gate_result || '',
+    reason: d.ai_reason || null,
   }
+})
+// 指标快照后端返回单个 dict，包装为数组方便表格渲染
+const tradeDecisionIndicators = computed(() => {
+  const ind = tradeDecisionDetail.value?.indicators
+  if (!ind || typeof ind !== 'object') return []
+  return [{
+    trade_date: ind.kline_date || tradeDecisionDetail.value?.signal_date || '--',
+    open_price: ind.open ?? '--',
+    close_price: ind.close ?? '--',
+    low_price: ind.low ?? '--',
+    high_price: ind.high ?? '--',
+    volume: ind.volume ?? '--',
+    ma: ind.ma,
+    boll: ind.boll,
+    rsi: ind.rsi,
+    macd: ind.macd,
+  }]
 })
 
 function showPosCol(key: string) { return posVisibleCols.value.includes(key) }
