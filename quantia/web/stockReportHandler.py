@@ -87,12 +87,15 @@ def _ensure_report_table():
 def _ensure_share_column():
     """幂等添加 share_token 列（用于分享链接）。"""
     try:
-        mdb.executeSql(
-            f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN share_token VARCHAR(36) DEFAULT NULL"
-        )
-        mdb.executeSql(
-            f"ALTER TABLE `{_REPORT_TABLE}` ADD UNIQUE INDEX idx_share_token (share_token)"
-        )
+        with mdb.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN share_token VARCHAR(36) DEFAULT NULL"
+                )
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"ALTER TABLE `{_REPORT_TABLE}` ADD UNIQUE INDEX idx_share_token (share_token)"
+                )
     except Exception as e:
         if 'Duplicate column' not in str(e) and 'Duplicate key name' not in str(e):
             _logger.debug(f'[stockReport] share_token列添加跳过: {e}')
@@ -967,8 +970,8 @@ class StockDataFallbackHandler(webBase.BaseHandler, ABC):
         # 基础行情
         try:
             sql = """
-                SELECT name, close, changepercent, pe9, pb, roe,
-                       mgjzc, mgsy, total_market_cap, turnoverratio
+                SELECT name, new_price, change_rate, pe9, pbnewmrq, roe_weight,
+                       bvps, basic_eps, total_market_cap, turnoverrate
                 FROM cn_stock_spot
                 WHERE code = %s
                 ORDER BY date DESC LIMIT 1
@@ -989,7 +992,7 @@ class StockDataFallbackHandler(webBase.BaseHandler, ABC):
         # 资金流向
         try:
             sql = """
-                SELECT date, main_net_inflow, super_net_inflow, big_net_inflow
+                SELECT date, fund_amount, fund_amount_super, fund_amount_large
                 FROM cn_stock_fund_flow
                 WHERE code = %s
                 ORDER BY date DESC LIMIT 5
@@ -1006,7 +1009,7 @@ class StockDataFallbackHandler(webBase.BaseHandler, ABC):
         # 技术指标
         try:
             sql = """
-                SELECT macd, macd_signal, kdj_k, kdj_d, kdj_j, rsi_6
+                SELECT macd, macds, kdjk, kdjd, kdjj, rsi_6
                 FROM cn_stock_indicators
                 WHERE code = %s
                 ORDER BY date DESC LIMIT 1
