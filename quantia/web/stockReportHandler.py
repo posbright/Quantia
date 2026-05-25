@@ -48,13 +48,9 @@ _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
 def _get_effective_tools() -> list:
     """根据环境配置过滤实际可用的工具列表。
 
-    未配置 QUANTIA_AI_WEB_SEARCH_URL 时排除 web_search，
-    避免 LLM 尝试调用后在报告里显示"工具不可用"。
+    web_search 已内置 DuckDuckGo 搜索后端，始终可用。
     """
-    tools = list(_ALLOWED_TOOLS)
-    if not (os.environ.get('QUANTIA_AI_WEB_SEARCH_URL') or '').strip():
-        tools = [t for t in tools if t != 'web_search']
-    return tools
+    return list(_ALLOWED_TOOLS)
 
 
 # ─── 并发请求合并（同一 code 生成中时，后续请求等待缓存）─────────

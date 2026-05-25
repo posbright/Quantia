@@ -93,10 +93,22 @@ class CodeValidateToolTests(unittest.TestCase):
 
 # ── web_search tool ──────────────────────────────────────────────────
 class WebSearchToolTests(unittest.TestCase):
-    def test_disabled_when_no_url(self):
+    def test_fallback_to_duckduckgo_when_no_url(self):
+        """未配置 URL 时使用内置 DuckDuckGo 搜索。"""
         os.environ.pop('QUANTIA_AI_WEB_SEARCH_URL', None)
-        with self.assertRaises(ToolError):
-            WebSearchTool().run({'query': 'btc price'})
+        fake_resp = mock.Mock()
+        fake_resp.status_code = 200
+        fake_resp.text = (
+            '<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com">Example Title</a>'
+            '<a class="result__snippet" href="#">A snippet here</a>'
+        )
+        fake_resp.raise_for_status = mock.Mock()
+        with mock.patch('quantia.lib.ai.tools.web_search.requests.post',
+                        return_value=fake_resp):
+            out = WebSearchTool().run({'query': 'btc price'})
+        self.assertIn('results', out)
+        self.assertEqual(out['result_count'], 1)
+        self.assertEqual(out['results'][0]['title'], 'Example Title')
 
     def test_calls_endpoint_when_configured(self):
         os.environ['QUANTIA_AI_WEB_SEARCH_URL'] = 'https://example.test/search'
