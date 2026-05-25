@@ -2,52 +2,51 @@
   <div class="stock-analysis">
     <!-- 搜索栏 -->
     <div class="search-bar">
-      <el-autocomplete
-        v-model="searchText"
-        :fetch-suggestions="queryStock"
-        placeholder="输入股票代码或名称搜索"
-        :trigger-on-focus="false"
-        :debounce="300"
-        clearable
-        class="search-input"
-        @select="handleSelect"
-      >
-        <template #default="{ item }">
-          <span class="suggestion-code">{{ item.code }}</span>
-          <span class="suggestion-name">{{ item.name }}</span>
-          <span v-if="item.industry" class="suggestion-industry">{{ item.industry }}</span>
-        </template>
-      </el-autocomplete>
-      <el-button type="primary" :loading="generating" :disabled="!currentCode" @click="handleGenerate">
-        <el-icon><VideoPlay /></el-icon>
-        生成报告
-      </el-button>
-      <el-button v-if="reportContent" @click="handleCopy">
-        <el-icon><CopyDocument /></el-icon>
-        复制
-      </el-button>
-      <el-button v-if="reportContent" @click="handleExportPdf">
-        📄 PDF
-      </el-button>
-      <el-button v-if="reportContent" @click="handleExportImage">
-        🖼️ 图片
-      </el-button>
-      <el-button v-if="reportMeta.report_id" @click="handleShare">
-        🔗 分享
-      </el-button>
-      <el-button v-if="reportContent" :loading="translating" @click="handleTranslate">
-        {{ isTranslated ? '🇨🇳 中文' : '🌐 英文' }}
-      </el-button>
-      <el-button v-if="reportContent" @click="handleVoice" :type="isSpeaking ? 'danger' : 'default'">
-        {{ isSpeaking ? '⏹️ 停止' : '🔊 播报' }}
-      </el-button>
-      <el-button
-        v-if="attentionCount > 0"
-        :loading="batchGenerating"
-        @click="handleBatchAnalysis"
-      >
-        📋 批量分析({{ attentionCount }})
-      </el-button>
+      <div class="search-row">
+        <el-autocomplete
+          v-model="searchText"
+          :fetch-suggestions="queryStock"
+          placeholder="输入股票代码或名称搜索"
+          :trigger-on-focus="false"
+          :debounce="300"
+          clearable
+          class="search-input"
+          @select="handleSelect"
+        >
+          <template #default="{ item }">
+            <span class="suggestion-code">{{ item.code }}</span>
+            <span class="suggestion-name">{{ item.name }}</span>
+            <span v-if="item.industry" class="suggestion-industry">{{ item.industry }}</span>
+          </template>
+        </el-autocomplete>
+        <el-button type="primary" :loading="generating" :disabled="!currentCode" @click="handleGenerate">
+          <el-icon><VideoPlay /></el-icon>
+          生成报告
+        </el-button>
+        <el-button
+          v-if="attentionCount > 0"
+          :loading="batchGenerating"
+          @click="handleBatchAnalysis"
+        >
+          📋 批量分析({{ attentionCount }})
+        </el-button>
+      </div>
+      <!-- 报告工具栏：仅报告生成后显示 -->
+      <div v-if="reportContent" class="toolbar-row">
+        <el-button size="small" @click="handleCopy">
+          <el-icon><CopyDocument /></el-icon>
+          复制
+        </el-button>
+        <el-button size="small" @click="handleExportPdf">📄 PDF</el-button>
+        <el-button size="small" @click="handleExportImage">🖼️ 图片</el-button>
+        <el-button v-if="reportMeta.report_id" size="small" @click="handleShare">🔗 分享</el-button>
+        <el-button size="small" :loading="translating" @click="handleTranslate">
+          {{ isTranslated ? '🇨🇳 中文' : '🌐 英文' }}
+        </el-button>
+        <el-button size="small" @click="handleVoice" :type="isSpeaking ? 'danger' : 'default'">
+          {{ isSpeaking ? '⏹️ 停止' : '🔊 播报' }}
+        </el-button>
+      </div>
     </div>
 
     <!-- 批量分析结果卡片网格 -->
@@ -889,7 +888,19 @@ async function loadKlineChart(code: string) {
       ],
       yAxis: [
         { scale: true, axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: 'dashed', color: '#eee' } } },
-        { scale: true, gridIndex: 1, axisLabel: { fontSize: 10 }, splitLine: { show: false } },
+        {
+          scale: true,
+          gridIndex: 1,
+          axisLabel: {
+            fontSize: 10,
+            formatter: (value: number) => {
+              if (Math.abs(value) >= 1e8) return (value / 1e8).toFixed(1) + '亿'
+              if (Math.abs(value) >= 1e4) return (value / 1e4).toFixed(0) + '万'
+              return String(value)
+            },
+          },
+          splitLine: { show: false },
+        },
         { scale: true, gridIndex: 2, axisLabel: { fontSize: 10 }, splitLine: { show: false } },
       ],
       series: [
@@ -1076,20 +1087,39 @@ watch(klineCollapsed, (collapsed) => {
 
 <style scoped>
 .stock-analysis {
-  padding: 20px;
-  max-width: 960px;
+  padding: 24px 32px;
+  max-width: 1100px;
   margin: 0 auto;
 }
 
 .search-bar {
   display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 24px;
+  padding: 16px 20px;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.search-row {
+  display: flex;
   gap: 12px;
   align-items: center;
-  margin-bottom: 20px;
+}
+
+.toolbar-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px solid var(--el-border-color-extra-light);
 }
 
 .search-input {
-  width: 320px;
+  width: 360px;
 }
 
 .suggestion-code {
@@ -1110,10 +1140,11 @@ watch(klineCollapsed, (collapsed) => {
 }
 
 .progress-panel {
-  background: var(--el-fill-color-light);
-  border-radius: 8px;
-  padding: 16px 20px;
+  background: linear-gradient(135deg, var(--el-color-primary-light-9), var(--el-fill-color-light));
+  border-radius: 10px;
+  padding: 18px 24px;
   margin-bottom: 20px;
+  border: 1px solid var(--el-color-primary-light-8);
 }
 
 .progress-title {
@@ -1155,11 +1186,12 @@ watch(klineCollapsed, (collapsed) => {
 .report-container {
   background: var(--el-bg-color);
   border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 20px;
-  max-height: 70vh;
+  border-radius: 10px;
+  padding: 28px 32px;
+  max-height: 75vh;
   overflow-y: auto;
   position: relative;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
 .report-toc {
@@ -1207,17 +1239,33 @@ watch(klineCollapsed, (collapsed) => {
   color: var(--el-text-color-secondary);
 }
 
+.report-body {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--el-text-color-regular);
+}
+
 .report-body :deep(h3) {
-  margin-top: 20px;
-  margin-bottom: 8px;
-  font-size: 16px;
+  margin-top: 24px;
+  margin-bottom: 10px;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
 }
 
 .report-body :deep(h4) {
-  margin-top: 16px;
-  margin-bottom: 6px;
-  font-size: 14px;
+  margin-top: 20px;
+  margin-bottom: 8px;
+  font-size: 15px;
+  font-weight: 600;
   color: var(--el-text-color-primary);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
+}
+
+.report-body :deep(p) {
+  margin: 8px 0;
+  line-height: 1.8;
 }
 
 .report-body :deep(table) {
@@ -1229,14 +1277,16 @@ watch(klineCollapsed, (collapsed) => {
 .report-body :deep(th),
 .report-body :deep(td) {
   border: 1px solid var(--el-border-color-lighter);
-  padding: 8px 12px;
+  padding: 10px 14px;
   text-align: left;
   font-size: 13px;
+  line-height: 1.6;
 }
 
 .report-body :deep(th) {
   background: var(--el-fill-color-light);
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .report-body :deep(ul),
@@ -1246,8 +1296,8 @@ watch(klineCollapsed, (collapsed) => {
 }
 
 .report-body :deep(li) {
-  margin: 4px 0;
-  line-height: 1.6;
+  margin: 6px 0;
+  line-height: 1.7;
 }
 
 .report-body :deep(strong) {
@@ -1255,7 +1305,13 @@ watch(klineCollapsed, (collapsed) => {
 }
 
 .empty-state {
-  margin-top: 80px;
+  margin-top: 100px;
+  text-align: center;
+}
+
+.empty-state :deep(.el-empty__description) {
+  font-size: 15px;
+  color: var(--el-text-color-secondary);
 }
 
 /* ---- Fallback Data Panel ---- */
@@ -1340,9 +1396,10 @@ watch(klineCollapsed, (collapsed) => {
 .kline-panel {
   background: var(--el-bg-color);
   border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  margin-bottom: 20px;
+  border-radius: 10px;
+  margin-bottom: 24px;
   overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
 .kline-header {
@@ -1414,8 +1471,17 @@ watch(klineCollapsed, (collapsed) => {
   border-top: 1px dashed var(--el-border-color-lighter);
 }
 
-@media (max-width: 600px) {
+@media (max-width: 768px) {
+  .stock-analysis {
+    padding: 12px;
+  }
   .search-bar {
+    padding: 12px;
+  }
+  .search-row {
+    flex-wrap: wrap;
+  }
+  .toolbar-row {
     flex-wrap: wrap;
   }
   .search-input {
@@ -1423,13 +1489,16 @@ watch(klineCollapsed, (collapsed) => {
   }
   .report-container {
     max-height: none;
-    padding: 12px;
+    padding: 16px;
   }
   .kline-chart {
     height: 320px;
   }
   .followup-bar {
     flex-direction: column;
+  }
+  .report-toc {
+    display: none;
   }
 }
 

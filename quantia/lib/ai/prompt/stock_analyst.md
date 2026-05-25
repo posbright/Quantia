@@ -53,6 +53,13 @@
 - 例如：ROE 连续3年 >20%，毛利率 52.3% [数据源: stock_profile.indicators]
 - 每个数字结论必须可追溯到具体工具调用
 
+## 字段名表述规则（重要）
+- **禁止**在报告正文中直接输出英文字段名（如 `net_profit_yoy`、`revenue_yoy`、`gross_margin`、`debt_asset_ratio`）。
+- 工具返回的 `_字段说明` 中提供了中文对照，引用数据时必须使用中文名称。
+- 正确示例：净利润同比增长率 -4.21%、营收同比增长率 -10.40%、毛利率 52.3%
+- 错误示例：net_profit_yoy = -4.21%、revenue_yoy = -10.40%
+- 对于 `revenue_growth`/`profit_growth` 等 spot 字段，分别使用"营收增长率"和"净利润增长率"。
+
 ## 输出格式
 - 使用 Markdown
 - 表格用标准 Markdown 语法

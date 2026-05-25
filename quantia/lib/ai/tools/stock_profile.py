@@ -281,13 +281,36 @@ def _query_financials(code: str) -> Dict[str, Any]:
     keys_basic = ['report_date', 'revenue', 'net_profit', 'revenue_yoy', 'net_profit_yoy',
                   'roe', 'roa', 'gross_margin', 'net_profit_margin', 'asset_liability_ratio']
 
+    # 字段中文别名（供 LLM 在报告中使用）
+    _FIELD_CN = {
+        'report_date': '报告期',
+        'revenue': '营业收入',
+        'net_profit': '净利润',
+        'revenue_yoy': '营收同比增长率',
+        'net_profit_yoy': '净利润同比增长率',
+        'roe': '净资产收益率(ROE)',
+        'roa': '总资产收益率(ROA)',
+        'gross_margin': '毛利率',
+        'net_profit_margin': '净利率',
+        'asset_liability_ratio': '资产负债率',
+        'rd_expense': '研发费用',
+        'admin_expense': '管理费用',
+        'selling_expense': '销售费用',
+        'financial_expense': '财务费用',
+        'rd_ratio': '研发费用率',
+    }
+
     rows = executeSqlFetch(sql_full, (code,))
     if rows:
-        return _row_to_dict(rows[0], keys_full)
+        d = _row_to_dict(rows[0], keys_full)
+        d['_字段说明'] = {k: v for k, v in _FIELD_CN.items() if k in d}
+        return d
     # 降级：可能是列不存在（1054错误）或无数据
     rows = executeSqlFetch(sql_basic, (code,))
     if rows:
-        return _row_to_dict(rows[0], keys_basic)
+        d = _row_to_dict(rows[0], keys_basic)
+        d['_字段说明'] = {k: v for k, v in _FIELD_CN.items() if k in d}
+        return d
     return {}
 
 

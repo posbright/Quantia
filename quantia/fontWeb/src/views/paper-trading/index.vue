@@ -1474,7 +1474,19 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
     ],
     yAxis: [
       { scale: true, axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { type: 'dashed', color: '#eee' } } },
-      { scale: true, gridIndex: 1, axisLabel: { fontSize: 10 }, splitLine: { show: false } },
+      {
+        scale: true,
+        gridIndex: 1,
+        axisLabel: {
+          fontSize: 10,
+          formatter: (value: number) => {
+            if (Math.abs(value) >= 1e8) return (value / 1e8).toFixed(1) + '亿'
+            if (Math.abs(value) >= 1e4) return (value / 1e4).toFixed(0) + '万'
+            return String(value)
+          },
+        },
+        splitLine: { show: false },
+      },
       { scale: true, gridIndex: 2, axisLabel: { fontSize: 10 }, splitLine: { show: false } },
       ...(ext.subPanel ? [{ scale: true, gridIndex: 3, min: 0, max: 100, splitNumber: 3, axisLabel: { fontSize: 10 } }] : []),
     ],
