@@ -132,15 +132,40 @@ def _is_analysis_done(date_str):
         return False
 
 
+def _get_roe_threshold(date):
+    """根据季报披露周期动态调整 ROE 阈值。
+
+    东方财富 roe_weight 字段在季报披露后会更新为该报告期的累计 ROE，
+    而非年化 ROE。例如 Q1 报表（4月底前披露）后，该字段约为全年 ROE 的 1/4。
+    固定阈值 15% 在 Q1 披露后只能筛出极少数股票。
+
+    按报告周期年化换算：
+    - 5~8 月（Q1 报表为主）：阈值 = 15 / 4 = 3.75
+    - 9~10 月（半年报为主）：阈值 = 15 / 2 = 7.5
+    - 11~12 月（Q3 报表为主）：阈值 = 15 * 3 / 4 = 11.25
+    - 1~4 月（年报为主）：阈值 = 15.0
+    """
+    month = date.month if hasattr(date, 'month') else int(str(date).split('-')[1])
+    if 5 <= month <= 8:
+        return 3.75
+    elif 9 <= month <= 10:
+        return 7.5
+    elif month >= 11:
+        return 11.25
+    else:
+        return 15.0
+
+
 def _run_stock_spot_buy(date):
     """
-    基本面选股：筛选 PE<20、PB<10、ROE>=15% 的股票。
+    基本面选股：筛选 PE<20、PB<10、ROE>=年化15% 的股票。
 
     数据源优先级：
     1. cn_stock_selection（东方财富选股器 API，PE/ROE 数据更可靠）
     2. cn_stock_spot（行情 API，降级到腾讯/新浪时 PE/ROE=0）
 
     筛选逻辑：从数据源筛出符合条件的股票代码，再用代码去 cn_stock_spot 取完整行情数据写入。
+    ROE 阈值根据季报披露周期动态调整（避免 Q1 报表后阈值过严）。
     """
     import pandas as pd
     import quantia.core.tablestructure as tbs
@@ -148,27 +173,30 @@ def _run_stock_spot_buy(date):
     try:
         date_str = date.strftime("%Y-%m-%d") if hasattr(date, 'strftime') else str(date)
         qualified_codes = None
+        roe_threshold = _get_roe_threshold(date)
 
         # 优先从 cn_stock_selection 筛选（PE/ROE 数据更可靠）
         sel_table = tbs.TABLE_CN_STOCK_SELECTION['name']
         if mdb.checkTableIsExist(sel_table):
             sel_sql = (f'SELECT `code` FROM `{sel_table}` WHERE `date` = %s '
-                       f'AND `pe9` > 0 AND `pe9` <= 20 AND `pbnewmrq` <= 10 AND `roe_weight` >= 15')
-            sel_data = pd.read_sql(sql=sel_sql, con=mdb.engine(), params=(date_str,))
+                       f'AND `pe9` > 0 AND `pe9` <= 20 AND `pbnewmrq` <= 10 AND `roe_weight` >= %s')
+            sel_data = pd.read_sql(sql=sel_sql, con=mdb.engine(), params=(date_str, roe_threshold))
             if len(sel_data) > 0:
                 qualified_codes = set(sel_data['code'].values)
-                logging.info(f"基本面选股：从 cn_stock_selection 筛出 {len(qualified_codes)} 只符合条件")
+                logging.info(f"基本面选股：从 cn_stock_selection 筛出 {len(qualified_codes)} 只符合条件"
+                             f"（ROE阈值={roe_threshold}%）")
 
         # 降级：从 cn_stock_spot 筛选
         if qualified_codes is None:
             spot_table = tbs.TABLE_CN_STOCK_SPOT['name']
             if mdb.checkTableIsExist(spot_table):
                 spot_sql = (f'SELECT `code` FROM `{spot_table}` WHERE `date` = %s '
-                            f'AND `pe9` > 0 AND `pe9` <= 20 AND `pbnewmrq` <= 10 AND `roe_weight` >= 15')
-                spot_data = pd.read_sql(sql=spot_sql, con=mdb.engine(), params=(date_str,))
+                            f'AND `pe9` > 0 AND `pe9` <= 20 AND `pbnewmrq` <= 10 AND `roe_weight` >= %s')
+                spot_data = pd.read_sql(sql=spot_sql, con=mdb.engine(), params=(date_str, roe_threshold))
                 if len(spot_data) > 0:
                     qualified_codes = set(spot_data['code'].values)
-                    logging.info(f"基本面选股：降级从 cn_stock_spot 筛出 {len(qualified_codes)} 只符合条件")
+                    logging.info(f"基本面选股：降级从 cn_stock_spot 筛出 {len(qualified_codes)} 只符合条件"
+                                 f"（ROE阈值={roe_threshold}%）")
 
         if not qualified_codes:
             logging.info("基本面选股：无符合条件的股票")
