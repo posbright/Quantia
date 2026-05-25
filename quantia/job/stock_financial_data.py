@@ -82,6 +82,17 @@ _DB_FIELDS = [
     'roe', 'roa', 'gross_margin', 'net_profit_margin',
     'asset_liability_ratio', 'current_ratio', 'quick_ratio',
     'total_asset_turnover', 'inventory_turnover', 'receivable_turnover',
+    'rd_expense', 'admin_expense', 'selling_expense', 'financial_expense',
+    'rd_ratio',
+]
+
+# 仅 EM 来源字段（不含费用列，避免 upsert 覆盖已有费用数据）
+_EM_DB_FIELDS = [
+    'code', 'report_date', 'report_name', 'eps', 'bps', 'ocfps',
+    'revenue', 'net_profit', 'revenue_yoy', 'net_profit_yoy',
+    'roe', 'roa', 'gross_margin', 'net_profit_margin',
+    'asset_liability_ratio', 'current_ratio', 'quick_ratio',
+    'total_asset_turnover', 'inventory_turnover', 'receivable_turnover',
 ]
 
 _NUMERIC_FIELDS = set(_DB_FIELDS) - {'code', 'report_date', 'report_name'}
@@ -97,6 +108,33 @@ def _code_to_secucode(code):
     elif code.startswith(('4', '8', '9')):
         return f"{code}.BJ"
     return f"{code}.SZ"
+
+
+def _parse_cn_amount(val) -> float | None:
+    """解析中文金额字符串（如 '5931.07万', '18.54亿', '-1.16亿'）为浮点数（单位：元）。
+
+    Returns:
+        float (单位：元) 或 None（无法解析时）
+    """
+    if val is None or (isinstance(val, float) and val != val):
+        return None
+    s = str(val).strip()
+    if not s or s == '--' or s == '-' or s.lower() == 'nan':
+        return None
+    try:
+        if s.endswith('亿'):
+            return float(s[:-1]) * 1e8
+        elif s.endswith('万'):
+            return float(s[:-1]) * 1e4
+        else:
+            # 尝试直接解析为数字
+            result = float(s)
+            # 防止 float('nan') / float('inf') 通过
+            if result != result or result == float('inf') or result == float('-inf'):
+                return None
+            return result
+    except (ValueError, TypeError):
+        return None
 
 
 def _retry_call(fn, name="", retries=RETRY_TIMES, sleep=RETRY_SLEEP):
@@ -125,6 +163,8 @@ def create_financial_table():
     """创建 cn_stock_financial 表（幂等）"""
     table_name = TABLE_CN_STOCK_FINANCIAL['name']
     if mdb.checkTableIsExist(table_name):
+        # 表已存在，尝试添加新列（幂等）
+        _alter_add_expense_columns()
         return
 
     import pymysql
@@ -150,6 +190,11 @@ def create_financial_table():
         `total_asset_turnover`   FLOAT         COMMENT '总资产周转率(次)',
         `inventory_turnover`     FLOAT         COMMENT '存货周转率(次)',
         `receivable_turnover`    FLOAT         COMMENT '应收账款周转率(次)',
+        `rd_expense`             FLOAT         COMMENT '研发费用(元)',
+        `admin_expense`          FLOAT         COMMENT '管理费用(元)',
+        `selling_expense`        FLOAT         COMMENT '销售费用(元)',
+        `financial_expense`      FLOAT         COMMENT '财务费用(元)',
+        `rd_ratio`               FLOAT         COMMENT '研发占营收比',
         `updated_at`             DATETIME      DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (`code`, `report_date`),
         INDEX `idx_report_date` (`report_date`),
@@ -163,20 +208,42 @@ def create_financial_table():
     log.info(f"创建 {table_name} 表完成")
 
 
+def _alter_add_expense_columns():
+    """为已有表添加费用相关列（幂等，忽略已存在的列）"""
+    new_cols = [
+        ("rd_expense", "FLOAT COMMENT '研发费用(元)'"),
+        ("admin_expense", "FLOAT COMMENT '管理费用(元)'"),
+        ("selling_expense", "FLOAT COMMENT '销售费用(元)'"),
+        ("financial_expense", "FLOAT COMMENT '财务费用(元)'"),
+        ("rd_ratio", "FLOAT COMMENT '研发占营收比'"),
+    ]
+    for col_name, col_def in new_cols:
+        try:
+            mdb.executeSql(
+                f"ALTER TABLE `cn_stock_financial` ADD COLUMN `{col_name}` {col_def}"
+            )
+            log.info(f"添加列 {col_name} 成功")
+        except Exception as e:
+            if 'Duplicate column' in str(e):
+                pass  # 列已存在，跳过
+            else:
+                log.debug(f"添加列 {col_name} 跳过: {e}")
+
+
 def _upsert_batch(rows):
-    """批量 upsert 财务数据到 cn_stock_financial"""
+    """批量 upsert 财务数据到 cn_stock_financial（仅 EM 来源字段，不覆盖费用列）"""
     if not rows:
         return
     from sqlalchemy import text as sa_text
 
-    defaults = {f: None for f in _DB_FIELDS}
-    rows = [{**defaults, **{k: v for k, v in r.items() if k in _DB_FIELDS}} for r in rows]
+    defaults = {f: None for f in _EM_DB_FIELDS}
+    rows = [{**defaults, **{k: v for k, v in r.items() if k in _EM_DB_FIELDS}} for r in rows]
 
-    placeholders = ", ".join([f":{f}" for f in _DB_FIELDS])
-    updates = ", ".join([f"`{f}`=VALUES(`{f}`)" for f in _DB_FIELDS
+    placeholders = ", ".join([f":{f}" for f in _EM_DB_FIELDS])
+    updates = ", ".join([f"`{f}`=VALUES(`{f}`)" for f in _EM_DB_FIELDS
                          if f not in ('code', 'report_date')])
     sql = sa_text(f"""
-        INSERT INTO `cn_stock_financial` ({', '.join([f'`{f}`' for f in _DB_FIELDS])})
+        INSERT INTO `cn_stock_financial` ({', '.join([f'`{f}`' for f in _EM_DB_FIELDS])})
         VALUES ({placeholders})
         ON DUPLICATE KEY UPDATE {updates}, `updated_at`=CURRENT_TIMESTAMP
     """)
@@ -292,6 +359,138 @@ def fetch_single_stock(code, incremental=False, min_date=None):
     rows = _clean_nan(df.to_dict(orient='records'))
     _upsert_batch(rows)
     return len(rows)
+
+
+def fetch_expense_data(code, min_date=None):
+    """从同花顺利润表获取费用明细（研发/管理/销售/财务费用），更新到 cn_stock_financial。
+
+    Args:
+        code: 6位股票代码
+        min_date: 最早报告期日期
+
+    Returns:
+        int: 更新记录数，-1 表示失败
+    """
+    try:
+        df = _retry_call(
+            lambda: ak.stock_financial_benefit_ths(symbol=code, indicator="按报告期"),
+            name=f"ths_benefit_{code}"
+        )
+        if df is None or df.empty:
+            return 0
+    except Exception as e:
+        log.debug(f"[{code}] THS利润表获取失败: {e}")
+        return -1
+
+    # 解析报告期
+    if '报告期' not in df.columns:
+        return 0
+    df['report_date'] = pd.to_datetime(df['报告期'], errors='coerce').dt.date
+    df = df.dropna(subset=['report_date'])
+
+    if df.empty:
+        return 0
+
+    # 按年份过滤
+    if min_date is not None:
+        df = df[df['report_date'] >= min_date]
+        if df.empty:
+            return 0
+
+    # 解析费用字段（中文金额 → 元）
+    rows = []
+    for _, row in df.iterrows():
+        rd = _parse_cn_amount(row.get('研发费用'))
+        admin = _parse_cn_amount(row.get('管理费用'))
+        selling = _parse_cn_amount(row.get('销售费用'))
+        financial = _parse_cn_amount(row.get('财务费用'))
+        revenue = _parse_cn_amount(row.get('*营业总收入'))
+
+        # 计算研发占营收比
+        rd_ratio = None
+        if rd is not None and revenue and revenue > 0:
+            rd_ratio = round(rd / revenue * 100, 4)
+
+        rows.append({
+            'code': code,
+            'report_date': row['report_date'],
+            'rd_expense': rd,
+            'admin_expense': admin,
+            'selling_expense': selling,
+            'financial_expense': financial,
+            'rd_ratio': rd_ratio,
+        })
+
+    if not rows:
+        return 0
+
+    # 批量更新费用字段（UPDATE 已有行，INSERT 新行时仅填费用）
+    _upsert_expense_batch(rows)
+    return len(rows)
+
+
+def _upsert_expense_batch(rows):
+    """批量 upsert 费用数据到 cn_stock_financial（仅更新费用列）"""
+    if not rows:
+        return
+    from sqlalchemy import text as sa_text
+
+    expense_fields = ['code', 'report_date', 'rd_expense', 'admin_expense',
+                      'selling_expense', 'financial_expense', 'rd_ratio']
+    placeholders = ", ".join([f":{f}" for f in expense_fields])
+    updates = ", ".join([
+        f"`{f}`=VALUES(`{f}`)" for f in expense_fields if f not in ('code', 'report_date')
+    ])
+    sql = sa_text(f"""
+        INSERT INTO `cn_stock_financial` ({', '.join([f'`{f}`' for f in expense_fields])})
+        VALUES ({placeholders})
+        ON DUPLICATE KEY UPDATE {updates}, `updated_at`=CURRENT_TIMESTAMP
+    """)
+    clean_rows = _clean_nan(rows)
+    # 确保每行有所有字段
+    defaults = {f: None for f in expense_fields}
+    clean_rows = [{**defaults, **{k: v for k, v in r.items() if k in expense_fields}}
+                  for r in clean_rows]
+    try:
+        with mdb.engine().connect() as conn:
+            conn.execute(sql, clean_rows)
+            conn.commit()
+    except Exception as e:
+        log.error(f"批量写入费用数据失败: {e}")
+        raise
+
+
+def fetch_all_expenses(stock_codes, min_date=None):
+    """批量采集所有股票的费用明细数据
+
+    Returns:
+        tuple: (成功数, 失败数, 跳过数, 更新总行数)
+    """
+    total = len(stock_codes)
+    success, fail, skip, total_rows = 0, 0, 0, 0
+
+    log.info(f"开始采集费用明细数据（THS利润表），共 {total} 只股票")
+
+    for i, code in enumerate(stock_codes):
+        result = fetch_expense_data(code, min_date=min_date)
+        if result < 0:
+            fail += 1
+        elif result == 0:
+            skip += 1
+        else:
+            success += 1
+            total_rows += result
+
+        done = i + 1
+        if done % 100 == 0 or done == total:
+            log.info(f"费用采集进度: {done}/{total} "
+                     f"(成功={success}, 跳过={skip}, 失败={fail}, 更新={total_rows}行)")
+
+        time.sleep(SLEEP_PER_STOCK)
+
+    log.info(f"费用数据采集完成: 成功={success}, 跳过={skip}, 失败={fail}, "
+             f"更新={total_rows}行")
+    return success, fail, skip, total_rows
 
 
 def fetch_all_stocks(stock_codes, incremental=False, min_date=None):
@@ -433,6 +632,10 @@ def main():
                         help="增量模式：仅采集新报告期数据")
     parser.add_argument("--years", type=int, default=0,
                         help="仅采集最近N年的数据（0=不限制）")
+    parser.add_argument("--expenses", action="store_true",
+                        help="同时采集费用明细（研发/管理/销售/财务费用，来源: THS利润表）")
+    parser.add_argument("--expenses-only", action="store_true",
+                        help="仅采集费用明细，跳过基础财务指标")
     args = parser.parse_args()
 
     # 计算日期过滤
@@ -450,9 +653,11 @@ def main():
         log.info("[增量模式] 仅采集新报告期数据")
     if min_date:
         log.info(f"[年份过滤] 仅保留 {min_date} 之后的报告期")
+    if args.expenses or args.expenses_only:
+        log.info("[费用明细] 将采集研发/管理/销售/财务费用（THS利润表）")
     log.info("=" * 60)
 
-    # 1. 建表
+    # 1. 建表（含新列迁移）
     create_financial_table()
 
     # 2. 获取股票列表
@@ -464,17 +669,31 @@ def main():
     if args.test:
         stock_codes = stock_codes[:args.test]
 
-    # 3. 采集
-    success, fail, skip, total_rows = fetch_all_stocks(
-        stock_codes, incremental=args.incremental, min_date=min_date)
+    # 3. 采集基础财务指标（EM）
+    if not args.expenses_only:
+        success, fail, skip, total_rows = fetch_all_stocks(
+            stock_codes, incremental=args.incremental, min_date=min_date)
 
-    log.info("=" * 60)
-    log.info("采集完成汇总:")
-    log.info(f"  股票数: {len(stock_codes)}")
-    log.info(f"  成功: {success}, 失败: {fail}, 跳过: {skip}")
-    log.info(f"  入库总行数: {total_rows}")
+        log.info("=" * 60)
+        log.info("基础财务指标采集完成:")
+        log.info(f"  股票数: {len(stock_codes)}")
+        log.info(f"  成功: {success}, 失败: {fail}, 跳过: {skip}")
+        log.info(f"  入库总行数: {total_rows}")
+        log.info("=" * 60)
+
+    # 4. 采集费用明细（THS利润表）
+    if args.expenses or args.expenses_only:
+        e_success, e_fail, e_skip, e_rows = fetch_all_expenses(
+            stock_codes, min_date=min_date)
+
+        log.info("=" * 60)
+        log.info("费用明细采集完成:")
+        log.info(f"  股票数: {len(stock_codes)}")
+        log.info(f"  成功: {e_success}, 失败: {e_fail}, 跳过: {e_skip}")
+        log.info(f"  更新总行数: {e_rows}")
+        log.info("=" * 60)
+
     log.info(f"结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    log.info("=" * 60)
 
 
 if __name__ == "__main__":

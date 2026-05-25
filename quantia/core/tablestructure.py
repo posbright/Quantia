@@ -649,7 +649,22 @@ TABLE_CN_STOCK_FINANCIAL = {'name': 'cn_stock_financial', 'cn': '个股财务数
                                         'total_asset_turnover': {'type': FLOAT, 'cn': '总资产周转率', 'size': 70},
                                         'inventory_turnover': {'type': FLOAT, 'cn': '存货周转率', 'size': 70},
                                         'receivable_turnover': {'type': FLOAT, 'cn': '应收账款周转率', 'size': 70},
+                                        'rd_expense': {'type': FLOAT, 'cn': '研发费用(元)', 'size': 100},
+                                        'admin_expense': {'type': FLOAT, 'cn': '管理费用(元)', 'size': 100},
+                                        'selling_expense': {'type': FLOAT, 'cn': '销售费用(元)', 'size': 100},
+                                        'financial_expense': {'type': FLOAT, 'cn': '财务费用(元)', 'size': 100},
+                                        'rd_ratio': {'type': FLOAT, 'cn': '研发占营收比', 'size': 70},
                                         'updated_at': {'type': DATETIME, 'cn': '更新时间', 'size': 0}}}
+
+# ── 公告事件表 ──
+TABLE_CN_STOCK_ANNOUNCEMENT = {'name': 'cn_stock_announcement', 'cn': '个股公告',
+                               'columns': {'code': {'type': VARCHAR(6, _COLLATE), 'cn': '代码', 'size': 60},
+                                           'ann_date': {'type': DATE, 'cn': '公告日期', 'size': 100},
+                                           'title': {'type': VARCHAR(200, _COLLATE), 'cn': '公告标题', 'size': 300},
+                                           'ann_type': {'type': VARCHAR(30, _COLLATE), 'cn': '公告类型', 'size': 120},
+                                           'tag': {'type': VARCHAR(20, _COLLATE), 'cn': '风险标签', 'size': 80},
+                                           'url': {'type': VARCHAR(300, _COLLATE), 'cn': '链接', 'size': 0},
+                                           'created_at': {'type': DATETIME, 'cn': '入库时间', 'size': 0}}}
 
 TABLE_CN_STOCK_STRATEGIES = [
     {'name': 'cn_stock_strategy_enter', 'cn': '放量上涨', 'size': 70, 'func': enter.check_volume,

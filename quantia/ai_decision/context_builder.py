@@ -60,6 +60,7 @@ def build_input_summary(
     kline_window: Optional[list] = None,
     portfolio_snapshot: Optional[Dict[str, Any]] = None,
     market_context: Optional[Dict[str, Any]] = None,
+    event_context: Optional[Dict[str, Any]] = None,
     extra: Optional[Dict[str, Any]] = None,
     kline_max_rows: int = 30,
 ) -> Dict[str, Any]:
@@ -89,6 +90,8 @@ def build_input_summary(
         }
     if market_context:
         summary["market"] = market_context
+    if event_context:
+        summary["event_context"] = event_context
     if extra:
         summary["extra"] = extra
     return summary

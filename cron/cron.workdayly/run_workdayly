@@ -24,6 +24,11 @@ log_info "============ 每日完整任务开始 ============"
 # 抑制 run_fetch 自带的服务停止（由本脚本统一管理服务生命周期）
 QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 1: 数据获取" "$SCRIPT_DIR/run_fetch" || FAILED=$((FAILED + 1))
 
+# Phase 1.5: 公告事件采集（轻量 API 调用）
+log_info "开始采集今日公告事件"
+cd "$PROJECT_ROOT"
+"$PYTHON_BIN" -m quantia.job.stock_announcement_em --days 1 >> "$LOG_FILE" 2>&1 || log_warn "公告采集异常"
+
 # ── OOM 防护：停止非关键服务，释放内存 ──
 SERVICES_STOPPED=0
 

@@ -26,6 +26,15 @@
         <el-icon><CopyDocument /></el-icon>
         复制
       </el-button>
+      <el-button v-if="reportContent" @click="handleExportPdf">
+        📄 PDF
+      </el-button>
+      <el-button v-if="reportContent" @click="handleExportImage">
+        🖼️ 图片
+      </el-button>
+      <el-button v-if="reportMeta.report_id" @click="handleShare">
+        🔗 分享
+      </el-button>
       <el-button
         v-if="attentionCount > 0"
         :loading="batchGenerating"
@@ -226,6 +235,30 @@
         >👎</el-button>
         <span v-if="feedbackSubmitted !== 0" class="feedback-done">感谢反馈！</span>
       </div>
+
+      <!-- AI 评分历史趋势 (Phase 3) -->
+      <div v-if="scoreHistory.length > 0" class="score-trend-panel">
+        <h4 class="panel-title">📈 AI 评分趋势</h4>
+        <div ref="scoreTrendChartRef" class="score-trend-chart"></div>
+      </div>
+
+      <!-- 报告版本时间线 (Phase 3) -->
+      <div v-if="reportTimeline.length > 1" class="timeline-panel">
+        <h4 class="panel-title">📋 分析历史</h4>
+        <div class="timeline-items">
+          <div
+            v-for="(t, idx) in reportTimeline"
+            :key="t.id"
+            class="timeline-item"
+            :class="{ active: t.id === reportMeta.report_id }"
+            @click="loadTimelineReport(t.id)"
+          >
+            <span class="timeline-date">{{ t.created_at?.slice(0, 16) }}</span>
+            <span class="timeline-model">{{ t.model }}</span>
+            <span v-if="idx === 0" class="timeline-badge">最新</span>
+          </div>
+        </div>
+      </div>
     </div>
     </div><!-- /main-content -->
 
@@ -247,9 +280,9 @@ import {
   VideoPlay, CopyDocument, Loading, CircleCheckFilled, Clock, DataAnalysis, ArrowDown
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData, getAttentionList, batchSummaryStream } from '@/api/report'
+import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData, getAttentionList, batchSummaryStream, getScoreHistory, getReportTimeline, getReportDetail, createShareLink } from '@/api/report'
 import { getKlineData } from '@/api/stock'
-import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent, StockFallbackData, BatchSummaryEvent } from '@/api/report'
+import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent, StockFallbackData, BatchSummaryEvent, ScoreHistoryItem, ReportTimelineItem } from '@/api/report'
 import * as echarts from 'echarts'
 
 // ---- markdown-it setup (dynamic import for code-split) ----
@@ -323,6 +356,11 @@ const batchTotal = ref(0)
 interface BatchItem { code: string; name: string; summary: string; rating?: string; error?: boolean; latency_ms?: number }
 const batchResults = ref<BatchItem[]>([])
 
+// ---- Score History & Timeline State (Phase 3) ----
+const scoreHistory = ref<ScoreHistoryItem[]>([])
+const reportTimeline = ref<ReportTimelineItem[]>([])
+const scoreTrendChartRef = ref<HTMLElement | null>(null)
+let scoreTrendChart: echarts.ECharts | null = null
 const renderedHtml = computed(() => {
   if (!reportContent.value || !mdInstance.value) return ''
   return mdInstance.value.render(reportContent.value)
@@ -336,7 +374,7 @@ async function queryStock(queryString: string, cb: (items: { value: string; code
   }
   try {
     const res = await searchStock(queryString) as any
-    const data = res?.items || res?.data?.items || []
+    const data = res?.items || []
     const items = data.map((item: StockSearchItem) => ({
       value: `${item.code} ${item.name}`,
       code: item.code,
@@ -433,6 +471,8 @@ function handleStreamEvent(ev: ReportStreamEvent) {
         }
       }
       generating.value = false
+      loadScoreHistory(currentCode.value)
+      loadReportTimeline(currentCode.value)
       break
     case 'done':
       if (ev.tokens_used) reportMeta.value.tokens_used = ev.tokens_used
@@ -442,6 +482,8 @@ function handleStreamEvent(ev: ReportStreamEvent) {
         reportMeta.value.created_at = new Date().toLocaleString()
       }
       generating.value = false
+      loadScoreHistory(currentCode.value)
+      loadReportTimeline(currentCode.value)
       break
     case 'error':
       errorMsg.value = ev.msg || '生成失败'
@@ -468,6 +510,67 @@ async function handleCopy() {
   }
 }
 
+async function handleExportPdf() {
+  if (!reportRef.value) return
+  try {
+    ElMessage.info('正在生成 PDF...')
+    const html2canvas = (await import('html2canvas')).default
+    const { jsPDF } = await import('jspdf')
+    const canvas = await html2canvas(reportRef.value, { scale: 2, useCORS: true })
+    const imgData = canvas.toDataURL('image/png')
+    const pdf = new jsPDF('p', 'mm', 'a4')
+    const pageWidth = pdf.internal.pageSize.getWidth()
+    const pageHeight = pdf.internal.pageSize.getHeight()
+    const imgWidth = pageWidth - 20
+    const imgHeight = (canvas.height * imgWidth) / canvas.width
+    let heightLeft = imgHeight
+    let position = 10
+    pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight)
+    heightLeft -= pageHeight - 20
+    while (heightLeft > 0) {
+      position = heightLeft - imgHeight + 10
+      pdf.addPage()
+      pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight)
+      heightLeft -= pageHeight - 20
+    }
+    pdf.save(`AI分析报告_${currentCode.value}_${currentName.value}.pdf`)
+    ElMessage.success('PDF 已下载')
+  } catch (e) {
+    ElMessage.error('PDF 导出失败')
+    console.error(e)
+  }
+}
+
+async function handleExportImage() {
+  if (!reportRef.value) return
+  try {
+    ElMessage.info('正在生成图片...')
+    const html2canvas = (await import('html2canvas')).default
+    const canvas = await html2canvas(reportRef.value, { scale: 2, useCORS: true })
+    const link = document.createElement('a')
+    link.download = `AI分析报告_${currentCode.value}_${currentName.value}.png`
+    link.href = canvas.toDataURL('image/png')
+    link.click()
+    ElMessage.success('图片已下载')
+  } catch (e) {
+    ElMessage.error('图片导出失败')
+    console.error(e)
+  }
+}
+
+async function handleShare() {
+  const reportId = reportMeta.value.report_id
+  if (!reportId) return
+  try {
+    const res = await createShareLink(reportId) as any
+    const shareUrl = `${window.location.origin}/quantia${res.share_url}`
+    await navigator.clipboard.writeText(shareUrl)
+    ElMessage.success('分享链接已复制到剪贴板')
+  } catch {
+    ElMessage.error('生成分享链接失败')
+  }
+}
+
 async function handleFeedback(value: 1 | -1) {
   const reportId = reportMeta.value.report_id
   if (!reportId) return
@@ -483,7 +586,7 @@ async function loadFallbackData(code: string) {
   if (!code) return
   try {
     const res = await getStockFallbackData(code) as any
-    fallbackData.value = res?.data || res || null
+    fallbackData.value = res || null
   } catch {
     // silent — fallback data is best-effort
   }
@@ -611,7 +714,7 @@ async function loadKlineChart(code: string) {
     const res = await getKlineData({ code, days: 90 }) as any
     // Guard: discard stale response if user already switched to another stock
     if (currentCode.value !== code) return
-    const data = res?.data || res
+    const data = res
     if (!data?.dates?.length) return
 
     klineLoaded.value = true
@@ -705,8 +808,84 @@ async function loadKlineChart(code: string) {
   }
 }
 
+// ---- Score History & Timeline (Phase 3) ----
+async function loadScoreHistory(code: string) {
+  try {
+    const res = await getScoreHistory(code) as any
+    scoreHistory.value = res?.items || []
+    if (scoreHistory.value.length > 0) {
+      nextTick(() => renderScoreTrendChart())
+    }
+  } catch {
+    scoreHistory.value = []
+  }
+}
+
+async function loadReportTimeline(code: string) {
+  try {
+    const res = await getReportTimeline(code) as any
+    reportTimeline.value = res?.items || []
+  } catch {
+    reportTimeline.value = []
+  }
+}
+
+async function loadTimelineReport(id: number) {
+  try {
+    const res = await getReportDetail(id) as any
+    if (res?.report_md) {
+      reportContent.value = res.report_md
+      reportMeta.value = {
+        report_id: res.id,
+        created_at: res.created_at,
+        tokens_used: res.tokens_used,
+        latency_ms: res.latency_ms,
+        model: res.model,
+      }
+    }
+  } catch {
+    ElMessage.error('加载报告失败')
+  }
+}
+
+function renderScoreTrendChart() {
+  if (!scoreTrendChartRef.value || scoreHistory.value.length === 0) return
+  if (scoreTrendChart) {
+    scoreTrendChart.dispose()
+  }
+  scoreTrendChart = echarts.init(scoreTrendChartRef.value)
+  const dates = scoreHistory.value.map(i => i.date.slice(5))
+  const scores = scoreHistory.value.map(i => i.score)
+  scoreTrendChart.setOption({
+    tooltip: { trigger: 'axis', formatter: (params: any) => {
+      const p = params[0]
+      const item = scoreHistory.value[p.dataIndex]
+      return `${item.date}<br/>评分: ${item.score}<br/>动作: ${item.action}<br/>${item.reason}`
+    }},
+    grid: { left: 40, right: 20, top: 20, bottom: 30 },
+    xAxis: { type: 'category', data: dates },
+    yAxis: { type: 'value', min: 0, max: 100, splitNumber: 5 },
+    series: [{
+      type: 'line', data: scores, smooth: true,
+      areaStyle: { opacity: 0.15 },
+      markLine: {
+        silent: true,
+        data: [
+          { yAxis: 70, lineStyle: { color: '#67c23a', type: 'dashed' }, label: { formatter: '买入线' } },
+          { yAxis: 50, lineStyle: { color: '#e6a23c', type: 'dashed' }, label: { formatter: '观望线' } },
+        ],
+      },
+      itemStyle: { color: (params: any) => {
+        const v = params.value
+        return v >= 70 ? '#67c23a' : v >= 50 ? '#e6a23c' : '#f56c6c'
+      }},
+    }],
+  })
+}
+
 function handleChartResize() {
   chartInstance?.resize()
+  scoreTrendChart?.resize()
 }
 
 // ---- Lifecycle ----
@@ -725,9 +904,16 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleChartResize)
+  if (abortController.value) {
+    abortController.value.abort()
+  }
   if (chartInstance) {
     chartInstance.dispose()
     chartInstance = null
+  }
+  if (scoreTrendChart) {
+    scoreTrendChart.dispose()
+    scoreTrendChart = null
   }
 })
 
@@ -1200,5 +1386,76 @@ watch(klineCollapsed, (collapsed) => {
   .stock-analysis .main-content .fallback-panel {
     flex: 1;
   }
+}
+
+/* Score trend panel (Phase 3) */
+.score-trend-panel {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.panel-title {
+  font-size: 14px;
+  font-weight: 500;
+  margin: 0 0 12px;
+}
+
+.score-trend-chart {
+  width: 100%;
+  height: 220px;
+}
+
+/* Report timeline panel (Phase 3) */
+.timeline-panel {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.timeline-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.timeline-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  background: var(--el-fill-color-lighter);
+  transition: background 0.2s;
+}
+
+.timeline-item:hover {
+  background: var(--el-fill-color);
+}
+
+.timeline-item.active {
+  background: var(--el-color-primary-light-9);
+  border-left: 3px solid var(--el-color-primary);
+}
+
+.timeline-date {
+  color: var(--el-text-color-regular);
+  font-family: monospace;
+}
+
+.timeline-model {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.timeline-badge {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--el-color-primary-light-8);
+  color: var(--el-color-primary);
 }
 </style>

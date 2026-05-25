@@ -256,6 +256,41 @@ def _query_kline_30d(code: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _query_financials(code: str) -> Dict[str, Any]:
+    """最新一期财务数据：费用明细 + 关键增长率。"""
+    from quantia.lib.database import executeSqlFetch
+    # 先尝试带费用列的查询，若列不存在则降级
+    sql_full = """
+        SELECT report_date, revenue, net_profit, revenue_yoy, net_profit_yoy,
+               roe, roa, gross_margin, net_profit_margin, asset_liability_ratio,
+               rd_expense, admin_expense, selling_expense, financial_expense, rd_ratio
+        FROM cn_stock_financial
+        WHERE code = %s
+        ORDER BY report_date DESC LIMIT 1
+    """
+    sql_basic = """
+        SELECT report_date, revenue, net_profit, revenue_yoy, net_profit_yoy,
+               roe, roa, gross_margin, net_profit_margin, asset_liability_ratio
+        FROM cn_stock_financial
+        WHERE code = %s
+        ORDER BY report_date DESC LIMIT 1
+    """
+    keys_full = ['report_date', 'revenue', 'net_profit', 'revenue_yoy', 'net_profit_yoy',
+                 'roe', 'roa', 'gross_margin', 'net_profit_margin', 'asset_liability_ratio',
+                 'rd_expense', 'admin_expense', 'selling_expense', 'financial_expense', 'rd_ratio']
+    keys_basic = ['report_date', 'revenue', 'net_profit', 'revenue_yoy', 'net_profit_yoy',
+                  'roe', 'roa', 'gross_margin', 'net_profit_margin', 'asset_liability_ratio']
+
+    rows = executeSqlFetch(sql_full, (code,))
+    if rows:
+        return _row_to_dict(rows[0], keys_full)
+    # 降级：可能是列不存在（1054错误）或无数据
+    rows = executeSqlFetch(sql_basic, (code,))
+    if rows:
+        return _row_to_dict(rows[0], keys_basic)
+    return {}
+
+
 class StockProfileTool(Tool):
     name = 'stock_profile'
     description = '获取个股综合画像：最新行情+近期指标+资金流向+K线形态信号+近30日K线。'
@@ -285,6 +320,7 @@ class StockProfileTool(Tool):
         fund_flow = _query_fund_flow(code, 5)
         patterns = _query_patterns(code)
         kline_30d = _query_kline_30d(code)
+        financials = _query_financials(code)
 
         return {
             'code': code,
@@ -294,4 +330,5 @@ class StockProfileTool(Tool):
             'fund_flow': fund_flow,
             'patterns': patterns,
             'kline_30d': kline_30d,
+            'financials': financials,
         }

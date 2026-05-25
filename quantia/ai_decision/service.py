@@ -159,6 +159,7 @@ def score_trade(
     kline_window: Optional[List[Dict[str, Any]]] = None,
     portfolio_snapshot: Optional[Dict[str, Any]] = None,
     market_context: Optional[Dict[str, Any]] = None,
+    event_context: Optional[Dict[str, Any]] = None,
     extra: Optional[Dict[str, Any]] = None,
     provider_factory: Optional[Callable[[str], Any]] = None,
     persist: bool = True,
@@ -194,7 +195,8 @@ def score_trade(
         decision_phase=decision_phase, direction=direction,
         indicators=indicators, selection=selection,
         kline_window=kline_window, portfolio_snapshot=portfolio_snapshot,
-        market_context=market_context, extra=extra,
+        market_context=market_context, event_context=event_context,
+        extra=extra,
     )
     input_hash = compute_input_hash(input_summary)
 

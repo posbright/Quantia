@@ -19,6 +19,7 @@ import logging
 import queue
 import threading
 import time
+import uuid
 from abc import ABC
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -77,6 +78,20 @@ def _ensure_report_table():
         _logger.warning(f'[stockReport] 建表失败（可能已存在）: {exc}', exc_info=True)
 
 
+def _ensure_share_column():
+    """幂等添加 share_token 列（用于分享链接）。"""
+    try:
+        mdb.executeSql(
+            f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN share_token VARCHAR(36) DEFAULT NULL"
+        )
+        mdb.executeSql(
+            f"ALTER TABLE `{_REPORT_TABLE}` ADD UNIQUE INDEX idx_share_token (share_token)"
+        )
+    except Exception as e:
+        if 'Duplicate column' not in str(e) and 'Duplicate key name' not in str(e):
+            _logger.debug(f'[stockReport] share_token列添加跳过: {e}')
+
+
 _table_ensured = False
 _table_lock = threading.Lock()
 
@@ -88,6 +103,7 @@ def _lazy_ensure_table():
     with _table_lock:
         if not _table_ensured:
             _ensure_report_table()
+            _ensure_share_column()
             _table_ensured = True
 
 
@@ -898,4 +914,180 @@ class StockDataFallbackHandler(webBase.BaseHandler, ABC):
         except Exception as exc:
             _logger.debug(f'[stockReport] fallback indicators 查询异常: {exc}')
 
+        # 财务费用明细
+        try:
+            sql = """
+                SELECT report_date, rd_expense, admin_expense, selling_expense,
+                       financial_expense, rd_ratio, revenue, roe, gross_margin
+                FROM cn_stock_financial
+                WHERE code = %s
+                ORDER BY report_date DESC LIMIT 1
+            """
+            rows = mdb.executeSqlFetch(sql, (code,))
+            if rows:
+                r = rows[0]
+                financials = {}
+                keys = ['report_date', 'rd_expense', 'admin_expense', 'selling_expense',
+                        'financial_expense', 'rd_ratio', 'revenue', 'roe', 'gross_margin']
+                for i, k in enumerate(keys):
+                    if r[i] is not None:
+                        financials[k] = str(r[i]) if k == 'report_date' else r[i]
+                if financials:
+                    result['financials'] = financials
+        except Exception as exc:
+            _logger.debug(f'[stockReport] fallback financials 查询异常: {exc}')
+
         _write_json(self, result)
+
+
+class StockScoreHistoryHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/ai/report/score_history — AI评分历史趋势。
+
+    查询 cn_stock_trade_ai_score 获取某股票近30天评分变化。
+    返回: [{date, score, action, reason_summary, decision_phase}]
+    """
+
+    @gen.coroutine
+    def get(self):
+        code = self.get_argument('code', '').strip()
+        if not code or len(code) != 6:
+            _write_json(self, {'items': []})
+            return
+
+        try:
+            days = min(90, max(1, int(self.get_argument('days', '30'))))
+        except (ValueError, TypeError):
+            days = 30
+
+        sql = """
+            SELECT decision_date, score, action, reason_summary, decision_phase
+            FROM cn_stock_trade_ai_score
+            WHERE code = %s AND decision_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+              AND status = 'succeeded'
+            ORDER BY decision_date ASC, id ASC
+        """
+        try:
+            rows = mdb.executeSqlFetch(sql, (code, days))
+        except Exception:
+            rows = None
+
+        items = []
+        if rows:
+            for r in rows:
+                items.append({
+                    'date': str(r[0]) if r[0] else '',
+                    'score': r[1],
+                    'action': r[2] or '',
+                    'reason': (r[3] or '')[:100],
+                    'phase': r[4] or '',
+                })
+        _write_json(self, {'items': items, 'code': code, 'days': days})
+
+
+class StockReportTimelineHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/ai/report/timeline — 同股票评级变化轨迹。
+
+    返回同一股票多次报告的评分/评级变化时间线。
+    """
+
+    @gen.coroutine
+    def get(self):
+        _lazy_ensure_table()
+        code = self.get_argument('code', '').strip()
+        if not code or len(code) != 6:
+            _write_json(self, {'items': []})
+            return
+
+        sql = f"""
+            SELECT id, created_at, model, tokens_used, latency_ms
+            FROM `{_REPORT_TABLE}`
+            WHERE code = %s
+            ORDER BY created_at DESC
+            LIMIT 20
+        """
+        rows = mdb.executeSqlFetch(sql, (code,))
+        items = []
+        if rows:
+            for r in rows:
+                items.append({
+                    'id': r[0],
+                    'created_at': str(r[1]) if r[1] else '',
+                    'model': r[2] or '',
+                    'tokens_used': r[3],
+                    'latency_ms': r[4],
+                })
+        _write_json(self, {'items': items, 'code': code})
+
+
+class StockReportShareHandler(webBase.BaseHandler, ABC):
+    """POST /quantia/api/ai/report/share — 生成分享链接。
+
+    请求体: {"report_id": 123}
+    返回: {"share_token": "uuid", "share_url": "/quantia/api/ai/report/shared/uuid"}
+    """
+
+    @gen.coroutine
+    def post(self):
+        _lazy_ensure_table()
+        try:
+            body = json.loads(self.request.body or '{}')
+        except (json.JSONDecodeError, TypeError):
+            _write_json(self, {'error': '无效请求体'}, 400)
+            return
+
+        report_id = body.get('report_id')
+        if not report_id:
+            _write_json(self, {'error': '缺少 report_id'}, 400)
+            return
+
+        # 检查是否已有 share_token
+        sql = f"SELECT share_token FROM `{_REPORT_TABLE}` WHERE id = %s"
+        rows = mdb.executeSqlFetch(sql, (report_id,))
+        if not rows:
+            _write_json(self, {'error': '报告不存在'}, 404)
+            return
+
+        existing_token = rows[0][0]
+        if existing_token:
+            token = existing_token
+        else:
+            token = str(uuid.uuid4())
+            mdb.executeSql(
+                f"UPDATE `{_REPORT_TABLE}` SET share_token = %s WHERE id = %s",
+                (token, report_id)
+            )
+
+        _write_json(self, {
+            'share_token': token,
+            'share_url': f'/quantia/api/ai/report/shared/{token}',
+        })
+
+
+class StockReportSharedViewHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/ai/report/shared/<token> — 只读公开报告（无需登录）。"""
+
+    @gen.coroutine
+    def get(self, token: str):
+        _lazy_ensure_table()
+        if not token or len(token) != 36:
+            _write_json(self, {'error': '无效链接'}, 400)
+            return
+
+        sql = f"""
+            SELECT id, code, name, report_md, model, tokens_used, latency_ms, created_at
+            FROM `{_REPORT_TABLE}`
+            WHERE share_token = %s
+        """
+        rows = mdb.executeSqlFetch(sql, (token,))
+        if not rows:
+            _write_json(self, {'error': '报告不存在或链接已失效'}, 404)
+            return
+        r = rows[0]
+        _write_json(self, {
+            'id': r[0], 'code': r[1], 'name': r[2],
+            'report_md': r[3], 'model': r[4],
+            'tokens_used': r[5], 'latency_ms': r[6],
+            'created_at': str(r[7]),
+            'shared': True,
+        })
+

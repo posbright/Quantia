@@ -24,7 +24,7 @@ clean_expired_cache()
 fi
 
 # ── 月度财务数据更新 ──
-log_info "开始月度财务数据增量更新"
+log_info "开始月度财务数据增量更新（含费用明细）"
 cd "$PROJECT_ROOT"
-"$PYTHON_BIN" -m quantia.job.stock_financial_data --incremental >> "$LOG_FILE" 2>&1
+"$PYTHON_BIN" -m quantia.job.stock_financial_data --incremental --expenses >> "$LOG_FILE" 2>&1
 log_info "月度财务数据更新完成"

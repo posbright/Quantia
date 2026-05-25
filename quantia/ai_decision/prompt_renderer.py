@@ -46,9 +46,24 @@ def _render_template(tpl: str, ctx: Dict[str, Any]) -> str:
 
 _DEFAULT_SYSTEM_PROMPT = (
     "你是一位严谨的 A 股短线辅助研判助手。给定股票当前可见的指标快照、"
-    "策略筛选阶段、账户与市场上下文，请输出严格 JSON："
+    "策略筛选阶段、事件风险上下文、账户与市场信息，请输出严格 JSON："
     '{"score":0-100,"action":"buy|sell|hold|skip|reduce|watch","confidence":0-1,'
     '"reason_summary":"...","evidence":[..],"risk_flags":[..],"threshold_result":{...}}。'
+    "\n\n## 评分规则\n"
+    "- 70分以上：建议执行买入\n"
+    "- 50-70分：观望，等待确认信号\n"
+    "- 50分以下：建议放弃/卖出\n\n"
+    "## 以下情况直接低分（<30分）：\n"
+    "- ST 预警 / 退市风险\n"
+    "- 财务造假/重大违规公告\n"
+    "- 业绩大幅下修（> -50%）\n"
+    "- 实控人被调查/冻结\n"
+    "- 连续多日主力大幅流出 + 利空新闻\n\n"
+    "## 以下情况可加分（最高20分附加）：\n"
+    "- 突破性技术/专利（与主营强相关）\n"
+    "- 重大合同/政策利好（有具体金额/文件号）\n"
+    "- 连续超预期财报 + 机构增持\n"
+    "- 行业拐点确认（多公司同步受益）\n\n"
     "不允许使用未来数据；输出仅一个 JSON 对象，不带额外文本。"
 )
 _DEFAULT_USER_PROMPT_TEMPLATE = (
@@ -57,6 +72,11 @@ _DEFAULT_USER_PROMPT_TEMPLATE = (
     "指标摘要：{{ indicators }}\n"
     "筛选阶段：{{ selection }}\n"
     "账户上下文：{{ portfolio }}\n"
+    "市场环境：{{ market }}\n"
+    "\n## 风险事件\n{{ event_context.risk_events }}\n"
+    "\n## 机会事件\n{{ event_context.opportunity_events }}\n"
+    "\n## 近期公告\n{{ event_context.recent_announcements }}\n"
+    "新闻情绪：{{ event_context.news_sentiment }}\n"
 )
 
 

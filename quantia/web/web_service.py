@@ -183,6 +183,10 @@ class Application(tornado.web.Application):
             (r"/quantia/api/ai/report/stock_data", stockReportHandler.StockDataFallbackHandler),
             (r"/quantia/api/ai/report/attention_list", stockReportHandler.StockReportAttentionListHandler),
             (r"/quantia/api/ai/report/batch_summary", stockReportHandler.StockReportBatchHandler),
+            (r"/quantia/api/ai/report/score_history", stockReportHandler.StockScoreHistoryHandler),
+            (r"/quantia/api/ai/report/timeline", stockReportHandler.StockReportTimelineHandler),
+            (r"/quantia/api/ai/report/share", stockReportHandler.StockReportShareHandler),
+            (r"/quantia/api/ai/report/shared/([a-f0-9\-]{36})", stockReportHandler.StockReportSharedViewHandler),
             # Phase 6: IM 指令确认（默认关闭，由 QUANTIA_IM_COMMAND_ENABLED=1 启用；仅落库 trade_command，不直接调券商）
             (r"/quantia/api/im/status", imCommandHandler.IMStatusHandler),
             (r"/quantia/api/im/dingtalk/callback", imCommandHandler.DingtalkCallbackHandler),

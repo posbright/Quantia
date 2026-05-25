@@ -207,6 +207,56 @@ export function getStockFallbackData(code: string) {
   return request.get<StockFallbackData>('/api/ai/report/stock_data', { params: { code } })
 }
 
+// ---- Score History & Timeline (Phase 3) ----
+
+export interface ScoreHistoryItem {
+  date: string
+  score: number | null
+  action: string
+  reason: string
+  phase: string
+}
+
+export interface ReportTimelineItem {
+  id: number
+  created_at: string
+  model: string
+  tokens_used: number
+  latency_ms: number
+}
+
+/**
+ * AI评分历史趋势（近N天评分变化）
+ */
+export function getScoreHistory(code: string, days?: number) {
+  return request.get<{ items: ScoreHistoryItem[]; code: string; days: number }>(
+    '/api/ai/report/score_history', { params: { code, days: days || 30 } }
+  )
+}
+
+/**
+ * 同股票报告版本时间线
+ */
+export function getReportTimeline(code: string) {
+  return request.get<{ items: ReportTimelineItem[]; code: string }>(
+    '/api/ai/report/timeline', { params: { code } }
+  )
+}
+
+// ---- Export & Share (Phase 3c) ----
+
+export interface ShareResult {
+  share_token: string
+  share_url: string
+}
+
+/**
+ * 生成分享链接
+ */
+export function createShareLink(reportId: number) {
+  return request.post<ShareResult>('/api/ai/report/share', { report_id: reportId })
+}
+
 // ---- Batch Analysis (§10.6) ----
 
 export interface AttentionListItem {

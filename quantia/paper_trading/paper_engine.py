@@ -537,13 +537,16 @@ def run_paper_trading_daily(paper_id, scheduled=False, now=None):
                     if _ai_gate_cfg is not None:
                         from quantia.ai_decision import service as _ai_svc_pre
                         from quantia.ai_decision.schema import GATE_REJECT as _GATE_REJECT
+                        from quantia.ai_decision.event_context import build_event_context as _build_evt
                         _phase = 'pre_buy' if _direction == 'buy' else 'pre_sell'
+                        _evt_ctx = _build_evt(code)
                         _ai_pre = _ai_svc_pre.score_trade(
                             cfg=_ai_gate_cfg, source_type='paper', source_id=paper_id,
                             run_id=None, code=code, name=None,
                             decision_date=date_str, decision_phase=_phase,
                             direction=_direction,
                             indicators=indicators, selection=selection,
+                            event_context=_evt_ctx if _evt_ctx.get('risk_events') or _evt_ctx.get('opportunity_events') else None,
                         ) or {}
                         if _ai_pre.get('ai_gate_result') == _GATE_REJECT:
                             logging.info(
@@ -944,6 +947,8 @@ def run_paper_trading_daily(paper_id, scheduled=False, now=None):
                         from quantia.ai_decision import config as _ai_cfg
                         _cfg = _ai_cfg.load_config_for_source('paper', paper_id)
                         if _cfg is not None and _cfg.is_enabled():
+                            from quantia.ai_decision.event_context import build_event_context as _build_evt_post
+                            _evt_ctx_post = _build_evt_post(t.code)
                             ai_meta = _ai_svc.score_trade(
                                 cfg=_cfg, source_type='paper', source_id=paper_id, run_id=run_id,
                                 code=t.code, name=t.name,
@@ -952,6 +957,7 @@ def run_paper_trading_daily(paper_id, scheduled=False, now=None):
                                 direction=t.direction,
                                 indicators=order_info.get('indicators'),
                                 selection=order_info.get('selection'),
+                                event_context=_evt_ctx_post if _evt_ctx_post.get('risk_events') or _evt_ctx_post.get('opportunity_events') else None,
                             ) or {}
                     except Exception as ai_err:
                         logging.warning(f"[模拟交易] AI 评分调用失败(不影响交易): {ai_err}")
