@@ -42,6 +42,14 @@ DEFAULT_ALERT_COOLDOWN_HOURS = 24  # 同一股票同一方向预警冷却时间
 _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
 
 
+def _get_effective_tools() -> list:
+    """根据环境配置过滤实际可用的工具列表。"""
+    tools = list(_ALLOWED_TOOLS)
+    if not (os.environ.get('QUANTIA_AI_WEB_SEARCH_URL') or '').strip():
+        tools = [t for t in tools if t != 'web_search']
+    return tools
+
+
 # ─── 工具函数 ──────────────────────────────────────────────────────
 
 def _get_attention_codes() -> List[str]:
@@ -183,7 +191,7 @@ def scheduled_report_analysis(max_stocks: int = 10) -> Dict[str, Any]:
                     '格式要求：使用 Markdown，包含技术指标、财务数据、资金流向、'
                     '事件风险等维度，最后给出综合评级和操作建议。'
                 ),
-                allowed_tools=_ALLOWED_TOOLS,
+                allowed_tools=_get_effective_tools(),
             )
 
             # 存入数据库
@@ -473,7 +481,7 @@ def pregenerate_hot_stocks(top_n: int = 50) -> Dict[str, Any]:
                 user_message=f"请为 A 股 {code} 生成分析报告。",
                 scene='report_cron',
                 agent='stock_analyst',
-                allowed_tools=_ALLOWED_TOOLS,
+                allowed_tools=_get_effective_tools(),
             )
             content = (result.content or '')[:10000]
             mdb.executeSql(

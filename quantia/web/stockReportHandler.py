@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import re
 import threading
@@ -42,6 +43,19 @@ _STREAM_SENTINEL = object()
 _executor = ThreadPoolExecutor(max_workers=4)
 
 _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
+
+
+def _get_effective_tools() -> list:
+    """根据环境配置过滤实际可用的工具列表。
+
+    未配置 QUANTIA_AI_WEB_SEARCH_URL 时排除 web_search，
+    避免 LLM 尝试调用后在报告里显示"工具不可用"。
+    """
+    tools = list(_ALLOWED_TOOLS)
+    if not (os.environ.get('QUANTIA_AI_WEB_SEARCH_URL') or '').strip():
+        tools = [t for t in tools if t != 'web_search']
+    return tools
+
 
 # ─── 并发请求合并（同一 code 生成中时，后续请求等待缓存）─────────
 # 每个 Event 关联到注册它的请求；pop 时只删除自己注册的 event
@@ -297,7 +311,7 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
             scene='stock_report',
             agent='stock_analyst',
             system=_load_analyst_prompt(),
-            allowed_tools=_ALLOWED_TOOLS,
+            allowed_tools=_get_effective_tools(),
         )
 
         elapsed_ms = int((time.time() - started) * 1000)
@@ -846,7 +860,7 @@ def _run_batch_summary(codes: List[str], q: queue.Queue, cancel: threading.Event
                     '严格控制在300字以内。格式：一段文字概述 + 评级。'
                     '不要使用 markdown 标题，仅纯文本段落。'
                 ),
-                allowed_tools=_ALLOWED_TOOLS,
+                allowed_tools=_get_effective_tools(),
             )
             elapsed_ms = int((time.time() - started) * 1000)
 
@@ -1283,7 +1297,7 @@ class StockReportCompareHandler(webBase.BaseHandler, ABC):
                         '使用结构化表格展示差异，给出明确的对比结论。'
                         '格式要求：Markdown，包含对比表格和总结建议。'
                     ),
-                    allowed_tools=_ALLOWED_TOOLS,
+                    allowed_tools=_get_effective_tools(),
                 )
                 content = result.content or ''
                 q_out.put(('done', {
