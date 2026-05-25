@@ -93,8 +93,8 @@ export function searchStock(q: string) {
 /**
  * 获取历史报告列表
  */
-export function getReportHistory(params: { code?: string; limit?: number; offset?: number }) {
-  return request.get<{ items: ReportHistoryItem[] }>(
+export function getReportHistory(params: { code?: string; limit?: number; offset?: number; days?: number }) {
+  return request.get<{ items: ReportHistoryItem[]; total?: number }>(
     '/api/ai/report/history', { params }
   )
 }

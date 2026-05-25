@@ -111,6 +111,25 @@ def _ensure_share_column():
             _logger.debug(f'[stockReport] share_token列添加跳过: {e}')
 
 
+def _ensure_missing_columns():
+    """幂等添加后续版本新增的列（已有表可能缺少这些列）。"""
+    _alter_stmts = [
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN quality_score TINYINT DEFAULT NULL COMMENT '结构校验: 100=通过, 50=部分, 0=失败' AFTER latency_ms",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN user_feedback TINYINT DEFAULT NULL COMMENT '1=满意, -1=不满意, NULL=未评' AFTER quality_score",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN feedback_reason VARCHAR(200) DEFAULT NULL AFTER user_feedback",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN source ENUM('user','cron','batch') DEFAULT 'user' COMMENT '生成来源' AFTER data_cutoff_date",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD INDEX idx_source (source, created_at DESC)",
+    ]
+    for stmt in _alter_stmts:
+        try:
+            with mdb.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(stmt)
+        except Exception as e:
+            if 'Duplicate column' not in str(e) and 'Duplicate key name' not in str(e):
+                _logger.debug(f'[stockReport] 列迁移跳过: {e}')
+
+
 _table_ensured = False
 _table_lock = threading.Lock()
 
@@ -123,6 +142,7 @@ def _lazy_ensure_table():
         if not _table_ensured:
             _ensure_report_table()
             _ensure_share_column()
+            _ensure_missing_columns()
             _table_ensured = True
 
 
@@ -534,23 +554,45 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
 
 
 class StockReportHistoryHandler(webBase.BaseHandler, ABC):
-    """GET /quantia/api/ai/report/history — 历史报告列表。"""
+    """GET /quantia/api/ai/report/history — 历史报告列表。
+
+    参数:
+      code  — 按股票代码筛选（空=全部）
+      limit — 每页数量（默认20，最大100）
+      offset — 翻页偏移
+      days  — 限制天数范围（默认30，仅无 code 时生效；传0=不限）
+    """
 
     @gen.coroutine
     def get(self):
         _lazy_ensure_table()
-        code = self.get_argument('code', '')
+        code = self.get_argument('code', '').strip()
         try:
-            limit = min(50, max(1, int(self.get_argument('limit', '20'))))
+            limit = min(100, max(1, int(self.get_argument('limit', '20'))))
             offset = max(0, int(self.get_argument('offset', '0')))
         except (ValueError, TypeError):
             limit, offset = 20, 0
+        try:
+            days = int(self.get_argument('days', '30'))
+        except (ValueError, TypeError):
+            days = 30
 
-        where = ''
+        conditions: List[str] = []
         params: List[Any] = []
         if code:
-            where = 'WHERE code = %s'
+            conditions.append('code = %s')
             params.append(code)
+        elif days > 0:
+            # 无指定代码时，默认仅展示最近 N 天
+            conditions.append('created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)')
+            params.append(days)
+
+        where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
+
+        # 查询总数
+        count_sql = f"SELECT COUNT(*) FROM `{_REPORT_TABLE}` {where}"
+        count_rows = mdb.executeSqlFetch(count_sql, tuple(params))
+        total = count_rows[0][0] if count_rows else 0
 
         sql = f"""
             SELECT id, code, name, model, tokens_used, latency_ms, created_at
@@ -569,7 +611,7 @@ class StockReportHistoryHandler(webBase.BaseHandler, ABC):
                     'model': r[3], 'tokens_used': r[4],
                     'latency_ms': r[5], 'created_at': str(r[6]),
                 })
-        _write_json(self, {'items': items, 'limit': limit, 'offset': offset})
+        _write_json(self, {'items': items, 'total': total, 'limit': limit, 'offset': offset})
 
 
 class StockReportDetailHandler(webBase.BaseHandler, ABC):
