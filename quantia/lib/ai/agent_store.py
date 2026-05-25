@@ -202,9 +202,22 @@ def _validate(meta: Dict[str, Any], *, partial: bool = False) -> Dict[str, Any]:
 
 
 # ── CRUD ──────────────────────────────────────────────────────────
-def _row_to_dict(row: Dict[str, Any]) -> Dict[str, Any]:
-    """torndb Row → 普通 dict，并解析 allowed_tools JSON。"""
-    d = dict(row)
+_COLUMNS = (
+    'id', 'name', 'display_name', 'description', 'system_prompt',
+    'default_provider', 'default_model', 'allowed_tools',
+    'temperature', 'max_tokens', 'is_builtin', 'enabled',
+    'created_at', 'updated_at',
+)
+
+
+def _row_to_dict(row) -> Dict[str, Any]:
+    """DB row (tuple or dict) → 普通 dict，并解析 allowed_tools JSON。"""
+    if isinstance(row, dict):
+        d = dict(row)
+    elif isinstance(row, (tuple, list)):
+        d = dict(zip(_COLUMNS, row))
+    else:
+        d = dict(row)
     raw = d.get('allowed_tools')
     if raw is not None and isinstance(raw, str):
         try:
