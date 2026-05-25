@@ -327,3 +327,111 @@ export async function batchSummaryStream(
     }
   }
 }
+
+// ---- Phase 4: Report Comparison ----
+
+export interface CompareResult {
+  type: 'progress' | 'done' | 'error'
+  report_md?: string
+  codes?: string[]
+  tokens_used?: number
+  model?: string
+  msg?: string
+}
+
+/**
+ * SSE 流式对比报告
+ */
+export async function compareReportStream(
+  codes: [string, string],
+  onEvent: (ev: CompareResult) => void,
+  options?: { signal?: AbortSignal }
+): Promise<void> {
+  const resp = await fetch('/quantia/api/ai/report/compare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify({ codes }),
+    signal: options?.signal,
+  })
+  if (!resp.ok) {
+    const text = await resp.text()
+    onEvent({ type: 'error', msg: text || `HTTP ${resp.status}` })
+    return
+  }
+  const reader = resp.body!.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const raw = buf.slice(0, idx).trim()
+      buf = buf.slice(idx + 2)
+      if (!raw.startsWith('data:')) continue
+      try {
+        const ev: CompareResult = JSON.parse(raw.slice(5).trim())
+        onEvent(ev)
+      } catch {
+        // skip
+      }
+    }
+  }
+}
+
+// ---- Phase 4: User Preferences ----
+
+export interface ReportPreference {
+  focus_dimensions: string[]
+  language: 'zh' | 'en'
+  voice_enabled: boolean
+  alert_threshold: number
+  auto_report: boolean
+  push_enabled: boolean
+}
+
+/**
+ * 获取用户报告偏好
+ */
+export function getReportPreference(userId?: string) {
+  return request.get<ReportPreference>(
+    '/api/ai/report/preference', { params: { user_id: userId || 'default' } }
+  )
+}
+
+/**
+ * 保存用户报告偏好
+ */
+export function saveReportPreference(pref: Partial<ReportPreference> & { user_id?: string }) {
+  return request.post<{ ok: boolean }>('/api/ai/report/preference', pref)
+}
+
+// ---- Phase 4: Multi-language Translation ----
+
+export interface TranslateResult {
+  translated_md: string
+  language: string
+}
+
+/**
+ * 翻译报告为英文
+ */
+export function translateReport(params: { report_id?: number; report_md?: string }) {
+  return request.post<TranslateResult>('/api/ai/report/translate', params)
+}
+
+// ---- Phase 4: Voice Broadcast ----
+
+export interface SpeechTextResult {
+  speech_text: string
+  estimated_duration_sec: number
+  char_count: number
+}
+
+/**
+ * 获取报告语音播报文本
+ */
+export function getSpeechText(params: { report_id?: number; report_md?: string }) {
+  return request.post<SpeechTextResult>('/api/ai/report/speech_text', params)
+}

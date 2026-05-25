@@ -35,6 +35,12 @@
       <el-button v-if="reportMeta.report_id" @click="handleShare">
         🔗 分享
       </el-button>
+      <el-button v-if="reportContent" :loading="translating" @click="handleTranslate">
+        {{ isTranslated ? '🇨🇳 中文' : '🌐 英文' }}
+      </el-button>
+      <el-button v-if="reportContent" @click="handleVoice" :type="isSpeaking ? 'danger' : 'default'">
+        {{ isSpeaking ? '⏹️ 停止' : '🔊 播报' }}
+      </el-button>
       <el-button
         v-if="attentionCount > 0"
         :loading="batchGenerating"
@@ -281,7 +287,7 @@ import {
   VideoPlay, CopyDocument, Loading, CircleCheckFilled, Clock, DataAnalysis, ArrowDown
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData, getAttentionList, batchSummaryStream, getScoreHistory, getReportTimeline, getReportDetail, createShareLink } from '@/api/report'
+import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData, getAttentionList, batchSummaryStream, getScoreHistory, getReportTimeline, getReportDetail, createShareLink, translateReport, getSpeechText, getReportPreference } from '@/api/report'
 import { getKlineData } from '@/api/stock'
 import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent, StockFallbackData, BatchSummaryEvent, ScoreHistoryItem, ReportTimelineItem } from '@/api/report'
 import * as echarts from 'echarts'
@@ -413,6 +419,8 @@ async function handleGenerate(force?: boolean | MouseEvent) {
   followupAnswers.value = []
   feedbackSubmitted.value = 0
   fallbackData.value = null
+  isTranslated.value = false
+  originalReportMd.value = ''
   progressSteps.value = progressSteps.value.map(s => ({ ...s, status: 'pending' as const, elapsed: undefined }))
 
   // Init markdown-it
@@ -474,6 +482,10 @@ function handleStreamEvent(ev: ReportStreamEvent) {
       generating.value = false
       loadScoreHistory(currentCode.value)
       loadReportTimeline(currentCode.value)
+      // 偏好设置：自动语音播报
+      if (userVoiceEnabled.value && reportContent.value && !isSpeaking.value) {
+        nextTick(() => handleVoice())
+      }
       break
     case 'done':
       if (ev.tokens_used) reportMeta.value.tokens_used = ev.tokens_used
@@ -485,6 +497,10 @@ function handleStreamEvent(ev: ReportStreamEvent) {
       generating.value = false
       loadScoreHistory(currentCode.value)
       loadReportTimeline(currentCode.value)
+      // 偏好设置：自动语音播报
+      if (userVoiceEnabled.value && reportContent.value && !isSpeaking.value) {
+        nextTick(() => handleVoice())
+      }
       break
     case 'error':
       errorMsg.value = ev.msg || '生成失败'
@@ -569,6 +585,79 @@ async function handleShare() {
     ElMessage.success('分享链接已复制到剪贴板')
   } catch {
     ElMessage.error('生成分享链接失败')
+  }
+}
+
+// ---- Phase 4: Voice Broadcast (Web Speech API) ----
+const isSpeaking = ref(false)
+const userVoiceEnabled = ref(false)  // 用户偏好：自动播报
+let speechUtterance: SpeechSynthesisUtterance | null = null
+
+async function handleVoice() {
+  if (isSpeaking.value) {
+    window.speechSynthesis.cancel()
+    isSpeaking.value = false
+    return
+  }
+  if (!reportContent.value) return
+
+  try {
+    const res = await getSpeechText({
+      report_id: reportMeta.value.report_id,
+      report_md: reportContent.value,
+    }) as any
+    const text = res.speech_text || reportContent.value.slice(0, 2000)
+
+    if (!window.speechSynthesis) {
+      ElMessage.warning('当前浏览器不支持语音播报')
+      return
+    }
+
+    speechUtterance = new SpeechSynthesisUtterance(text)
+    speechUtterance.lang = 'zh-CN'
+    speechUtterance.rate = 1.0
+    speechUtterance.onend = () => { isSpeaking.value = false }
+    speechUtterance.onerror = () => { isSpeaking.value = false }
+
+    window.speechSynthesis.speak(speechUtterance)
+    isSpeaking.value = true
+  } catch {
+    ElMessage.error('获取播报文本失败')
+  }
+}
+
+// ---- Phase 4: Multi-language Translation ----
+const translating = ref(false)
+const originalReportMd = ref('')  // 保存翻译前的原文
+const isTranslated = ref(false)
+
+async function handleTranslate() {
+  if (!reportContent.value) return
+
+  // 如果已翻译，恢复原文
+  if (isTranslated.value && originalReportMd.value) {
+    reportContent.value = originalReportMd.value
+    isTranslated.value = false
+    ElMessage.success('已恢复中文原文')
+    return
+  }
+
+  translating.value = true
+  try {
+    const res = await translateReport({
+      report_id: reportMeta.value.report_id,
+      report_md: reportContent.value,
+    }) as any
+    if (res.translated_md) {
+      originalReportMd.value = reportContent.value
+      reportContent.value = res.translated_md
+      isTranslated.value = true
+      ElMessage.success('报告已翻译为英文')
+    }
+  } catch (err: any) {
+    ElMessage.error('翻译失败: ' + (err.message || err))
+  } finally {
+    translating.value = false
   }
 }
 
@@ -899,6 +988,11 @@ onMounted(async () => {
   await ensureMarkdownIt()
   window.addEventListener('resize', handleChartResize)
   loadAttentionList()
+  // 加载用户偏好（用于自动语音播报）
+  try {
+    const pref = await getReportPreference() as any
+    if (pref?.voice_enabled) userVoiceEnabled.value = true
+  } catch { /* 偏好加载失败不阻塞 */ }
   // 支持从 URL query 参数传入 code
   const code = route.query.code as string
   if (code && code.length === 6) {
@@ -912,6 +1006,11 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', handleChartResize)
   if (abortController.value) {
     abortController.value.abort()
+  }
+  // 停止语音播报
+  if (isSpeaking.value) {
+    window.speechSynthesis.cancel()
+    isSpeaking.value = false
   }
   if (chartInstance) {
     chartInstance.dispose()

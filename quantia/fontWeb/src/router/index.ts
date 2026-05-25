@@ -204,6 +204,18 @@ const routes: RouteRecordRaw[] = [
         name: 'ReportHistory',
         component: () => import('@/views/stock/report-history.vue'),
         meta: { title: '历史报告' }
+      },
+      {
+        path: 'compare',
+        name: 'ReportCompare',
+        component: () => import('@/views/stock/report-compare.vue'),
+        meta: { title: '报告对比' }
+      },
+      {
+        path: 'preference',
+        name: 'ReportPreference',
+        component: () => import('@/views/stock/report-preference.vue'),
+        meta: { title: '报告偏好' }
       }
     ]
   },

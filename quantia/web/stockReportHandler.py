@@ -229,7 +229,8 @@ def _get_previous_report_summary(code: str) -> Optional[str]:
 
 
 def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
-                      prev_summary: Optional[str] = None):
+                      prev_summary: Optional[str] = None,
+                      focus_dims: Optional[List[str]] = None):
     """在线程中运行 Agent 生成报告，通过 queue 推送进度和文本。"""
     try:
         from quantia.lib.ai import run_agent
@@ -242,6 +243,14 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
         q.put(('progress', {'step': 'stock_profile', 'status': 'running'}))
 
         user_message = f"请为 A 股 {code} 生成分析报告。"
+        # 用户偏好：侧重维度
+        if focus_dims:
+            dim_labels = {
+                'technical': '技术面', 'fundamental': '基本面',
+                'fund_flow': '资金面', 'event': '事件面', 'ai_gate': 'AI Gate'
+            }
+            selected = [dim_labels.get(d, d) for d in focus_dims]
+            user_message += f"\n请重点分析以下维度：{'、'.join(selected)}。其他维度可简略。"
         if prev_summary:
             user_message += (
                 f"\n\n【增量对比参考】以下是上次分析报告的摘要，"
@@ -352,12 +361,22 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
         # 获取上次报告摘要用于增量对比
         prev_summary = _get_previous_report_summary(code)
 
+        # 获取用户偏好的侧重维度
+        focus_dims = None
+        try:
+            pref_sql = "SELECT focus_dimensions FROM `cn_stock_report_preference` ORDER BY updated_at DESC LIMIT 1"
+            pref_rows = mdb.executeSqlFetch(pref_sql)
+            if pref_rows and pref_rows[0][0]:
+                focus_dims = json.loads(pref_rows[0][0])
+        except Exception:
+            pass
+
         q_out = queue.Queue(maxsize=128)
         cancel_event = threading.Event()
 
         # Start producer
         t = threading.Thread(
-            target=_run_agent_report, args=(code, q_out, cancel_event, prev_summary), daemon=True)
+            target=_run_agent_report, args=(code, q_out, cancel_event, prev_summary, focus_dims), daemon=True)
         t.start()
 
         loop = IOLoop.current()
@@ -1108,5 +1127,389 @@ class StockReportSharedViewHandler(webBase.BaseHandler, ABC):
             'tokens_used': r[5], 'latency_ms': r[6],
             'created_at': str(r[7]),
             'shared': True,
+        })
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 4: 报告对比（两只股票 side-by-side）
+# ═══════════════════════════════════════════════════════════════════
+
+class StockReportCompareHandler(webBase.BaseHandler, ABC):
+    """POST /quantia/api/ai/report/compare — 两只股票对比分析。
+
+    请求体: {"codes": ["000001", "600036"]}
+    返回 SSE 流式对比报告。
+    """
+
+    @gen.coroutine
+    def post(self):
+        try:
+            body = json.loads(self.request.body or '{}')
+        except (json.JSONDecodeError, TypeError):
+            _write_json(self, {'error': '无效请求体'}, 400)
+            return
+
+        codes = body.get('codes', [])
+        if not isinstance(codes, list) or len(codes) != 2:
+            _write_json(self, {'error': 'codes 必须是包含2个股票代码的数组'}, 400)
+            return
+        codes = [c.strip() for c in codes if isinstance(c, str) and len(c.strip()) == 6]
+        if len(codes) != 2:
+            _write_json(self, {'error': '需要2个有效的6位股票代码'}, 400)
+            return
+
+        self.set_header('Content-Type', 'text/event-stream; charset=utf-8')
+        self.set_header('Cache-Control', 'no-cache')
+        self.set_header('X-Accel-Buffering', 'no')
+
+        # 进度事件
+        self.write('data: ' + json.dumps(
+            {'type': 'progress', 'step': 'compare_start', 'status': 'running'},
+            ensure_ascii=False) + '\n\n')
+        yield self.flush()
+
+        q_out = queue.Queue(maxsize=32)
+
+        def _run_compare():
+            try:
+                from quantia.lib.ai import run_agent
+                from quantia.lib.ai.feature_switch import check_feature
+                check_feature('stock_report')
+
+                result = run_agent(
+                    user_message=(
+                        f"请对比分析 A 股 {codes[0]} 和 {codes[1]} 两只股票。\n"
+                        f"要求：\n"
+                        f"1. 分别获取两只股票的基本面、技术面、资金面数据\n"
+                        f"2. 使用对比表格展示关键指标差异\n"
+                        f"3. 从估值、成长性、技术趋势、资金流向四个维度对比\n"
+                        f"4. 给出综合对比结论和投资建议\n"
+                        f"格式：Markdown，包含对比表格和总结。"
+                    ),
+                    scene='stock_report',
+                    agent='stock_analyst',
+                    system=(
+                        '你是 Quantia AI 股票对比分析师。请对两只股票进行全方位对比分析。'
+                        '使用结构化表格展示差异，给出明确的对比结论。'
+                        '格式要求：Markdown，包含对比表格和总结建议。'
+                    ),
+                    allowed_tools=_ALLOWED_TOOLS,
+                )
+                content = result.content or ''
+                q_out.put(('done', {
+                    'report_md': content,
+                    'codes': codes,
+                    'tokens_used': result.total_tokens or 0,
+                    'model': result.model or '',
+                }))
+            except Exception as exc:
+                q_out.put(('error', str(exc)))
+
+        t = threading.Thread(target=_run_compare, daemon=True)
+        t.start()
+
+        loop = IOLoop.current()
+
+        def _wait():
+            import queue as _q
+            try:
+                return q_out.get(block=True, timeout=120)
+            except _q.Empty:
+                return ('error', '对比分析超时')
+
+        item = yield loop.run_in_executor(_executor, _wait)
+        kind, payload = item
+
+        try:
+            if kind == 'done':
+                self.write('data: ' + json.dumps(
+                    {'type': 'done', **payload}, ensure_ascii=False) + '\n\n')
+            else:
+                self.write('data: ' + json.dumps(
+                    {'type': 'error', 'msg': payload}, ensure_ascii=False) + '\n\n')
+            yield self.flush()
+        except Exception:
+            pass
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 4: 自定义报告偏好
+# ═══════════════════════════════════════════════════════════════════
+
+_PREFERENCE_TABLE = 'cn_stock_report_preference'
+
+
+def _ensure_preference_table():
+    """确保用户偏好表存在。"""
+    if not mdb.checkTableIsExist(_PREFERENCE_TABLE):
+        mdb.executeSql(f'''
+            CREATE TABLE IF NOT EXISTS `{_PREFERENCE_TABLE}` (
+                `id` INT AUTO_INCREMENT PRIMARY KEY,
+                `user_id` VARCHAR(64) DEFAULT 'default',
+                `focus_dimensions` TEXT COMMENT '侧重维度JSON: ["technical","fundamental","fund_flow","event","ai_gate"]',
+                `language` VARCHAR(16) DEFAULT 'zh' COMMENT '报告语言: zh/en',
+                `voice_enabled` TINYINT(1) DEFAULT 0 COMMENT '是否启用语音播报',
+                `alert_threshold` INT DEFAULT 50 COMMENT '评分预警阈值',
+                `auto_report` TINYINT(1) DEFAULT 0 COMMENT '是否启用定时自动分析',
+                `push_enabled` TINYINT(1) DEFAULT 0 COMMENT '是否启用钉钉推送',
+                `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+                `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY `uq_user` (`user_id`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ''')
+
+
+class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
+    """GET/POST /quantia/api/ai/report/preference — 用户报告偏好设置。
+
+    GET: 获取当前偏好
+    POST: 保存偏好 {"focus_dimensions": [...], "language": "zh", ...}
+    """
+
+    @gen.coroutine
+    def get(self):
+        _ensure_preference_table()
+        user_id = self.get_argument('user_id', 'default')
+        sql = f"""
+            SELECT focus_dimensions, language, voice_enabled, alert_threshold,
+                   auto_report, push_enabled
+            FROM `{_PREFERENCE_TABLE}`
+            WHERE user_id = %s
+        """
+        rows = mdb.executeSqlFetch(sql, (user_id,))
+        if rows:
+            r = rows[0]
+            try:
+                dims = json.loads(r[0]) if r[0] else ['technical', 'fundamental', 'fund_flow']
+            except (json.JSONDecodeError, TypeError):
+                dims = ['technical', 'fundamental', 'fund_flow']
+            _write_json(self, {
+                'focus_dimensions': dims,
+                'language': r[1] or 'zh',
+                'voice_enabled': bool(r[2]),
+                'alert_threshold': r[3] or 50,
+                'auto_report': bool(r[4]),
+                'push_enabled': bool(r[5]),
+            })
+        else:
+            _write_json(self, {
+                'focus_dimensions': ['technical', 'fundamental', 'fund_flow'],
+                'language': 'zh',
+                'voice_enabled': False,
+                'alert_threshold': 50,
+                'auto_report': False,
+                'push_enabled': False,
+            })
+
+    @gen.coroutine
+    def post(self):
+        _ensure_preference_table()
+        try:
+            body = json.loads(self.request.body or '{}')
+        except (json.JSONDecodeError, TypeError):
+            _write_json(self, {'error': '无效请求体'}, 400)
+            return
+
+        user_id = body.get('user_id', 'default')
+        allowed_dims = ['technical', 'fundamental', 'fund_flow', 'event', 'ai_gate']
+        dims = body.get('focus_dimensions', ['technical', 'fundamental', 'fund_flow'])
+        dims = [d for d in dims if d in allowed_dims]
+
+        language = body.get('language', 'zh')
+        if language not in ('zh', 'en'):
+            language = 'zh'
+
+        voice_enabled = 1 if body.get('voice_enabled') else 0
+        try:
+            alert_threshold = min(max(int(body.get('alert_threshold', 50)), 10), 90)
+        except (ValueError, TypeError):
+            alert_threshold = 50
+        auto_report = 1 if body.get('auto_report') else 0
+        push_enabled = 1 if body.get('push_enabled') else 0
+
+        sql = f"""
+            INSERT INTO `{_PREFERENCE_TABLE}`
+                (user_id, focus_dimensions, language, voice_enabled,
+                 alert_threshold, auto_report, push_enabled)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                focus_dimensions = VALUES(focus_dimensions),
+                language = VALUES(language),
+                voice_enabled = VALUES(voice_enabled),
+                alert_threshold = VALUES(alert_threshold),
+                auto_report = VALUES(auto_report),
+                push_enabled = VALUES(push_enabled)
+        """
+        try:
+            mdb.executeSql(sql, (
+                user_id, json.dumps(dims), language, voice_enabled,
+                alert_threshold, auto_report, push_enabled,
+            ))
+            _write_json(self, {'ok': True})
+        except Exception as exc:
+            _logger.warning(f'[preference] 保存失败: {exc}')
+            _write_json(self, {'error': str(exc)}, 500)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 4: 多语言摘要（英文版）
+# ═══════════════════════════════════════════════════════════════════
+
+class StockReportTranslateHandler(webBase.BaseHandler, ABC):
+    """POST /quantia/api/ai/report/translate — 报告翻译为英文。
+
+    请求体: {"report_id": 123} 或 {"report_md": "原始markdown..."}
+    返回: {"translated_md": "...", "language": "en"}
+    """
+
+    @gen.coroutine
+    def post(self):
+        try:
+            body = json.loads(self.request.body or '{}')
+        except (json.JSONDecodeError, TypeError):
+            _write_json(self, {'error': '无效请求体'}, 400)
+            return
+
+        report_md = body.get('report_md', '')
+        report_id = body.get('report_id')
+
+        # 如果给了 report_id 就从 DB 加载
+        if report_id and not report_md:
+            _lazy_ensure_table()
+            sql = f"SELECT report_md FROM `{_REPORT_TABLE}` WHERE id = %s"
+            rows = mdb.executeSqlFetch(sql, (report_id,))
+            if rows:
+                report_md = rows[0][0] or ''
+            else:
+                _write_json(self, {'error': '报告不存在'}, 404)
+                return
+
+        if not report_md or len(report_md.strip()) < 20:
+            _write_json(self, {'error': '报告内容为空或太短'}, 400)
+            return
+
+        # 使用 AI 翻译（限制长度防止 token 过大）
+        source_text = report_md[:5000]
+
+        q_out = queue.Queue(maxsize=4)
+
+        def _run_translate():
+            try:
+                from quantia.lib.ai import run_agent
+                from quantia.lib.ai.feature_switch import check_feature
+                check_feature('stock_report')
+
+                result = run_agent(
+                    user_message=(
+                        f"Please translate the following Chinese stock analysis report "
+                        f"into professional English. Keep the Markdown format, tables, "
+                        f"and structure intact. Do not add or remove content.\n\n"
+                        f"---\n{source_text}\n---"
+                    ),
+                    scene='stock_report',
+                    agent='stock_analyst',
+                    system=(
+                        'You are a professional financial translator. '
+                        'Translate Chinese stock reports into clear, professional English. '
+                        'Preserve all Markdown formatting, tables, and data. '
+                        'Use standard financial terminology.'
+                    ),
+                    allowed_tools=[],
+                )
+                q_out.put(('ok', result.content or ''))
+            except Exception as exc:
+                q_out.put(('error', str(exc)))
+
+        t = threading.Thread(target=_run_translate, daemon=True)
+        t.start()
+
+        loop = IOLoop.current()
+
+        def _wait():
+            import queue as _q
+            try:
+                return q_out.get(block=True, timeout=60)
+            except _q.Empty:
+                return ('error', '翻译超时')
+
+        item = yield loop.run_in_executor(_executor, _wait)
+        kind, payload = item
+
+        if kind == 'ok':
+            _write_json(self, {'translated_md': payload, 'language': 'en'})
+        else:
+            _write_json(self, {'error': payload}, 500)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 4: 语音播报文本提取
+# ═══════════════════════════════════════════════════════════════════
+
+class StockReportSpeechTextHandler(webBase.BaseHandler, ABC):
+    """POST /quantia/api/ai/report/speech_text — 提取报告语音播报文本。
+
+    将 Markdown 报告转换为适合 Web Speech API 朗读的纯文本。
+    请求体: {"report_id": 123} 或 {"report_md": "..."}
+    返回: {"speech_text": "...", "estimated_duration_sec": 45}
+    """
+
+    @gen.coroutine
+    def post(self):
+        try:
+            body = json.loads(self.request.body or '{}')
+        except (json.JSONDecodeError, TypeError):
+            _write_json(self, {'error': '无效请求体'}, 400)
+            return
+
+        report_md = body.get('report_md', '')
+        report_id = body.get('report_id')
+
+        if report_id and not report_md:
+            _lazy_ensure_table()
+            sql = f"SELECT report_md FROM `{_REPORT_TABLE}` WHERE id = %s"
+            rows = mdb.executeSqlFetch(sql, (report_id,))
+            if rows:
+                report_md = rows[0][0] or ''
+            else:
+                _write_json(self, {'error': '报告不存在'}, 404)
+                return
+
+        if not report_md:
+            _write_json(self, {'error': '报告内容为空'}, 400)
+            return
+
+        # Markdown → 纯文本（去除标记语法）
+        import re
+        text = report_md
+        # 去除代码块
+        text = re.sub(r'```[\s\S]*?```', '', text)
+        # 去除行内代码
+        text = re.sub(r'`[^`]+`', '', text)
+        # 去除图片/链接
+        text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
+        text = re.sub(r'\[([^\]]+)\]\(.*?\)', r'\1', text)
+        # 去除 HTML 标签
+        text = re.sub(r'<[^>]+>', '', text)
+        # 去除标题符号
+        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+        # 去除加粗/斜体
+        text = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', text)
+        # 去除表格分隔线
+        text = re.sub(r'\|?[-:]+\|[-:|]+\|?', '', text)
+        # 去除表格管道符
+        text = re.sub(r'\|', '，', text)
+        # 去除多余空行
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        # 清理空白
+        text = text.strip()
+
+        # 估算朗读时长（中文约 3 字/秒）
+        char_count = len(text.replace('\n', '').replace(' ', ''))
+        estimated_sec = max(10, char_count // 3)
+
+        _write_json(self, {
+            'speech_text': text[:3000],  # 限制长度
+            'estimated_duration_sec': estimated_sec,
+            'char_count': char_count,
         })
 

@@ -61,6 +61,9 @@ fi
 # Phase 4: 模拟交易（依赖数据获取+K线缓存，内存占用低）
 run_sub "Phase 4: 模拟交易" "$SCRIPT_DIR/run_paper_trading" || FAILED=$((FAILED + 1))
 
+# Phase 5: AI 定时分析 + 评分预警（依赖模拟交易完成后的最新评分）
+run_sub "Phase 5: AI报告+评分预警" "$SCRIPT_DIR/run_report_alert" || FAILED=$((FAILED + 1))
+
 OVERALL_END=$(date +%s)
 OVERALL_DUR=$((OVERALL_END - OVERALL_START))
 OVERALL_STR=$(elapsed_fmt $OVERALL_DUR)
@@ -68,5 +71,5 @@ OVERALL_STR=$(elapsed_fmt $OVERALL_DUR)
 if [ $FAILED -eq 0 ]; then
     log_info "============ 每日完整任务结束 ✓ (全部成功, ${OVERALL_STR}) ============"
 else
-    log_warn "============ 每日完整任务结束 ✗ (${FAILED}/4 阶段异常, ${OVERALL_STR}) ============"
+    log_warn "============ 每日完整任务结束 ✗ (${FAILED}/5 阶段异常, ${OVERALL_STR}) ============"
 fi
