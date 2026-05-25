@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import time
 from typing import Any, Dict, Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import requests
 
@@ -46,6 +46,10 @@ class DingTalkChannel(NotificationChannel):
     def send(self, payload: Dict[str, Any]) -> NotificationSendResult:
         if not self.webhook:
             return NotificationSendResult(ok=False, error="DingTalk webhook is empty")
+        # 校验 webhook URL 安全性（防止 SSRF）
+        parsed = urlparse(self.webhook)
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+            return NotificationSendResult(ok=False, error="Invalid webhook URL scheme or host")
         try:
             url = self.build_signed_url(self.webhook, self.secret)
             response = requests.post(url, json=payload, timeout=self.timeout)

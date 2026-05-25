@@ -423,7 +423,9 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
             pref_sql = "SELECT focus_dimensions FROM `cn_stock_report_preference` ORDER BY updated_at DESC LIMIT 1"
             pref_rows = mdb.executeSqlFetch(pref_sql)
             if pref_rows and pref_rows[0][0]:
-                focus_dims = json.loads(pref_rows[0][0])
+                parsed = json.loads(pref_rows[0][0])
+                if isinstance(parsed, list) and all(isinstance(d, str) for d in parsed):
+                    focus_dims = parsed
         except Exception:
             pass
 

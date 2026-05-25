@@ -1,5 +1,8 @@
 import request from './request'
 
+// SSE buffer size limit (1MB) to prevent memory exhaustion
+const _SSE_MAX_BUF = 1024 * 1024
+
 // ---- Interfaces ----
 
 export interface StockSearchItem {
@@ -131,6 +134,10 @@ export async function generateReportStream(
     const { done, value } = await reader.read()
     if (done) break
     buf += decoder.decode(value, { stream: true })
+    if (buf.length > _SSE_MAX_BUF) {
+      onEvent({ type: 'error', msg: '响应数据超出大小限制' })
+      return
+    }
     let idx: number
     while ((idx = buf.indexOf('\n\n')) !== -1) {
       const raw = buf.slice(0, idx).trim()
@@ -174,6 +181,10 @@ export async function followupReportStream(
     const { done, value } = await reader.read()
     if (done) break
     buf += decoder.decode(value, { stream: true })
+    if (buf.length > _SSE_MAX_BUF) {
+      onEvent({ type: 'error', msg: '响应数据超出大小限制' })
+      return
+    }
     let idx: number
     while ((idx = buf.indexOf('\n\n')) !== -1) {
       const raw = buf.slice(0, idx).trim()
@@ -313,6 +324,7 @@ export async function batchSummaryStream(
     const { done, value } = await reader.read()
     if (done) break
     buf += decoder.decode(value, { stream: true })
+    if (buf.length > _SSE_MAX_BUF) { return }
     let idx: number
     while ((idx = buf.indexOf('\n\n')) !== -1) {
       const raw = buf.slice(0, idx).trim()
@@ -365,6 +377,10 @@ export async function compareReportStream(
     const { done, value } = await reader.read()
     if (done) break
     buf += decoder.decode(value, { stream: true })
+    if (buf.length > _SSE_MAX_BUF) {
+      onEvent({ type: 'error', msg: '响应数据超出大小限制' })
+      return
+    }
     let idx: number
     while ((idx = buf.indexOf('\n\n')) !== -1) {
       const raw = buf.slice(0, idx).trim()
