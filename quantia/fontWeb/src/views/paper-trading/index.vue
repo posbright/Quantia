@@ -803,8 +803,8 @@
             <el-table-column prop="actual" label="实际数据" min-width="160" show-overflow-tooltip />
             <el-table-column label="结果" width="70" align="center">
               <template #default="{ row }">
-                <el-tag :type="row.pass ? 'success' : 'warning'" size="small" effect="plain">
-                  {{ row.pass ? '通过' : '未通过' }}
+                <el-tag :type="ruleResultTagType(row.pass)" size="small" effect="plain">
+                  {{ ruleResultLabel(row.pass) }}
                 </el-tag>
               </template>
             </el-table-column>
@@ -817,16 +817,32 @@
           <span class="td-block-title">指标快照</span>
           <el-table :data="tradeDecisionIndicators" size="small" border max-height="220">
             <el-table-column prop="trade_date" label="日期" width="100" />
-            <el-table-column prop="open_price" label="开" width="70" align="right" />
-            <el-table-column prop="close_price" label="收" width="70" align="right" />
-            <el-table-column prop="low_price" label="低" width="70" align="right" />
-            <el-table-column prop="high_price" label="高" width="70" align="right" />
-            <el-table-column prop="volume" label="成交量" min-width="100" align="right" />
-            <el-table-column prop="ma" label="MA" min-width="120" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.ma ? JSON.stringify(row.ma) : '--' }}</template>
+            <el-table-column label="开" width="70" align="right">
+              <template #default="{ row }">{{ fmtNumDp(row.open_price) }}</template>
             </el-table-column>
-            <el-table-column prop="boll" label="BOLL" min-width="120" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.boll ? JSON.stringify(row.boll) : '--' }}</template>
+            <el-table-column label="收" width="70" align="right">
+              <template #default="{ row }">{{ fmtNumDp(row.close_price) }}</template>
+            </el-table-column>
+            <el-table-column label="低" width="70" align="right">
+              <template #default="{ row }">{{ fmtNumDp(row.low_price) }}</template>
+            </el-table-column>
+            <el-table-column label="高" width="70" align="right">
+              <template #default="{ row }">{{ fmtNumDp(row.high_price) }}</template>
+            </el-table-column>
+            <el-table-column label="成交量" min-width="90" align="right">
+              <template #default="{ row }">{{ fmtVolumeHuman(row.volume) }}</template>
+            </el-table-column>
+            <el-table-column label="MA" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }">{{ fmtIndicatorDictMA(row.ma) }}</template>
+            </el-table-column>
+            <el-table-column label="BOLL" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">{{ fmtIndicatorBOLL(row.boll) }}</template>
+            </el-table-column>
+            <el-table-column label="RSI" min-width="110" show-overflow-tooltip>
+              <template #default="{ row }">{{ fmtIndicatorRSI(row.rsi) }}</template>
+            </el-table-column>
+            <el-table-column label="MACD" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">{{ fmtIndicatorMACD(row.macd) }}</template>
             </el-table-column>
           </el-table>
         </div>
@@ -1035,15 +1051,78 @@ function _fmtVal(v: any) {
 const tradeDecisionRules = computed(() => {
   const d = tradeDecisionDetail.value
   if (!d || !Array.isArray(d.rules)) return []
-  return d.rules.map((r: any) => ({
-    name: r.rule_name || r.name || '--',
-    threshold: _fmtVal(r.threshold_expr ?? r.threshold_value ?? r.threshold),
-    actual: _fmtVal(r.actual_value ?? r.actual),
-    pass: r.passed === 1 || r.passed === true,
-    weight: r.weight ?? null,
-    note: r.note || '',
-  }))
+  return d.rules.map((r: any) => {
+    // 三态：true=通过 / false=未通过 / null=事实快照（不做评判）
+    let passState: boolean | null
+    if (r.passed === 1 || r.passed === true) passState = true
+    else if (r.passed === 0 || r.passed === false) passState = false
+    else passState = null
+    return {
+      name: r.rule_name || r.name || '--',
+      threshold: _fmtVal(r.threshold_expr ?? r.threshold_value ?? r.threshold),
+      actual: _fmtVal(r.actual_value ?? r.actual),
+      pass: passState,
+      weight: r.weight ?? null,
+      note: r.note || '',
+    }
+  })
 })
+// "结果"标签：tri-state（事实/通过/未通过）
+function ruleResultLabel(pass: boolean | null): string {
+  if (pass === true) return '通过'
+  if (pass === false) return '未通过'
+  return '事实'
+}
+function ruleResultTagType(pass: boolean | null): 'success' | 'warning' | 'info' {
+  if (pass === true) return 'success'
+  if (pass === false) return 'warning'
+  return 'info'
+}
+function fmtNumDp(v: any, d = 2): string {
+  if (v == null || v === '' || v === '--') return '--'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '--'
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: d, maximumFractionDigits: d })
+}
+function fmtIndicatorDictMA(v: any): string {
+  if (!v || typeof v !== 'object') return '--'
+  const parts = Object.entries(v)
+    .filter(([, val]) => val != null && val !== '')
+    .map(([k, val]) => `${k.toUpperCase()} ${fmtNumDp(val, 2)}`)
+  return parts.length ? parts.join(' / ') : '--'
+}
+function fmtIndicatorBOLL(v: any): string {
+  if (!v || typeof v !== 'object') return '--'
+  const u = v.upper ?? v.ub ?? v.up
+  const m = v.mid ?? v.middle ?? v.mb
+  const l = v.lower ?? v.lb ?? v.dn
+  return `上 ${fmtNumDp(u)} / 中 ${fmtNumDp(m)} / 下 ${fmtNumDp(l)}`
+}
+function fmtIndicatorRSI(v: any): string {
+  if (v == null) return '--'
+  if (typeof v === 'object') {
+    const parts = Object.entries(v)
+      .filter(([, val]) => val != null)
+      .map(([k, val]) => `${k.toUpperCase()} ${fmtNumDp(val, 2)}`)
+    return parts.length ? parts.join(' / ') : '--'
+  }
+  return fmtNumDp(v, 2)
+}
+function fmtIndicatorMACD(v: any): string {
+  if (!v || typeof v !== 'object') return '--'
+  const dif = v.dif ?? v.DIF
+  const dea = v.dea ?? v.DEA
+  const hist = v.hist ?? v.bar ?? v.histogram
+  return `DIF ${fmtNumDp(dif, 4)} / DEA ${fmtNumDp(dea, 4)} / 柱 ${fmtNumDp(hist, 4)}`
+}
+function fmtVolumeHuman(v: any): string {
+  if (v == null || v === '' || v === '--') return '--'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '--'
+  if (Math.abs(n) >= 1e8) return `${(n / 1e8).toFixed(2)}亿`
+  if (Math.abs(n) >= 1e4) return `${(n / 1e4).toFixed(1)}万`
+  return n.toLocaleString('zh-CN', { maximumFractionDigits: 0 })
+}
 const tradeDecisionAi = computed(() => {
   const d = tradeDecisionDetail.value
   if (!d) return null

@@ -534,8 +534,19 @@ def _synthesize_fallback_rules(reason: str, reason_source: str, direction: str,
              f"成交量 {_fmt(indicators.get('volume'))} / 成交额 {_fmt(indicators.get('amount'))}",
              "事实数据，仅供核对")
     if has_risk:
-        _add("风控触发", "策略提及止盈 / 止损 / 风控 / 突破 / 海龟入场",
-             text, "由策略自身的入场/风控规则触发，详见左列说明")
+        # 仅摘取与"突破/止损/止盈/海龟/风控/超时"相关的关键日志行，避免与"策略决策"行重复整段 reason。
+        risk_keywords = ("止损", "止盈", "风控", "超时", "最大持有", "max_hold",
+                         "max hold", "海龟", "突破", "入场")
+        excerpts = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip(" -·•[]")
+            if not line:
+                continue
+            if any(kw in line for kw in risk_keywords):
+                excerpts.append(line)
+        excerpt_text = "\n".join(excerpts) if excerpts else "（参见上方『策略决策』行）"
+        _add("风控/入场触发", "策略提及止盈 / 止损 / 风控 / 突破 / 海龟入场",
+             excerpt_text, "由策略自身的入场或风控规则触发")
 
     if len(rows) == 1:
         # reason 未点名具体指标 → 仍把 K 线/收盘价兜底列一行
