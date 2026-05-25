@@ -45,6 +45,11 @@ def get_indicators(data, end_date=None, threshold=120, calc_threshold=None):
         # 2. pandas 2.x CoW 模式下 .loc[mask] 返回的是懒拷贝，直接修改会报 read-only 错误
         data = data.copy()
 
+        # talib 要求输入为 float64，缓存中 amount/volume 可能为 int64
+        for col in ('amount', 'volume'):
+            if col in data.columns and not np.issubdtype(data[col].dtype, np.floating):
+                data[col] = data[col].astype(np.float64)
+
         # import stockstats
         # test = data.copy()
         # test = stockstats.StockDataFrame.retype(test)  # 验证计算结果
