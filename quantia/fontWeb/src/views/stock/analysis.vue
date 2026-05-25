@@ -988,6 +988,7 @@ function renderScoreTrendChart() {
       const p = params[0]
       if (!p) return ''
       const item = validItems[p.dataIndex]
+      if (!item) return ''
       return `${item.date}<br/>评分: ${item.score}<br/>动作: ${item.action}<br/>${item.reason}`
     }},
     grid: { left: 40, right: 20, top: 20, bottom: 30 },

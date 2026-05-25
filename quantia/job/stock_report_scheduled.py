@@ -220,6 +220,11 @@ def scheduled_report_analysis(max_stocks: int = 10) -> Dict[str, Any]:
             stats['failed'] += 1
             _logger.warning(f'[定时分析] {code} 报告生成失败: {exc}')
 
+        # 熔断：连续失败过多则提前终止
+        if stats['failed'] >= 5 and stats['generated'] == 0:
+            _logger.error('[定时分析] 连续失败过多，熔断终止')
+            break
+
         # 简单限速，避免 API 过载
         time.sleep(2)
 

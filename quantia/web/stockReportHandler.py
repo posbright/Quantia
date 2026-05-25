@@ -359,7 +359,7 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
             return
 
         # 缓存检查
-        force = body.get('force', False)
+        force = body.get('force', False) is True
         if not force:
             cached = _check_cache(code)
             if cached:
@@ -567,6 +567,11 @@ class StockReportDetailHandler(webBase.BaseHandler, ABC):
         if not report_id:
             _write_json(self, {'error': '缺少 id 参数'}, 400)
             return
+        try:
+            report_id = int(report_id)
+        except (TypeError, ValueError):
+            _write_json(self, {'error': 'id 必须是整数'}, 400)
+            return
         sql = f"""
             SELECT id, code, name, report_md, model, provider, tools_used,
                    tokens_used, latency_ms, created_at
@@ -603,7 +608,7 @@ class StockSearchHandler(webBase.BaseHandler, ABC):
         sql = """
             SELECT code, name, industry
             FROM cn_stock_spot
-            WHERE (code LIKE %s OR name LIKE %s)
+            WHERE (code LIKE %s ESCAPE '\\\\' OR name LIKE %s ESCAPE '\\\\')
             ORDER BY total_market_cap DESC
             LIMIT 50
         """
@@ -662,7 +667,7 @@ def _run_followup(code: str, report_md: str, question: str,
         }))
     except Exception as exc:
         _logger.exception(f'[stockReport] 追问失败: {exc}')
-        q.put(('error', {'msg': str(exc)}))
+        q.put(('error', {'msg': '追问失败，请稍后重试'}))
     finally:
         q.put((_STREAM_SENTINEL, None))
 
@@ -869,7 +874,7 @@ def _run_batch_summary(codes: List[str], q: queue.Queue, cancel: threading.Event
             q.put(('item', {
                 'code': code,
                 'name': '',
-                'summary': f'生成失败: {exc}',
+                'summary': '生成失败，请稍后重试',
                 'error': True,
             }))
     q.put((_STREAM_SENTINEL, None))
@@ -889,7 +894,7 @@ class StockReportBatchHandler(webBase.BaseHandler, ABC):
             _write_json(self, {'error': 'codes 必须是非空数组'}, 400)
             return
         # 限制最多 20 只
-        codes = [c for c in codes[:20] if isinstance(c, str) and len(c) == 6]
+        codes = [c for c in codes[:20] if isinstance(c, str) and len(c) == 6 and c.isdigit()]
         if not codes:
             _write_json(self, {'error': '无有效的6位股票代码'}, 400)
             return
@@ -951,8 +956,8 @@ class StockDataFallbackHandler(webBase.BaseHandler, ABC):
     @gen.coroutine
     def get(self):
         code = (self.get_argument('code', '') or '').strip()
-        if not code or len(code) != 6:
-            _write_json(self, {'error': 'code 必须是6位'}, 400)
+        if not code or len(code) != 6 or not code.isdigit():
+            _write_json(self, {'error': 'code 必须是6位数字'}, 400)
             return
 
         result: Dict[str, Any] = {'code': code}
@@ -1150,6 +1155,11 @@ class StockReportShareHandler(webBase.BaseHandler, ABC):
         if not report_id:
             _write_json(self, {'error': '缺少 report_id'}, 400)
             return
+        try:
+            report_id = int(report_id)
+        except (TypeError, ValueError):
+            _write_json(self, {'error': 'report_id 必须是整数'}, 400)
+            return
 
         # 检查是否已有 share_token
         sql = f"SELECT share_token FROM `{_REPORT_TABLE}` WHERE id = %s"
@@ -1228,9 +1238,9 @@ class StockReportCompareHandler(webBase.BaseHandler, ABC):
         if not isinstance(codes, list) or len(codes) != 2:
             _write_json(self, {'error': 'codes 必须是包含2个股票代码的数组'}, 400)
             return
-        codes = [c.strip() for c in codes if isinstance(c, str) and len(c.strip()) == 6]
+        codes = [c.strip() for c in codes if isinstance(c, str) and len(c.strip()) == 6 and c.strip().isdigit()]
         if len(codes) != 2:
-            _write_json(self, {'error': '需要2个有效的6位股票代码'}, 400)
+            _write_json(self, {'error': '需要2个有效的6位数字股票代码'}, 400)
             return
 
         self.set_header('Content-Type', 'text/event-stream; charset=utf-8')
@@ -1278,7 +1288,8 @@ class StockReportCompareHandler(webBase.BaseHandler, ABC):
                     'model': result.model or '',
                 }))
             except Exception as exc:
-                q_out.put(('error', str(exc)))
+                _logger.warning(f'[stockReport] 对比分析失败: {exc}', exc_info=True)
+                q_out.put(('error', '对比分析失败，请稍后重试'))
 
         t = threading.Thread(target=_run_compare, daemon=True)
         t.start()
@@ -1454,6 +1465,11 @@ class StockReportTranslateHandler(webBase.BaseHandler, ABC):
 
         # 如果给了 report_id 就从 DB 加载
         if report_id and not report_md:
+            try:
+                report_id = int(report_id)
+            except (TypeError, ValueError):
+                _write_json(self, {'error': 'report_id 必须是整数'}, 400)
+                return
             _lazy_ensure_table()
             sql = f"SELECT report_md FROM `{_REPORT_TABLE}` WHERE id = %s"
             rows = mdb.executeSqlFetch(sql, (report_id,))
@@ -1497,7 +1513,8 @@ class StockReportTranslateHandler(webBase.BaseHandler, ABC):
                 )
                 q_out.put(('ok', result.content or ''))
             except Exception as exc:
-                q_out.put(('error', str(exc)))
+                _logger.warning(f'[stockReport] 翻译失败: {exc}', exc_info=True)
+                q_out.put(('error', '翻译失败，请稍后重试'))
 
         t = threading.Thread(target=_run_translate, daemon=True)
         t.start()
@@ -1544,6 +1561,11 @@ class StockReportSpeechTextHandler(webBase.BaseHandler, ABC):
         report_id = body.get('report_id')
 
         if report_id and not report_md:
+            try:
+                report_id = int(report_id)
+            except (TypeError, ValueError):
+                _write_json(self, {'error': 'report_id 必须是整数'}, 400)
+                return
             _lazy_ensure_table()
             sql = f"SELECT report_md FROM `{_REPORT_TABLE}` WHERE id = %s"
             rows = mdb.executeSqlFetch(sql, (report_id,))
