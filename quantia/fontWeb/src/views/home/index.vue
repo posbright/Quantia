@@ -274,10 +274,10 @@ async function loadPicks() {
   picksLoading.value = true
   try {
     const r: any = await getStockData({ name: 'cn_stock_strategy_enter', page: 1, page_size: 8 })
-    const rows: any[] = r?.rows || []
+    const rows: any[] = r?.data || r?.rows || []
     picks.value = rows.map((row) => {
       const p = pickField(row, ['latest_price', 'new_price', 'close'])
-      const c = pickField(row, ['change_rate', 'changepercent', 'pct_chg'])
+      const c = pickField(row, ['p_change', 'change_rate', 'changepercent', 'pct_chg'])
       return {
         code: String(row.code || ''),
         name: String(row.name || ''),
@@ -296,10 +296,11 @@ async function loadFundFlow() {
   fundLoading.value = true
   try {
     const r: any = await getStockData({ name: 'cn_stock_fund_flow_industry', page: 1, page_size: 50 })
-    const rows: any[] = r?.rows || []
+    const rows: any[] = r?.data || r?.rows || []
     const enriched: FundFlowRow[] = rows.map((row) => {
       const c = pickField(row, ['change_rate', 'changepercent'])
       const inflow = pickField(row, [
+        'fund_amount',
         'today_main_net_inflow',
         'main_net_inflow',
         'today_main_net_inflow_ratio',

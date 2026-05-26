@@ -1,27 +1,17 @@
-feat(frontend): 移动端图表全屏+横屏+缩放体验优化
+fix(frontend): 首页"今日精选/行业资金流向"空数据修复
 
-修复 360px 屏幕模拟交易/回测/指标详情图表 legend 遮挡曲线、
-无法横屏放大查看数据的问题。新增可复用组件 + 在三个高频
-页面接入。
+根因：/api_data 后端返回 {columns, data, total}，
+而 home/index.vue loadPicks/loadFundFlow 读取 r.rows，
+始终为 undefined → 空数组 → 走空态占位文案。
 
-新增可复用基础设施：
-- composables/useChartFullscreen.ts
-  · 调 Fullscreen API + screen.orientation.lock('landscape')
-  · iOS 等不支持时回退到 CSS 90° 旋转兜底类 .chart-fs-fallback
-  · 进/出全屏自动多次 chart.resize() 适配新尺寸
-  · 监听 fullscreenchange + ESC 主动退出，组件卸载自动清理
-- components/ChartFullscreenBtn.vue
-  · 仅 isMobile 显示，32x32px 右上角浮动按钮
-  · 全屏态切换图标 FullScreen <-> Close
-- styles/index.scss 全局 .chart-wrap:fullscreen 与 .chart-fs-fallback
+修复：
+- loadPicks / loadFundFlow 取数改为 r.data || r.rows
+  （保留 rows 兜底，与 loadIndexes/loadSelection 一致）
+- pickField 候选字段补齐真实表列：
+  · cn_stock_strategy_enter 涨跌幅 = p_change（前置最优先）
+  · cn_stock_fund_flow_industry 净流入 = fund_amount（前置最优先）
 
-接入页面：
-- paper-trading 历史收益图：
-  · legend 改 type:'scroll' 防 4 项标签换行遮挡曲线
-  · 响应式 grid mobile {left:42,right:16,top:56,bottom:30}
-  · 内层 320→380px on mobile
-  · dataZoom 启用 zoomOnMouseWheel / moveOnMouseMove
-- backtest-detail 收益走势主图（同模式）
-- indicator/index K线图（同模式）
-
-验证：vue-tsc + vite build ✓ vitest 110/110 ✓ dist 已部署
+验证：localhost 黑盒
+  /api_data?name=cn_stock_strategy_enter → total=5388, data[].p_change ✓
+  /api_data?name=cn_stock_fund_flow_industry → total=13888, data[].fund_amount ✓
+vite build ✓ dist 已部署
