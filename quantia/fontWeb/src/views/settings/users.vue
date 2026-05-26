@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { authApi, type AdminUser } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
+import ResponsiveDataView from '@/components/ResponsiveDataView.vue'
 
 const authStore = useAuthStore()
 const loading = ref(false)
@@ -127,32 +128,54 @@ onMounted(refresh)
           <el-button type="primary" @click="openCreate">新建用户</el-button>
         </div>
       </template>
-      <el-table :data="users" v-loading="loading" border>
-        <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column prop="username" label="用户名" />
-        <el-table-column prop="role" label="角色" width="120">
-          <template #default="{ row }">
-            <el-tag
-              :type="row.role === 'admin' ? 'danger' : row.role === 'operator' ? 'warning' : 'info'"
-            >{{ row.role }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="enabled" label="启用" width="80">
-          <template #default="{ row }">
-            <el-tag :type="row.enabled ? 'success' : 'info'">
-              {{ row.enabled ? '启用' : '禁用' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="last_login_at" label="最近登录" />
-        <el-table-column prop="updated_at" label="更新时间" />
-        <el-table-column label="操作" width="200">
-          <template #default="{ row }">
-            <el-button size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <ResponsiveDataView :data="users" :loading="loading" row-key="id" switch-at="md" empty-text="暂无用户">
+        <el-table :data="users" v-loading="loading" border>
+          <el-table-column prop="id" label="ID" width="60" />
+          <el-table-column prop="username" label="用户名" />
+          <el-table-column prop="role" label="角色" width="120">
+            <template #default="{ row }">
+              <el-tag
+                :type="row.role === 'admin' ? 'danger' : row.role === 'operator' ? 'warning' : 'info'"
+              >{{ row.role }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="enabled" label="启用" width="80">
+            <template #default="{ row }">
+              <el-tag :type="row.enabled ? 'success' : 'info'">
+                {{ row.enabled ? '启用' : '禁用' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="last_login_at" label="最近登录" />
+          <el-table-column prop="updated_at" label="更新时间" />
+          <el-table-column label="操作" width="200">
+            <template #default="{ row }">
+              <el-button size="small" @click="openEdit(row)">编辑</el-button>
+              <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <template #mobile-card="{ row }">
+          <div class="user-card">
+            <div class="user-card-header">
+              <span class="user-card-name">{{ row.username }}</span>
+              <span class="user-card-id">#{{ row.id }}</span>
+            </div>
+            <div class="user-card-tags">
+              <el-tag size="small" :type="row.role === 'admin' ? 'danger' : row.role === 'operator' ? 'warning' : 'info'">{{ row.role }}</el-tag>
+              <el-tag size="small" :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</el-tag>
+            </div>
+            <div class="user-card-meta">
+              <div>最近登录：{{ row.last_login_at || '--' }}</div>
+              <div>更新：{{ row.updated_at || '--' }}</div>
+            </div>
+            <div class="user-card-actions">
+              <el-button size="small" @click="openEdit(row)">编辑</el-button>
+              <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
+            </div>
+          </div>
+        </template>
+      </ResponsiveDataView>
     </el-card>
 
     <el-dialog v-model="dialogVisible" :title="editing.id ? '编辑用户' : '新建用户'" width="min(500px, 92vw)">
@@ -190,5 +213,18 @@ onMounted(refresh)
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+/* PR-08 移动端用户卡片 */
+.user-card { display: flex; flex-direction: column; gap: 8px; }
+.user-card-header { display: flex; justify-content: space-between; align-items: baseline; }
+.user-card-name { font-size: 15px; font-weight: 600; }
+.user-card-id { color: #909399; font-size: 12px; }
+.user-card-tags { display: flex; gap: 6px; }
+.user-card-meta { color: #606266; font-size: 12px; line-height: 1.6; }
+.user-card-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+@media (max-width: 575.98px) {
+  .user-mgmt-page { padding: 12px; }
 }
 </style>

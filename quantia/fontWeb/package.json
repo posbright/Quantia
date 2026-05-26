@@ -13,7 +13,9 @@
     "test:coverage": "vitest --coverage",
     "size": "size-limit",
     "size:why": "size-limit --why",
-    "smoke:mobile": "node scripts/smoke-mobile.mjs"
+    "smoke:mobile": "node scripts/smoke-mobile.mjs",
+    "visual": "node scripts/visual.mjs",
+    "visual:update": "node scripts/visual.mjs --update"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
@@ -40,7 +42,9 @@
     "@vue/test-utils": "^2.4.5",
     "jsdom": "^24.0.0",
     "msw": "^2.2.3",
+    "pixelmatch": "^7.2.0",
     "playwright": "^1.59.1",
+    "pngjs": "^7.0.0",
     "sass": "^1.72.0",
     "size-limit": "^12.1.0",
     "typescript": "^5.4.2",

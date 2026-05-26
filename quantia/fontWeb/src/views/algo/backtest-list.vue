@@ -24,7 +24,9 @@
       </div>
     </div>
 
-    <el-table :data="list" v-loading="loading" stripe style="width: 100%;"
+    <ResponsiveDataView :data="list" :loading="loading" row-key="id" switch-at="md" empty-text="暂无回测记录">
+      <!-- 桌面端：保留原大宽表 -->
+      <el-table :data="list" v-loading="loading" stripe style="width: 100%;"
               :default-sort="{ prop: 'total_return', order: 'descending' }"
               @selection-change="onSelectionChange" @sort-change="onSortChange" ref="tableRef">
       <el-table-column type="selection" width="45" />
@@ -98,6 +100,53 @@
       </el-table-column>
     </el-table>
 
+      <!-- 移动端：卡片视图，只展示关键指标 + 操作 -->
+      <template #mobile-card="{ row }">
+        <div class="bt-card">
+          <div class="bt-card-header">
+            <el-link type="primary" class="bt-card-strategy" @click="$router.push('/algo/edit/' + row.strategy_id)">
+              {{ row.strategy_name }}
+            </el-link>
+            <span class="bt-card-id">#{{ row.id }}</span>
+          </div>
+          <div class="bt-card-range">{{ row.start_date }} ~ {{ row.end_date }}</div>
+          <div class="bt-card-metrics">
+            <div class="m-cell">
+              <span class="m-label">策略收益</span>
+              <span class="m-value" :class="retCls(row.total_return)">{{ fmtRet(row.total_return) }}</span>
+            </div>
+            <div class="m-cell">
+              <span class="m-label">年化</span>
+              <span class="m-value" :class="retCls(row.annual_return)">{{ fmtRet(row.annual_return) }}</span>
+            </div>
+            <div class="m-cell">
+              <span class="m-label">超额</span>
+              <span class="m-value" :class="retCls(row.excess_return)">{{ fmtRet(row.excess_return) }}</span>
+            </div>
+            <div class="m-cell">
+              <span class="m-label">最大回撤</span>
+              <span class="m-value val-green">{{ row.max_drawdown != null ? N(row.max_drawdown).toFixed(2) + '%' : '--' }}</span>
+            </div>
+            <div class="m-cell">
+              <span class="m-label">夏普</span>
+              <span class="m-value">{{ row.sharpe_ratio != null ? N(row.sharpe_ratio).toFixed(2) : '--' }}</span>
+            </div>
+            <div class="m-cell">
+              <span class="m-label">胜率</span>
+              <span class="m-value">{{ N(row.win_rate || 0).toFixed(1) }}%</span>
+            </div>
+          </div>
+          <div class="bt-card-actions">
+            <span class="bt-card-time">{{ row.completed_at }}</span>
+            <div>
+              <el-button size="small" type="primary" text @click="viewDetail(row.id)">详情</el-button>
+              <el-button size="small" type="danger" text @click="deleteSingle(row)">删除</el-button>
+            </div>
+          </div>
+        </div>
+      </template>
+    </ResponsiveDataView>
+
     <div class="pagination-wrap" v-if="total > 0">
       <el-pagination
         v-model:current-page="currentPage"
@@ -109,8 +158,6 @@
         @current-change="loadData"
       />
     </div>
-
-    <el-empty v-if="!loading && list.length === 0" description="暂无回测记录" />
   </div>
 </template>
 
@@ -120,6 +167,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { DataAnalysis, Delete } from '@element-plus/icons-vue'
 import { getPortfolioBacktestListPage, getStrategyCodeList, deleteBacktests } from '@/api/stock'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import ResponsiveDataView from '@/components/ResponsiveDataView.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -271,4 +319,49 @@ onActivated(() => { loadData() })
 .val-red { color: #f56c6c; font-weight: 600; }
 .val-green { color: #67c23a; font-weight: 600; }
 .pagination-wrap { margin-top: 16px; display: flex; justify-content: flex-end; }
+
+/* PR-05/06 移动端卡片 */
+.bt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bt-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.bt-card-strategy { font-size: 15px; font-weight: 600; }
+.bt-card-id { color: #909399; font-size: 12px; }
+.bt-card-range { color: #606266; font-size: 12px; }
+.bt-card-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px 12px;
+  margin-top: 4px;
+}
+.bt-card-metrics .m-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.bt-card-metrics .m-label { color: #909399; font-size: 11px; }
+.bt-card-metrics .m-value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bt-card-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+  border-top: 1px dashed var(--el-border-color-lighter, #ebeef5);
+  padding-top: 6px;
+}
+.bt-card-time { color: #909399; font-size: 11px; }
+
+@media (max-width: 575.98px) {
+  .bt-history { padding: 12px; }
+  .page-header { flex-direction: column; align-items: stretch; }
+  .header-right { flex-wrap: wrap; }
+  .header-right .el-select { width: 100% !important; }
+  .pagination-wrap { justify-content: center; }
+}
 </style>

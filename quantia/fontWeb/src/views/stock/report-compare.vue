@@ -82,17 +82,14 @@ const canCompare = computed(() => {
 
 const renderedHtml = computed(() => md.render(reportMd.value))
 
-async function handleSearch(query: string, cb: (items: any[]) => void) {
+function handleSearch(query: string, cb: (items: any[]) => void) {
   if (!query || query.length < 1) {
     cb([])
     return
   }
-  try {
-    const res = await searchStock(query)
-    cb((res as any)?.items || [])
-  } catch {
-    cb([])
-  }
+  searchStock(query)
+    .then((res) => cb((res as any)?.items || []))
+    .catch(() => cb([]))
 }
 
 async function runCompare() {

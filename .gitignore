@@ -185,3 +185,7 @@ vitest_result.txt
 vitest_done.txt
 build_result.txt
 build_done.txt
+
+# Frontend visual regression: actual snapshots are local only, baseline is committed
+quantia/fontWeb/tests/visual/actual/
+quantia/fontWeb/tests/visual/diff/

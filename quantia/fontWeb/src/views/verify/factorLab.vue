@@ -73,7 +73,7 @@
       <el-tag
         v-for="p in presets"
         :key="p.id"
-        :type="p.id === activePreset ? '' : 'info'"
+        :type="p.id === activePreset ? 'primary' : 'info'"
         size="small"
         class="preset-chip"
         @click="loadPreset(p)"
@@ -302,7 +302,7 @@
                     v-for="(ps, pi) in af.presets"
                     :key="pi"
                     size="small"
-                    :type="isPresetActive(af, ps) ? '' : 'info'"
+                    :type="isPresetActive(af, ps) ? 'primary' : 'info'"
                     class="chip"
                     @click="applyFactorPreset(af, ps)"
                   >{{ ps.label }}</el-tag>

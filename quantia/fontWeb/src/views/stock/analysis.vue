@@ -447,28 +447,29 @@ function scrollToSection(idx: number) {
 }
 
 // ---- Methods ----
-async function queryStock(queryString: string, cb: (items: { value: string; code: string; name: string }[]) => void) {
+function queryStock(queryString: string, cb: (items: Record<string, any>[]) => void) {
   if (!queryString || queryString.length < 1) {
     cb([])
     return
   }
-  try {
-    const res = await searchStock(queryString) as any
-    const data = res?.items || []
-    const items = data.map((item: StockSearchItem) => ({
-      value: `${item.code} ${item.name}`,
-      code: item.code,
-      name: item.name,
-      industry: item.industry || '',
-    }))
-    cb(items)
-  } catch (e) {
-    console.warn('[analysis] 股票搜索失败:', e)
-    cb([])
-  }
+  searchStock(queryString)
+    .then((res: any) => {
+      const data = res?.items || []
+      const items = data.map((item: StockSearchItem) => ({
+        value: `${item.code} ${item.name}`,
+        code: item.code,
+        name: item.name,
+        industry: item.industry || '',
+      }))
+      cb(items)
+    })
+    .catch((e) => {
+      console.warn('[analysis] 股票搜索失败:', e)
+      cb([])
+    })
 }
 
-function handleSelect(item: { code: string; name: string }) {
+function handleSelect(item: Record<string, any>) {
   currentCode.value = item.code
   currentName.value = item.name
   searchText.value = `${item.code} ${item.name}`
