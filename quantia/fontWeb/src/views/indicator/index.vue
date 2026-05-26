@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, watch, nextTick } from 'vue'
+import { ref, shallowRef, onMounted, onUnmounted, onActivated, onDeactivated, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
@@ -8,11 +8,16 @@ import { ElMessage } from 'element-plus'
 import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverlay'
 import CustomIndicatorOverlayBar from '@/components/CustomIndicatorOverlayBar.vue'
 import { useResponsive } from '@/composables/useResponsive'
+import { useChartFullscreen } from '@/composables/useChartFullscreen'
+import ChartFullscreenBtn from '@/components/ChartFullscreenBtn.vue'
 
 const route = useRoute()
 const router = useRouter()
 
 let chartInstance: echarts.ECharts | null = null
+const chartShallow = shallowRef<echarts.ECharts | null>(null)
+const klineWrapRef = ref<HTMLDivElement>()
+const klineChartFs = useChartFullscreen(klineWrapRef, chartShallow)
 
 const code = computed(() => route.query.code as string)
 const date = computed(() => route.query.date as string || dayjs().format('YYYY-MM-DD'))
@@ -501,6 +506,7 @@ const renderChart = () => {
   }
 
   chartInstance.setOption(option)
+  chartShallow.value = chartInstance
 }
 
 // Switch period
@@ -617,7 +623,10 @@ onUnmounted(() => {
 
     <!-- Chart area -->
     <div class="chart-wrapper" v-loading="loading">
-      <div ref="klineChartRef" class="chart-main" :style="{ height: chartHeight + 'px' }"></div>
+      <div ref="klineWrapRef" class="chart-wrap kline-chart-wrap">
+        <div ref="klineChartRef" class="chart-main" :style="{ height: chartHeight + 'px' }"></div>
+        <ChartFullscreenBtn :is-fullscreen="klineChartFs.isFullscreen.value" @toggle="klineChartFs.toggle" />
+      </div>
       <!-- Sub indicator picker: 桌面用东方财富风格 tab bar；移动端用 el-segmented 节省高度 -->
       <el-segmented
         v-if="isMobile"

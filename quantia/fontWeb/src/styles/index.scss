@@ -185,3 +185,46 @@ $stock-down-color: #67c23a;
     padding: 10px 14px !important;
   }
 }
+
+/* ─── 图表全屏 + 横屏（useChartFullscreen） ─── */
+.chart-wrap {
+  position: relative;
+}
+/* 原生 Fullscreen API：让 wrapper 自身铺满 */
+.chart-wrap:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  background: #fff;
+  padding: 8px;
+  display: flex;
+  align-items: stretch;
+}
+.chart-wrap:fullscreen > [ref],
+.chart-wrap:fullscreen > div:not(.chart-fs-btn) {
+  width: 100% !important;
+  height: 100% !important;
+  flex: 1;
+  min-height: 0;
+}
+.chart-wrap:fullscreen .chart-fs-btn {
+  top: 10px;
+  right: 10px;
+}
+
+/* CSS 兜底（浏览器不支持 Fullscreen API）：固定定位 + 90° 旋转模拟横屏 */
+.chart-wrap.chart-fs-fallback {
+  position: fixed !important;
+  inset: 0;
+  z-index: 9999;
+  background: #fff;
+  width: 100vh !important;
+  height: 100vw !important;
+  transform: rotate(90deg) translate(0, -100%);
+  transform-origin: top left;
+  padding: 8px;
+}
+.chart-wrap.chart-fs-fallback > div:not(.chart-fs-btn) {
+  width: 100% !important;
+  height: 100% !important;
+}
+

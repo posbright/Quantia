@@ -110,7 +110,10 @@
 
       <!-- Tab 1: 收益走势（累计收益 + 超额） -->
       <el-tab-pane label="收益走势" name="overview">
-        <div ref="chartEl" class="chart-box"></div>
+        <div ref="chartWrapEl" class="chart-wrap">
+          <div ref="chartEl" class="chart-box"></div>
+          <ChartFullscreenBtn :is-fullscreen="mainChartFs.isFullscreen.value" @toggle="mainChartFs.toggle" />
+        </div>
       </el-tab-pane>
 
       <!-- Tab 2: 每日盈亏 -->
@@ -374,7 +377,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, onActivated, nextTick, watch } from 'vue'
+import { ref, shallowRef, computed, onMounted, onUnmounted, onActivated, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -384,6 +387,8 @@ import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverl
 import CustomIndicatorOverlayBar from '@/components/CustomIndicatorOverlayBar.vue'
 import AiChatDrawer, { type AiApplyMeta } from '@/components/AiChatDrawer.vue'
 import { useResponsive } from '@/composables/useResponsive'
+import { useChartFullscreen } from '@/composables/useChartFullscreen'
+import ChartFullscreenBtn from '@/components/ChartFullscreenBtn.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -426,6 +431,7 @@ function onAiRepairApply(code: string, meta: AiApplyMeta) {
 }
 
 const chartEl = ref<HTMLElement>()
+const chartWrapEl = ref<HTMLElement>()
 const pnlChartEl = ref<HTMLElement>()
 const tradeChartEl = ref<HTMLElement>()
 const stockDailyEl = ref<HTMLElement>()
@@ -433,6 +439,8 @@ const stockWeeklyEl = ref<HTMLElement>()
 const stockMonthlyEl = ref<HTMLElement>()
 let chart: echarts.ECharts | null = null
 let pnlChart: echarts.ECharts | null = null
+const mainChartShallow = shallowRef<echarts.ECharts | null>(null)
+const mainChartFs = useChartFullscreen(chartWrapEl, mainChartShallow)
 let tradeChart: echarts.ECharts | null = null
 let stockDailyChart: echarts.ECharts | null = null
 let stockWeeklyChart: echarts.ECharts | null = null
@@ -870,6 +878,7 @@ function renderReturnChart() {
     devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
     useDirtyRect: true,
   })
+  mainChartShallow.value = chart
 
   const nav = info.value.nav as any[]
   const dates = nav.map(r => r.date)

@@ -1,28 +1,27 @@
-fix(frontend): 二轮页面横扫 3 处移动适配缺陷
+feat(frontend): 移动端图表全屏+横屏+缩放体验优化
 
-按"再次审查其他页面"请求，扫描全部 views/* 后修复以下 3 个真实问题：
+修复 360px 屏幕模拟交易/回测/指标详情图表 legend 遮挡曲线、
+无法横屏放大查看数据的问题。新增可复用组件 + 在三个高频
+页面接入。
 
-1. customIndicator/index.vue —— 整页缺移动 @media
-   - 顶层 7/17 el-col 不折叠：mobile 强制 100% 宽 + 上下堆叠
-   - 列表面板限高 60vh，避免占满屏挤掉编辑区
-   - 表单 el-row 内 12/6/8 列 → 全部单列
-   - el-form 标签 120 → 88px
-   - bt-metrics 4 卡 flex → 2x2 grid
-   - 表格字号 11px、cell padding 6px
-   - 顶部按钮组允许换行、过滤栏 radio 横向滚动
+新增可复用基础设施：
+- composables/useChartFullscreen.ts
+  · 调 Fullscreen API + screen.orientation.lock('landscape')
+  · iOS 等不支持时回退到 CSS 90° 旋转兜底类 .chart-fs-fallback
+  · 进/出全屏自动多次 chart.resize() 适配新尺寸
+  · 监听 fullscreenchange + ESC 主动退出，组件卸载自动清理
+- components/ChartFullscreenBtn.vue
+  · 仅 isMobile 显示，32x32px 右上角浮动按钮
+  · 全屏态切换图标 FullScreen <-> Close
+- styles/index.scss 全局 .chart-wrap:fullscreen 与 .chart-fs-fallback
 
-2. settings/token-usage.vue —— el-col 缺响应式断点
-   - 4 个 :span=6 汇总卡 + 2 个 :span=12 图表卡在 xs<768 仍占 6/12
-   - 加 :xs="12"/:xs="24"，靠 Element Plus 内置 xs 断点折叠
+接入页面：
+- paper-trading 历史收益图：
+  · legend 改 type:'scroll' 防 4 项标签换行遮挡曲线
+  · 响应式 grid mobile {left:42,right:16,top:56,bottom:30}
+  · 内层 320→380px on mobile
+  · dataZoom 启用 zoomOnMouseWheel / moveOnMouseMove
+- backtest-detail 收益走势主图（同模式）
+- indicator/index K线图（同模式）
 
-3. verify/fusion.vue —— 移动 @media 未覆盖网格
-   - 768 块新增 overlap-grid → 1 列、dim-items → 1 列、kpi-row gap 收紧
-   - 480 块新增 kpi-row → 1 列（避免 4 卡挤在 375px 屏）
-
-误报排查（subagent 标记但已有适配，未改动）：
-- verify/optimize.vue @768 已有 summary-strip→2 列规则
-- home/index.vue 已有 991/767/575 三层断点
-- algo/backtest-detail.vue stock-summary @768 已→2 列
-- algo/edit.vue metrics-row @992 已→2 列
-
-验证：vite build ✓ vitest 110/110 ✓ dist 已部署
+验证：vue-tsc + vite build ✓ vitest 110/110 ✓ dist 已部署

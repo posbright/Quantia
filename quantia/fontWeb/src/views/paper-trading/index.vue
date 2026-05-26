@@ -295,7 +295,10 @@
                         </el-checkbox-group>
                       </div>
                       <div v-if="detailData.nav && detailData.nav.length">
-                        <div ref="navChartRef" style="height: 320px; width: 100%;"></div>
+                        <div ref="navChartWrapRef" class="chart-wrap nav-chart-wrap">
+                          <div ref="navChartRef" class="nav-chart-inner"></div>
+                          <ChartFullscreenBtn :is-fullscreen="navChartFs.isFullscreen.value" @toggle="navChartFs.toggle" />
+                        </div>
                       </div>
                       <div v-else class="jq-empty-chart">未开始，暂无数据</div>
                     </el-tab-pane>
@@ -725,7 +728,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
+import { ref, shallowRef, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -741,6 +744,8 @@ import {
 } from '@/api/stock'
 import request from '@/api/request'
 import { useResponsive } from '@/composables/useResponsive'
+import { useChartFullscreen } from '@/composables/useChartFullscreen'
+import ChartFullscreenBtn from '@/components/ChartFullscreenBtn.vue'
 import CreatePaperDialog from './components/CreatePaperDialog.vue'
 import TradeDecisionDialog from './components/TradeDecisionDialog.vue'
 import StockDialog from './components/StockDialog.vue'
@@ -823,8 +828,11 @@ const codeBtResult = ref<any>(null)
 const codeBtLogs = ref<string[]>([])
 
 const navChartRef = ref<HTMLElement | null>(null)
+const navChartWrapRef = ref<HTMLElement | null>(null)
 const compareChartRef = ref<HTMLElement | null>(null)
 let navChart: echarts.ECharts | null = null
+const navChartShallow = shallowRef<echarts.ECharts | null>(null)
+const navChartFs = useChartFullscreen(navChartWrapRef, navChartShallow)
 // 跟踪活跃 SSE 连接，组件卸载时统一关闭，避免后台连接泄漏
 const activeEvtSources = new Set<EventSource>()
 
@@ -1287,6 +1295,7 @@ function initNavChart() {
   if (!navChartRef.value || !detailData.value?.nav?.length) return
   if (navChart) { navChart.dispose(); navChart = null }
   navChart = echarts.init(navChartRef.value)
+  navChartShallow.value = navChart
   const nav = detailData.value.nav as any[]
   const dates = nav.map((n: any) => n.date)
   const pointSymbol = nav.length === 1 ? 'circle' : 'none'
@@ -1336,9 +1345,19 @@ function initNavChart() {
         return h
       },
     },
-    legend: { data: activeOptions.map(item => item.label), top: 4, textStyle: { fontSize: 11 } },
-    grid: { left: 55, right: 60, top: 42, bottom: 30 },
-    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
+    legend: {
+      type: 'scroll',
+      data: activeOptions.map(item => item.label),
+      top: 4,
+      textStyle: { fontSize: 11 },
+      padding: [2, 6],
+    },
+    grid: isMobile.value
+      ? { left: 42, right: 16, top: 56, bottom: 30 }
+      : { left: 55, right: 60, top: 42, bottom: 30 },
+    dataZoom: [
+      { type: 'inside', start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: true, preventDefaultMouseMove: false },
+    ],
     xAxis: { type: 'category', data: dates, boundaryGap: false, axisLabel: { fontSize: 10 } },
     yAxis: [
       { type: 'value', name: '收益率', axisLabel: { formatter: '{value}%', fontSize: 10 },
@@ -1956,6 +1975,13 @@ onUnmounted(() => {
 .settings-inline-control { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .settings-help { color: #909399; font-size: 12px; }
 .jq-readonly-value { color: #303133; font-weight: 500; }
+
+/* nav 收益图：包裹层 + 内层默认高度，移动端略增高让 legend 不挡线 */
+.nav-chart-wrap { position: relative; }
+.nav-chart-inner { height: 320px; width: 100%; }
+@media (max-width: 767.98px) {
+  .nav-chart-inner { height: 380px; }
+}
 
 /* ── 颜色 ── */
 .val-red { color: #f56c6c !important; }
