@@ -378,6 +378,24 @@ def link_signal_to_trade(signal_id: int, trade_id: int) -> bool:
         return False
 
 
+def _query_strategy_description(mdb, strategy_id) -> Optional[str]:
+    """从 cn_stock_strategy_code.description 读取策略说明文本，供前端"策略说明"
+    区块展示买入/卖出条件。失败/无数据 → 返回 None。"""
+    if not strategy_id:
+        return None
+    try:
+        rows = mdb.executeSqlFetch(
+            "SELECT description FROM cn_stock_strategy_code WHERE id=%s LIMIT 1",
+            (int(strategy_id),),
+        ) or []
+        if rows and rows[0][0]:
+            return str(rows[0][0]).strip() or None
+    except Exception as exc:
+        logging.debug("[trade_signal_store] 读取 strategy description 失败 sid=%s: %s",
+                      strategy_id, exc)
+    return None
+
+
 def _query_indicators_fallback(mdb, code: str, signal_date) -> Optional[Dict[str, Any]]:
     """当 cn_stock_trade_indicator_snapshot 没有该 signal 的数据时，
     从 cn_stock_indicators + cn_stock_spot 合成"信号发生当日（或最近交易日）"的
@@ -571,7 +589,8 @@ def fetch_signal_with_decision(signal_id: int) -> Dict[str, Any]:
             f"SELECT id, reason, reason_source, code, name, direction, signal_date, "
             f" requested_amount, requested_value, target_amount, target_percent, "
             f" order_api, source_type, source_id, run_id, trade_id, "
-            f" ai_score_id, ai_score, ai_action, ai_gate_result "
+            f" ai_score_id, ai_score, ai_action, ai_gate_result, "
+            f" strategy_id, strategy_name "
             f"FROM `{SIGNAL_TABLE}` WHERE id=%s",
             (int(signal_id),),
         ) or []
@@ -649,6 +668,9 @@ def fetch_signal_with_decision(signal_id: int) -> Dict[str, Any]:
             "source_type": s[12], "source_id": s[13], "run_id": s[14], "trade_id": s[15],
             "ai_score_id": s[16], "ai_score": s[17], "ai_action": s[18], "ai_gate_result": s[19],
             "ai_reason": ai_reason,
+            "strategy_id": s[20],
+            "strategy_name": s[21],
+            "strategy_description": _query_strategy_description(mdb, s[20]),
             "rules": rules_out,
             "indicators": indicators,
             "selection": [

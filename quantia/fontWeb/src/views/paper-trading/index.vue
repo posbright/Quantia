@@ -802,6 +802,17 @@
             </div>
           </div>
         </div>
+        <div v-if="tradeStrategyExplain" class="td-block td-strategy-explain">
+          <span class="td-block-title">
+            策略说明
+            <span v-if="tradeStrategyExplain.name" class="td-block-sub">{{ tradeStrategyExplain.name }}</span>
+            <el-tag :type="tradeStrategyExplain.isBuy ? 'danger' : 'success'" size="small" effect="plain"
+                    style="margin-left:6px;">
+              {{ tradeStrategyExplain.isBuy ? '买入条件' : '卖出条件' }}
+            </el-tag>
+          </span>
+          <div class="strategy-explain-body">{{ tradeStrategyExplain.text }}</div>
+        </div>
         <div class="td-block">
           <span class="td-block-title">决策规则对比</span>
           <el-table :data="tradeDecisionRules" size="small" border empty-text="该策略未输出结构化决策规则（仅有理由文本，请参见上方'策略理由'与下方'指标快照'）"
@@ -1156,6 +1167,107 @@ const tradeReasonParsed = computed(() => {
     .filter(s => !/^策略日志[:：]?$/.test(s))
   if (segments.length === 0) return { headline: txt, logs: [] }
   return { headline: segments[0], logs: segments.slice(1) }
+})
+// 策略说明（买入条件 / 卖出条件）。优先级：
+//   后端 cn_stock_strategy_code.description > 父模拟盘 info.description > 内置名称映射 > 通用兜底
+const BUILTIN_STRATEGY_DESC: Record<string, { buy: string; sell: string }> = {
+  '海龟交易法则': {
+    buy: '收盘价创 60 日新高时买入（Donchian 上轨突破）。',
+    sell: '收盘价跌破 20 日最低价时卖出（Donchian 下轨退出）。',
+  },
+  '放量上涨': {
+    buy: '涨幅 ≥ 2%、成交额 ≥ 2 亿、量比 ≥ 2 时买入（量价共振突破）。',
+    sell: '触发 +15% 止盈 或 -7% 止损时卖出。',
+  },
+  '趋势回调': {
+    buy: 'MA20 > MA60 趋势向上，价格回踩 MA20 附近，RSI 中性、缩量时买入。',
+    sell: '跌破 MA20 / 趋势走坏或触发止损时卖出。',
+  },
+  '超跌反弹': {
+    buy: 'RSI < 30 + 近 5 日触及布林下轨 + 当日收回下轨 + 阳线放量时买入。',
+    sell: '反弹至布林中轨或触发止损时卖出。',
+  },
+  '无大幅回撤': {
+    buy: '60 日涨幅 ≥ 60% 且无单日大跌、无连续两日大跌的强势趋势股买入。',
+    sell: '触发 +20% 止盈 或 -10% 止损时卖出。',
+  },
+  '均线多头': {
+    buy: 'MA30 持续上升且 30 日涨幅超 20% 时买入。',
+    sell: '均线走平或触发止损时卖出。',
+  },
+  '停机坪': {
+    buy: '近 15 日内出现涨停 + 放量，随后 3 日高开收涨且振幅 < 3% 时买入。',
+    sell: '失守平台或触发止损时卖出。',
+  },
+  '回踩年线': {
+    buy: '突破 MA250 后缩量回踩年线，回踩幅度 ≥ 20% 且量比 > 2 时买入。',
+    sell: '跌破年线或触发止损时卖出。',
+  },
+  '突破平台': {
+    buy: '60 日内价格在 MA60 附近整理后放量上穿 MA60 时买入。',
+    sell: '跌回平台或触发止损时卖出。',
+  },
+  '低ATR成长': {
+    buy: '上市满 250 日，近 10 日 ATR ≤ 10% 且最高/最低价比 > 1.1 的低波动成长股买入。',
+    sell: '趋势走坏或触发止损时卖出。',
+  },
+  '高而窄的旗形': {
+    buy: '短期翻倍且含连续涨停的极端强势形态买入。',
+    sell: '触发 +20% 止盈 或 -10% 止损时卖出。',
+  },
+  '突破确认': {
+    buy: '40 日振幅 < 25%、创新高、量比 ≥ 1.5、涨幅 > 2%、站上 MA60 时买入。',
+    sell: '跌回 MA60 或触发止损时卖出。',
+  },
+  '小市值策略': {
+    buy: '每月初选出市值最小的 5 只股票等权买入。',
+    sell: '月末按市值重新筛选，剔除不再满足条件的股票。',
+  },
+  '双均线策略': {
+    buy: '5 日均线上穿 20 日均线（金叉）时买入。',
+    sell: '5 日均线下穿 20 日均线（死叉）时卖出。',
+  },
+  '动量策略': {
+    buy: '买入近 20 日涨幅最大的股票。',
+    sell: '持有 20 日后换仓为新的高动量股票。',
+  },
+  '基本面筛选动量策略': {
+    buy: '基本面（ROE、净利润增速、市盈率）筛选后按动量排序取前 10 只买入。',
+    sell: '每 20 个交易日按相同规则调仓。',
+  },
+  '季度基本面Top5+均线交叉': {
+    buy: '每季度筛选基本面最优的 5 只作为股票池，MA5 金叉 MA20 时买入。',
+    sell: 'MA5 死叉 MA20 时卖出。',
+  },
+}
+function _matchBuiltinDesc(name: string): { buy: string; sell: string } | null {
+  if (!name) return null
+  if (BUILTIN_STRATEGY_DESC[name]) return BUILTIN_STRATEGY_DESC[name]
+  for (const k of Object.keys(BUILTIN_STRATEGY_DESC)) {
+    if (name.includes(k)) return BUILTIN_STRATEGY_DESC[k]
+  }
+  return null
+}
+const tradeStrategyExplain = computed(() => {
+  const row = tradeDecisionRow.value
+  if (!row) return null
+  const isBuy = String(row.direction || '').toLowerCase() === 'buy' || row.direction === '买入'
+  const d = tradeDecisionDetail.value || {}
+  const stratName = d.strategy_name || detailData.value?.info?.strategy_name || ''
+  const dbDesc = String(d.strategy_description || detailData.value?.info?.description || '').trim()
+  const builtin = _matchBuiltinDesc(stratName)
+  let text = ''
+  if (builtin) {
+    const condText = isBuy ? builtin.buy : builtin.sell
+    text = dbDesc ? `${dbDesc}\n\n${isBuy ? '【买入条件】' : '【卖出条件】'}${condText}` : condText
+  } else if (dbDesc) {
+    text = dbDesc
+  } else {
+    text = isBuy
+      ? '该策略未提供标准化买入条件说明。请参考下方"决策规则对比"中的"策略决策"/"风控、入场触发"行了解本笔买入的实际触发条件。'
+      : '该策略未提供标准化卖出条件说明。请参考下方"决策规则对比"中的"策略决策"/"风控、入场触发"行了解本笔卖出的实际触发条件。'
+  }
+  return { name: stratName, isBuy, text }
 })
 
 function showPosCol(key: string) { return posVisibleCols.value.includes(key) }
@@ -2178,6 +2290,11 @@ onUnmounted(() => {
 .trade-decision-dialog .td-indicators :deep(.el-descriptions__label) { width: 64px; color: #909399; font-weight: 500; }
 .trade-decision-dialog .td-indicators :deep(.el-descriptions__content) {
   font-variant-numeric: tabular-nums; color: #303133; word-break: break-all;
+}
+.trade-decision-dialog .td-strategy-explain .strategy-explain-body {
+  padding: 8px 12px; background: var(--el-fill-color-lighter, #f5f7fa);
+  border-left: 3px solid var(--el-color-primary, #409eff); border-radius: 4px;
+  font-size: 12px; line-height: 1.7; color: #303133; white-space: pre-wrap; word-break: break-all;
 }
 .trade-decision-dialog .td-ai { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .trade-decision-dialog .td-ai-reason {
