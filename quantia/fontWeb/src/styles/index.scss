@@ -10,6 +10,8 @@
 html, body {
   height: 100%;
   font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB',
+    // Android 国产字体回退（v1.10）
+    'HarmonyOS Sans SC', 'MiSans', 'OPPO Sans', 'vivo Sans', 'Source Han Sans CN',
     'Microsoft YaHei', '微软雅黑', Arial, sans-serif;
 }
 

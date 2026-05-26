@@ -1223,10 +1223,10 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
       ...(ext.subPanel ? [{ text: '自定义指标', subtext: '快慢线EMA交叉+策略买卖点(点击查看理由)', left: 60, top: 512, textStyle: { fontSize: 11, color: '#303133', fontWeight: 'bold' as const }, subtextStyle: { fontSize: 9, color: '#909399' }, triggerEvent: true }] : []),
     ],
     grid: [
-      { left: 58, right: 62, top: 60, height: 248 },
-      { left: 58, right: 62, top: 370, height: 40 },
-      { left: 58, right: 62, top: 460, height: 40 },
-      ...(ext.subPanel ? [{ left: 58, right: 62, top: 550, height: 60 }] : []),
+      { left: isMobile.value ? 40 : 58, right: isMobile.value ? 16 : 62, top: 60, height: 248 },
+      { left: isMobile.value ? 40 : 58, right: isMobile.value ? 16 : 62, top: 370, height: 40 },
+      { left: isMobile.value ? 40 : 58, right: isMobile.value ? 16 : 62, top: 460, height: 40 },
+      ...(ext.subPanel ? [{ left: isMobile.value ? 40 : 58, right: isMobile.value ? 16 : 62, top: 550, height: 60 }] : []),
     ],
     dataZoom: [
       { type: 'inside', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, minSpan: Math.max(5, Math.round(150 / dates.length * 100)) },

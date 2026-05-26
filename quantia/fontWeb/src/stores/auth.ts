@@ -23,7 +23,13 @@ export const useAuthStore = defineStore('auth', () => {
   async function bootstrap() {
     if (bootstrapped.value) return
     try {
-      const resp = await authApi.me()
+      // 弱网保护：3s 超时，避免路由守卫无限阻塞
+      const resp: any = await Promise.race([
+        authApi.me(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('auth bootstrap timeout')), 3000)
+        ),
+      ])
       enabled.value = !!resp?.data?.enabled
       username.value = resp?.data?.username ?? null
       role.value = (resp?.data?.role as Role | null) ?? null

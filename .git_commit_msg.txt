@@ -1,24 +1,25 @@
-feat(frontend): 移动端 PR-09/10/11 完成 + 弹窗全局适配
+fix(frontend): 二轮审查 3 处移动适配缺陷修复
 
-PR-10 算法管理页 mobile:
-- algo/list.vue: toolbar 横向滚动；表格紧凑（12px / cell padding 6px）
-- algo/agent-manager.vue: header 纵向堆叠；actions wrap；表格紧凑
+1. backtest-detail K线 grid 响应式（chart 缺陷 4）
+   - echarts grid[]/dataZoom 之前硬编码 left:58 right:62 px
+   - mobile 时改为 left:40 right:16，回收约 14% 横向空间
 
-PR-11 弹窗全局适配:
-- styles/index.scss 新增 @media (max-width: 768px)
-  .el-overlay-dialog .el-dialog:not(.is-fullscreen) 强制 92vw 宽 / 5vh 顶距
-  header/body/footer 内边距统一减小；body 最大 70vh + 自动滚动
-- 影响：所有 el-dialog（CreatePaperDialog/TradeDecision/StockDialog/算法对比/编辑/AI 配置等）在移动端不再被桌面 width=50%/1200px 撑出滚动条
-- 不动 drawer（AiChatDrawer 等已自管 100%/55% 自适应）
+2. auth store bootstrap 增加 3s 超时（§1.8）
+   - 弱网下 /api/auth/me 慢响应会无限阻塞路由守卫
+   - 用 Promise.race 兜底，超时走 catch 回退到 enabled=false
 
-PR-09 图表自适应:
-- 现状审计：所有主要图表页（analysis/dashboard/backtest-detail/compare/edit/factorLab/paper-trading）均已注册 chart.resize handler
-- 验证中心 4 页 grid 在 ≤768 已强制 1 列（前一 commit）
-- 未做：固定 height 容器（多为 280/300/400px），桌面横向 1280 时收益较大，移动端竖屏 667 时空间充足，暂不强制压缩
+3. 字体栈补 Android 国产字体回退（§1.10 问题 1）
+   - styles/index.scss 增加 HarmonyOS Sans SC / MiSans / OPPO Sans / vivo Sans / Source Han Sans CN
+   - 解决华为/小米/OPPO/vivo 设备 fallback 到系统默认 Roboto 字号过小问题
 
 验证：
-- build✓ vendor-element 186.17 KB gzip 无变化
+- build✓
 - vitest 110/110 ✓
 - smoke 10/10 ✓
-- visual baseline 因实时行情漂移已 refresh
 - dist 已部署
+
+其他审计结果（无需改）：
+- 所有 100vh→100dvh 迁移已完成
+- 所有 el-dialog width 已为 min(Npx, 92vw) 模式
+- chart 缺陷 1/5/6/7 已在前期 commit 完成
+- useVirtualKeyboard 已在 login/register 接入
