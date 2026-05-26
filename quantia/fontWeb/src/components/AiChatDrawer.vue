@@ -3,8 +3,9 @@
     v-model="visible"
     title="AI 策略助手"
     direction="rtl"
-    size="55%"
+    :size="drawerSize"
     :before-close="handleClose"
+    class="ai-chat-drawer"
   >
     <div class="ai-drawer-wrap">
       <!-- M8 会话侧边栏（仅 chat 模式可见） -->
@@ -187,7 +188,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   aiGenerateStrategy, aiRefineStrategy, aiRepairStrategy, aiGenerateStrategyStream,
@@ -243,6 +244,20 @@ const visible = computed({
   get: () => props.modelValue,
   set: (v: boolean) => emit('update:modelValue', v),
 })
+
+// M0: 移动端抽屉占满整屏；桌面端保持 55% 不变
+const isNarrow = ref(false)
+let _mql: MediaQueryList | null = null
+const _onMqlChange = (e: MediaQueryListEvent) => { isNarrow.value = e.matches }
+onMounted(() => {
+  if (typeof window !== 'undefined' && window.matchMedia) {
+    _mql = window.matchMedia('(max-width: 768px)')
+    isNarrow.value = _mql.matches
+    _mql.addEventListener?.('change', _onMqlChange)
+  }
+})
+onBeforeUnmount(() => { _mql?.removeEventListener?.('change', _onMqlChange) })
+const drawerSize = computed(() => (isNarrow.value ? '100%' : '55%'))
 
 const mode = ref<'generate' | 'refine' | 'repair' | 'chat'>(props.defaultMode || 'generate')
 
@@ -639,5 +654,11 @@ watch(() => props.modelValue, (v) => {
   padding: 8px 10px; font-family: 'Consolas', 'Monaco', monospace;
   font-size: 12px; line-height: 1.5; max-height: 360px; overflow: auto;
   white-space: pre-wrap; word-break: break-word; margin: 0;
+}
+
+/* M0: 窄屏（手机 / 折叠屏闭合态）下隐藏 220px 会话侧边栏，主体撑满 */
+@media (max-width: 768px) {
+  .ai-drawer-wrap .ai-sidebar { display: none; }
+  .ai-drawer-wrap .ai-drawer { padding: 0 12px; }
 }
 </style>

@@ -518,7 +518,22 @@ const routes: RouteRecordRaw[] = [
 
 const router = createRouter({
   history: createWebHistory(),
-  routes
+  routes,
+  // M0: 切页回顶；带 hash 时滚到 anchor；浏览器后退保留滚动位
+  scrollBehavior(_to, _from, saved) {
+    if (saved) return saved
+    if (_to.hash) return { el: _to.hash, behavior: 'smooth' }
+    return { top: 0 }
+  }
+})
+
+// M0: CDN 部署后老会话动态 chunk 404 → 自动整页刷新，避免白屏
+router.onError((err: any, to) => {
+  const msg = String(err?.message || err || '')
+  if (/Loading chunk|Failed to fetch dynamically imported|ChunkLoadError|Importing a module script failed/i.test(msg)) {
+    const target = to?.fullPath || window.location.pathname + window.location.search
+    window.location.replace(target)
+  }
 })
 
 /**

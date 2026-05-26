@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, onActivated, computed, watch, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
@@ -501,6 +501,9 @@ watch(() => route.query.code, (newCode, oldCode) => {
   }
 })
 
+// M0: 监听器只在 onMounted 注册一次，onUnmounted 撤销；keep-alive 切回不再重复添加
+// 旧实现 onMounted + onActivated 各 addEventListener 一次但 onUnmounted 只移除一次，
+// 每次切回泄漏一个闭包 + 一个 echarts 实例引用。
 onMounted(() => {
   lastLoadedCode = code.value || ''
   loadKlineData()
@@ -508,13 +511,17 @@ onMounted(() => {
 })
 
 onActivated(() => {
-  window.addEventListener('resize', handleResize)
   nextTick(() => { chartInstance?.resize() })
   if (code.value && code.value !== lastLoadedCode) {
     lastLoadedCode = code.value
     currentPeriod.value = 'daily'
     loadKlineData()
   }
+})
+
+onDeactivated(() => {
+  // keep-alive 切走时让出 GPU；切回 onActivated 里 resize 会自动重渲
+  chartInstance?.clear()
 })
 
 onUnmounted(() => {

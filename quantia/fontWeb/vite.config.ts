@@ -30,7 +30,22 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
-      assetsDir: 'assets'
+      assetsDir: 'assets',
+      chunkSizeWarningLimit: 600,
+      rollupOptions: {
+        output: {
+          // M0: 把 vendor 拆出来，业务 chunk 才能进二级缓存
+          manualChunks(id: string) {
+            if (!id.includes('node_modules')) return
+            if (id.includes('echarts') || id.includes('zrender')) return 'vendor-echarts'
+            if (id.includes('element-plus') || id.includes('@element-plus')) return 'vendor-element'
+            if (id.includes('@vue') || id.includes('/vue/') || id.includes('vue-router') || id.includes('pinia')) return 'vendor-vue'
+            if (id.includes('jspdf') || id.includes('html2canvas')) return 'vendor-export'
+            if (id.includes('axios') || id.includes('dayjs') || id.includes('lodash')) return 'vendor-utils'
+            return 'vendor'
+          }
+        }
+      }
     }
   }
 })
