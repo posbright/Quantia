@@ -50,7 +50,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑通知配置' : '新增通知配置'" width="640">
+    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑通知配置' : '新增通知配置'" width="min(640px, 92vw)">
       <el-form :model="form" label-width="120px">
         <el-form-item label="模拟盘 ID">
           <el-input v-model.number="form.paper_id" placeholder="留空表示全局生效" clearable />

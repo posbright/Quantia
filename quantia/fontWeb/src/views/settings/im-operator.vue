@@ -45,7 +45,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑操作人' : '新增操作人'" width="540">
+    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑操作人' : '新增操作人'" width="min(540px, 92vw)">
       <el-form :model="form" label-width="120px">
         <el-form-item label="渠道">
           <el-select v-model="form.channel">

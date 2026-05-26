@@ -50,7 +50,7 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="640px"
+    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="min(640px, 92vw)"
                :close-on-click-modal="false">
       <el-form :model="form" label-width="120px" ref="formRef" :rules="rules">
         <el-form-item label="名称" prop="name">

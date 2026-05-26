@@ -2,7 +2,7 @@
   <el-dialog
     v-model="visible"
     title="交易决策依据"
-    :width="isMobile ? '96vw' : '720px'"
+    width="min(720px, 92vw)"
     :top="isMobile ? '3vh' : '6vh'"
     destroy-on-close
   >

@@ -2,7 +2,7 @@
   <el-dialog
     v-model="visible"
     title="新建模拟交易"
-    :width="isMobile ? '96vw' : '520px'"
+    width="min(520px, 92vw)"
     :top="isMobile ? '3vh' : '15vh'"
   >
     <el-form label-width="120px" class="paper-create-form">

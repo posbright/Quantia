@@ -47,7 +47,7 @@
     </div>
 
     <!-- 报告详情弹窗 -->
-    <el-dialog v-model="dialogVisible" title="报告详情" width="70%" top="5vh">
+    <el-dialog v-model="dialogVisible" title="报告详情" width="min(900px, 92vw)" top="5vh">
       <div class="report-detail-body markdown-body" v-html="detailHtml"></div>
     </el-dialog>
   </div>

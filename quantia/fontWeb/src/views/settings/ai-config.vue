@@ -54,7 +54,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑 AI 配置' : '新增 AI 配置'" width="780">
+    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑 AI 配置' : '新增 AI 配置'" width="min(780px, 92vw)">
       <el-form :model="form" label-width="140px">
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="例如：默认模拟盘 Pre-Buy" />

@@ -119,7 +119,7 @@
     </el-card>
 
     <!-- 编辑预算对话框 -->
-    <el-dialog v-model="budgetDialogVisible" title="编辑日预算" width="400px">
+    <el-dialog v-model="budgetDialogVisible" title="编辑日预算" width="min(400px, 92vw)">
       <el-form label-width="100px">
         <el-form-item label="功能">
           <span>{{ featureLabel(editingFeature.feature) }}</span>

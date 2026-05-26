@@ -177,7 +177,7 @@
               <span class="jq-mc-label">最大回撤</span>
             </div>
             <div class="jq-metric-sep"></div>
-            <el-popover placement="bottom-end" :width="320" trigger="click">
+            <el-popover placement="bottom-end" width="min(320px, 90vw)" trigger="click">
               <template #reference>
                 <div class="jq-metric-cell jq-metric-more">
                   <span class="jq-mc-value">其他指标 <el-icon><InfoFilled /></el-icon></span>
@@ -589,7 +589,7 @@
     </template>
 
     <!-- ═══════════ 对比对话框 ═══════════ -->
-    <el-dialog v-model="showCompare" title="模拟盘对比" :width="isMobile ? '96vw' : '90%'" :top="isMobile ? '3vh' : '15vh'" :fullscreen="false">
+    <el-dialog v-model="showCompare" title="模拟盘对比" width="min(1200px, 92vw)" :top="isMobile ? '3vh' : '15vh'" :fullscreen="false">
       <div v-loading="compareLoading">
         <div v-if="compareData.length">
           <h4>收益走势对比</h4>

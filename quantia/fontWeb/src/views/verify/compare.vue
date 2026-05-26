@@ -24,7 +24,7 @@
             <span class="tag" :class="'t-' + getCategoryKey(s)">{{ getCategoryLabel(s) }}</span>
             <span class="x" @click="removeStrategy(s)">✕</span>
           </span>
-          <el-popover placement="bottom" :width="280" trigger="click">
+          <el-popover placement="bottom" width="min(280px, 90vw)" trigger="click">
             <template #reference>
               <span class="chip chip-add">+ 添加策略</span>
             </template>

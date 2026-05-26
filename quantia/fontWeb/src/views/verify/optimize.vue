@@ -239,7 +239,7 @@
           <div class="stat-card primary"><span>优化后夏普</span><strong>{{ fmt(sltpBest?.sharpe ?? bestHolding?.sharpe_approx) }}</strong><em>相对当前组合</em></div>
         </div>
         <!-- 点击单元格弹窗 -->
-        <el-dialog v-model="sltpDialogVisible" title="止盈止损组合详情" width="400px">
+        <el-dialog v-model="sltpDialogVisible" title="止盈止损组合详情" width="min(400px, 92vw)">
           <div v-if="sltpDialogData">
             <p><strong>止损:</strong> {{ sltpDialogData.stop_loss }}% &nbsp; <strong>止盈:</strong> {{ sltpDialogData.take_profit }}%</p>
             <table class="cmp-table" style="margin-top: 8px">

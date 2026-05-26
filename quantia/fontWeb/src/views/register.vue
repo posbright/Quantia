@@ -220,6 +220,13 @@ async function onSubmit() {
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
 }
+@media (max-width: 575.98px) {
+  .register-card {
+    width: calc(100vw - 32px);
+    max-width: 420px;
+    padding: 24px 20px;
+  }
+}
 .title {
   text-align: center;
   margin: 0 0 16px;

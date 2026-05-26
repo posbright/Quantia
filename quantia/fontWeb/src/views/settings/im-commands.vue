@@ -54,7 +54,7 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="`指令详情 #${current?.id ?? ''}`" width="780">
+    <el-dialog v-model="dialogVisible" :title="`指令详情 #${current?.id ?? ''}`" width="min(780px, 92vw)">
       <el-descriptions v-if="current" :column="2" border size="small">
         <el-descriptions-item label="ID">{{ current.id }}</el-descriptions-item>
         <el-descriptions-item label="状态">

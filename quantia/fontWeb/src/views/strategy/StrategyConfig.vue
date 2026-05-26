@@ -575,7 +575,7 @@ const handleDiff = async () => {
     </el-card>
 
     <!-- 参数变更历史对话框 -->
-    <el-dialog v-model="showHistory" title="参数变更历史" width="800px" destroy-on-close>
+    <el-dialog v-model="showHistory" title="参数变更历史" width="min(800px, 92vw)" destroy-on-close>
       <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
         <el-button
           type="primary"

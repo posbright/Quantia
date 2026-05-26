@@ -155,7 +155,7 @@ onMounted(refresh)
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="editing.id ? '编辑用户' : '新建用户'" width="500px">
+    <el-dialog v-model="dialogVisible" :title="editing.id ? '编辑用户' : '新建用户'" width="min(500px, 92vw)">
       <el-form label-width="100px">
         <el-form-item label="用户名">
           <el-input v-model="editing.username" :disabled="!!editing.id" />

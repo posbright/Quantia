@@ -541,7 +541,7 @@
     </div>
 
     <!-- 保存方案弹窗 -->
-    <el-dialog v-model="saveDialogVisible" title="保存因子方案" width="420px" destroy-on-close>
+    <el-dialog v-model="saveDialogVisible" title="保存因子方案" width="min(420px, 92vw)" destroy-on-close>
       <el-form :model="saveForm" label-width="80px" size="small">
         <el-form-item label="方案名称">
           <el-input v-model="saveForm.name" placeholder="例如：技术+价值多因子" maxlength="200" show-word-limit />
@@ -580,7 +580,7 @@
     </el-drawer>
 
     <!-- 导出代码弹窗 -->
-    <el-dialog v-model="exportDialogVisible" title="导出 Python 策略代码" width="680px" destroy-on-close>
+    <el-dialog v-model="exportDialogVisible" title="导出 Python 策略代码" width="min(680px, 92vw)" destroy-on-close>
       <div v-if="exportCode" class="export-code-wrapper">
         <div class="export-toolbar">
           <span class="export-filename">{{ exportFilename }}</span>
