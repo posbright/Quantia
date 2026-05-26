@@ -157,9 +157,11 @@ import { ArrowLeft } from '@element-plus/icons-vue'
 import { getBacktestCompare, runPortfolioBacktest } from '@/api/stock'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
+import { useResponsive } from '@/composables/useResponsive'
 
 const route = useRoute()
 const router = useRouter()
+const { isMobile } = useResponsive()
 const loading = ref(false)
 const activeTab = ref('chart')
 const backtests = ref<any[]>([])
@@ -348,7 +350,7 @@ function renderChart() {
       },
     },
     legend: { data: legend, top: 4, textStyle: { fontSize: 11 } },
-    grid: { left: 55, right: 20, top: 40, bottom: 36 },
+    grid: { left: isMobile.value ? 40 : 55, right: isMobile.value ? 8 : 20, top: 40, bottom: 36 },
     dataZoom: [{ type: 'inside', start: 0, end: 100 }],
     xAxis: { type: 'category', data: dates, boundaryGap: false, axisLabel: { fontSize: 10 } },
     yAxis: { type: 'value', axisLabel: { formatter: '{value}%', fontSize: 10 }, splitLine: { lineStyle: { type: 'dashed', color: '#eee' } } },
@@ -468,4 +470,33 @@ onUnmounted(() => { window.removeEventListener('resize', onResize); chart?.dispo
 .code-editor :deep(.el-textarea__inner) { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 12px; line-height: 1.6; border: none; border-radius: 0; }
 .code-panel-actions { padding: 8px 12px; text-align: right; border-top: 1px solid #ebeef5; display: flex; justify-content: flex-end; gap: 8px; }
 .new-result-card { margin-top: 16px; }
+
+/* ── PR-10 F: 移动端适配 ── */
+@media (max-width: 991.98px) {
+  /* 代码对比面板：自动换行（最小宽度从 480 降到 320） */
+  .code-panels { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+}
+@media (max-width: 767.98px) {
+  .bt-compare { padding: 10px 12px; }
+  .compare-header { flex-wrap: wrap; gap: 6px 10px; }
+  .compare-header h3 { font-size: 15px; }
+  .header-sub { flex-basis: 100%; font-size: 12px; }
+  .chart-box { height: 300px; min-height: 240px; }
+  /* 对比表：缩小字号 + 第一列 sticky */
+  .cmp-table { font-size: 11px; }
+  .cmp-table th, .cmp-table td { padding: 6px 8px; }
+  .cmp-lbl {
+    width: auto;
+    min-width: 84px;
+    position: sticky; left: 0; z-index: 1;
+  }
+  .cmp-name { font-size: 11px; }
+  .cmp-id { font-size: 10px; }
+  /* 代码对比单列、行编辑器折叠 */
+  .code-panels { grid-template-columns: 1fr; gap: 10px; }
+  .code-panel { font-size: 12px; }
+  .code-params :deep(.el-form-item) { margin-right: 6px; margin-bottom: 6px; }
+  .code-params :deep(.el-form-item__label) { font-size: 11px; }
+  :deep(.el-tabs__item) { padding: 0 10px; font-size: 13px; }
+}
 </style>

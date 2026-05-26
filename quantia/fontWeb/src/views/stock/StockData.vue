@@ -87,6 +87,28 @@ const otherDynamicColumns = computed(() =>
   dynamicColumns.value.filter(col => col.group !== 'ind' && !col.value.startsWith('rate_'))
 )
 
+// PR-05-extra: 移动端卡片视图展示的列。优先指标列 + 回测收益列（最多 6 个），不够再补其他列
+const mobileCardColumns = computed<ColumnDef[]>(() => {
+  const priority = [
+    ...indicatorColumns.value,
+    ...rateColumns.value,
+  ]
+  const picked: ColumnDef[] = []
+  const seen = new Set<string>()
+  for (const c of priority) {
+    if (!seen.has(c.value)) { picked.push(c); seen.add(c.value) }
+    if (picked.length >= 6) break
+  }
+  if (picked.length < 6) {
+    for (const c of otherDynamicColumns.value) {
+      if (seen.has(c.value)) continue
+      picked.push(c); seen.add(c.value)
+      if (picked.length >= 6) break
+    }
+  }
+  return picked
+})
+
 // 搜索关键词
 const searchKeyword = ref('')
 let searchTimer: ReturnType<typeof setTimeout> | null = null
@@ -448,6 +470,7 @@ onMounted(async () => {
     <!-- 数据表格 -->
     <el-card class="table-card" shadow="never">
       <el-table
+        v-if="!isMobile"
         v-loading="loading"
         :data="tableData"
         stripe
@@ -663,6 +686,55 @@ onMounted(async () => {
         </el-table-column>
       </el-table>
 
+      <!-- PR-05-extra: 移动端卡片视图 —— 替代窄屏下不可读的横向滚动表 -->
+      <div v-else v-loading="loading" class="card-list">
+        <div v-if="!loading && tableData.length === 0" class="card-empty">暂无数据</div>
+        <div
+          v-for="(row, idx) in tableData"
+          :key="(row.code || '') + '_' + (row.date || '') + '_' + idx"
+          class="stock-card"
+          :class="getRowClassName({ row })"
+        >
+          <div class="card-head">
+            <div class="card-title">
+              <el-link
+                v-if="hasCodeField"
+                type="primary"
+                @click="viewIndicators(row)"
+              >{{ row.code }}</el-link>
+              <span v-else class="card-code">{{ row.code || '-' }}</span>
+              <span class="card-name">{{ row.name || '' }}</span>
+            </div>
+            <div class="card-meta">
+              <el-tag size="small" effect="plain">{{ row.date || '' }}</el-tag>
+            </div>
+          </div>
+          <div class="card-body">
+            <div
+              v-for="col in mobileCardColumns"
+              :key="col.value"
+              class="card-field"
+              :class="{ 'is-indicator': col.group === 'ind', 'is-rate': col.value.startsWith('rate_') }"
+            >
+              <span class="card-lbl">{{ col.caption }}</span>
+              <span class="card-val" :class="getCellClass(row[col.value], col)">
+                {{ formatCellValue(row[col.value], col) }}
+              </span>
+            </div>
+          </div>
+          <div class="card-actions" v-if="hasCodeField || isBacktestSummary">
+            <el-button v-if="hasCodeField" :type="row.cdatetime ? 'warning' : 'primary'" size="small" text @click="handleAttention(row)">
+              <el-icon><StarFilled v-if="row.cdatetime" /><Star v-else /></el-icon>
+              {{ row.cdatetime ? '取消' : '关注' }}
+            </el-button>
+            <el-button v-if="hasCodeField" type="success" size="small" text @click="goAnalysis(row)">分析</el-button>
+            <el-button v-if="isBacktestSummary" type="primary" size="small" text @click="goBacktestDashboard(row)">看板</el-button>
+            <el-button v-if="isBacktestSummary" type="primary" size="small" text @click="goBacktestTimeline(row)">时序</el-button>
+            <el-button v-if="isBacktestSummary" type="primary" size="small" text @click="goBacktestDetail(row)">明细</el-button>
+          </div>
+        </div>
+      </div>
+
       <!-- 分页 -->
       <div class="pagination-wrapper">
         <span class="total-info">
@@ -806,5 +878,80 @@ onMounted(async () => {
     gap: 8px;
     .total-info { font-size: 12px; }
   }
+
+  /* PR-05-extra: 卡片视图 */
+  .card-list {
+    padding: 8px 10px 4px;
+    max-height: calc(100dvh - 320px);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .card-empty {
+    text-align: center;
+    padding: 40px 0;
+    color: #909399;
+    font-size: 13px;
+  }
+  .stock-card {
+    border: 1px solid #ebeef5;
+    border-radius: 6px;
+    background: #fff;
+    padding: 10px 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+  }
+  .stock-card .card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .stock-card .card-title {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+    .card-code { font-size: 14px; font-weight: 700; color: #303133; }
+    .card-name {
+      font-size: 13px; color: #606266;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+  }
+  .stock-card .card-body {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 12px;
+    margin-bottom: 8px;
+  }
+  .stock-card .card-field {
+    display: flex;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 12px;
+    line-height: 1.4;
+    .card-lbl { color: #909399; flex-shrink: 0; }
+    .card-val {
+      color: #303133;
+      font-variant-numeric: tabular-nums;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+  }
+  .stock-card .card-field.is-indicator { background: rgba(64,158,255,0.04); padding: 0 4px; border-radius: 2px; }
+  .stock-card .card-field.is-rate .card-val { font-weight: 600; }
+  .stock-card .card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    border-top: 1px dashed #f0f0f0;
+    padding-top: 6px;
+    .el-button { padding: 2px 6px; font-size: 12px; }
+  }
+  /* 移动端卡片视图行高着色 */
+  .stock-card.attention-row { background-color: #fff7e6; }
+  .stock-card.text-up-row { border-color: #fbd2d2; }
+  .stock-card.text-down-row { border-color: #c8e8c8; }
 }
 </style>

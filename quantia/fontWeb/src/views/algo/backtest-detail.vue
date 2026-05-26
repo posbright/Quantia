@@ -383,9 +383,11 @@ import * as echarts from 'echarts'
 import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverlay'
 import CustomIndicatorOverlayBar from '@/components/CustomIndicatorOverlayBar.vue'
 import AiChatDrawer, { type AiApplyMeta } from '@/components/AiChatDrawer.vue'
+import { useResponsive } from '@/composables/useResponsive'
 
 const route = useRoute()
 const router = useRouter()
+const { isMobile } = useResponsive()
 
 const btId = computed(() => Number(route.params.id))
 const info = ref<any>(null)
@@ -917,7 +919,7 @@ function renderReturnChart() {
       },
     },
     legend: { data: legend, top: 4, textStyle: { fontSize: 11 } },
-    grid: { left: 55, right: 20, top: 38, bottom: 36 },
+    grid: { left: isMobile.value ? 38 : 55, right: isMobile.value ? 8 : 20, top: 38, bottom: 36 },
     dataZoom: [{ type: 'inside', start: 0, end: 100 }],
     xAxis: {
       type: 'category', data: dates, boundaryGap: false,
@@ -965,7 +967,7 @@ function renderPnlChart() {
       },
     },
     legend: { data: ['日收益率', '日盈亏金额'], top: 4, textStyle: { fontSize: 11 } },
-    grid: { left: 60, right: 60, top: 38, bottom: 36 },
+    grid: { left: isMobile.value ? 42 : 60, right: isMobile.value ? 42 : 60, top: 38, bottom: 36 },
     dataZoom: [{ type: 'inside', start: 0, end: 100 }],
     xAxis: {
       type: 'category', data: dates, boundaryGap: true,
@@ -1047,7 +1049,7 @@ function renderTradeChart() {
       },
     },
     legend: { data: ['总资产', '买入', '卖出'], top: 4, textStyle: { fontSize: 11 } },
-    grid: { left: 70, right: 20, top: 38, bottom: 36 },
+    grid: { left: isMobile.value ? 46 : 70, right: isMobile.value ? 8 : 20, top: 38, bottom: 36 },
     dataZoom: [{ type: 'inside', start: 0, end: 100 }],
     xAxis: {
       type: 'category', data: dates, boundaryGap: false,
@@ -1551,4 +1553,43 @@ function indicatorSnapshot(period: string, trade: any) {
 }
 .log-line { white-space: pre-wrap; line-height: 1.5; }
 .log-empty { text-align: center; color: #606266; padding: 40px; }
+
+/* ── PR-10 D: 移动端适配 ── */
+@media (max-width: 767.98px) {
+  .bt-detail { padding: 10px 12px; }
+  .detail-header {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    margin-bottom: 10px;
+    h3 { font-size: 15px; }
+  }
+  .header-sub { font-size: 12px; flex-basis: 100%; }
+  .failed-banner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  /* jq-summary 6 列宽表在手机上极拥挤：改为单列双块（lbl/val 横向，每两个一行） */
+  .jq-summary { border-radius: 4px; }
+  .jq-table { font-size: 12px; }
+  .jq-table td { padding: 6px 8px; }
+  .jq-lbl { width: auto; font-size: 11px; }
+  .jq-val { min-width: 60px; font-size: 12px; }
+  .jq-val-sm { font-size: 11px; }
+  /* el-tabs 滚动 */
+  :deep(.el-tabs__nav-wrap) { padding: 0 6px; }
+  :deep(.el-tabs__item) { padding: 0 10px; font-size: 13px; height: 36px; line-height: 36px; }
+  .chart-box { height: 280px; }
+  .stock-chart-box { height: 360px; }
+  .stock-chart-box.has-sub { height: 460px; }
+  /* 持仓 / 交易 / 每日盈亏 大表格水平滚动 */
+  :deep(.el-table) { font-size: 11px; }
+  /* 收益概述网格 → 移动端两列 */
+  .stock-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .stock-toolbar { padding: 6px 8px; gap: 6px; }
+  .toolbar-label { font-size: 12px; }
+  .decision-summary { font-size: 12px; padding: 6px 8px; flex-wrap: wrap; }
+}
 </style>

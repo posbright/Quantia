@@ -801,4 +801,47 @@ function repairWithHints() {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+
+/* ── PR-10 E: 移动端适配 ── */
+@media (max-width: 991.98px) {
+  .editor-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 8px 10px;
+  }
+  .toolbar-left, .toolbar-right {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .strategy-name { font-size: 14px; }
+  .param-label { font-size: 11px; }
+  .editor-main {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .code-panel {
+    flex: none;
+    height: 45dvh;
+    border-right: none;
+    border-bottom: 1px solid #ebeef5;
+  }
+  .right-panel {
+    flex: none;
+    min-height: 55dvh;
+  }
+  .code-editor { font-size: 12px; padding: 8px; }
+  .nav-chart { height: 220px; }
+  .metrics-row { grid-template-columns: repeat(2, 1fr); }
+  .metric-val { font-size: 14px; }
+  .log-panel { height: 160px; }
+}
+@media (max-width: 575.98px) {
+  .toolbar-right {
+    /* 把日期 + 资金折成一行多列 */
+    :deep(.el-date-editor.el-input) { width: 130px !important; }
+    :deep(.el-input-number) { width: 110px !important; }
+  }
+  .metrics-row { grid-template-columns: repeat(2, 1fr); }
+}
 </style>
