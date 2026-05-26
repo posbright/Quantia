@@ -695,166 +695,43 @@
     </el-dialog>
 
     <!-- ═══════════ 创建对话框 ═══════════ -->
-    <el-dialog v-model="showCreateDialog" title="新建模拟交易" :width="isMobile ? '96vw' : '520px'" :top="isMobile ? '3vh' : '15vh'">
-      <el-form label-width="120px" class="paper-create-form">
-        <el-form-item label="交易名称">
-          <el-input v-model="createForm.name" placeholder="模拟交易名称（可选）" />
-        </el-form-item>
-        <el-form-item label="选择策略" required>
-          <el-select v-model="createForm.strategy_id" placeholder="请选择一个策略" style="width: 100%;"
-                     filterable @change="onCreateStrategyChange">
-            <el-option v-for="s in strategies" :key="s.id" :label="s.name" :value="s.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="选择回测" required>
-          <el-select v-model="createForm.backtest_id" placeholder="请选择该策略的一个回测版本"
-                     style="width: 100%;" filterable :loading="backtestsLoading"
-                     :disabled="!createForm.strategy_id">
-            <el-option v-for="bt in strategyBacktests" :key="bt.id"
-                       :label="backtestOptionLabel(bt)" :value="bt.id">
-              <div class="bt-option">
-                <span class="bt-option-name">{{ bt.strategy_name || `回测-${bt.id}` }}</span>
-                <span :class="retCls(bt.total_return)">{{ fmtPct(bt.total_return) }}</span>
-              </div>
-            </el-option>
-          </el-select>
-          <div v-if="createForm.strategy_id && !backtestsLoading && strategyBacktests.length === 0"
-               class="form-tip">该策略暂无已完成回测，请先运行一次组合回测。</div>
-        </el-form-item>
-        <el-form-item label="初始资金">
-          <el-input-number v-model="createForm.initial_cash" :min="10000" :step="100000" style="width: 100%;" />
-        </el-form-item>
-        <el-form-item label="运行频率" required>
-          <div class="form-inline-row">
-            <el-select v-model="createForm.run_frequency" style="width: 130px;">
-              <el-option v-for="f in frequencyOptions" :key="f.value" :label="f.label" :value="f.value" />
-            </el-select>
-            <span class="inline-label">开始时间</span>
-            <el-date-picker v-model="createForm.start_at" type="datetime"
-                            value-format="YYYY-MM-DD HH:mm:ss"
-                            format="YYYY-MM-DD HH:mm" style="flex: 1;" />
-          </div>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showCreateDialog = false">取消</el-button>
-        <el-button type="primary" @click="doCreate" :loading="creating">确定</el-button>
-      </template>
-    </el-dialog>
+    <CreatePaperDialog
+      v-model:visible="showCreateDialog"
+      :form="createForm"
+      :strategies="strategies"
+      :strategy-backtests="strategyBacktests"
+      :backtests-loading="backtestsLoading"
+      :creating="creating"
+      :is-mobile="isMobile"
+      :frequency-options="frequencyOptions"
+      :formatters="{ backtestOptionLabel, retCls, fmtPct }"
+      @strategy-change="onCreateStrategyChange"
+      @submit="doCreate"
+    />
 
     <!-- ═══════════ 交易决策依据弹窗 (Phase 3) ═══════════ -->
-    <el-dialog v-model="tradeDecisionVisible" title="交易决策依据" :width="isMobile ? '96vw' : '720px'" :top="isMobile ? '3vh' : '6vh'" destroy-on-close>
-      <div v-loading="tradeDecisionLoading" class="trade-decision-dialog">
-        <div v-if="tradeDecisionRow" class="td-summary">
-          <div class="td-row">
-            <span>日期</span><b>{{ tradeDecisionRow.date }}</b>
-            <span>方向</span>
-            <b :style="{ color: tradeDecisionRow.direction === 'buy' ? '#f56c6c' : '#67c23a' }">
-              {{ tradeDecisionRow.direction === 'buy' ? '买入' : '卖出' }}
-            </b>
-            <span>标的</span><b>{{ tradeDecisionRow.code }} {{ tradeDecisionRow.name || '' }}</b>
-          </div>
-          <div class="td-row">
-            <span>成交价</span><b>{{ Number(tradeDecisionRow.price ?? 0).toFixed(2) }}</b>
-            <span>成交量</span><b>{{ Number(tradeDecisionRow.amount ?? 0).toLocaleString() }}</b>
-            <span>成交额</span><b>{{ formatMoneyFull(tradeDecisionRow.value) }}</b>
-          </div>
-          <div class="td-reason">
-            <span>策略理由</span>
-            <div class="td-reason-body">
-              <div class="reason-headline">{{ tradeReasonParsed.headline }}</div>
-              <ul v-if="tradeReasonParsed.logs.length" class="reason-logs">
-                <li v-for="(line, i) in tradeReasonParsed.logs" :key="i">{{ line }}</li>
-              </ul>
-              <div class="reason-tags">
-                <el-tag v-if="tradeDecisionRow.reason_source === 'generated'" size="small" type="warning"
-                        effect="plain">系统兜底说明（非策略显式提供）</el-tag>
-                <el-tag v-else-if="tradeDecisionRow.reason_source === 'derived'" size="small" type="info"
-                        effect="plain">系统派生（来自策略日志/订单参数）</el-tag>
-                <el-tag v-else-if="tradeDecisionRow.reason_source === 'strategy'" size="small" type="success"
-                        effect="plain">策略真实理由</el-tag>
-                <el-tag v-else-if="tradeDecisionRow.reason_source" size="small" type="info" effect="plain">
-                  来源：{{ tradeDecisionRow.reason_source }}
-                </el-tag>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div v-if="tradeDecisionAi" class="td-ai">
-          <span class="td-block-title">AI 综合评分</span>
-          <el-tag :type="tradeDecisionAi.gate === 'reject' ? 'danger' : 'success'" effect="plain" size="small">
-            {{ tradeDecisionAi.action || '--' }}
-            <span v-if="tradeDecisionAi.score != null"> · {{ Number(tradeDecisionAi.score).toFixed(2) }}</span>
-            <span v-if="tradeDecisionAi.gate"> · gate: {{ tradeDecisionAi.gate }}</span>
-          </el-tag>
-          <div v-if="tradeDecisionAi.reason" class="td-ai-reason">
-            <div v-if="tradeDecisionAi.reason.reason_summary" class="ai-reason-summary">
-              <strong>理由：</strong>{{ tradeDecisionAi.reason.reason_summary }}
-            </div>
-            <div v-if="tradeDecisionAi.reason.evidence" class="ai-reason-evidence">
-              <strong>证据：</strong>{{ tradeDecisionAi.reason.evidence }}
-            </div>
-            <div v-if="tradeDecisionAi.reason.risk_flags" class="ai-reason-risk">
-              <strong>风险标记：</strong>
-              <el-tag type="danger" size="small" effect="plain" style="margin-left: 4px;">
-                {{ tradeDecisionAi.reason.risk_flags }}
-              </el-tag>
-            </div>
-          </div>
-        </div>
-        <div v-if="tradeStrategyExplain" class="td-block td-strategy-explain">
-          <span class="td-block-title">
-            策略说明
-            <span v-if="tradeStrategyExplain.name" class="td-block-sub">{{ tradeStrategyExplain.name }}</span>
-            <el-tag :type="tradeStrategyExplain.isBuy ? 'danger' : 'success'" size="small" effect="plain"
-                    style="margin-left:6px;">
-              {{ tradeStrategyExplain.isBuy ? '买入条件' : '卖出条件' }}
-            </el-tag>
-            <span v-if="tradeStrategyExplain.source" class="td-block-source">{{ tradeStrategyExplain.source }}</span>
-          </span>
-          <div class="strategy-explain-body">{{ tradeStrategyExplain.text }}</div>
-        </div>
-        <div class="td-block">
-          <span class="td-block-title">决策规则对比</span>
-          <el-table :data="tradeDecisionRules" size="small" border empty-text="该策略未输出结构化决策规则（仅有理由文本，请参见上方'策略理由'与下方'指标快照'）"
-                    class="td-rules-table">
-            <el-table-column prop="name" label="指标/规则" min-width="160" show-overflow-tooltip />
-            <el-table-column prop="threshold" label="阈值/判定" min-width="160" show-overflow-tooltip />
-            <el-table-column prop="actual" label="实际数据" min-width="160" show-overflow-tooltip />
-            <el-table-column label="结果" width="70" align="center">
-              <template #default="{ row }">
-                <el-tag :type="ruleResultTagType(row.pass)" size="small" effect="plain">
-                  {{ ruleResultLabel(row.pass) }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="weight" label="权重" width="70" align="right">
-              <template #default="{ row }">{{ row.weight != null ? Number(row.weight).toFixed(2) : '--' }}</template>
-            </el-table-column>
-          </el-table>
-        </div>
-        <div v-if="tradeDecisionIndicator" class="td-block">
-          <span class="td-block-title">
-            指标快照
-            <span class="td-block-sub">{{ tradeDecisionIndicator.trade_date }}</span>
-          </span>
-          <el-descriptions :column="4" border size="small" class="td-indicators">
-            <el-descriptions-item label="开盘">{{ fmtNumDp(tradeDecisionIndicator.open_price) }}</el-descriptions-item>
-            <el-descriptions-item label="收盘">{{ fmtNumDp(tradeDecisionIndicator.close_price) }}</el-descriptions-item>
-            <el-descriptions-item label="最低">{{ fmtNumDp(tradeDecisionIndicator.low_price) }}</el-descriptions-item>
-            <el-descriptions-item label="最高">{{ fmtNumDp(tradeDecisionIndicator.high_price) }}</el-descriptions-item>
-            <el-descriptions-item label="成交量" :span="4">{{ fmtVolumeHuman(tradeDecisionIndicator.volume) }}</el-descriptions-item>
-            <el-descriptions-item label="MA" :span="4">{{ fmtIndicatorDictMA(tradeDecisionIndicator.ma) }}</el-descriptions-item>
-            <el-descriptions-item label="BOLL" :span="4">{{ fmtIndicatorBOLL(tradeDecisionIndicator.boll) }}</el-descriptions-item>
-            <el-descriptions-item label="RSI" :span="4">{{ fmtIndicatorRSI(tradeDecisionIndicator.rsi) }}</el-descriptions-item>
-            <el-descriptions-item label="MACD" :span="4">{{ fmtIndicatorMACD(tradeDecisionIndicator.macd) }}</el-descriptions-item>
-          </el-descriptions>
-        </div>
-      </div>
-      <template #footer>
-        <el-button @click="tradeDecisionVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
+    <TradeDecisionDialog
+      v-model:visible="tradeDecisionVisible"
+      :loading="tradeDecisionLoading"
+      :is-mobile="isMobile"
+      :row="tradeDecisionRow"
+      :reason="tradeReasonParsed"
+      :ai="tradeDecisionAi"
+      :strategy-explain="tradeStrategyExplain"
+      :rules="tradeDecisionRules"
+      :indicator="tradeDecisionIndicator"
+      :formatters="{
+        formatMoneyFull,
+        fmtNumDp,
+        fmtVolumeHuman,
+        fmtIndicatorDictMA,
+        fmtIndicatorBOLL,
+        fmtIndicatorRSI,
+        fmtIndicatorMACD,
+        ruleResultLabel,
+        ruleResultTagType,
+      }"
+    />
   </div>
 </template>
 
@@ -877,6 +754,8 @@ import request from '@/api/request'
 import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverlay'
 import CustomIndicatorOverlayBar from '@/components/CustomIndicatorOverlayBar.vue'
 import { useResponsive } from '@/composables/useResponsive'
+import CreatePaperDialog from './components/CreatePaperDialog.vue'
+import TradeDecisionDialog from './components/TradeDecisionDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -2068,7 +1947,7 @@ function resetSettingsForm() {
   }
 }
 
-async function onCreateStrategyChange(strategyId: number) {
+async function onCreateStrategyChange(strategyId: number | null) {
   createForm.value.backtest_id = null
   if (strategyId) await loadStrategyBacktests(strategyId)
 }
@@ -2291,59 +2170,6 @@ onUnmounted(() => {
 <style scoped>
 .paper-trading { padding: 16px 20px; }
 
-/* ── Phase 3 交易决策依据弹窗 ── */
-.trade-decision-dialog { display: flex; flex-direction: column; gap: 12px; }
-.trade-decision-dialog .td-summary { background: #f7f8fa; padding: 10px 12px; border-radius: 4px; }
-.trade-decision-dialog .td-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 4px; font-size: 12px; }
-.trade-decision-dialog .td-row > span { color: #909399; }
-.trade-decision-dialog .td-row > b { color: #303133; font-weight: 600; margin-right: 12px; }
-.trade-decision-dialog .td-reason { font-size: 12px; margin-top: 4px; display: flex; gap: 8px; align-items: flex-start; }
-.trade-decision-dialog .td-reason > span { color: #909399; flex-shrink: 0; padding-top: 1px; }
-.trade-decision-dialog .td-reason-body { flex: 1; min-width: 0; }
-.trade-decision-dialog .td-reason-body .reason-headline {
-  color: #303133; font-weight: 600; line-height: 1.6; word-break: break-all;
-}
-.trade-decision-dialog .td-reason-body .reason-logs {
-  margin: 6px 0 0 0; padding: 8px 12px 8px 24px; list-style: disc;
-  background: var(--el-fill-color-lighter, #f5f7fa); border-radius: 4px;
-  font-size: 12px; line-height: 1.7; color: #606266;
-}
-.trade-decision-dialog .td-reason-body .reason-logs li { word-break: break-all; }
-.trade-decision-dialog .td-reason-body .reason-tags { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
-.trade-decision-dialog .td-block { display: flex; flex-direction: column; gap: 6px; }
-.trade-decision-dialog .td-block-title { font-size: 13px; font-weight: 600; color: #303133; }
-.trade-decision-dialog .td-block-title .td-block-sub {
-  font-size: 12px; font-weight: 400; color: #909399; margin-left: 8px;
-}
-.trade-decision-dialog .td-block-title .td-block-source {
-  font-size: 11px; font-weight: 400; color: #b1b3b8; margin-left: 8px;
-}
-.trade-decision-dialog .td-rules-table { font-size: 12px; }
-.trade-decision-dialog .td-indicators { font-size: 12px; }
-.trade-decision-dialog .td-indicators :deep(.el-descriptions__label) { width: 64px; color: #909399; font-weight: 500; }
-.trade-decision-dialog .td-indicators :deep(.el-descriptions__content) {
-  font-variant-numeric: tabular-nums; color: #303133; word-break: break-all;
-}
-.trade-decision-dialog .td-strategy-explain .strategy-explain-body {
-  padding: 8px 12px; background: var(--el-fill-color-lighter, #f5f7fa);
-  border-left: 3px solid var(--el-color-primary, #409eff); border-radius: 4px;
-  font-size: 12px; line-height: 1.7; color: #303133; white-space: pre-wrap; word-break: break-all;
-}
-.trade-decision-dialog .td-ai { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.trade-decision-dialog .td-ai-reason {
-  width: 100%;
-  margin-top: 6px;
-  padding: 8px 12px;
-  background: var(--el-fill-color-lighter, #f5f7fa);
-  border-radius: 4px;
-  font-size: 12px;
-  line-height: 1.6;
-}
-.td-ai-reason .ai-reason-summary,
-.td-ai-reason .ai-reason-evidence,
-.td-ai-reason .ai-reason-risk { margin-bottom: 4px; }
-.td-ai-reason .ai-reason-risk:last-child { margin-bottom: 0; }
-
 /* ── 页面头部 ── */
 .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .header-left { display: flex; align-items: center; gap: 12px; }
@@ -2351,12 +2177,6 @@ onUnmounted(() => {
 .header-right { display: flex; gap: 8px; }
 .count-tag { font-variant-numeric: tabular-nums; }
 
-.paper-create-form :deep(.el-form-item) { margin-bottom: 18px; }
-.form-inline-row { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; }
-.inline-label { color: #606266; white-space: nowrap; }
-.form-tip { margin-top: 6px; font-size: 12px; color: #909399; line-height: 1.4; }
-.bt-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.bt-option-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ══════ 详情页：聚宽实盘风格 ══════ */
 .detail-page { min-height: 500px; }
