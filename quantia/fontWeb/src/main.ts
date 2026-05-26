@@ -8,6 +8,7 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import App from './App.vue'
 import router from './router'
 import './styles/index.scss'
+import { startWebVitals } from './lib/webVitals'
 
 // 开发模式下启用 Mock 服务
 async function enableMocking() {
@@ -36,4 +37,5 @@ enableMocking().then(() => {
   app.use(ElementPlus, { locale: zhCn })
 
   app.mount('#app')
+  startWebVitals()
 })

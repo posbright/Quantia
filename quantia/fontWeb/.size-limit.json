@@ -1,0 +1,32 @@
+[
+  {
+    "name": "Initial JS (index)",
+    "path": "dist/assets/index-*.js",
+    "limit": "100 kB",
+    "gzip": true
+  },
+  {
+    "name": "vendor-vue",
+    "path": "dist/assets/vendor-vue-*.js",
+    "limit": "60 kB",
+    "gzip": true
+  },
+  {
+    "name": "vendor-element",
+    "path": "dist/assets/vendor-element-*.js",
+    "limit": "320 kB",
+    "gzip": true
+  },
+  {
+    "name": "vendor-echarts",
+    "path": "dist/assets/vendor-echarts-*.js",
+    "limit": "360 kB",
+    "gzip": true
+  },
+  {
+    "name": "vendor-utils (axios/dayjs/vueuse/web-vitals)",
+    "path": "dist/assets/vendor-utils-*.js",
+    "limit": "40 kB",
+    "gzip": true
+  }
+]
