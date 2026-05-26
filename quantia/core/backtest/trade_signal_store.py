@@ -378,22 +378,168 @@ def link_signal_to_trade(signal_id: int, trade_id: int) -> bool:
         return False
 
 
-def _query_strategy_description(mdb, strategy_id) -> Optional[str]:
-    """从 cn_stock_strategy_code.description 读取策略说明文本，供前端"策略说明"
-    区块展示买入/卖出条件。失败/无数据 → 返回 None。"""
-    if not strategy_id:
+_BUY_STRONG = ('买', '入场', '建仓', '开仓', '加仓', '进场', '抄底')
+_SELL_STRONG = ('卖', '出场', '平仓', '清仓', '止损', '止盈', '减仓', '退出')
+_BUY_PATTERN = ('上穿', '金叉')
+_SELL_PATTERN = ('下穿', '死叉', '跌破')
+# 中性技术词：单独出现时不分类，结合 strong/pattern 才能确定方向
+_AMBIG_PATTERN = ('突破',)
+
+
+def _classify_line(text: str, buy_lines: list, sell_lines: list) -> None:
+    """按关键词把一行文本分到买/卖篮子。
+
+    决策顺序：
+      1) "买/卖" 等明确方向词（strong）→ 仅落该方向，避免 "卖出条件：突破上轨" 被
+         "突破" 二次拉到买入桶。
+      2) 否则看技术词：上穿/金叉 vs 下穿/死叉/跌破。
+      3) 中性技术词（突破）单独出现时不分类。
+      4) 同时含双向 strong / 双向 pattern → 两边都加（描述综合条件的行）。
+    """
+    s = (text or '').strip().strip('"\'')
+    if not s:
+        return
+    has_buy_s = any(k in s for k in _BUY_STRONG)
+    has_sell_s = any(k in s for k in _SELL_STRONG)
+    if has_buy_s or has_sell_s:
+        if has_buy_s:
+            buy_lines.append(s)
+        if has_sell_s:
+            sell_lines.append(s)
+        return
+    has_buy_p = any(k in s for k in _BUY_PATTERN)
+    has_sell_p = any(k in s for k in _SELL_PATTERN)
+    if has_buy_p:
+        buy_lines.append(s)
+    if has_sell_p:
+        sell_lines.append(s)
+    # 中性词 "突破"：根据相邻的"上/下"轨位推断方向（突破下轨=买入；突破上轨=卖出）
+    if not has_buy_p and not has_sell_p and any(k in s for k in _AMBIG_PATTERN):
+        is_down = any(k in s for k in ('下轨', '下方', '下沿', '向下', '低位'))
+        is_up = any(k in s for k in ('上轨', '上方', '上沿', '向上', '高位'))
+        if is_down and not is_up:
+            buy_lines.append(s)
+        elif is_up and not is_down:
+            sell_lines.append(s)
+
+
+def _extract_strategy_explain_from_code(code: str) -> Optional[Dict[str, str]]:
+    """从策略 Python 源码里抽取买入/卖出条件说明。
+
+    策略：
+      1) 解析模块级 + 各函数的 docstring，逐行按关键词分类。
+      2) 扫描所有 `#` 行注释 / 行尾注释，按关键词分类。
+      3) 去重并各保留前 8 条，组装成带 "• " 前缀的多行文本。
+
+    任一篮子为空 → 该侧返回 ''；两边都空 → 返回 None。
+    """
+    if not code or not isinstance(code, str):
         return None
+    buy_lines: list = []
+    sell_lines: list = []
+    # 1) AST docstrings
+    try:
+        import ast
+        tree = ast.parse(code)
+        mod_doc = ast.get_docstring(tree)
+        if mod_doc:
+            for line in mod_doc.splitlines():
+                _classify_line(line, buy_lines, sell_lines)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                doc = ast.get_docstring(node)
+                if doc:
+                    for line in doc.splitlines():
+                        _classify_line(line, buy_lines, sell_lines)
+    except Exception:
+        pass
+    # 2) 行注释 + 行尾注释（启发式：忽略字符串字面量内部 # 的极端情况，
+    #    对量化策略源码足够稳健）。
+    for raw in code.splitlines():
+        line = raw.rstrip()
+        if not line:
+            continue
+        stripped = line.lstrip()
+        if stripped.startswith('#'):
+            comment = stripped.lstrip('#').strip()
+            _classify_line(comment, buy_lines, sell_lines)
+            continue
+        # 行尾注释：找到不在引号里的 #
+        in_s = False
+        quote = ''
+        for i, ch in enumerate(line):
+            if in_s:
+                if ch == quote and line[i - 1] != '\\':
+                    in_s = False
+            elif ch in ('"', "'"):
+                in_s = True
+                quote = ch
+            elif ch == '#':
+                _classify_line(line[i + 1:].strip(), buy_lines, sell_lines)
+                break
+    # 去重保序
+    def _dedupe(xs):
+        seen, out = set(), []
+        for x in xs:
+            if x in seen:
+                continue
+            seen.add(x)
+            out.append(x)
+        return out
+    buy_lines = _dedupe(buy_lines)[:8]
+    sell_lines = _dedupe(sell_lines)[:8]
+    if not buy_lines and not sell_lines:
+        return None
+    return {
+        'buy': '\n'.join(f'• {x}' for x in buy_lines),
+        'sell': '\n'.join(f'• {x}' for x in sell_lines),
+    }
+
+
+def _query_strategy_explain(mdb, strategy_id) -> Dict[str, Optional[str]]:
+    """统一读取策略说明：description（用户填写）+ 从 code 抽取的 buy/sell。
+
+    返回 dict：
+      - name: str | None  （策略名称，反查用）
+      - description: str | None
+      - explain_buy: str | None
+      - explain_sell: str | None
+    """
+    result: Dict[str, Optional[str]] = {
+        'name': None, 'description': None, 'explain_buy': None, 'explain_sell': None,
+    }
+    if not strategy_id:
+        return result
     try:
         rows = mdb.executeSqlFetch(
-            "SELECT description FROM cn_stock_strategy_code WHERE id=%s LIMIT 1",
+            "SELECT IFNULL(name,''), IFNULL(description,''), IFNULL(code,'') "
+            "FROM cn_stock_strategy_code WHERE id=%s LIMIT 1",
             (int(strategy_id),),
         ) or []
-        if rows and rows[0][0]:
-            return str(rows[0][0]).strip() or None
+        if not rows:
+            return result
+        name_raw, desc_raw, code_raw = rows[0][0], rows[0][1], rows[0][2]
+        name = str(name_raw or '').strip()
+        if name:
+            result['name'] = name
+        desc = str(desc_raw or '').strip()
+        if desc:
+            result['description'] = desc
+        extracted = _extract_strategy_explain_from_code(str(code_raw or ''))
+        if extracted:
+            if extracted.get('buy'):
+                result['explain_buy'] = extracted['buy']
+            if extracted.get('sell'):
+                result['explain_sell'] = extracted['sell']
     except Exception as exc:
-        logging.debug("[trade_signal_store] 读取 strategy description 失败 sid=%s: %s",
+        logging.debug("[trade_signal_store] 读取 strategy explain 失败 sid=%s: %s",
                       strategy_id, exc)
-    return None
+    return result
+
+
+def _query_strategy_description(mdb, strategy_id) -> Optional[str]:
+    """向后兼容入口：仅返回 description 文本。"""
+    return _query_strategy_explain(mdb, strategy_id).get('description')
 
 
 def _query_indicators_fallback(mdb, code: str, signal_date) -> Optional[Dict[str, Any]]:
@@ -656,6 +802,30 @@ def fetch_signal_with_decision(signal_id: int) -> Dict[str, Any]:
                     }
             except Exception:
                 pass
+        # 信号自身 strategy_id 可能为空（早期写入未回填），从 source 表反查
+        effective_strategy_id = s[20]
+        if not effective_strategy_id:
+            try:
+                src_type = (s[12] or '').lower()
+                src_id = s[13]
+                if src_type == 'paper' and src_id:
+                    sr = mdb.executeSqlFetch(
+                        "SELECT strategy_id FROM cn_stock_paper_trading WHERE id=%s LIMIT 1",
+                        (int(src_id),),
+                    ) or []
+                    if sr and sr[0][0]:
+                        effective_strategy_id = sr[0][0]
+                elif src_type in ('backtest', 'bt') and src_id:
+                    sr = mdb.executeSqlFetch(
+                        "SELECT strategy_id FROM cn_stock_backtest_run WHERE id=%s LIMIT 1",
+                        (int(src_id),),
+                    ) or []
+                    if sr and sr[0][0]:
+                        effective_strategy_id = sr[0][0]
+            except Exception as exc:
+                logging.debug("[trade_signal_store] 反查 strategy_id 失败 sig=%s: %s",
+                              s[0], exc)
+        _strategy_explain_pack = _query_strategy_explain(mdb, effective_strategy_id)
         return {
             "signal_id": int(s[0]),
             "reason": s[1] or "",
@@ -668,9 +838,11 @@ def fetch_signal_with_decision(signal_id: int) -> Dict[str, Any]:
             "source_type": s[12], "source_id": s[13], "run_id": s[14], "trade_id": s[15],
             "ai_score_id": s[16], "ai_score": s[17], "ai_action": s[18], "ai_gate_result": s[19],
             "ai_reason": ai_reason,
-            "strategy_id": s[20],
-            "strategy_name": s[21],
-            "strategy_description": _query_strategy_description(mdb, s[20]),
+            "strategy_id": effective_strategy_id,
+            "strategy_name": s[21] or _strategy_explain_pack.get("name") or None,
+            "strategy_description": _strategy_explain_pack["description"],
+            "strategy_explain_buy": _strategy_explain_pack["explain_buy"],
+            "strategy_explain_sell": _strategy_explain_pack["explain_sell"],
             "rules": rules_out,
             "indicators": indicators,
             "selection": [

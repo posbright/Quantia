@@ -810,6 +810,7 @@
                     style="margin-left:6px;">
               {{ tradeStrategyExplain.isBuy ? '买入条件' : '卖出条件' }}
             </el-tag>
+            <span v-if="tradeStrategyExplain.source" class="td-block-source">{{ tradeStrategyExplain.source }}</span>
           </span>
           <div class="strategy-explain-body">{{ tradeStrategyExplain.text }}</div>
         </div>
@@ -1255,19 +1256,34 @@ const tradeStrategyExplain = computed(() => {
   const d = tradeDecisionDetail.value || {}
   const stratName = d.strategy_name || detailData.value?.info?.strategy_name || ''
   const dbDesc = String(d.strategy_description || detailData.value?.info?.description || '').trim()
+  // 后端从策略代码里抽取的买/卖说明（注释 + docstring）
+  const codeExplain = String((isBuy ? d.strategy_explain_buy : d.strategy_explain_sell) || '').trim()
+  const codeExplainOther = String((isBuy ? d.strategy_explain_sell : d.strategy_explain_buy) || '').trim()
   const builtin = _matchBuiltinDesc(stratName)
   let text = ''
-  if (builtin) {
+  let source = ''
+  if (codeExplain) {
+    // 优先用代码注释里提取出的对应方向说明
+    text = dbDesc ? `${dbDesc}\n\n${isBuy ? '【买入条件】' : '【卖出条件】'}\n${codeExplain}` : codeExplain
+    source = '来自策略代码注释 / docstring'
+  } else if (builtin) {
     const condText = isBuy ? builtin.buy : builtin.sell
     text = dbDesc ? `${dbDesc}\n\n${isBuy ? '【买入条件】' : '【卖出条件】'}${condText}` : condText
+    source = '内置策略说明'
+  } else if (codeExplainOther) {
+    // 反向有提取到、本方向没有 → 退而展示反向，避免空白
+    text = `${isBuy ? '未在策略代码中识别到买入相关注释。' : '未在策略代码中识别到卖出相关注释。'}\n\n${isBuy ? '【已识别的卖出条件】' : '【已识别的买入条件】'}\n${codeExplainOther}`
+    source = '来自策略代码注释 / docstring（反向）'
   } else if (dbDesc) {
     text = dbDesc
+    source = '策略保存时填写的说明'
   } else {
     text = isBuy
       ? '该策略未提供标准化买入条件说明。请参考下方"决策规则对比"中的"策略决策"/"风控、入场触发"行了解本笔买入的实际触发条件。'
       : '该策略未提供标准化卖出条件说明。请参考下方"决策规则对比"中的"策略决策"/"风控、入场触发"行了解本笔卖出的实际触发条件。'
+    source = ''
   }
-  return { name: stratName, isBuy, text }
+  return { name: stratName, isBuy, text, source }
 })
 
 function showPosCol(key: string) { return posVisibleCols.value.includes(key) }
@@ -2284,6 +2300,9 @@ onUnmounted(() => {
 .trade-decision-dialog .td-block-title { font-size: 13px; font-weight: 600; color: #303133; }
 .trade-decision-dialog .td-block-title .td-block-sub {
   font-size: 12px; font-weight: 400; color: #909399; margin-left: 8px;
+}
+.trade-decision-dialog .td-block-title .td-block-source {
+  font-size: 11px; font-weight: 400; color: #b1b3b8; margin-left: 8px;
 }
 .trade-decision-dialog .td-rules-table { font-size: 12px; }
 .trade-decision-dialog .td-indicators { font-size: 12px; }
