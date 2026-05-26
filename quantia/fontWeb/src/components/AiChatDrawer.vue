@@ -660,5 +660,19 @@ watch(() => props.modelValue, (v) => {
 @media (max-width: 768px) {
   .ai-drawer-wrap .ai-sidebar { display: none; }
   .ai-drawer-wrap .ai-drawer { padding: 0 12px; }
+  /* M4/PR-11b: 利用 100dvh 抽屉空间，code/stream/chat 历史按视口高度撑开 */
+  .chat-history { min-height: calc(100dvh - 380px); max-height: calc(100dvh - 320px); }
+  .failure-block pre,
+  .code-preview,
+  .tb-preview,
+  .stream-preview { max-height: calc(100dvh - 280px); }
+  .ai-pickers { gap: 6px; }
+  /* AiModelPicker 内嵌两个 select，移动端撑满一行 */
+  .ai-pickers :deep(.ai-model-picker) { display: flex; gap: 6px; flex: 1 1 100%; }
+  .ai-pickers :deep(.ai-model-picker .el-select) { flex: 1 1 0; width: auto !important; margin-left: 0 !important; min-width: 0; }
+  /* AiAgentPicker 是裸 el-select，撑满一行 */
+  .ai-pickers > :deep(.el-select) { flex: 1 1 100%; width: auto !important; }
+  .ai-actions { flex-wrap: wrap; }
+  .ai-actions .el-button { flex: 1 1 calc(50% - 4px); min-width: 110px; margin-left: 0 !important; }
 }
 </style>
