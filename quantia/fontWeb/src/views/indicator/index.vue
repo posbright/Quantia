@@ -498,6 +498,9 @@ const goBacktest = () => {
 
 const handleResize = () => { chartInstance?.resize() }
 
+// keep-alive 缓存期间标记，避免无意义的 breakpoint 重渲
+let isActive = true
+
 let lastLoadedCode = ''
 watch(() => route.query.code, (newCode, oldCode) => {
   if (newCode && newCode !== oldCode) {
@@ -509,7 +512,7 @@ watch(() => route.query.code, (newCode, oldCode) => {
 
 // 断点变化时（桌面 <-> 移动）重新渲染：grid 左右内边距会切换
 watch(breakpoint, () => {
-  if (klineData.value) {
+  if (isActive && klineData.value) {
     nextTick(() => renderChart())
   }
 })
@@ -527,6 +530,7 @@ onMounted(() => {
 })
 
 onActivated(() => {
+  isActive = true
   nextTick(() => { chartInstance?.resize() })
   if (code.value && code.value !== lastLoadedCode) {
     lastLoadedCode = code.value
@@ -536,6 +540,7 @@ onActivated(() => {
 })
 
 onDeactivated(() => {
+  isActive = false
   chartInstance?.clear()
 })
 

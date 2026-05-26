@@ -2612,7 +2612,8 @@ onUnmounted(() => {
   .stock-dialog { min-height: 0; }
   .stock-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .summary-item.wide { grid-column: span 2; }
-  .stock-chart-box { height: 280px; }
+  .stock-chart-box { height: 360px; }
+  .stock-chart-box.has-sub { height: 480px; }
   .stock-toolbar {
     gap: 8px;
     .toolbar-hint { display: none; }
