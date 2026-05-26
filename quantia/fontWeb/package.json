@@ -12,7 +12,8 @@
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
     "size": "size-limit",
-    "size:why": "size-limit --why"
+    "size:why": "size-limit --why",
+    "smoke:mobile": "node scripts/smoke-mobile.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
