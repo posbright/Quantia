@@ -891,8 +891,8 @@ onMounted(async () => {
       getFactorCatalog(),
       getFactorPresets(),
     ])
-    categories.value = (catRes as any).categories
-    presets.value = (presetRes as any).presets
+    categories.value = Array.isArray((catRes as any)?.categories) ? (catRes as any).categories : []
+    presets.value = Array.isArray((presetRes as any)?.presets) ? (presetRes as any).presets : []
   } catch {
     ElMessage.error('加载因子目录失败')
   }
@@ -1029,8 +1029,10 @@ function loadPreset(preset: Preset) {
 }
 
 function findFactorMeta(id: string): FactorMeta | undefined {
-  for (const cat of categories.value) {
-    const f = cat.factors.find((f) => f.id === id)
+  const cats = categories.value
+  if (!Array.isArray(cats)) return undefined
+  for (const cat of cats) {
+    const f = cat?.factors?.find((f) => f.id === id)
     if (f) return f
   }
   return undefined
