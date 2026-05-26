@@ -1,25 +1,18 @@
-fix(frontend): 二轮审查 3 处移动适配缺陷修复
+fix(frontend): 模拟交易详情页移动端布局修复
 
-1. backtest-detail K线 grid 响应式（chart 缺陷 4）
-   - echarts grid[]/dataZoom 之前硬编码 left:58 right:62 px
-   - mobile 时改为 left:40 right:16，回收约 14% 横向空间
+问题（来自用户实机截图）：
+- 顶部标题条策略名被"其他操作"按钮挤压，竖排显示
+- 指标条单元过宽，¥99,7... 被截断在屏外
+- 左侧 tab 占 64px，Chinese label 竖排，正文剩余横向空间不足
+- section 左右内边距 16/20px 加剧内容拥挤
 
-2. auth store bootstrap 增加 3s 超时（§1.8）
-   - 弱网下 /api/auth/me 慢响应会无限阻塞路由守卫
-   - 用 Promise.race 兜底，超时走 catch 回退到 enabled=false
+修复（@media max-width:767.98px）：
+1. .jq-detail-header 改纵向 flex，策略名 flex-basis:100% 独占一行
+2. .jq-metrics-bar 单元 padding 18→12px、数值 18→15px、加 scroll-snap-x
+3. .jq-side-tabs 宽 64→52px、item 高 60→54px、字号缩小
+4. .jq-section padding 16/20→12/10px；section-header 允许换行
+5. .jq-chart-toolbar 左对齐换行；按钮 padding/font 缩小
+6. .jq-stats-grid 5 列→2 列
+7. 持仓/下单 table 字号缩小到 12px
 
-3. 字体栈补 Android 国产字体回退（§1.10 问题 1）
-   - styles/index.scss 增加 HarmonyOS Sans SC / MiSans / OPPO Sans / vivo Sans / Source Han Sans CN
-   - 解决华为/小米/OPPO/vivo 设备 fallback 到系统默认 Roboto 字号过小问题
-
-验证：
-- build✓
-- vitest 110/110 ✓
-- smoke 10/10 ✓
-- dist 已部署
-
-其他审计结果（无需改）：
-- 所有 100vh→100dvh 迁移已完成
-- 所有 el-dialog width 已为 min(Npx, 92vw) 模式
-- chart 缺陷 1/5/6/7 已在前期 commit 完成
-- useVirtualKeyboard 已在 login/register 接入
+验证：vue-tsc + vite build ✓；dist 已部署到 quantia/web/static

@@ -2092,6 +2092,111 @@ onUnmounted(() => {
   .code-toolbar { flex-direction: column; align-items: stretch; }
   .code-toolbar-right { justify-content: flex-end; }
   .code-bt-metrics { gap: 12px; }
+
+  /* ─── 详情页移动端适配 ─── */
+  /* 顶部标题条：标题与操作分两行，让策略名占满宽度 */
+  .jq-detail-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  .jq-detail-title {
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    row-gap: 4px;
+  }
+  .jq-title-text { font-size: 14px; }
+  .jq-title-name {
+    font-size: 12px;
+    margin-left: 0;
+    flex-basis: 100%;
+    white-space: normal;
+    word-break: break-all;
+    line-height: 1.3;
+  }
+  .jq-detail-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  /* 指标条：横向滚动，缩小单元尺寸与字号，添加滚动提示 */
+  .jq-metrics-bar {
+    padding: 10px 8px;
+    gap: 0;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+  .jq-metric-cell {
+    padding: 0 12px;
+    scroll-snap-align: start;
+  }
+  .jq-metric-cell:first-child { padding-left: 4px; }
+  .jq-metric-cell:last-child { padding-right: 4px; }
+  .jq-mc-value { font-size: 15px; }
+  .jq-mc-label { font-size: 10px; }
+  .jq-metric-sep { height: 24px; }
+  .jq-metric-more .jq-mc-value { font-size: 12px; }
+
+  /* 左侧 Tab 收窄，节省正文横向空间 */
+  :deep(.jq-side-tabs > .el-tabs__header) {
+    width: 52px;
+  }
+  :deep(.jq-side-tabs > .el-tabs__header .el-tabs__item) {
+    height: 54px;
+    font-size: 10px;
+    padding: 6px 0 !important;
+  }
+  :deep(.jq-side-tabs > .el-tabs__header .el-tabs__item .el-icon) {
+    font-size: 16px;
+  }
+
+  /* 内容区段：减少左右内边距，避免与 tab 一起挤压内容 */
+  .jq-section { padding: 12px 10px; }
+  .jq-section-header {
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .jq-section-actions {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .jq-section-actions :deep(.el-date-editor) {
+    width: 130px !important;
+  }
+  .jq-section-title { font-size: 13px; }
+  .jq-export-link, .jq-date-label { font-size: 11px; }
+
+  /* 图表工具条：允许换行，按钮变小 */
+  .jq-chart-toolbar {
+    justify-content: flex-start;
+    gap: 6px;
+  }
+  :deep(.jq-chart-toolbar .el-checkbox-button__inner),
+  :deep(.jq-chart-toolbar .el-radio-button__inner) {
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+
+  /* 统计指标网格 -> 2 列 */
+  .jq-stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .jq-stat-card { padding: 10px; }
+  .jq-stat-value { font-size: 14px; }
+
+  /* 列筛选复选框：紧凑 */
+  .jq-col-filter { gap: 4px 8px; padding: 6px 0; }
+  :deep(.jq-col-filter .el-checkbox__label) { font-size: 11px; }
+
+  /* 持仓/下单 table：允许横向滚动 + 缩小字号 */
+  :deep(.jq-section .el-table) { font-size: 12px; }
+  :deep(.jq-section .el-table .el-button--small) {
+    padding: 4px 6px;
+    font-size: 12px;
+  }
 }
 
 /* ─── 移动端卡片视图（PR-07） ─── */
