@@ -1,18 +1,28 @@
-fix(frontend): 模拟交易详情页移动端布局修复
+fix(frontend): 二轮页面横扫 3 处移动适配缺陷
 
-问题（来自用户实机截图）：
-- 顶部标题条策略名被"其他操作"按钮挤压，竖排显示
-- 指标条单元过宽，¥99,7... 被截断在屏外
-- 左侧 tab 占 64px，Chinese label 竖排，正文剩余横向空间不足
-- section 左右内边距 16/20px 加剧内容拥挤
+按"再次审查其他页面"请求，扫描全部 views/* 后修复以下 3 个真实问题：
 
-修复（@media max-width:767.98px）：
-1. .jq-detail-header 改纵向 flex，策略名 flex-basis:100% 独占一行
-2. .jq-metrics-bar 单元 padding 18→12px、数值 18→15px、加 scroll-snap-x
-3. .jq-side-tabs 宽 64→52px、item 高 60→54px、字号缩小
-4. .jq-section padding 16/20→12/10px；section-header 允许换行
-5. .jq-chart-toolbar 左对齐换行；按钮 padding/font 缩小
-6. .jq-stats-grid 5 列→2 列
-7. 持仓/下单 table 字号缩小到 12px
+1. customIndicator/index.vue —— 整页缺移动 @media
+   - 顶层 7/17 el-col 不折叠：mobile 强制 100% 宽 + 上下堆叠
+   - 列表面板限高 60vh，避免占满屏挤掉编辑区
+   - 表单 el-row 内 12/6/8 列 → 全部单列
+   - el-form 标签 120 → 88px
+   - bt-metrics 4 卡 flex → 2x2 grid
+   - 表格字号 11px、cell padding 6px
+   - 顶部按钮组允许换行、过滤栏 radio 横向滚动
 
-验证：vue-tsc + vite build ✓；dist 已部署到 quantia/web/static
+2. settings/token-usage.vue —— el-col 缺响应式断点
+   - 4 个 :span=6 汇总卡 + 2 个 :span=12 图表卡在 xs<768 仍占 6/12
+   - 加 :xs="12"/:xs="24"，靠 Element Plus 内置 xs 断点折叠
+
+3. verify/fusion.vue —— 移动 @media 未覆盖网格
+   - 768 块新增 overlap-grid → 1 列、dim-items → 1 列、kpi-row gap 收紧
+   - 480 块新增 kpi-row → 1 列（避免 4 卡挤在 375px 屏）
+
+误报排查（subagent 标记但已有适配，未改动）：
+- verify/optimize.vue @768 已有 summary-strip→2 列规则
+- home/index.vue 已有 991/767/575 三层断点
+- algo/backtest-detail.vue stock-summary @768 已→2 列
+- algo/edit.vue metrics-row @992 已→2 列
+
+验证：vite build ✓ vitest 110/110 ✓ dist 已部署

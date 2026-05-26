@@ -689,4 +689,65 @@ onMounted(loadList)
   font-size: 12px;
   font-weight: normal;
 }
+
+/* ─── 移动端适配 ─── */
+@media (max-width: 767.98px) {
+  .custom-indicator-page { padding: 4px; }
+  /* 顶层左右列 → 上下堆叠 */
+  .ci-row > :deep(.el-col-7),
+  .ci-row > :deep(.el-col-17) {
+    flex: 0 0 100%;
+    max-width: 100%;
+    margin-bottom: 10px;
+  }
+  /* 左侧列表面板限高，避免占满屏挤掉右侧 */
+  .ci-row > :deep(.el-col-7) .ci-panel {
+    min-height: 0;
+    max-height: 60vh;
+  }
+  .ci-row > :deep(.el-col-7) .ci-panel :deep(.el-table) {
+    max-height: 40vh !important;
+  }
+  /* 编辑面板：取消 100dvh 高度限制，跟随内容 */
+  .ci-edit-panel,
+  .ci-panel { min-height: 0 !important; padding: 10px; }
+  /* 表单内部 el-row 的两列 / 三列 / 四列 → 单列 */
+  :deep(.el-form .el-row .el-col) {
+    flex: 0 0 100% !important;
+    max-width: 100% !important;
+  }
+  /* 表单标签 120px → 88px，避免输入框被压扁 */
+  :deep(.el-form) {
+    .el-form-item__label { width: 88px !important; font-size: 12px; }
+    .el-form-item__content { margin-left: 88px !important; }
+  }
+  /* 顶部操作按钮组允许换行 */
+  .ci-panel-header {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .ci-panel-header > div { display: flex; flex-wrap: wrap; gap: 4px; }
+  .ci-panel-header .el-button { font-size: 12px; padding: 4px 8px; }
+  /* 回测指标 4 卡 → 2x2 */
+  .bt-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .bt-metric { padding: 6px 8px; }
+  .bt-metric b { font-size: 14px; }
+  /* 回测工具条换行 */
+  .bt-bar { flex-wrap: wrap; gap: 6px; padding: 6px; }
+  /* 规则编辑器字号缩小 */
+  .rule-editor { font-size: 12px; min-height: 64px; }
+  /* 表格紧凑 */
+  :deep(.el-table) { font-size: 11px; }
+  :deep(.el-table .cell) { padding: 0 6px !important; }
+  :deep(.el-table th .cell) { padding: 0 4px !important; }
+  /* 过滤栏 radio-group 横向滚动 */
+  .ci-filter-row :deep(.el-radio-group) {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .ci-filter-row :deep(.el-radio-button) { flex-shrink: 0; }
+  /* el-divider 缩小间距 */
+  :deep(.el-divider) { margin: 10px 0 8px; }
+}
 </style>

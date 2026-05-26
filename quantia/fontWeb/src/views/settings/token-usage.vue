@@ -2,28 +2,28 @@
   <div class="token-usage-page">
     <!-- 汇总卡片 -->
     <el-row :gutter="16" class="summary-row">
-      <el-col :span="6">
+      <el-col :xs="12" :sm="12" :md="6" :lg="6">
         <el-card shadow="hover" class="summary-card">
           <div class="card-title">今日消耗</div>
           <div class="card-value">{{ formatNumber(summary.today_tokens) }}</div>
           <div class="card-sub">{{ summary.today_calls }} 次调用</div>
         </el-card>
       </el-col>
-      <el-col :span="6">
+      <el-col :xs="12" :sm="12" :md="6" :lg="6">
         <el-card shadow="hover" class="summary-card">
           <div class="card-title">本月消耗</div>
           <div class="card-value">{{ formatNumber(summary.month_tokens) }}</div>
           <div class="card-sub">tokens</div>
         </el-card>
       </el-col>
-      <el-col :span="6">
+      <el-col :xs="12" :sm="12" :md="6" :lg="6">
         <el-card shadow="hover" class="summary-card">
           <div class="card-title">小时配额</div>
           <div class="card-value">{{ summary.hour_calls }}/{{ summary.hour_limit_calls }}</div>
           <div class="card-sub">{{ formatNumber(summary.hour_tokens) }}/{{ formatNumber(summary.hour_limit_tokens) }} tokens</div>
         </el-card>
       </el-col>
-      <el-col :span="6">
+      <el-col :xs="12" :sm="12" :md="6" :lg="6">
         <el-card shadow="hover" class="summary-card">
           <div class="card-title">小时余量</div>
           <div class="card-value">{{ formatNumber(Math.max(0, summary.hour_limit_tokens - summary.hour_tokens)) }}</div>
@@ -34,13 +34,13 @@
 
     <!-- 图表行 -->
     <el-row :gutter="16" style="margin-top: 16px">
-      <el-col :span="12">
+      <el-col :xs="24" :sm="24" :md="12" :lg="12">
         <el-card shadow="hover">
           <template #header><span>按模型分布（近30天）</span></template>
           <div ref="modelChartRef" style="height: 280px"></div>
         </el-card>
       </el-col>
-      <el-col :span="12">
+      <el-col :xs="24" :sm="24" :md="12" :lg="12">
         <el-card shadow="hover">
           <template #header><span>按场景分布（近30天）</span></template>
           <div ref="sceneChartRef" style="height: 280px"></div>

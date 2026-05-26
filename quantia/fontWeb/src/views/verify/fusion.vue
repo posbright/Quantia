@@ -871,5 +871,11 @@ function sharpeClass(v: number | null | undefined): string {
   .el-date-editor, .el-select { width: 100% !important; }
   table { font-size: 11px; }
   table th, table td { padding: 6px 4px !important; }
+  .dim-grid, .overlap-grid { grid-template-columns: 1fr; }
+  .kpi-row { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .dim-items { grid-template-columns: 1fr; }
+}
+@media (max-width: 480px) {
+  .kpi-row { grid-template-columns: 1fr; }
 }
 </style>
