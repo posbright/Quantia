@@ -761,15 +761,23 @@
           </div>
           <div class="td-reason">
             <span>策略理由</span>
-            <b>{{ tradeDecisionRow.reason || '--' }}</b>
-            <el-tag v-if="tradeDecisionRow.reason_source === 'generated'" size="small" type="warning"
-                    effect="plain" style="margin-left:6px;">系统兜底说明（非策略显式提供）</el-tag>
-            <el-tag v-else-if="tradeDecisionRow.reason_source === 'derived'" size="small" type="info"
-                    effect="plain" style="margin-left:6px;">系统派生（来自策略日志/订单参数）</el-tag>
-            <el-tag v-else-if="tradeDecisionRow.reason_source === 'strategy'" size="small" type="success"
-                    effect="plain" style="margin-left:6px;">策略真实理由</el-tag>
-            <el-tag v-else-if="tradeDecisionRow.reason_source" size="small" type="info" effect="plain"
-                    style="margin-left:6px;">来源：{{ tradeDecisionRow.reason_source }}</el-tag>
+            <div class="td-reason-body">
+              <div class="reason-headline">{{ tradeReasonParsed.headline }}</div>
+              <ul v-if="tradeReasonParsed.logs.length" class="reason-logs">
+                <li v-for="(line, i) in tradeReasonParsed.logs" :key="i">{{ line }}</li>
+              </ul>
+              <div class="reason-tags">
+                <el-tag v-if="tradeDecisionRow.reason_source === 'generated'" size="small" type="warning"
+                        effect="plain">系统兜底说明（非策略显式提供）</el-tag>
+                <el-tag v-else-if="tradeDecisionRow.reason_source === 'derived'" size="small" type="info"
+                        effect="plain">系统派生（来自策略日志/订单参数）</el-tag>
+                <el-tag v-else-if="tradeDecisionRow.reason_source === 'strategy'" size="small" type="success"
+                        effect="plain">策略真实理由</el-tag>
+                <el-tag v-else-if="tradeDecisionRow.reason_source" size="small" type="info" effect="plain">
+                  来源：{{ tradeDecisionRow.reason_source }}
+                </el-tag>
+              </div>
+            </div>
           </div>
         </div>
         <div v-if="tradeDecisionAi" class="td-ai">
@@ -813,38 +821,22 @@
             </el-table-column>
           </el-table>
         </div>
-        <div v-if="tradeDecisionIndicators.length" class="td-block">
-          <span class="td-block-title">指标快照</span>
-          <el-table :data="tradeDecisionIndicators" size="small" border max-height="220">
-            <el-table-column prop="trade_date" label="日期" width="100" />
-            <el-table-column label="开" width="70" align="right">
-              <template #default="{ row }">{{ fmtNumDp(row.open_price) }}</template>
-            </el-table-column>
-            <el-table-column label="收" width="70" align="right">
-              <template #default="{ row }">{{ fmtNumDp(row.close_price) }}</template>
-            </el-table-column>
-            <el-table-column label="低" width="70" align="right">
-              <template #default="{ row }">{{ fmtNumDp(row.low_price) }}</template>
-            </el-table-column>
-            <el-table-column label="高" width="70" align="right">
-              <template #default="{ row }">{{ fmtNumDp(row.high_price) }}</template>
-            </el-table-column>
-            <el-table-column label="成交量" min-width="90" align="right">
-              <template #default="{ row }">{{ fmtVolumeHuman(row.volume) }}</template>
-            </el-table-column>
-            <el-table-column label="MA" min-width="140" show-overflow-tooltip>
-              <template #default="{ row }">{{ fmtIndicatorDictMA(row.ma) }}</template>
-            </el-table-column>
-            <el-table-column label="BOLL" min-width="180" show-overflow-tooltip>
-              <template #default="{ row }">{{ fmtIndicatorBOLL(row.boll) }}</template>
-            </el-table-column>
-            <el-table-column label="RSI" min-width="110" show-overflow-tooltip>
-              <template #default="{ row }">{{ fmtIndicatorRSI(row.rsi) }}</template>
-            </el-table-column>
-            <el-table-column label="MACD" min-width="200" show-overflow-tooltip>
-              <template #default="{ row }">{{ fmtIndicatorMACD(row.macd) }}</template>
-            </el-table-column>
-          </el-table>
+        <div v-if="tradeDecisionIndicator" class="td-block">
+          <span class="td-block-title">
+            指标快照
+            <span class="td-block-sub">{{ tradeDecisionIndicator.trade_date }}</span>
+          </span>
+          <el-descriptions :column="4" border size="small" class="td-indicators">
+            <el-descriptions-item label="开盘">{{ fmtNumDp(tradeDecisionIndicator.open_price) }}</el-descriptions-item>
+            <el-descriptions-item label="收盘">{{ fmtNumDp(tradeDecisionIndicator.close_price) }}</el-descriptions-item>
+            <el-descriptions-item label="最低">{{ fmtNumDp(tradeDecisionIndicator.low_price) }}</el-descriptions-item>
+            <el-descriptions-item label="最高">{{ fmtNumDp(tradeDecisionIndicator.high_price) }}</el-descriptions-item>
+            <el-descriptions-item label="成交量" :span="4">{{ fmtVolumeHuman(tradeDecisionIndicator.volume) }}</el-descriptions-item>
+            <el-descriptions-item label="MA" :span="4">{{ fmtIndicatorDictMA(tradeDecisionIndicator.ma) }}</el-descriptions-item>
+            <el-descriptions-item label="BOLL" :span="4">{{ fmtIndicatorBOLL(tradeDecisionIndicator.boll) }}</el-descriptions-item>
+            <el-descriptions-item label="RSI" :span="4">{{ fmtIndicatorRSI(tradeDecisionIndicator.rsi) }}</el-descriptions-item>
+            <el-descriptions-item label="MACD" :span="4">{{ fmtIndicatorMACD(tradeDecisionIndicator.macd) }}</el-descriptions-item>
+          </el-descriptions>
         </div>
       </div>
       <template #footer>
@@ -1150,6 +1142,20 @@ const tradeDecisionIndicators = computed(() => {
     rsi: ind.rsi,
     macd: ind.macd,
   }]
+})
+// el-descriptions 版快照，取首行即可
+const tradeDecisionIndicator = computed(() => tradeDecisionIndicators.value[0] || null)
+// 将原始 reason 文本拆成一行总结 + 多行策略日志
+const tradeReasonParsed = computed(() => {
+  const txt = String(tradeDecisionRow.value?.reason || '').trim()
+  if (!txt) return { headline: '--', logs: [] as string[] }
+  const segments = txt
+    .split(/[\n|]+/)
+    .map(s => s.trim().replace(/^[-•·\[\]]\s*/, '').trim())
+    .filter(Boolean)
+    .filter(s => !/^策略日志[:：]?$/.test(s))
+  if (segments.length === 0) return { headline: txt, logs: [] }
+  return { headline: segments[0], logs: segments.slice(1) }
 })
 
 function showPosCol(key: string) { return posVisibleCols.value.includes(key) }
@@ -2149,12 +2155,30 @@ onUnmounted(() => {
 .trade-decision-dialog .td-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 4px; font-size: 12px; }
 .trade-decision-dialog .td-row > span { color: #909399; }
 .trade-decision-dialog .td-row > b { color: #303133; font-weight: 600; margin-right: 12px; }
-.trade-decision-dialog .td-reason { font-size: 12px; margin-top: 4px; }
-.trade-decision-dialog .td-reason > span { color: #909399; margin-right: 8px; }
-.trade-decision-dialog .td-reason > b { color: #303133; }
+.trade-decision-dialog .td-reason { font-size: 12px; margin-top: 4px; display: flex; gap: 8px; align-items: flex-start; }
+.trade-decision-dialog .td-reason > span { color: #909399; flex-shrink: 0; padding-top: 1px; }
+.trade-decision-dialog .td-reason-body { flex: 1; min-width: 0; }
+.trade-decision-dialog .td-reason-body .reason-headline {
+  color: #303133; font-weight: 600; line-height: 1.6; word-break: break-all;
+}
+.trade-decision-dialog .td-reason-body .reason-logs {
+  margin: 6px 0 0 0; padding: 8px 12px 8px 24px; list-style: disc;
+  background: var(--el-fill-color-lighter, #f5f7fa); border-radius: 4px;
+  font-size: 12px; line-height: 1.7; color: #606266;
+}
+.trade-decision-dialog .td-reason-body .reason-logs li { word-break: break-all; }
+.trade-decision-dialog .td-reason-body .reason-tags { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
 .trade-decision-dialog .td-block { display: flex; flex-direction: column; gap: 6px; }
 .trade-decision-dialog .td-block-title { font-size: 13px; font-weight: 600; color: #303133; }
+.trade-decision-dialog .td-block-title .td-block-sub {
+  font-size: 12px; font-weight: 400; color: #909399; margin-left: 8px;
+}
 .trade-decision-dialog .td-rules-table { font-size: 12px; }
+.trade-decision-dialog .td-indicators { font-size: 12px; }
+.trade-decision-dialog .td-indicators :deep(.el-descriptions__label) { width: 64px; color: #909399; font-weight: 500; }
+.trade-decision-dialog .td-indicators :deep(.el-descriptions__content) {
+  font-variant-numeric: tabular-nums; color: #303133; word-break: break-all;
+}
 .trade-decision-dialog .td-ai { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .trade-decision-dialog .td-ai-reason {
   width: 100%;
