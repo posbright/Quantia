@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
@@ -492,18 +492,37 @@ const goBacktest = () => {
 
 const handleResize = () => { chartInstance?.resize() }
 
+let lastLoadedCode = ''
 watch(() => route.query.code, (newCode, oldCode) => {
   if (newCode && newCode !== oldCode) {
+    currentPeriod.value = 'daily'
+    lastLoadedCode = newCode as string
+    loadKlineData()
+  }
+})
+
+// layout/index.vue 使用 <keep-alive> 缓存 router-view，所以本组件会被复用：
+// - onMounted: 仅在首次挂载时执行一次（绑 resize、首次加载）
+// - onActivated: 每次切回都触发（resize + 若 code 已变则重新加载）
+// - onDeactivated: 切走时 clear() 让出 GPU；切回时 resize 会重渲
+// - onUnmounted: keep-alive 真正卸载时移除 resize 并 dispose
+onMounted(() => {
+  lastLoadedCode = code.value || ''
+  loadKlineData()
+  window.addEventListener('resize', handleResize)
+})
+
+onActivated(() => {
+  nextTick(() => { chartInstance?.resize() })
+  if (code.value && code.value !== lastLoadedCode) {
+    lastLoadedCode = code.value
     currentPeriod.value = 'daily'
     loadKlineData()
   }
 })
 
-// M0: 仅在 onMounted 绑 resize，onUnmounted 解绑 + dispose chart。
-// 项目未使用 <keep-alive>，所以 onActivated / onDeactivated 不会触发、不需要处理。
-onMounted(() => {
-  loadKlineData()
-  window.addEventListener('resize', handleResize)
+onDeactivated(() => {
+  chartInstance?.clear()
 })
 
 onUnmounted(() => {

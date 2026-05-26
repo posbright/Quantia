@@ -575,8 +575,13 @@ async function pollResult(taskId: string) {
   poll()
 }
 
+const handleChartResize = () => { chart?.resize() }
+
 onBeforeUnmount(() => {
   closeEventSource()
+  window.removeEventListener('resize', handleChartResize)
+  chart?.dispose()
+  chart = null
 })
 
 async function doCreatePaper() {
@@ -662,7 +667,7 @@ watch(activeTab, async (tab) => {
   }
 })
 
-window.addEventListener('resize', () => chart?.resize())
+window.addEventListener('resize', handleChartResize)
 
 // AI 助手：把生成代码灌入编辑器
 const aiMeta = ref<{ source: 'ai'; ai_prompt: string; ai_agent: string; ai_model?: string } | null>(null)

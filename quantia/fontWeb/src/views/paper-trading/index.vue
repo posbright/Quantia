@@ -962,6 +962,8 @@ let navChart: echarts.ECharts | null = null
 let stockDailyChart: echarts.ECharts | null = null
 let stockWeeklyChart: echarts.ECharts | null = null
 let stockMonthlyChart: echarts.ECharts | null = null
+// 跟踪活跃 SSE 连接，组件卸载时统一关闭，避免后台连接泄漏
+const activeEvtSources = new Set<EventSource>()
 
 const stockDialogVisible = ref(false)
 const stockLoading = ref(false)
@@ -1979,20 +1981,25 @@ async function doCodeBacktest() {
       // SSE log stream
       const evtUrl = `/quantia/api/backtest/portfolio/log_stream?task_id=${taskId}`
       const evtSource = new EventSource(evtUrl)
+      activeEvtSources.add(evtSource)
+      const cleanupEvt = () => {
+        try { evtSource.close() } catch {}
+        activeEvtSources.delete(evtSource)
+      }
       evtSource.onmessage = (event) => {
         if (event.data) codeBtLogs.value.push(event.data)
       }
       evtSource.addEventListener('done', () => {
-        evtSource.close()
+        cleanupEvt()
         fetchCodeBtResult(taskId)
       })
       evtSource.addEventListener('error_msg', (e: any) => {
         codeBtLogs.value.push('[错误] ' + (e.data || '回测异常'))
-        evtSource.close()
+        cleanupEvt()
         codeRunning.value = false
       })
       evtSource.onerror = () => {
-        evtSource.close()
+        cleanupEvt()
         // fallback: poll
         pollCodeBtResult(taskId)
       }
@@ -2269,6 +2276,11 @@ watch(posHistDate, (newDate) => {
 
 onMounted(() => { loadList(); loadStrategies() })
 onUnmounted(() => {
+  // 关闭所有未完结的 SSE 连接，避免卸载后后台连接泄漏
+  for (const es of activeEvtSources) {
+    try { es.close() } catch {}
+  }
+  activeEvtSources.clear()
   if (navChart) { navChart.dispose(); navChart = null }
   disposeStockCharts()
 })
