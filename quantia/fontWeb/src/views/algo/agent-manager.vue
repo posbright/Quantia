@@ -273,4 +273,13 @@ onMounted(reload)
   font-size: 12px;
   margin-top: 4px;
 }
+
+/* 移动端适配（PR-10） */
+@media (max-width: 768px) {
+  .agent-manager { padding: 10px 8px; }
+  .header { flex-direction: column; align-items: stretch; gap: 8px; }
+  .actions { flex-wrap: wrap; }
+  :deep(.el-table) { font-size: 12px; }
+  :deep(.el-table .cell) { padding: 0 6px; }
+}
 </style>

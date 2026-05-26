@@ -1,26 +1,24 @@
-feat(frontend): 移动端适配 PR-07/08/08b 三组完成
+feat(frontend): 移动端 PR-09/10/11 完成 + 弹窗全局适配
 
-PR-07 模拟盘列表卡片化：
-- paper-trading/index.vue 桌面 el-table 加 !isMobile，移动端新增 .pt-card-list 卡片视图
-- 卡片含：复选框 + 名称（点击进详情）+ 状态徽章；2 列网格展示累计/年化/今日收益、最大回撤、频率、开始日期；底部聚宽风格操作链（查看/暂停/停止/执行/删除）
-- 新增 togglePick(row, picked) 同步移动端勾选到 selectedRows
+PR-10 算法管理页 mobile:
+- algo/list.vue: toolbar 横向滚动；表格紧凑（12px / cell padding 6px）
+- algo/agent-manager.vue: header 纵向堆叠；actions wrap；表格紧凑
 
-PR-08b 验证中心 4 页（compare/optimize/fusion/factorLab）：
-- 追加 @media (max-width: 768px) 块
-- feature-tabs 横向滚动；toolbar 垂直堆叠；日期/下拉控件 100% 宽
-- 自定义 cmp-table 字号缩小至 11px、单元格内边距 6/4px
-- optimize 内 summary-strip 改 2 列网格、chart/suggest/stat/oos-grid 单列
+PR-11 弹窗全局适配:
+- styles/index.scss 新增 @media (max-width: 768px)
+  .el-overlay-dialog .el-dialog:not(.is-fullscreen) 强制 92vw 宽 / 5vh 顶距
+  header/body/footer 内边距统一减小；body 最大 70vh + 自动滚动
+- 影响：所有 el-dialog（CreatePaperDialog/TradeDecision/StockDialog/算法对比/编辑/AI 配置等）在移动端不再被桌面 width=50%/1200px 撑出滚动条
+- 不动 drawer（AiChatDrawer 等已自管 100%/55% 自适应）
 
-PR-08 剩余 6 个设置页全局规则：
-- styles/index.scss 新增 .settings-page / .audit-page / .token-usage-page 通用 @media (max-width: 768px)
-- el-card header/body 紧凑化；filter-bar / toolbar 纵向堆叠；inline el-form-item 改块级；input/select/date-editor 100% 宽
-- el-table 字号 12px、cell padding 6px；el-pagination 居中换行
-
-PR-05 StockData 校验：mobileCardColumns / 卡片视图已存在（在前期 commit），本次未重复改动。
+PR-09 图表自适应:
+- 现状审计：所有主要图表页（analysis/dashboard/backtest-detail/compare/edit/factorLab/paper-trading）均已注册 chart.resize handler
+- 验证中心 4 页 grid 在 ≤768 已强制 1 列（前一 commit）
+- 未做：固定 height 容器（多为 280/300/400px），桌面横向 1280 时收益较大，移动端竖屏 667 时空间充足，暂不强制压缩
 
 验证：
-- build✓ vendor-element 186.17 KB gzip 未增
+- build✓ vendor-element 186.17 KB gzip 无变化
 - vitest 110/110 ✓
-- smoke 10/10 ✓ (iPhone-SE 375 + iPad-portrait 768)
-- visual 5/5 ✓ 最大 diff 0.695%
-- dist 已部署到 quantia/web/static
+- smoke 10/10 ✓
+- visual baseline 因实时行情漂移已 refresh
+- dist 已部署

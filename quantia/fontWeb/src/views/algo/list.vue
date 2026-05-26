@@ -340,4 +340,15 @@ onMounted(loadData)
 .name-cell { display: flex; align-items: center; gap: 8px; cursor: pointer; width: 100%; min-height: 32px; }
 .name-cell:hover .name-text { color: #409eff; }
 .name-text { color: #303133; font-size: 14px; transition: color 0.15s; }
+
+/* 移动端适配（PR-10） */
+@media (max-width: 768px) {
+  .algo-list { padding: 10px 8px; }
+  .toolbar { flex-wrap: wrap; gap: 6px; padding: 8px 0; }
+  .toolbar .el-button,
+  .toolbar .el-dropdown { font-size: 12px; }
+  .toolbar > * { flex-shrink: 0; }
+  :deep(.el-table) { font-size: 12px; }
+  :deep(.el-table .cell) { padding: 0 6px; }
+}
 </style>

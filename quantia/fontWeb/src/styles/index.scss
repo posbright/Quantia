@@ -162,3 +162,24 @@ $stock-down-color: #67c23a;
     flex-wrap: wrap;
   }
 }
+
+// ─── 弹窗全局移动适配（PR-11）───
+// 所有 el-dialog 默认在 ≤768 屏幕缩到 92vw，不再被桌面 width=50% / 1200px 撑出滚动条
+@media (max-width: 768px) {
+  .el-overlay-dialog .el-dialog:not(.is-fullscreen) {
+    width: 92vw !important;
+    max-width: 92vw !important;
+    margin: 5vh auto !important;
+  }
+  .el-overlay-dialog .el-dialog__header {
+    padding: 14px 14px 10px !important;
+  }
+  .el-overlay-dialog .el-dialog__body {
+    padding: 14px !important;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  .el-overlay-dialog .el-dialog__footer {
+    padding: 10px 14px !important;
+  }
+}
