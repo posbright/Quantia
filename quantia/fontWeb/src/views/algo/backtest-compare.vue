@@ -99,7 +99,25 @@
                   </el-tag>
                 </div>
                 <div class="code-params">
-                  <el-form :inline="true" size="small">
+                  <el-collapse v-if="isMobile" class="code-params-collapse">
+                    <el-collapse-item :title="`参数 (${paramEditors[idx].start_date || '--'} → ${paramEditors[idx].end_date || '--'})`" :name="`p${idx}`">
+                      <el-form size="small" label-width="60px" class="code-params-form-mobile">
+                        <el-form-item label="开始">
+                          <el-date-picker v-model="paramEditors[idx].start_date" type="date" value-format="YYYY-MM-DD" style="width: 100%;" />
+                        </el-form-item>
+                        <el-form-item label="结束">
+                          <el-date-picker v-model="paramEditors[idx].end_date" type="date" value-format="YYYY-MM-DD" style="width: 100%;" />
+                        </el-form-item>
+                        <el-form-item label="资金">
+                          <el-input-number v-model="paramEditors[idx].initial_cash" :min="10000" :step="100000" style="width: 100%;" />
+                        </el-form-item>
+                        <el-form-item label="基准">
+                          <el-input v-model="paramEditors[idx].benchmark" style="width: 100%;" />
+                        </el-form-item>
+                      </el-form>
+                    </el-collapse-item>
+                  </el-collapse>
+                  <el-form v-else :inline="true" size="small">
                     <el-form-item label="开始">
                       <el-date-picker v-model="paramEditors[idx].start_date" type="date"
                                       value-format="YYYY-MM-DD" style="width: 130px;" />
@@ -497,6 +515,10 @@ onUnmounted(() => { window.removeEventListener('resize', onResize); chart?.dispo
   .code-panel { font-size: 12px; }
   .code-params :deep(.el-form-item) { margin-right: 6px; margin-bottom: 6px; }
   .code-params :deep(.el-form-item__label) { font-size: 11px; }
+  .code-params-collapse :deep(.el-collapse-item__header) { font-size: 12px; height: 32px; line-height: 32px; }
+  .code-params-collapse :deep(.el-collapse-item__content) { padding-bottom: 8px; }
+  .code-params-form-mobile :deep(.el-form-item) { margin-bottom: 6px; }
+  .code-params-form-mobile :deep(.el-form-item__label) { font-size: 12px; }
   :deep(.el-tabs__item) { padding: 0 10px; font-size: 13px; }
 }
 </style>

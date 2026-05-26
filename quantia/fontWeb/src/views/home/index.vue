@@ -253,8 +253,14 @@ async function loadStrategy() {
   const kpi = kpis.value.find((k) => k.key === 'strategy')!
   try {
     const r: any = await getStrategyCodeList({})
-    const items: any[] = r?.items || r?.data || r?.rows || []
-    kpi.value = items.length.toString()
+    const items: any[] = Array.isArray(r?.items) ? r.items
+      : Array.isArray(r?.data) ? r.data
+      : Array.isArray(r?.rows) ? r.rows
+      : Array.isArray(r?.data?.items) ? r.data.items
+      : Array.isArray(r?.data?.strategies) ? r.data.strategies
+      : Array.isArray(r?.strategies) ? r.strategies
+      : []
+    kpi.value = String(items.length)
     kpi.delta = items.length > 0 ? '个策略' : '空'
     kpi.trend = items.length > 0 ? 'up' : 'flat'
   } catch (e) {
