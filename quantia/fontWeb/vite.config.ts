@@ -46,6 +46,15 @@ export default defineConfig(({ mode }) => {
           }
         }
       }
+    },
+    css: {
+      preprocessorOptions: {
+        scss: {
+          // M1: 全局注入 响应式断点 mixin，任何 .vue/.scss 文件可直接用 mixin（不需手写 @use）
+          additionalData: '@use "@/styles/_breakpoints.scss" as *;\n',
+          api: 'modern-compiler' as const,
+        }
+      }
     }
   }
 })
