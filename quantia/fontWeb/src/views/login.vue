@@ -6,10 +6,21 @@
  *   { ok:true, data:{ enabled:false } }，本页直接跳回首页。
  * - 启用后，登录成功颁发 QUANTIA_session + csrf_token cookie。
  */
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { useVirtualKeyboard } from '@/composables/useVirtualKeyboard'
+
+// 软键盘弹起时让聚焦的输入框滚到可视区中央，避免被键盘遮挡
+const { visible: _kbVisible } = useVirtualKeyboard()
+watch(_kbVisible, (v) => {
+  if (!v) return
+  const el = document.activeElement as HTMLElement | null
+  if (el && typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+})
 
 const router = useRouter()
 const route = useRoute()

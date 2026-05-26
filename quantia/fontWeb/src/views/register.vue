@@ -9,14 +9,25 @@
  *   2. 填写验证码 + 密码 + 确认密码 + 昵称 → 提交注册。
  *      - 注册成功自动登录（若鉴权启用），跳转首页。
  */
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { authApi } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
+import { useVirtualKeyboard } from '@/composables/useVirtualKeyboard'
 
 const router = useRouter()
 const authStore = useAuthStore()
+
+// 软键盘弹起时把聚焦输入框滚到可视区中央
+const { visible: _kbVisible } = useVirtualKeyboard()
+watch(_kbVisible, (v) => {
+  if (!v) return
+  const el = document.activeElement as HTMLElement | null
+  if (el && typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+})
 
 const email = ref('')
 const code = ref('')
