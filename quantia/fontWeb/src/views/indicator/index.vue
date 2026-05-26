@@ -51,8 +51,22 @@ const klineDates = computed<string[]>(() => klineData.value?.dates || [])
 const codeStr = computed(() => code.value || '')
 const ciOverlay = useCustomIndicatorOverlay(codeStr, currentPeriod, klineDates)
 
-// 容器高度根据是否有 CI 自定义指标副图自适应（和 renderChart 中 grid 计算保持一致）
-const chartHeight = computed(() => (ciOverlay.extension.value?.subPanel ? 780 : 680))
+const { isMobile, breakpoint } = useResponsive()
+
+// 当前是否展示技术副图（MACD/KDJ/...）
+const hasSubInd = computed(() => ['MACD', 'KDJ', 'RSI', 'WR', '多空趋势'].includes(currentSubIndicator.value))
+
+// 容器高度按断点 + 是否有副图 + 是否有 CI 副图自适应
+//   xs: 280/380   sm: 380/480   md: 520/620   lg+: 680/780
+//   CI 副图再 +100
+const chartHeight = computed(() => {
+  const bp = breakpoint.value
+  const base: Record<string, number> = { xs: 280, sm: 380, md: 520, lg: 680, xl: 680, xxl: 680 }
+  let H = base[bp] ?? 680
+  if (hasSubInd.value) H += 100
+  if (ciOverlay.extension.value?.subPanel) H += 100
+  return H
+})
 
 // Load K-line data
 const loadKlineData = async () => {
@@ -104,7 +118,11 @@ const getZoomStart = (total: number): number => {
     quarterly: 12,   // ~3 years
     yearly: 9999,    // show all
   }
-  const n = visible[currentPeriod.value] || 80
+  let n = visible[currentPeriod.value] || 80
+  // PR-09: 移动端默认仅展示最近 30%，避免屏幕过窄时蜡烛挤成一团
+  if (isMobile.value && currentPeriod.value !== 'yearly') {
+    n = Math.min(n, 40)
+  }
   if (n >= total) return 0
   return Math.max(0, Math.round((1 - n / total) * 100))
 }
@@ -123,8 +141,6 @@ const COLORS = {
   bollLower: '#67c23a',
 }
 
-const { isMobile, breakpoint } = useResponsive()
-
 // === Render ECharts ===
 const renderChart = () => {
   if (!klineChartRef.value || !klineData.value) return
@@ -134,7 +150,11 @@ const renderChart = () => {
   const padRight = isMobile.value ? 8 : 24
 
   if (chartInstance) { chartInstance.dispose() }
-  chartInstance = echarts.init(klineChartRef.value)
+  // PR-09: 限制 DPR 上限 + 启用脏矩形，提升移动端高 DPR 设备的渲染性能
+  chartInstance = echarts.init(klineChartRef.value, undefined, {
+    devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
+    useDirtyRect: true,
+  })
 
   const dates: string[] = d.dates
   const ohlc: number[][] = d.ohlc
@@ -162,8 +182,12 @@ const renderChart = () => {
   }))
 
   // === 布局：使用绝对像素的 grid + title 标签，避免百分比导致的副图重叠 ===
-  // 三段独立 grid，子图之间留 ≥30px 间距给标题，再用 graphic 画虚线分隔条
-  // 容器高 680px：预留上 60（图例 + 主标题）、下 30（dataZoom slider）
+  // PR-09: 按 chartHeight 缩放，适配 xs(280)/sm(380)/md(520)/lg+(680)
+  const H = chartHeight.value
+  const baseH = ciOverlay.extension.value?.subPanel ? 780 : 680
+  const S = H / baseH
+  const sc = (n: number) => Math.max(1, Math.round(n * S))
+  const scFs = (n: number) => Math.max(8, Math.round(n * Math.max(S, 0.75)))
   const stockLabel = (stockName.value ? `${code.value} ${stockName.value}` : code.value || '') + ` · ${currentPeriod.value}`
   const subLabelMap: Record<string, string> = {
     MACD: 'MACD (12,26,9)', KDJ: 'KDJ (9,3,3)', RSI: 'RSI (14)',
@@ -174,41 +198,44 @@ const renderChart = () => {
   const grids: any[] = []
   const titleItems: any[] = []
   const dividers: number[] = []  // y-像素位置，稍后渲染为分割线
-  const titleStyle = { fontSize: 12, color: '#303133', fontWeight: 'bold' as const }
-  const subTitleStyle = { fontSize: 10, color: '#909399' }
+  const titleStyle = { fontSize: scFs(12), color: '#303133', fontWeight: 'bold' as const }
+  const subTitleStyle = { fontSize: scFs(10), color: '#909399' }
   if (hasSub) {
-    // 主图 60-320  分割线 340  成交量 380-450  分割线 470  副图 510-610  slider 644-662
+    // 主图 60-320  分割线 340  成交量 380-450  分割线 470  副图 510-610  slider 644-662（baseH=680）
     grids.push(
-      { left: padLeft, right: padRight, top: 60, height: 260 },
-      { left: padLeft, right: padRight, top: 380, height: 70 },
-      { left: padLeft, right: padRight, top: 510, height: 100 },
+      { left: padLeft, right: padRight, top: sc(60), height: sc(260) },
+      { left: padLeft, right: padRight, top: sc(380), height: sc(70) },
+      { left: padLeft, right: padRight, top: sc(510), height: sc(100) },
     )
     titleItems.push(
-      { text: `K线主图 · ${stockLabel}`, subtext: showMA && showBollOnMain ? 'MA + BOLL' : showMA ? 'MA 均线' : showBollOnMain ? 'BOLL 布林带' : '蜡烛图', left: padLeft, top: 36, textStyle: titleStyle, subtextStyle: subTitleStyle },
-      { text: '成交量', subtext: '红涨绿跌·按当日K线方向上色', left: padLeft, top: 358, textStyle: titleStyle, subtextStyle: subTitleStyle },
-      { text: subLabel, subtext: '副图指标', left: padLeft, top: 488, textStyle: titleStyle, subtextStyle: subTitleStyle },
+      { text: `K线主图 · ${stockLabel}`, subtext: showMA && showBollOnMain ? 'MA + BOLL' : showMA ? 'MA 均线' : showBollOnMain ? 'BOLL 布林带' : '蜡烛图', left: padLeft, top: sc(36), textStyle: titleStyle, subtextStyle: subTitleStyle },
+      { text: '成交量', subtext: '红涨绿跌·按当日K线方向上色', left: padLeft, top: sc(358), textStyle: titleStyle, subtextStyle: subTitleStyle },
+      { text: subLabel, subtext: '副图指标', left: padLeft, top: sc(488), textStyle: titleStyle, subtextStyle: subTitleStyle },
     )
-    dividers.push(340, 470)
+    dividers.push(sc(340), sc(470))
   } else {
-    // 主图 60-400  分割线 420  成交量 460-600  slider 644-662
+    // 主图 60-400  分割线 420  成交量 460-600  slider 644-662（baseH=680）
     grids.push(
-      { left: padLeft, right: padRight, top: 60, height: 340 },
-      { left: padLeft, right: padRight, top: 460, height: 140 },
+      { left: padLeft, right: padRight, top: sc(60), height: sc(340) },
+      { left: padLeft, right: padRight, top: sc(460), height: sc(140) },
     )
     titleItems.push(
-      { text: `K线主图 · ${stockLabel}`, subtext: showMA && showBollOnMain ? 'MA + BOLL' : showMA ? 'MA 均线' : showBollOnMain ? 'BOLL 布林带' : '蜡烛图', left: padLeft, top: 36, textStyle: titleStyle, subtextStyle: subTitleStyle },
-      { text: '成交量', subtext: '红涨绿跌·按当日K线方向上色', left: padLeft, top: 438, textStyle: titleStyle, subtextStyle: subTitleStyle },
+      { text: `K线主图 · ${stockLabel}`, subtext: showMA && showBollOnMain ? 'MA + BOLL' : showMA ? 'MA 均线' : showBollOnMain ? 'BOLL 布林带' : '蜡烛图', left: padLeft, top: sc(36), textStyle: titleStyle, subtextStyle: subTitleStyle },
+      { text: '成交量', subtext: '红涨绿跌·按当日K线方向上色', left: padLeft, top: sc(438), textStyle: titleStyle, subtextStyle: subTitleStyle },
     )
-    dividers.push(420)
+    dividers.push(sc(420))
   }
 
   // === X/Y axes ===
+  // PR-09: 移动端轴字号略缩小，避免标签换行/拥挤
+  const axisFs = isMobile.value ? 9 : 10
+  const volAxisFs = isMobile.value ? 8 : 9
   const xAxes: any[] = [
     {
       type: 'category', data: dates, boundaryGap: false,
       axisLine: { onZero: false, lineStyle: { color: '#ccc' } },
       splitLine: { show: false },
-      axisLabel: { fontSize: 10, color: '#666' },
+      axisLabel: { fontSize: axisFs, color: '#666' },
       min: 'dataMin', max: 'dataMax',
     },
     {
@@ -221,11 +248,11 @@ const renderChart = () => {
       scale: true,
       splitArea: { show: true, areaStyle: { color: ['rgba(250,250,250,0.3)', 'rgba(240,240,240,0.3)'] } },
       splitLine: { lineStyle: { color: '#eee' } },
-      axisLabel: { fontSize: 10, color: '#666' },
+      axisLabel: { fontSize: axisFs, color: '#666' },
     },
     {
       scale: true, gridIndex: 1, splitNumber: 2,
-      axisLabel: { show: true, fontSize: 9, color: '#999', formatter: (v: number) => formatVolume(v) },
+      axisLabel: { show: true, fontSize: volAxisFs, color: '#999', formatter: (v: number) => formatVolume(v) },
       axisLine: { show: false }, axisTick: { show: false },
       splitLine: { show: false },
     },
@@ -238,7 +265,7 @@ const renderChart = () => {
     // Dynamic y-axis config based on sub-indicator type
     const subYAxis: any = {
       scale: true, gridIndex: 2, splitNumber: 3,
-      axisLabel: { show: true, fontSize: 9, color: '#999' },
+      axisLabel: { show: true, fontSize: volAxisFs, color: '#999' },
       axisLine: { show: false }, axisTick: { show: false },
       splitLine: { lineStyle: { color: '#f5f5f5' } },
     }
@@ -414,12 +441,12 @@ const renderChart = () => {
   if (ext.subPanel) {
     // 启用 CI 自定义指标副图：在已有布局尾部追加一段，并在其上方画分割线
     // 整体容器高度通过 chartHeight 计算属性自动增高（详见 <template>）
-    const ciTopActual = 644
-    const ciDividerY = ciTopActual - 22
+    const ciTopActual = sc(644)
+    const ciDividerY = ciTopActual - sc(22)
     const ciIdx = grids.length
-    grids.push({ left: 60, right: 24, top: ciTopActual, height: 90 })
-    titleItems.push({ text: '自定义指标', subtext: 'CI 叠加（快慢线 EMA / 策略买卖点）', left: 60, top: ciTopActual - 24, textStyle: titleStyle, subtextStyle: subTitleStyle })
-    dividers.push(ciDividerY - 12)
+    grids.push({ left: padLeft, right: padRight, top: ciTopActual, height: sc(90) })
+    titleItems.push({ text: '自定义指标', subtext: 'CI 叠加（快慢线 EMA / 策略买卖点）', left: padLeft, top: ciTopActual - sc(24), textStyle: titleStyle, subtextStyle: subTitleStyle })
+    dividers.push(ciDividerY - sc(12))
     xAxes.push({ ...ext.subPanel.xAxis, gridIndex: ciIdx })
     yAxes.push({ ...ext.subPanel.yAxis, gridIndex: ciIdx })
     for (const s of ext.subPanel.series) {
@@ -432,8 +459,8 @@ const renderChart = () => {
   // 分割线 graphic：每条 dashed 横线横跨整个绘图区
   const graphicElements: any[] = dividers.map(y => ({
     type: 'line' as const,
-    left: 60,
-    right: 24,
+    left: padLeft,
+    right: padRight,
     top: y,
     silent: true,
     z: 1,
@@ -591,8 +618,15 @@ onUnmounted(() => {
     <!-- Chart area -->
     <div class="chart-wrapper" v-loading="loading">
       <div ref="klineChartRef" class="chart-main" :style="{ height: chartHeight + 'px' }"></div>
-      <!-- Sub indicator tab bar (East Money style) -->
-      <div class="sub-indicator-bar">
+      <!-- Sub indicator picker: 桌面用东方财富风格 tab bar；移动端用 el-segmented 节省高度 -->
+      <el-segmented
+        v-if="isMobile"
+        v-model="currentSubIndicator"
+        :options="subIndicatorOptions.map(v => ({ label: v, value: v }))"
+        size="small"
+        class="sub-indicator-segmented"
+      />
+      <div v-else class="sub-indicator-bar">
         <span
           v-for="ind in subIndicatorOptions" :key="ind"
           :class="['sub-tab', { active: currentSubIndicator === ind }]"
@@ -683,5 +717,18 @@ onUnmounted(() => {
   .period-tabs .period-tab { padding: 3px 8px; font-size: 12px; }
   .overlay-checks .label { display: none; }
   .sub-indicator-bar .sub-tab { padding: 6px 0; font-size: 11px; }
+  .sub-indicator-segmented {
+    width: 100%;
+    padding: 4px 8px;
+    background: #fafafa;
+    border-top: 1px solid #eee;
+  }
+}
+
+/* PR-09 C: 移动端横屏 —— 隐藏信息栏 / 工具栏，把整个高度让给图表 */
+@media (max-width: 991.98px) and (orientation: landscape) and (max-height: 540px) {
+  .top-bar, .toolbar { display: none; }
+  .chart-wrapper .chart-main { height: calc(100dvh - 40px) !important; }
+  .sub-indicator-bar, .sub-indicator-segmented { padding: 2px 6px; }
 }
 </style>
