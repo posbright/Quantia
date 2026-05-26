@@ -201,6 +201,40 @@ npm test
 - 通知与 IM：通知配置、事件追踪、钉钉回调和指令确认。
 - 系统设置：用户管理、操作审计、实盘交易配置。
 
+## 移动端 / 平板使用
+
+前端在桌面端布局完全保持原状的前提下增加了响应式适配，手机和平板可直接打开 `http://<server>:9988` 浏览。
+
+**支持的浏览器（2025–2026 主流版本）**：
+
+- iOS 16+ Safari / 微信内置 WebView / QQ 内置 WebView
+- Android 11+ Chrome 108+ / 微信 X5（TBS ≥ 6013）/ 华为 Petal / 小米 / vivo / OPPO / 三星 Internet（Chromium 100+）
+- 桌面 Chrome / Edge / Firefox / Safari 当前-2 版本
+
+**断点（与 Element Plus / Bootstrap 5 对齐）**：
+
+| 断点 | 宽度 | 设备 |
+|---|---|---|
+| `xs` | < 576 | 手机竖屏 |
+| `sm` | ≥ 576 | 手机横屏 / 小平板竖屏 |
+| `md` | ≥ 768 | 平板竖屏 |
+| `lg` | ≥ 992 | 桌面（项目原始布局） |
+| `xl` | ≥ 1200 | 大桌面 |
+| `xxl` | ≥ 1600 | 超宽屏 |
+
+**移动端体验要点**：
+
+- 主导航在 `< 992` 折叠为汉堡菜单 + 抽屉，桌面保持顶栏。
+- 所有弹窗 `width` 统一用 CSS `min(<desktop>px, 92vw)`，避免移动端溢出。
+- AI 聊天抽屉 / Agent / Model 选择器在手机上改为底部 sheet（`el-drawer direction="btt"`）。
+- 登录 / 注册接入 `useVirtualKeyboard`（基于 `visualViewport`），Android 软键盘弹起时聚焦输入框自动滚到可视区。
+- 长代码块 `pre` 用 `pre-wrap + word-break: break-word`，移动端不会横向溢出。
+
+**紧急强制桌面端**：
+
+- 浏览器侧：在 DevTools 控制台执行 `localStorage.setItem('quantia.forceDesktop', '1')` 后刷新。
+- 服务端侧：启动 `web_service.py` 时设置环境变量 `QUANTIA_FORCE_DESKTOP=1`，会在 `<html>` 上注入 `data-force-desktop`，前端短路所有移动端样式。
+
 ## 配置说明
 
 Quantia 通过 `.env`、系统环境变量和代码默认值读取配置。常用变量包括：
