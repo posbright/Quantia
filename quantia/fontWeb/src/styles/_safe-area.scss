@@ -1,0 +1,43 @@
+// Safe-area + 反暗黑反色 + 移动触摸防御
+//
+// 引用：见 mobile_adaptation_plan.md §1.14.1（safe-area）、§1.14.2（暗黑反色）、§1.14.10（触摸高亮）。
+// 配合 index.html 中 `<meta name="viewport" content="...viewport-fit=cover">` 才能生效。
+
+:root {
+  --sa-top: env(safe-area-inset-top, 0px);
+  --sa-bottom: env(safe-area-inset-bottom, 0px);
+  --sa-left: env(safe-area-inset-left, 0px);
+  --sa-right: env(safe-area-inset-right, 0px);
+}
+
+// 通用工具类：业务可按需挂在固定头/尾/侧边
+.sa-pad-top    { padding-top:    max(var(--sa-top), 8px); }
+.sa-pad-bottom { padding-bottom: max(var(--sa-bottom), 8px); }
+.sa-pad-x      { padding-left:   var(--sa-left); padding-right: var(--sa-right); }
+.sa-pad-all    { padding: max(var(--sa-top), 8px) var(--sa-right) max(var(--sa-bottom), 8px) var(--sa-left); }
+
+// 全局触摸防御：消除 iOS/X5 点击灰块、阻止橡皮筋外溢、保留可选区
+html {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior-y: contain;
+  // MIUI / EMUI 强制反色防御（金融场景不能被翻转）
+  forced-color-adjust: none;
+}
+
+input,
+textarea,
+[contenteditable],
+.selectable {
+  -webkit-touch-callout: default;
+  user-select: text;
+}
+
+// 暗黑模式下显式锁定红涨绿跌主色：哪怕系统/X5 自动暗黑，颜色也不能被反转。
+// 业务里只要保持使用 .price-up / .price-down / .candle-up / .candle-down 语义类即可。
+@media (prefers-color-scheme: dark) {
+  .price-up,
+  .candle-up { color: #f56c6c !important; }
+  .price-down,
+  .candle-down { color: #67c23a !important; }
+}

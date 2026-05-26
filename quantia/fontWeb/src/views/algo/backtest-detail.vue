@@ -831,9 +831,13 @@ const onResize = () => {
   chart?.resize(); pnlChart?.resize(); tradeChart?.resize()
   stockDailyChart?.resize(); stockWeeklyChart?.resize(); stockMonthlyChart?.resize()
 }
-window.addEventListener('resize', onResize)
+onMounted(() => {
+  window.addEventListener('resize', onResize, { passive: true })
+  ;(window as any).visualViewport?.addEventListener?.('resize', onResize, { passive: true })
+})
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
+  ;(window as any).visualViewport?.removeEventListener?.('resize', onResize)
   disposeAllCharts()
 })
 
@@ -862,7 +866,10 @@ function renderReturnChart() {
   if (!el || !info.value?.nav?.length) return
   if (el.clientWidth === 0) { setTimeout(renderReturnChart, 120); return }
   if (chart) chart.dispose()
-  chart = echarts.init(el)
+  chart = echarts.init(el, undefined, {
+    devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
+    useDirtyRect: true,
+  })
 
   const nav = info.value.nav as any[]
   const dates = nav.map(r => r.date)
@@ -942,7 +949,10 @@ function renderPnlChart() {
   if (!el || !info.value?.nav?.length) return
   if (el.clientWidth === 0) { setTimeout(renderPnlChart, 120); return }
   if (pnlChart) pnlChart.dispose()
-  pnlChart = echarts.init(el)
+  pnlChart = echarts.init(el, undefined, {
+    devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
+    useDirtyRect: true,
+  })
 
   const nav = info.value.nav as any[]
   const dates = nav.map(r => r.date)
@@ -1011,7 +1021,10 @@ function renderTradeChart() {
   if (!el || !info.value?.nav?.length) return
   if (el.clientWidth === 0) { setTimeout(renderTradeChart, 120); return }
   if (tradeChart) tradeChart.dispose()
-  tradeChart = echarts.init(el)
+  tradeChart = echarts.init(el, undefined, {
+    devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
+    useDirtyRect: true,
+  })
 
   const nav = info.value.nav as any[]
   const trades = (info.value.trades || []) as any[]
@@ -1156,7 +1169,10 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
   if (!el || !kline?.dates?.length) return
   if (el.clientWidth === 0) { setTimeout(() => renderStockChart(period), 120); return }
   getStockChart(period)?.dispose()
-  const instance = echarts.init(el)
+  const instance = echarts.init(el, undefined, {
+    devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
+    useDirtyRect: true,
+  })
   setStockChart(period, instance)
 
   const dates = kline.dates as string[]

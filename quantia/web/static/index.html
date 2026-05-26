@@ -4,16 +4,26 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#1e88e5" />
+    <!--
+      theme-color: 浅色/暗黑分别声明，避免 Android 状态栏与 K 线红绿背景割裂。
+      color-scheme: 明确告知系统不要强制反色；金融红涨绿跌不可被反转。
+      darkmode=false / X-UA / renderer: 微信 X5 / MIUI / EMUI 自动暗黑 + 国产双核 IE 防御。
+    -->
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1f2937" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="darkmode" content="false" />
+    <meta name="renderer" content="webkit" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
     <meta name="format-detection" content="telephone=no,email=no,address=no" />
     <title>玄枢 Quantia</title>
-    <script type="module" crossorigin src="/assets/index-DpCDI0NH.js"></script>
+    <script type="module" crossorigin src="/assets/index-BAfeumQs.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/vendor-vue-8xommNLg.js">
     <link rel="modulepreload" crossorigin href="/assets/vendor-utils-MB_sgLU-.js">
     <link rel="modulepreload" crossorigin href="/assets/vendor-CaBQcsUY.js">
     <link rel="modulepreload" crossorigin href="/assets/vendor-element-DwQ7n5zi.js">
     <link rel="stylesheet" crossorigin href="/assets/vendor-element-RHpdG3AW.css">
-    <link rel="stylesheet" crossorigin href="/assets/index-fFZmMMOI.css">
+    <link rel="stylesheet" crossorigin href="/assets/index-DDkcRIFS.css">
   </head>
   <body>
     <div id="app"></div>
