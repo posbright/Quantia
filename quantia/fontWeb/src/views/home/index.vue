@@ -978,20 +978,39 @@ function go(to?: string) {
   }
 }
 
-/* ===== 响应式 ===== */
-@media (max-width: 1100px) {
+/* ===== 响应式（断点对齐 useResponsive：lg<992 / sm<768 / xs<576） ===== */
+@media (max-width: 991.98px) {
   .kpi-row { grid-template-columns: repeat(2, 1fr); }
   .index-row { grid-template-columns: repeat(2, 1fr); }
   .feature-grid { grid-template-columns: repeat(2, 1fr); }
   .quick-row { grid-template-columns: repeat(2, 1fr); }
   .two-col { grid-template-columns: 1fr; }
 }
-@media (max-width: 600px) {
-  .hero .hero-inner { padding: 24px 20px; }
-  .hero-left .hero-title { font-size: 24px; }
-  .kpi-row { grid-template-columns: 1fr; }
-  .index-row { grid-template-columns: 1fr 1fr; }
-  .feature-grid { grid-template-columns: 1fr; }
-  .quick-row { grid-template-columns: 1fr 1fr; }
+@media (max-width: 767.98px) {
+  .hero {
+    min-height: auto;
+    .hero-inner { padding: 20px 16px; flex-direction: column; align-items: stretch; gap: 16px; }
+  }
+  .hero-left { min-width: 0; }
+  .hero-left .hero-title { font-size: 22px; line-height: 1.3; }
+  .hero-left .hero-sub { font-size: 13px; }
+  .hero-right .trade-date-card { min-width: 0; padding: 14px 18px; }
+  .hero-right .trade-date-card .td-value { font-size: 22px; }
+  .kpi-card { padding: 14px; gap: 12px; }
+  .kpi-icon { width: 40px; height: 40px; }
+  .kpi-value { font-size: 20px; }
+  .block.panel { padding: 14px 14px; }
+}
+@media (max-width: 575.98px) {
+  .kpi-row { grid-template-columns: 1fr; gap: 12px; margin-bottom: 16px; }
+  .index-row { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .feature-grid { grid-template-columns: 1fr; gap: 12px; }
+  .quick-row { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .feature-card { padding: 16px; }
+  .index-card { padding: 12px 14px; min-height: 92px; }
+  .index-card .idx-price { font-size: 18px; }
+  .pick-item { grid-template-columns: 26px 1fr 72px 64px; gap: 8px; }
+  .quick-card { padding: 12px; gap: 10px; }
+  .quick-card .quick-icon { width: 36px; height: 36px; }
 }
 </style>

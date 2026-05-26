@@ -589,7 +589,7 @@
     </template>
 
     <!-- ═══════════ 对比对话框 ═══════════ -->
-    <el-dialog v-model="showCompare" title="模拟盘对比" width="90%">
+    <el-dialog v-model="showCompare" title="模拟盘对比" :width="isMobile ? '96vw' : '90%'" :top="isMobile ? '3vh' : '15vh'" :fullscreen="false">
       <div v-loading="compareLoading">
         <div v-if="compareData.length">
           <h4>收益走势对比</h4>
@@ -609,7 +609,7 @@
     </el-dialog>
 
     <!-- ═══════════ 个股模拟买卖点与指标K线 ═══════════ -->
-    <el-dialog v-model="stockDialogVisible" :title="stockDialogTitle" width="92vw" top="4vh" destroy-on-close
+    <el-dialog v-model="stockDialogVisible" :title="stockDialogTitle" :width="isMobile ? '100vw' : '92vw'" :top="isMobile ? '0' : '4vh'" :fullscreen="isMobile" destroy-on-close
                @closed="disposeStockCharts">
       <div class="stock-dialog" v-loading="stockLoading">
         <div class="stock-summary" v-if="selectedStock">
@@ -695,7 +695,7 @@
     </el-dialog>
 
     <!-- ═══════════ 创建对话框 ═══════════ -->
-    <el-dialog v-model="showCreateDialog" title="新建模拟交易" width="520px">
+    <el-dialog v-model="showCreateDialog" title="新建模拟交易" :width="isMobile ? '96vw' : '520px'" :top="isMobile ? '3vh' : '15vh'">
       <el-form label-width="120px" class="paper-create-form">
         <el-form-item label="交易名称">
           <el-input v-model="createForm.name" placeholder="模拟交易名称（可选）" />
@@ -743,7 +743,7 @@
     </el-dialog>
 
     <!-- ═══════════ 交易决策依据弹窗 (Phase 3) ═══════════ -->
-    <el-dialog v-model="tradeDecisionVisible" title="交易决策依据" width="720px" top="6vh" destroy-on-close>
+    <el-dialog v-model="tradeDecisionVisible" title="交易决策依据" :width="isMobile ? '96vw' : '720px'" :top="isMobile ? '3vh' : '6vh'" destroy-on-close>
       <div v-loading="tradeDecisionLoading" class="trade-decision-dialog">
         <div v-if="tradeDecisionRow" class="td-summary">
           <div class="td-row">
@@ -876,9 +876,11 @@ import {
 import request from '@/api/request'
 import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverlay'
 import CustomIndicatorOverlayBar from '@/components/CustomIndicatorOverlayBar.vue'
+import { useResponsive } from '@/composables/useResponsive'
 
 const route = useRoute()
 const router = useRouter()
+const { isMobile } = useResponsive()
 
 // ── 详情ID：基于路由query，侧栏导航点击会清除query回到列表 ──
 const detailId = computed(() => {
@@ -2587,4 +2589,43 @@ onUnmounted(() => {
   padding: 8px 10px; border-radius: 4px; margin-top: 8px;
 }
 .code-bt-log { white-space: pre-wrap; word-break: break-all; }
+
+/* ─────────── 移动端适配 (M3) ─────────── */
+@media (max-width: 767.98px) {
+  .page-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .header-left { justify-content: space-between; }
+  .header-left h2 { font-size: 16px; }
+  .header-right {
+    display: flex;
+    gap: 8px;
+    .el-button { flex: 1; }
+  }
+  /* 列表表格在小屏允许横向滚动；缩小字号 */
+  :deep(.jq-table .el-table__cell) { font-size: 12px; padding: 6px 4px; }
+  .jq-ops { gap: 2px; }
+  .jq-op { font-size: 12px; }
+  .stock-dialog { min-height: 0; }
+  .stock-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary-item.wide { grid-column: span 2; }
+  .stock-chart-box { height: 280px; }
+  .stock-toolbar {
+    gap: 8px;
+    .toolbar-hint { display: none; }
+  }
+  /* 创建表单标签变窄，避免在 360px 屏溢出 */
+  :deep(.paper-create-form .el-form-item__label) { width: 84px !important; }
+  .form-inline-row {
+    flex-wrap: wrap;
+    gap: 8px;
+    .el-select, .el-date-editor { width: 100% !important; flex: 1 1 100% !important; }
+  }
+  .code-toolbar { flex-direction: column; align-items: stretch; }
+  .code-toolbar-right { justify-content: flex-end; }
+  .code-bt-metrics { gap: 12px; }
+}
 </style>

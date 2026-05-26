@@ -7,6 +7,7 @@ import { getKlineData, type KlineParams } from '@/api/stock'
 import { ElMessage } from 'element-plus'
 import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverlay'
 import CustomIndicatorOverlayBar from '@/components/CustomIndicatorOverlayBar.vue'
+import { useResponsive } from '@/composables/useResponsive'
 
 const route = useRoute()
 const router = useRouter()
@@ -122,10 +123,15 @@ const COLORS = {
   bollLower: '#67c23a',
 }
 
+const { isMobile, breakpoint } = useResponsive()
+
 // === Render ECharts ===
 const renderChart = () => {
   if (!klineChartRef.value || !klineData.value) return
   const d = klineData.value
+  // 移动端：压缩左右留白，把宽度让给 K 线
+  const padLeft = isMobile.value ? 38 : 60
+  const padRight = isMobile.value ? 8 : 24
 
   if (chartInstance) { chartInstance.dispose() }
   chartInstance = echarts.init(klineChartRef.value)
@@ -173,25 +179,25 @@ const renderChart = () => {
   if (hasSub) {
     // 主图 60-320  分割线 340  成交量 380-450  分割线 470  副图 510-610  slider 644-662
     grids.push(
-      { left: 60, right: 24, top: 60, height: 260 },
-      { left: 60, right: 24, top: 380, height: 70 },
-      { left: 60, right: 24, top: 510, height: 100 },
+      { left: padLeft, right: padRight, top: 60, height: 260 },
+      { left: padLeft, right: padRight, top: 380, height: 70 },
+      { left: padLeft, right: padRight, top: 510, height: 100 },
     )
     titleItems.push(
-      { text: `K线主图 · ${stockLabel}`, subtext: showMA && showBollOnMain ? 'MA + BOLL' : showMA ? 'MA 均线' : showBollOnMain ? 'BOLL 布林带' : '蜡烛图', left: 60, top: 36, textStyle: titleStyle, subtextStyle: subTitleStyle },
-      { text: '成交量', subtext: '红涨绿跌·按当日K线方向上色', left: 60, top: 358, textStyle: titleStyle, subtextStyle: subTitleStyle },
-      { text: subLabel, subtext: '副图指标', left: 60, top: 488, textStyle: titleStyle, subtextStyle: subTitleStyle },
+      { text: `K线主图 · ${stockLabel}`, subtext: showMA && showBollOnMain ? 'MA + BOLL' : showMA ? 'MA 均线' : showBollOnMain ? 'BOLL 布林带' : '蜡烛图', left: padLeft, top: 36, textStyle: titleStyle, subtextStyle: subTitleStyle },
+      { text: '成交量', subtext: '红涨绿跌·按当日K线方向上色', left: padLeft, top: 358, textStyle: titleStyle, subtextStyle: subTitleStyle },
+      { text: subLabel, subtext: '副图指标', left: padLeft, top: 488, textStyle: titleStyle, subtextStyle: subTitleStyle },
     )
     dividers.push(340, 470)
   } else {
     // 主图 60-400  分割线 420  成交量 460-600  slider 644-662
     grids.push(
-      { left: 60, right: 24, top: 60, height: 340 },
-      { left: 60, right: 24, top: 460, height: 140 },
+      { left: padLeft, right: padRight, top: 60, height: 340 },
+      { left: padLeft, right: padRight, top: 460, height: 140 },
     )
     titleItems.push(
-      { text: `K线主图 · ${stockLabel}`, subtext: showMA && showBollOnMain ? 'MA + BOLL' : showMA ? 'MA 均线' : showBollOnMain ? 'BOLL 布林带' : '蜡烛图', left: 60, top: 36, textStyle: titleStyle, subtextStyle: subTitleStyle },
-      { text: '成交量', subtext: '红涨绿跌·按当日K线方向上色', left: 60, top: 438, textStyle: titleStyle, subtextStyle: subTitleStyle },
+      { text: `K线主图 · ${stockLabel}`, subtext: showMA && showBollOnMain ? 'MA + BOLL' : showMA ? 'MA 均线' : showBollOnMain ? 'BOLL 布林带' : '蜡烛图', left: padLeft, top: 36, textStyle: titleStyle, subtextStyle: subTitleStyle },
+      { text: '成交量', subtext: '红涨绿跌·按当日K线方向上色', left: padLeft, top: 438, textStyle: titleStyle, subtextStyle: subTitleStyle },
     )
     dividers.push(420)
   }
@@ -501,6 +507,13 @@ watch(() => route.query.code, (newCode, oldCode) => {
   }
 })
 
+// 断点变化时（桌面 <-> 移动）重新渲染：grid 左右内边距会切换
+watch(breakpoint, () => {
+  if (klineData.value) {
+    nextTick(() => renderChart())
+  }
+})
+
 // layout/index.vue 使用 <keep-alive> 缓存 router-view，所以本组件会被复用：
 // - onMounted: 仅在首次挂载时执行一次（绑 resize、首次加载）
 // - onActivated: 每次切回都触发（resize + 若 code 已变则重新加载）
@@ -510,6 +523,7 @@ onMounted(() => {
   lastLoadedCode = code.value || ''
   loadKlineData()
   window.addEventListener('resize', handleResize)
+  ;(window as any).visualViewport?.addEventListener?.('resize', handleResize)
 })
 
 onActivated(() => {
@@ -527,6 +541,7 @@ onDeactivated(() => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
+  ;(window as any).visualViewport?.removeEventListener?.('resize', handleResize)
   chartInstance?.dispose()
   chartInstance = null
 })
@@ -648,5 +663,20 @@ onUnmounted(() => {
     &:hover { background: #e8f0fe; color: #409eff; }
     &.active { background: #fff; color: #409eff; font-weight: 600; border-bottom: 2px solid #409eff; }
   }
+}
+
+/* 移动端：紧凑信息栏与工具栏，避免横向溢出 */
+@media (max-width: 767.98px) {
+  .top-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px;
+    .stock-basic { gap: 8px; .stock-code { font-size: 16px; } .stock-name { font-size: 13px; } }
+  }
+  .toolbar { padding: 6px 8px; }
+  .toolbar-left { gap: 12px; }
+  .period-tabs .period-tab { padding: 3px 8px; font-size: 12px; }
+  .overlay-checks .label { display: none; }
+  .sub-indicator-bar .sub-tab { padding: 6px 0; font-size: 11px; }
 }
 </style>

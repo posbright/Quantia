@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { getStockData, toggleAttention, getTradeDate } from '@/api/stock'
 import { getColumnTooltip, strategyDescriptions } from '@/utils/columnTooltips'
 import { buildBacktestDashboardQuery } from '@/utils/backtestDashboardLinks'
+import { useResponsive } from '@/composables/useResponsive'
 import dayjs from 'dayjs'
 
 // 列定义接口
@@ -22,6 +23,7 @@ interface ColumnDef {
 
 const route = useRoute()
 const router = useRouter()
+const { isMobile } = useResponsive()
 
 // 表格数据和列定义
 const tableData = ref<any[]>([])
@@ -421,7 +423,7 @@ onMounted(async () => {
             v-model="searchKeyword"
             placeholder="搜索代码/名称"
             clearable
-            style="width: 200px"
+            :style="isMobile ? { width: '100%' } : { width: '200px' }"
             @input="handleSearch"
             @clear="handleSearch"
           >
@@ -433,11 +435,11 @@ onMounted(async () => {
         <div class="toolbar-right">
           <el-button @click="loadData">
             <el-icon><Refresh /></el-icon>
-            刷新
+            {{ isMobile ? '' : '刷新' }}
           </el-button>
           <el-button type="primary" @click="exportExcel">
             <el-icon><Download /></el-icon>
-            导出
+            {{ isMobile ? '' : '导出' }}
           </el-button>
         </div>
       </div>
@@ -450,7 +452,7 @@ onMounted(async () => {
         :data="tableData"
         stripe
         border
-        height="calc(100dvh - 280px)"
+        :height="isMobile ? 'calc(100dvh - 340px)' : 'calc(100dvh - 280px)'"
         :row-class-name="getRowClassName"
       >
         <el-table-column type="index" label="#" width="50" fixed="left" />
@@ -671,7 +673,8 @@ onMounted(async () => {
           v-model:page-size="pageSize"
           :page-sizes="[20, 50, 100, 200]"
           :total="totalCount"
-          layout="sizes, prev, pager, next, jumper"
+          :layout="isMobile ? 'prev, pager, next' : 'sizes, prev, pager, next, jumper'"
+          :small="isMobile"
           background
           @current-change="handlePageChange"
           @size-change="handleSizeChange"
@@ -773,5 +776,35 @@ onMounted(async () => {
 
 :deep(.indicator-col) {
   background-color: #fafbff;
+}
+
+/* 移动端：工具栏单列纵向堆叠 + 紧凑分页 */
+@media (max-width: 767.98px) {
+  .toolbar-card {
+    margin-bottom: 8px;
+    :deep(.el-card__body) { padding: 10px 12px; }
+  }
+  .toolbar { gap: 8px; }
+  .toolbar-left {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    .page-title { font-size: 14px; margin-right: 0; }
+    :deep(.el-date-editor.el-input),
+    :deep(.el-date-editor.el-input__wrapper) { width: 100%; }
+  }
+  .toolbar-right {
+    width: 100%;
+    display: flex;
+    gap: 8px;
+    .el-button { flex: 1; }
+  }
+  .pagination-wrapper {
+    padding: 10px 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+    .total-info { font-size: 12px; }
+  }
 }
 </style>
