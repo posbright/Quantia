@@ -71,7 +71,9 @@ const getSingleChildPath = (item: RouteRecordRaw) => {
 const getSingleChildMeta = (item: RouteRecordRaw) => {
   const visibleChildren = getVisibleChildren(item)
   if (visibleChildren.length === 1) {
-    return visibleChildren[0].meta
+    const childMeta = visibleChildren[0].meta || {}
+    // 子路由若未声明 icon，回退父级 icon（避免单子菜单展平后图标丢失）
+    return { ...childMeta, icon: childMeta.icon || item.meta?.icon }
   }
   return item.meta
 }

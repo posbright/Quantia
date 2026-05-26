@@ -1,0 +1,8 @@
+fix(frontend): Sidebar 单子菜单展平时回退父级图标
+
+`getSingleChildMeta` 直接返回子路由 meta，但若子路由未声明 `icon`（如 KlinePattern），
+单菜单项展平后图标丢失。修改为浅合并：子级 icon 缺失时回退父级 icon。
+
+附带：visual baseline 重新生成（基于修复后正确状态）。
+
+验证：build✓ vitest 110/110 ✓ smoke 10/10 ✓ 浏览器实测 K线形态识别 等单子菜单图标已恢复
