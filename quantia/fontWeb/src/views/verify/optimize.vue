@@ -1596,7 +1596,7 @@ async function computeOOS() {
 </script>
 
 <style scoped>
-.verify-optimize { padding: 16px; background: #f4f7fb; min-height: calc(100vh - 80px); color: #303133; }
+.verify-optimize { padding: 16px; background: #f4f7fb; min-height: calc(100dvh - 80px); color: #303133; }
 .feature-tabs { display: flex; align-items: center; gap: 0; height: 42px; padding: 0 12px; margin-bottom: 12px; background: #fff; border: 1px solid #ebeef5; border-radius: 4px; }
 .feature-tab { height: 42px; display: inline-flex; align-items: center; padding: 0 18px; font-size: 13px; color: #606266; border-bottom: 2px solid transparent; cursor: pointer; text-decoration: none; }
 .feature-tab.router-link-exact-active { color: #1890ff; border-bottom-color: #1890ff; font-weight: 600; }

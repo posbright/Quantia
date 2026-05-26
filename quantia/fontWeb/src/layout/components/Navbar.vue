@@ -6,9 +6,10 @@ import { useAuthStore } from '@/stores/auth'
 
 interface Props {
   isCollapse: boolean
+  isMobile?: boolean
 }
 
-defineProps<Props>()
+withDefaults(defineProps<Props>(), { isMobile: false })
 const emit = defineEmits(['toggle'])
 
 const route = useRoute()
@@ -57,21 +58,23 @@ const handleUserMgmt = () => router.push('/settings/users')
 </script>
 
 <template>
-  <div class="navbar">
+  <div class="navbar" :class="{ 'is-mobile': isMobile }">
     <div class="navbar-left">
-      <!-- 折叠按钮 -->
+      <!-- 折叠/菜单按钮 -->
       <el-icon class="collapse-btn" @click="emit('toggle')">
-        <Fold v-if="!isCollapse" />
-        <Expand v-else />
+        <component :is="isMobile ? 'Menu' : (isCollapse ? 'Expand' : 'Fold')" />
       </el-icon>
-      
-      <!-- 面包屑 -->
-      <el-breadcrumb separator="/">
+
+      <!-- 面包屑：移动端隐藏 -->
+      <el-breadcrumb v-if="!isMobile" separator="/">
         <el-breadcrumb-item :to="{ path: '/' }">首页</el-breadcrumb-item>
         <el-breadcrumb-item v-for="item in breadcrumbs" :key="item.path" :to="{ path: item.path }">
           {{ item.title }}
         </el-breadcrumb-item>
       </el-breadcrumb>
+
+      <!-- 移动端仅显示当前页面标题 -->
+      <span v-else class="mobile-title">{{ breadcrumbs.length ? breadcrumbs[breadcrumbs.length - 1].title : '玄枢' }}</span>
     </div>
     
     <div class="navbar-right">
@@ -137,6 +140,33 @@ const handleUserMgmt = () => router.push('/settings/users')
   justify-content: space-between;
   height: 100%;
   padding: 0 20px;
+
+  @include md-down {
+    padding: 0 12px;
+    @include safe-area-padding(0);
+  }
+
+  &.is-mobile {
+    .navbar-right .action-btn,
+    .navbar-right .user-dropdown {
+      margin-left: 8px;
+    }
+    .navbar-right .role-tag,
+    .navbar-right .user-name {
+      display: none;
+    }
+  }
+
+  .mobile-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #303133;
+    margin-left: 4px;
+    max-width: 50vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 .navbar-left {

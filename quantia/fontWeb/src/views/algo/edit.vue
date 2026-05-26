@@ -734,7 +734,7 @@ function repairWithHints() {
 </script>
 
 <style scoped>
-.algo-editor { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.algo-editor { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
 .editor-toolbar {
   display: flex; justify-content: space-between; align-items: center;
   padding: 8px 16px; border-bottom: 1px solid #ebeef5; background: #fff; flex-shrink: 0;

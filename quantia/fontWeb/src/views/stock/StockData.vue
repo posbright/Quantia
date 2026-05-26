@@ -450,7 +450,7 @@ onMounted(async () => {
         :data="tableData"
         stripe
         border
-        height="calc(100vh - 280px)"
+        height="calc(100dvh - 280px)"
         :row-class-name="getRowClassName"
       >
         <el-table-column type="index" label="#" width="50" fixed="left" />

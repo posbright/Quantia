@@ -19,7 +19,7 @@
             </el-radio-group>
           </div>
           <el-table :data="list" v-loading="loadingList" size="small" highlight-current-row
-                    @row-click="onRowClick" :row-class-name="rowClass" max-height="calc(100vh - 220px)">
+                    @row-click="onRowClick" :row-class-name="rowClass" max-height="calc(100dvh - 220px)">
             <el-table-column label="名称" min-width="160">
               <template #default="{ row }">
                 <div class="ci-name-cell">
@@ -595,7 +595,7 @@ onMounted(loadList)
   border: 1px solid #ebeef5;
   border-radius: 4px;
   padding: 12px;
-  min-height: calc(100vh - 110px);
+  min-height: calc(100dvh - 110px);
 }
 .ci-edit-panel { padding-bottom: 24px; }
 .ci-panel-header {
