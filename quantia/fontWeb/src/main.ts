@@ -1,10 +1,11 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-// PR-02: Element Plus 组件 + 图标按需引入，由 vite.config.ts 中的 unplugin-vue-components
-// 自动补 `import { ElButton } from 'element-plus'` 及 `import { Plus } from '@element-plus/icons-vue'`。
-// 这里只保留样式（base reset + 主题变量）+ message/notification 等命令式组件的样式。
-// 注：ElMessage/ElMessageBox 的样式由对应组件按需 import 副作用注入。
+// PR-02: Element Plus 组件按需引入（由 vite.config.ts 中的 unplugin-vue-components 自动补 import）
+// 仍保留全局 CSS + 命令式组件样式。
+// 图标必须全局注册：Sidebar/Navbar/home 等使用 `<component :is="'IconName'">` 动态字符串绑定，
+// auto-import 只识别静态标识符，无法解析动态字符串。
 import 'element-plus/dist/index.css'
+import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 
 import App from './App.vue'
 import router from './router'
@@ -27,6 +28,11 @@ async function enableMocking() {
 
 enableMocking().then(() => {
   const app = createApp(App)
+
+  // 仅注册图标（组件本身由 unplugin-vue-components 按需注入）
+  for (const [name, comp] of Object.entries(ElementPlusIconsVue)) {
+    app.component(name, comp as any)
+  }
 
   app.use(createPinia())
   app.use(router)
