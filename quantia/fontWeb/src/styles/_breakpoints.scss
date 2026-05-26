@@ -1,0 +1,68 @@
+// M1 响应式断点 mixin。所有页面新增 @media 必须经此处入口，禁止直接 @media (max-width:..)。
+// 断点值与 src/composables/useResponsive.ts 保持一致。
+
+$bp-sm: 576px;
+$bp-md: 768px;
+$bp-lg: 992px;
+$bp-xl: 1200px;
+$bp-xxl: 1600px;
+
+// 单点命中（窄区间）
+@mixin xs-only { @media (max-width: #{$bp-sm - 1px}) { @content; } }
+@mixin sm-only { @media (min-width: $bp-sm) and (max-width: #{$bp-md - 1px}) { @content; } }
+@mixin md-only { @media (min-width: $bp-md) and (max-width: #{$bp-lg - 1px}) { @content; } }
+@mixin lg-only { @media (min-width: $bp-lg) and (max-width: #{$bp-xl - 1px}) { @content; } }
+@mixin xl-only { @media (min-width: $bp-xl) and (max-width: #{$bp-xxl - 1px}) { @content; } }
+@mixin xxl-only { @media (min-width: $bp-xxl) { @content; } }
+
+// 向下兼容（mobile-first 风格，最常用）
+@mixin xs-down { @media (max-width: #{$bp-sm - 1px}) { @content; } }
+@mixin sm-down { @media (max-width: #{$bp-md - 1px}) { @content; } }
+@mixin md-down { @media (max-width: #{$bp-lg - 1px}) { @content; } }
+@mixin lg-down { @media (max-width: #{$bp-xl - 1px}) { @content; } }
+
+// 向上兼容
+@mixin sm-up { @media (min-width: $bp-sm) { @content; } }
+@mixin md-up { @media (min-width: $bp-md) { @content; } }
+@mixin lg-up { @media (min-width: $bp-lg) { @content; } }
+@mixin xl-up { @media (min-width: $bp-xl) { @content; } }
+
+// 语义别名：手机 / 平板 / 桌面
+@mixin mobile-only { @media (max-width: #{$bp-md - 1px}) { @content; } }
+@mixin tablet-only { @media (min-width: $bp-md) and (max-width: #{$bp-lg - 1px}) { @content; } }
+@mixin desktop-only { @media (min-width: $bp-lg) { @content; } }
+
+// 横屏手机（窄高高优先）
+@mixin landscape-phone {
+  @media (orientation: landscape) and (max-height: 500px) { @content; }
+}
+
+// 强制桌面 escape：当 <html data-force-desktop> 存在时，移动样式自动失效
+// 用法：
+//   @include mobile-only {
+//     @include unless-force-desktop {
+//       .foo { ... }
+//     }
+//   }
+@mixin unless-force-desktop {
+  html:not([data-force-desktop]) & {
+    @content;
+  }
+}
+
+// 触控设备（hover 不稳定）—— 关闭 :hover 特效，避免 sticky-hover
+@mixin coarse-pointer {
+  @media (hover: none) and (pointer: coarse) { @content; }
+}
+
+// 安全区辅助（PR-04 全面接入前先暴露 mixin）
+@mixin safe-area-padding ($scale: 1) {
+  padding-top: calc(env(safe-area-inset-top, 0px) * #{$scale});
+  padding-right: calc(env(safe-area-inset-right, 0px) * #{$scale});
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) * #{$scale});
+  padding-left: calc(env(safe-area-inset-left, 0px) * #{$scale});
+}
+
+@mixin safe-area-bottom {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px));
+}
