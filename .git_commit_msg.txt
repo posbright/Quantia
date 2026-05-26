@@ -1,8 +1,26 @@
-fix(frontend): Sidebar 单子菜单展平时回退父级图标
+feat(frontend): 移动端适配 PR-07/08/08b 三组完成
 
-`getSingleChildMeta` 直接返回子路由 meta，但若子路由未声明 `icon`（如 KlinePattern），
-单菜单项展平后图标丢失。修改为浅合并：子级 icon 缺失时回退父级 icon。
+PR-07 模拟盘列表卡片化：
+- paper-trading/index.vue 桌面 el-table 加 !isMobile，移动端新增 .pt-card-list 卡片视图
+- 卡片含：复选框 + 名称（点击进详情）+ 状态徽章；2 列网格展示累计/年化/今日收益、最大回撤、频率、开始日期；底部聚宽风格操作链（查看/暂停/停止/执行/删除）
+- 新增 togglePick(row, picked) 同步移动端勾选到 selectedRows
 
-附带：visual baseline 重新生成（基于修复后正确状态）。
+PR-08b 验证中心 4 页（compare/optimize/fusion/factorLab）：
+- 追加 @media (max-width: 768px) 块
+- feature-tabs 横向滚动；toolbar 垂直堆叠；日期/下拉控件 100% 宽
+- 自定义 cmp-table 字号缩小至 11px、单元格内边距 6/4px
+- optimize 内 summary-strip 改 2 列网格、chart/suggest/stat/oos-grid 单列
 
-验证：build✓ vitest 110/110 ✓ smoke 10/10 ✓ 浏览器实测 K线形态识别 等单子菜单图标已恢复
+PR-08 剩余 6 个设置页全局规则：
+- styles/index.scss 新增 .settings-page / .audit-page / .token-usage-page 通用 @media (max-width: 768px)
+- el-card header/body 紧凑化；filter-bar / toolbar 纵向堆叠；inline el-form-item 改块级；input/select/date-editor 100% 宽
+- el-table 字号 12px、cell padding 6px；el-pagination 居中换行
+
+PR-05 StockData 校验：mobileCardColumns / 卡片视图已存在（在前期 commit），本次未重复改动。
+
+验证：
+- build✓ vendor-element 186.17 KB gzip 未增
+- vitest 110/110 ✓
+- smoke 10/10 ✓ (iPhone-SE 375 + iPad-portrait 768)
+- visual 5/5 ✓ 最大 diff 0.695%
+- dist 已部署到 quantia/web/static

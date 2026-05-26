@@ -1954,4 +1954,17 @@ function downloadExportCode() {
 .ai-actions { margin-top: 6px; display: flex; gap: 6px; }
 .ai-empty { font-size: 11px; color: #bbb; text-align: center; padding: 12px 0; }
 .ai-input-row { display: flex; gap: 6px; }
+
+/* ─── 移动端适配（PR-08b） ─── */
+@media (max-width: 768px) {
+  .factor-lab, .verify-factor, .factor-page { padding: 10px 8px !important; }
+  .feature-tabs { overflow-x: auto; padding: 0 6px; }
+  .feature-tab { padding: 0 12px; font-size: 12px; flex-shrink: 0; }
+  .toolbar, .filter-bar, .control-bar { flex-direction: column; align-items: stretch; gap: 10px; }
+  .toolbar-group, .control-group { width: 100%; }
+  .el-date-editor, .el-select { width: 100% !important; }
+  table { font-size: 11px; }
+  table th, table td { padding: 6px 4px !important; }
+  .grid, [class*='-grid'] { grid-template-columns: 1fr !important; }
+}
 </style>

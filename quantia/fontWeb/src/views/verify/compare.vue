@@ -777,4 +777,20 @@ function renderNavChart() {
 .insights-title { font-weight: 600; margin-bottom: 8px; font-size: 14px; color: #333; }
 .insights-body { line-height: 1.8; }
 .insight-item { padding: 2px 0; font-size: 12px; color: #444; }
+
+/* ─── 移动端适配（PR-08b） ─── */
+@media (max-width: 768px) {
+  .verify-compare { padding: 10px 8px; }
+  .feature-tabs { overflow-x: auto; padding: 0 6px; gap: 0; }
+  .feature-tab { padding: 0 12px; font-size: 12px; flex-shrink: 0; }
+  .toolbar { flex-direction: column; align-items: stretch; padding: 10px; gap: 10px; }
+  .toolbar-group { width: 100%; }
+  .toolbar-group .el-date-editor,
+  .toolbar-group .el-select { width: 100% !important; margin-left: 0 !important; }
+  .radio-group { flex-wrap: wrap; }
+  .radio-btn { flex: 1 1 calc(33.33% - 1px); text-align: center; padding: 5px 6px; font-size: 11px; }
+  .cmp-table { font-size: 11px; }
+  .cmp-table th, .cmp-table td { padding: 6px 4px; }
+  .insights-card { padding: 10px 12px; }
+}
 </style>

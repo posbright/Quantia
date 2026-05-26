@@ -94,3 +94,71 @@ $stock-down-color: #67c23a;
 .mr-10 { margin-right: 10px; }
 .p-10 { padding: 10px; }
 .p-20 { padding: 20px; }
+
+// ─── 设置页全局移动适配（PR-08）───
+// 适用于 settings-page / audit-page / token-usage-page 等顶级容器
+@media (max-width: 768px) {
+  .settings-page,
+  .audit-page,
+  .token-usage-page {
+    padding: 10px 8px !important;
+  }
+  .settings-page .el-card__header,
+  .audit-page .el-card__header,
+  .token-usage-page .el-card__header {
+    padding: 10px 12px;
+  }
+  .settings-page .el-card__body,
+  .audit-page .el-card__body,
+  .token-usage-page .el-card__body {
+    padding: 12px;
+  }
+  // 过滤栏/工具栏强制纵向堆叠
+  .settings-page .filter-bar,
+  .settings-page .toolbar,
+  .audit-page .filter-bar,
+  .audit-page .toolbar,
+  .token-usage-page .filter-bar,
+  .token-usage-page .toolbar {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 8px !important;
+  }
+  // 内联 el-form 在 mobile 改成块级，避免被压成单行
+  .settings-page .el-form--inline .el-form-item,
+  .audit-page .el-form--inline .el-form-item,
+  .token-usage-page .el-form--inline .el-form-item {
+    display: block;
+    margin-right: 0;
+    margin-bottom: 8px;
+  }
+  .settings-page .el-form--inline .el-form-item .el-input,
+  .settings-page .el-form--inline .el-form-item .el-select,
+  .settings-page .el-form--inline .el-form-item .el-date-editor,
+  .audit-page .el-form--inline .el-form-item .el-input,
+  .audit-page .el-form--inline .el-form-item .el-select,
+  .audit-page .el-form--inline .el-form-item .el-date-editor,
+  .token-usage-page .el-form--inline .el-form-item .el-input,
+  .token-usage-page .el-form--inline .el-form-item .el-select,
+  .token-usage-page .el-form--inline .el-form-item .el-date-editor {
+    width: 100% !important;
+  }
+  // 表格紧凑：缩小内边距 + 字号，原生横向滚动保留
+  .settings-page .el-table,
+  .audit-page .el-table,
+  .token-usage-page .el-table {
+    font-size: 12px;
+  }
+  .settings-page .el-table .cell,
+  .audit-page .el-table .cell,
+  .token-usage-page .el-table .cell {
+    padding: 0 6px !important;
+  }
+  // 分页控件紧凑
+  .settings-page .el-pagination,
+  .audit-page .el-pagination,
+  .token-usage-page .el-pagination {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+}

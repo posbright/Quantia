@@ -1699,4 +1699,18 @@ async function computeOOS() {
   .summary-strip { grid-template-columns: repeat(3, minmax(140px, 1fr)); }
   .chart-grid, .suggest-grid, .stat-grid, .oos-grid { grid-template-columns: 1fr; }
 }
+
+/* ─── 移动端适配（PR-08b） ─── */
+@media (max-width: 768px) {
+  .verify-optimize, .optimize-page { padding: 10px 8px !important; }
+  .feature-tabs { overflow-x: auto; padding: 0 6px; }
+  .feature-tab { padding: 0 12px; font-size: 12px; flex-shrink: 0; }
+  .toolbar, .filter-bar, .control-bar { flex-direction: column; align-items: stretch; gap: 10px; }
+  .toolbar-group, .control-group { width: 100%; }
+  .el-date-editor, .el-select { width: 100% !important; }
+  .summary-strip { grid-template-columns: repeat(2, 1fr) !important; }
+  .chart-grid, .suggest-grid, .stat-grid, .oos-grid { grid-template-columns: 1fr !important; }
+  table { font-size: 11px; }
+  table th, table td { padding: 6px 4px !important; }
+}
 </style>

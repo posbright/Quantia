@@ -15,8 +15,8 @@
         </div>
       </div>
 
-      <!-- 聚宽风格表格 -->
-      <el-table :data="paperList" v-loading="loading" stripe
+      <!-- 聚宽风格表格（仅桌面） -->
+      <el-table v-if="!isMobile" :data="paperList" v-loading="loading" stripe
                 @selection-change="onSelectionChange"
                 class="jq-table" header-cell-class-name="jq-header-cell"
                 table-layout="auto">
@@ -93,6 +93,70 @@
           </template>
         </el-table-column>
       </el-table>
+      <!-- 移动端：卡片视图 -->
+      <div v-if="isMobile" v-loading="loading" class="pt-card-list">
+        <div
+          v-for="row in paperList"
+          :key="row.id"
+          class="pt-card"
+        >
+          <div class="pt-card-head">
+            <el-checkbox
+              :model-value="selectedRows.some(r => r.id === row.id)"
+              @change="(v: any) => togglePick(row, !!v)"
+              size="small"
+            />
+            <span class="pt-card-name" @click="viewDetail(row.id)">
+              {{ row.name || `模拟盘-${row.id}` }}
+            </span>
+            <span class="pt-card-status" :class="'jq-status-' + row.status">{{ statusLabel(row.status) }}</span>
+          </div>
+          <div class="pt-card-body">
+            <div class="pt-card-field">
+              <span class="pt-lbl">累计收益</span>
+              <span :class="retCls(row.profit_rate)">{{ fmtPct(row.profit_rate) }}</span>
+            </div>
+            <div class="pt-card-field">
+              <span class="pt-lbl">年化</span>
+              <span :class="retCls(row.annual_return)">{{ fmtPctDash(row.annual_return) }}</span>
+            </div>
+            <div class="pt-card-field">
+              <span class="pt-lbl">今日</span>
+              <span :class="retCls(row.today_return)">{{ fmtPctDash(row.today_return) }}</span>
+            </div>
+            <div class="pt-card-field">
+              <span class="pt-lbl">最大回撤</span>
+              <span class="val-green">{{ row.max_drawdown ? '-' + row.max_drawdown.toFixed(2) + '%' : '——' }}</span>
+            </div>
+            <div class="pt-card-field">
+              <span class="pt-lbl">频率</span>
+              <span>{{ frequencyLabel(row.run_frequency) }}</span>
+            </div>
+            <div class="pt-card-field">
+              <span class="pt-lbl">开始</span>
+              <span>{{ row.start_at || row.started_at || row.last_run_date || '--' }}</span>
+            </div>
+          </div>
+          <div class="pt-card-ops">
+            <a class="jq-op jq-op-primary" @click="viewDetail(row.id)">查看</a>
+            <span class="jq-op-sep">|</span>
+            <a class="jq-op" :class="{ 'jq-op-disabled': row.status === 'stopped' }"
+               @click="row.status !== 'stopped' && doAction(row.id, row.status === 'paused' ? 'resume' : 'pause')">
+              {{ row.status === 'paused' ? '恢复' : '暂停' }}
+            </a>
+            <span class="jq-op-sep">|</span>
+            <a class="jq-op jq-op-danger" :class="{ 'jq-op-disabled': row.status === 'stopped' }"
+               @click="row.status !== 'stopped' && doAction(row.id, 'stop')">停止</a>
+            <span class="jq-op-sep">|</span>
+            <a class="jq-op jq-op-primary" :class="{ 'jq-op-disabled': row.status !== 'running' }"
+               @click="row.status === 'running' && doRun(row.id)">
+              {{ runningId === row.id ? '执行中...' : '执行' }}
+            </a>
+            <span class="jq-op-sep">|</span>
+            <a class="jq-op jq-op-danger" @click="doDelete(row.id, row.name)">删除</a>
+          </div>
+        </div>
+      </div>
       <el-empty v-if="!loading && paperList.length === 0"
                  description="还没有模拟盘，点击「创建模拟盘」开始">
         <el-button type="primary" @click="openCreateDialog">创建模拟盘</el-button>
@@ -1202,6 +1266,14 @@ function onSelectionChange(rows: any[]) {
   selectedRows.value = rows
 }
 
+// 移动端卡片视图：手动维护选中态
+function togglePick(row: any, picked: boolean) {
+  const id = row.id
+  const filtered = selectedRows.value.filter(r => r.id !== id)
+  if (picked) filtered.push(row)
+  selectedRows.value = filtered
+}
+
 // ── 导航 ──
 function viewDetail(id: number) {
   router.push({ path: '/algo/paper', query: { id: String(id) } })
@@ -2020,5 +2092,62 @@ onUnmounted(() => {
   .code-toolbar { flex-direction: column; align-items: stretch; }
   .code-toolbar-right { justify-content: flex-end; }
   .code-bt-metrics { gap: 12px; }
+}
+
+/* ─── 移动端卡片视图（PR-07） ─── */
+.pt-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+.pt-card {
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 10px 12px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+}
+.pt-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px dashed #ebeef5;
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+}
+.pt-card-name {
+  flex: 1;
+  font-weight: 600;
+  color: #409eff;
+  font-size: 15px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pt-card-status { font-size: 12px; }
+.pt-card-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+.pt-card-field {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pt-lbl { color: #909399; }
+.pt-card-ops {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed #ebeef5;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 13px;
 }
 </style>
