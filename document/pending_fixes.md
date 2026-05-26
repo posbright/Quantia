@@ -72,14 +72,13 @@ M3 已完成工具栏 / 分页移动适配，但 plan §PR-05 计划的「`<md` 
 - [ ] 接入 `ResponsiveDataView` 组件（或新建），`isMobile ? 'card' : 'table'`
 - [ ] 卡片字段：代码 / 名称 / 最新价 / 涨跌幅 / 关注按钮 / 分析按钮
 
-### [Feat-M3-PR07-extra] paper-trading 拆分（部分完成）
+### [Feat-M3-PR07-extra] paper-trading 拆分（已完成）
 
-M3 仅做样式与弹窗宽度适配，未拆分 128KB 单文件。已抽出 2 个子组件（`CreatePaperDialog.vue` / `TradeDecisionDialog.vue`），主文件 128KB → 114.5KB。剩余：
+M3 仅做样式与弹窗宽度适配，未拆分 128KB 单文件。已完成全部 3 个子组件抽出，主文件 128KB → 94.5KB（−27%）。
 
-- [ ] 抽出 `StockDialog.vue` 子组件（K 线弹窗 + ECharts 渲染逻辑；stockDailyEl/stockWeeklyEl/stockMonthlyEl refs + renderActiveStockChart 耦合较高）
-- [ ] 抽出后 `index.vue` 期望降到 ~50KB
 - [x] 2026-05-26 抽出 `TradeDecisionDialog.vue`（交易决策依据弹窗）
 - [x] 2026-05-26 抽出 `CreatePaperDialog.vue`（新建模拟盘弹窗）
+- [x] 2026-05-26 抽出 `StockDialog.vue` 子组件（K 线弹窗 + ECharts 渲染逻辑；3 个 chart refs + render/dispose/indicator snapshot/trade markers/ciOverlay 全部内聚）；父组件 `openPaperStock` 仅设置 `selectedStock + visible`，子组件 watch 加载 3 周期 K 线并渲染
 
 ---
 
