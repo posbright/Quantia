@@ -253,6 +253,8 @@ class Application(tornado.web.Application):
             (r"/quantia/api/factor_lab/my_configs", factorLabHandler.FactorLabConfigsHandler),
             (r"/quantia/api/factor_lab/configs/(\d+)", factorLabHandler.FactorLabDeleteConfigHandler),
             (r"/quantia/api/factor_lab/export_code", factorLabHandler.FactorLabExportCodeHandler),
+            # ── 性能监控（前端 web-vitals 上报，仅接收不处理）──
+            (r"/quantia/api/metric/web_vitals", WebVitalsHandler),
             # ── Vue SPA 路由 ──
             # 静态资源（assets/）
             (r"/assets/(.*)", tornado.web.StaticFileHandler, {"path": os.path.join(static_path, "assets")}),
@@ -278,6 +280,14 @@ class Application(tornado.web.Application):
         except Exception as e:
             logging.warning(f"数据库连接失败，部分功能不可用: {e}")
             self.db = None
+
+
+class WebVitalsHandler(tornado.web.RequestHandler):
+    """接收前端 web-vitals 性能上报，仅返回 204 不做处理。"""
+
+    def post(self):
+        self.set_status(204)
+        self.finish()
 
 
 class SPAHandler(tornado.web.RequestHandler, ABC):
