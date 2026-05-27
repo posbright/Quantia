@@ -21,6 +21,22 @@
     <el-table :data="historyList" v-loading="loading" stripe empty-text="暂无报告数据">
       <el-table-column prop="code" label="代码" width="90" />
       <el-table-column prop="name" label="名称" width="120" />
+      <el-table-column label="评级" width="90">
+        <template #default="{ row }">
+          <el-tag v-if="row.rating" :type="ratingType(row.rating)" size="small">
+            {{ ratingLabel(row.rating) }}
+          </el-tag>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="护城河" width="90" align="right">
+        <template #default="{ row }">
+          {{ row.moat_score ?? '-' }}<span v-if="row.moat_score !== null && row.moat_score !== undefined">/5</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="版本" width="80" align="right">
+        <template #default="{ row }">v{{ row.report_version || 1 }}</template>
+      </el-table-column>
       <el-table-column prop="model" label="模型" width="140" />
       <el-table-column prop="tokens_used" label="Token" width="90" align="right" />
       <el-table-column label="耗时" width="90" align="right">
@@ -48,6 +64,37 @@
 
     <!-- 报告详情弹窗 -->
     <el-dialog v-model="dialogVisible" title="报告详情" width="min(900px, 92vw)" top="5vh">
+      <div v-if="detailReport" class="structured-summary">
+        <div class="summary-row">
+          <el-tag v-if="detailReport.rating" :type="ratingType(detailReport.rating)">
+            {{ ratingLabel(detailReport.rating) }}
+          </el-tag>
+          <span v-if="detailReport.rating_score !== null && detailReport.rating_score !== undefined">
+            评分 {{ detailReport.rating_score }}
+          </span>
+          <span v-if="detailReport.moat_score !== null && detailReport.moat_score !== undefined">
+            护城河 {{ detailReport.moat_score }}/5
+          </span>
+          <span v-if="detailReport.target_price_low || detailReport.target_price_high">
+            目标 {{ formatPriceRange(detailReport) }}
+          </span>
+          <span v-if="detailReport.stop_loss_price">止损 {{ detailReport.stop_loss_price }}</span>
+        </div>
+        <div class="advice-grid">
+          <div v-if="detailReport.short_term_advice" class="advice-item">
+            <strong>短期</strong>
+            <span>{{ detailReport.short_term_advice }}</span>
+          </div>
+          <div v-if="detailReport.mid_term_advice" class="advice-item">
+            <strong>中期</strong>
+            <span>{{ detailReport.mid_term_advice }}</span>
+          </div>
+          <div v-if="detailReport.long_term_advice" class="advice-item">
+            <strong>长期</strong>
+            <span>{{ detailReport.long_term_advice }}</span>
+          </div>
+        </div>
+      </div>
       <div class="report-detail-body markdown-body" v-html="detailHtml"></div>
     </el-dialog>
   </div>
@@ -56,7 +103,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onActivated } from 'vue'
 import { getReportHistory, getReportDetail } from '@/api/report'
-import type { ReportHistoryItem } from '@/api/report'
+import type { ReportDetail, ReportHistoryItem, ReportRating } from '@/api/report'
 
 const loading = ref(false)
 const filterCode = ref('')
@@ -66,6 +113,7 @@ const pageSize = 20
 const total = ref(0)
 const dialogVisible = ref(false)
 const detailHtml = ref('')
+const detailReport = ref<ReportDetail | null>(null)
 
 let mdInstance: { render: (src: string) => string } | null = null
 
@@ -122,14 +170,37 @@ function handlePageChange(page: number) {
 async function viewReport(row: ReportHistoryItem) {
   try {
     const md = await ensureMd()
-    const res = await getReportDetail(row.id) as any
+    const res = await getReportDetail(row.id) as any as ReportDetail
     const reportMd = res?.report_md || ''
+    detailReport.value = res
     detailHtml.value = md.render(reportMd)
     dialogVisible.value = true
   } catch {
+    detailReport.value = null
     detailHtml.value = '<p>加载失败</p>'
     dialogVisible.value = true
   }
+}
+
+function ratingLabel(rating?: ReportRating | null) {
+  if (rating === 'buy') return '买入'
+  if (rating === 'avoid') return '回避'
+  if (rating === 'hold') return '观望'
+  return '-'
+}
+
+function ratingType(rating?: ReportRating | null) {
+  if (rating === 'buy') return 'success'
+  if (rating === 'avoid') return 'danger'
+  if (rating === 'hold') return 'warning'
+  return 'info'
+}
+
+function formatPriceRange(report: ReportDetail) {
+  const low = report.target_price_low
+  const high = report.target_price_high
+  if (low && high && low !== high) return `${low}-${high}`
+  return `${low || high || '-'}`
 }
 
 onMounted(() => {
@@ -164,5 +235,39 @@ onActivated(() => {
   max-height: 70vh;
   overflow-y: auto;
   padding: 12px;
+}
+.structured-summary {
+  border-bottom: 1px solid var(--el-border-color-light);
+  margin-bottom: 12px;
+  padding: 0 4px 12px;
+}
+.summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+.advice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+.advice-item {
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.5;
+}
+.advice-item strong {
+  color: var(--el-text-color-primary);
+}
+.advice-item span {
+  color: var(--el-text-color-regular);
 }
 </style>

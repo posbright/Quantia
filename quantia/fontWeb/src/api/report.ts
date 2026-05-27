@@ -11,7 +11,24 @@ export interface StockSearchItem {
   industry?: string
 }
 
-export interface ReportHistoryItem {
+export type ReportRating = 'buy' | 'hold' | 'avoid'
+
+export interface ReportStructuredFields {
+  rating?: ReportRating | null
+  rating_score?: number | null
+  short_term_advice?: string | null
+  mid_term_advice?: string | null
+  long_term_advice?: string | null
+  target_price_low?: number | null
+  target_price_high?: number | null
+  stop_loss_price?: number | null
+  moat_score?: number | null
+  moat_factors?: Record<string, boolean>
+  report_version?: number | null
+  prev_report_id?: number | null
+}
+
+export interface ReportHistoryItem extends ReportStructuredFields {
   id: number
   code: string
   name: string
@@ -21,7 +38,7 @@ export interface ReportHistoryItem {
   created_at: string
 }
 
-export interface ReportDetail {
+export interface ReportDetail extends ReportStructuredFields {
   id: number
   code: string
   name: string
@@ -76,6 +93,17 @@ export interface StockFallbackData {
     kdj_d: number
     kdj_j: number
     rsi_6: number
+  }
+  financials?: {
+    report_date?: string
+    rd_expense?: number
+    admin_expense?: number
+    selling_expense?: number
+    financial_expense?: number
+    rd_ratio?: number
+    revenue?: number
+    roe?: number
+    gross_margin?: number
   }
 }
 
