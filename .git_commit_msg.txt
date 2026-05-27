@@ -1,17 +1,20 @@
-fix(frontend): 首页"今日精选/行业资金流向"空数据修复
+feat(frontend): 行业资金流向可视化链路增强与样本股Top10
 
-根因：/api_data 后端返回 {columns, data, total}，
-而 home/index.vue loadPicks/loadFundFlow 读取 r.rows，
-始终为 undefined → 空数组 → 走空态占位文案。
+首页资金流向交互优化：
+- 修复行业资金流向点击后详情页常见空数据问题（跳转不再强制带日期）
+- 新增行业样本股 Top10 展示（按主力净流入绝对值）
+- 样本股支持一键跳转：
+  1) 个股资金流页面（带 keyword）
+  2) 指标详情 K 线页面（带 code/name/date/strategy）
+- 弹层抽为可复用组件 IndustryTopStocksDialog，便于后续在其它页面复用
 
-修复：
-- loadPicks / loadFundFlow 取数改为 r.data || r.rows
-  （保留 rows 兜底，与 loadIndexes/loadSelection 一致）
-- pickField 候选字段补齐真实表列：
-  · cn_stock_strategy_enter 涨跌幅 = p_change（前置最优先）
-  · cn_stock_fund_flow_industry 净流入 = fund_amount（前置最优先）
+数据口径与可用性改进：
+- StockData 支持路由 query 深链过滤（keyword/date）
+- 当仅有 keyword 且未指定 date 时自动放开日期过滤，避免落到无数据交易日
 
-验证：localhost 黑盒
-  /api_data?name=cn_stock_strategy_enter → total=5388, data[].p_change ✓
-  /api_data?name=cn_stock_fund_flow_industry → total=13888, data[].fund_amount ✓
-vite build ✓ dist 已部署
+验证：
+- vue-tsc + vite build 通过
+- 本地 black-box 验证：
+  - 行业条目点击可弹出 Top10
+  - Top10 资金流按钮可跳 /fund-flow/individual?keyword=<code>
+  - Top10 K线按钮可跳 /indicator/detail?code=<code>&strategy=cn_stock_fund_flow

@@ -168,6 +168,21 @@ const loadData = async () => {
   }
 }
 
+const applyRouteQueryFilters = () => {
+  const q = route.query as Record<string, any>
+  if (typeof q.keyword === 'string') {
+    searchKeyword.value = q.keyword.trim()
+  } else {
+    searchKeyword.value = ''
+  }
+  if (typeof q.date === 'string' && q.date.trim()) {
+    selectedDate.value = q.date.trim()
+  } else if (typeof q.keyword === 'string' && q.keyword.trim()) {
+    // 行业/个股关键词跳转若不带日期，放开日期过滤，避免落到无数据交易日
+    selectedDate.value = ''
+  }
+}
+
 // 查看指标详情
 const viewIndicators = (row: any) => {
   router.push({
@@ -371,11 +386,12 @@ const getRowClassName = ({ row }: { row: any }) => {
 
 // 监听路由变化
 watch(
-  () => route.path,
+  () => route.fullPath,
   () => {
+    applyRouteQueryFilters()
     currentPage.value = 1
     columnDefs.value = []
-    lastLoadedPath = route.path
+    lastLoadedPath = route.fullPath
     loadData()
   }
 )
@@ -383,27 +399,29 @@ watch(
 // keep-alive 重新激活时，检查路由是否变化并重新加载
 let lastLoadedPath = ''
 onActivated(() => {
-  if (route.path !== lastLoadedPath) {
+  if (route.fullPath !== lastLoadedPath) {
+    applyRouteQueryFilters()
     currentPage.value = 1
     columnDefs.value = []
-    lastLoadedPath = route.path
+    lastLoadedPath = route.fullPath
     loadData()
   }
 })
 
 onMounted(async () => {
   // 立即记录当前路径，避免 onActivated 在 await 期间重复加载
-  lastLoadedPath = route.path
+  lastLoadedPath = route.fullPath
+  applyRouteQueryFilters()
   // noDateFilter 模式下不设置日期，加载所有日期的数据
   if (noDateFilter.value) {
-    selectedDate.value = ''
+    if (!route.query.date) selectedDate.value = ''
     loadData()
     return
   }
   // 从服务端获取正确的交易日期，避免使用客户端本地日期导致日期不匹配
   try {
     const dateRes: any = await getTradeDate()
-    if (dateRes && dateRes.run_date) {
+    if (dateRes && dateRes.run_date && !route.query.date && !route.query.keyword) {
       // 实时数据表用 run_date_nph（含当日未收盘），非实时表用 run_date（仅已收盘）
       const isRealtime = route.meta.isRealtime as boolean
       selectedDate.value = isRealtime ? dateRes.run_date_nph : dateRes.run_date

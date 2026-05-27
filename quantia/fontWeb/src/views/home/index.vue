@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated, onDeactivated, onUnmounted } from 'vue'
+import dayjs from 'dayjs'
 import { useRouter } from 'vue-router'
 import {
   getStockData,
@@ -7,12 +8,14 @@ import {
   getPaperTradingList,
   getStrategyCodeList
 } from '@/api/stock'
+import IndustryTopStocksDialog from '@/components/IndustryTopStocksDialog.vue'
 
 const router = useRouter()
 
 // ---------- 顶部交易日 ----------
 const tradeDate = ref<string>('--')
 const tradeDateLatest = ref<string>('--')
+const tradeDateClose = ref<string>('--')
 
 // ---------- 核心指标卡 ----------
 interface KpiCard {
@@ -98,8 +101,11 @@ const indexLoading = ref(true)
 interface PickRow {
   code: string
   name: string
+  date: string
   latest_price: number | null
   change_rate: number | null
+  volume: number | null
+  amount: number | null
 }
 const picks = ref<PickRow[]>([])
 const picksLoading = ref(true)
@@ -109,9 +115,14 @@ interface FundFlowRow {
   name: string
   changeRate: number | null
   netInflow: number | null
+  sampleStocks: string[]
 }
 const fundFlows = ref<FundFlowRow[]>([])
 const fundLoading = ref(true)
+const activeDataDate = ref('')
+const industryDialogVisible = ref(false)
+const activeIndustry = ref<FundFlowRow | null>(null)
+let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 // ---------- 功能矩阵 ----------
 const features = [
@@ -168,15 +179,30 @@ function pickField(row: any, candidates: string[]): any {
 async function loadTradeDate() {
   try {
     const r: any = await getTradeDate()
-    tradeDate.value = r?.run_date || '--'
-    tradeDateLatest.value = r?.run_date_nph || r?.run_date || '--'
+    const runDate = String(r?.run_date || '')
+    const runDateNph = String(r?.run_date_nph || r?.run_date || '')
+    const isTradingHours = (() => {
+      const now = dayjs()
+      const hm = now.hour() * 100 + now.minute()
+      return hm >= 930 && hm <= 1500
+    })()
+
+    tradeDateClose.value = runDate || runDateNph || '--'
+    tradeDateLatest.value = runDateNph || runDate || '--'
+    activeDataDate.value = isTradingHours ? (runDateNph || runDate) : (runDate || runDateNph)
+    tradeDate.value = activeDataDate.value || '--'
   } catch { /* ignore */ }
 }
 
 async function loadIndexes() {
   indexLoading.value = true
   try {
-    const r: any = await getStockData({ name: 'cn_index_spot', page: 1, page_size: 200 })
+    const r: any = await getStockData({
+      name: 'cn_index_spot',
+      date: activeDataDate.value || undefined,
+      page: 1,
+      page_size: 200
+    })
     const rows: any[] = r?.rows || r?.data || []
     for (const idx of majorIndexes.value) {
       const hit = rows.find(
@@ -209,7 +235,12 @@ async function loadIndexes() {
 async function loadSelection() {
   const kpi = kpis.value.find((k) => k.key === 'selection')!
   try {
-    const r: any = await getStockData({ name: 'cn_stock_selection', page: 1, page_size: 1 })
+    const r: any = await getStockData({
+      name: 'cn_stock_selection',
+      date: activeDataDate.value || undefined,
+      page: 1,
+      page_size: 1
+    })
     const total = Number(r?.total ?? r?.count ?? 0)
     kpi.value = total > 0 ? total.toLocaleString('zh-CN') : '0'
     kpi.delta = total > 0 ? '只入选' : '暂无'
@@ -273,18 +304,46 @@ async function loadStrategy() {
 async function loadPicks() {
   picksLoading.value = true
   try {
-    const r: any = await getStockData({ name: 'cn_stock_strategy_enter', page: 1, page_size: 8 })
-    const rows: any[] = r?.data || r?.rows || []
-    picks.value = rows.map((row) => {
-      const p = pickField(row, ['latest_price', 'new_price', 'close'])
-      const c = pickField(row, ['p_change', 'change_rate', 'changepercent', 'pct_chg'])
-      return {
-        code: String(row.code || ''),
-        name: String(row.name || ''),
-        latest_price: p === null ? null : Number(p),
-        change_rate: c === null ? null : Number(c)
-      }
+    const r: any = await getStockData({
+      name: 'cn_stock_strategy_enter',
+      date: activeDataDate.value || undefined,
+      page: 1,
+      page_size: 120
     })
+    const rows: any[] = r?.data || r?.rows || []
+    const byCode = new Map<string, PickRow>()
+    rows.forEach((row) => {
+      const code = String(row.code || '')
+      if (!code) return
+      const vol = pickField(row, ['volume'])
+      const amt = pickField(row, ['amount'])
+      const rawP = pickField(row, ['latest_price', 'new_price', 'close'])
+      // strategy_enter 表多数只给 amount/volume；用均价兜底，避免前端出现大面积 --
+      const estPrice = rawP ?? ((vol && Number(vol) > 0 && amt) ? (Number(amt) / Number(vol)) : null)
+      const c = pickField(row, ['p_change', 'change_rate', 'changepercent', 'pct_chg'])
+      const candidate: PickRow = {
+        code,
+        name: String(row.name || ''),
+        date: String(row.date || activeDataDate.value || ''),
+        latest_price: estPrice === null ? null : Number(estPrice),
+        change_rate: c === null ? null : Number(c),
+        volume: vol === null ? null : Number(vol),
+        amount: amt === null ? null : Number(amt)
+      }
+      const existed = byCode.get(code)
+      if (!existed) {
+        byCode.set(code, candidate)
+        return
+      }
+      const score = (x: PickRow) =>
+        (x.change_rate !== null ? 4 : 0) +
+        (x.latest_price !== null ? 2 : 0) +
+        (x.amount !== null ? 1 : 0)
+      if (score(candidate) > score(existed)) byCode.set(code, candidate)
+    })
+    picks.value = Array.from(byCode.values())
+      .sort((a, b) => (b.change_rate ?? -999) - (a.change_rate ?? -999))
+      .slice(0, 8)
   } catch (e) {
     console.warn('[home] loadPicks failed', e)
   } finally {
@@ -295,7 +354,12 @@ async function loadPicks() {
 async function loadFundFlow() {
   fundLoading.value = true
   try {
-    const r: any = await getStockData({ name: 'cn_stock_fund_flow_industry', page: 1, page_size: 50 })
+    const r: any = await getStockData({
+      name: 'cn_stock_fund_flow_industry',
+      date: activeDataDate.value || undefined,
+      page: 1,
+      page_size: 80
+    })
     const rows: any[] = r?.data || r?.rows || []
     const enriched: FundFlowRow[] = rows.map((row) => {
       const c = pickField(row, ['change_rate', 'changepercent'])
@@ -306,10 +370,18 @@ async function loadFundFlow() {
         'today_main_net_inflow_ratio',
         'net_inflow'
       ])
+      const sampleStocks = [
+        pickField(row, ['stock_name']),
+        pickField(row, ['stock_name_5']),
+        pickField(row, ['stock_name_10'])
+      ]
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
       return {
         name: String(row.name || row.industry || ''),
         changeRate: c === null ? null : Number(c),
-        netInflow: inflow === null ? null : Number(inflow)
+        netInflow: inflow === null ? null : Number(inflow),
+        sampleStocks: Array.from(new Set(sampleStocks)).slice(0, 6)
       }
     })
     enriched.sort((a, b) => Math.abs(b.netInflow || 0) - Math.abs(a.netInflow || 0))
@@ -330,19 +402,109 @@ const maxFundAbs = computed(() => {
 })
 
 onMounted(() => {
-  loadTradeDate()
-  Promise.allSettled([
-    loadIndexes(),
-    loadSelection(),
-    loadPaper(),
-    loadStrategy(),
-    loadPicks(),
-    loadFundFlow()
-  ])
+  refreshHomeData(true)
+  refreshTimer = setInterval(() => {
+    refreshHomeData(false)
+  }, 60 * 1000)
 })
+
+onActivated(() => {
+  if (!refreshTimer) {
+    refreshTimer = setInterval(() => {
+      refreshHomeData(false)
+    }, 60 * 1000)
+  }
+  refreshHomeData(false)
+})
+
+onDeactivated(() => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+})
+
+onUnmounted(() => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+})
+
+async function refreshHomeData(fullLoad: boolean) {
+  await loadTradeDate()
+  const tasks = [loadIndexes(), loadSelection(), loadPicks(), loadFundFlow()]
+  if (fullLoad) {
+    tasks.push(loadPaper(), loadStrategy())
+  }
+  await Promise.allSettled(tasks)
+}
 
 function go(to?: string) {
   if (to) router.push(to)
+}
+
+function goIndexKline(idx: IndexCell) {
+  router.push({
+    path: '/indicator/detail',
+    query: {
+      code: idx.code,
+      name: idx.name,
+      date: activeDataDate.value || tradeDateLatest.value,
+      strategy: 'cn_index_spot'
+    }
+  })
+}
+
+function goStockKline(p: PickRow) {
+  if (!p.code) return
+  router.push({
+    path: '/indicator/detail',
+    query: {
+      code: p.code,
+      name: p.name,
+      date: p.date || activeDataDate.value || tradeDate.value,
+      strategy: 'cn_stock_strategy_enter'
+    }
+  })
+}
+
+function openIndustryFlow(f: FundFlowRow) {
+  activeIndustry.value = f
+  industryDialogVisible.value = true
+}
+
+function goIndustryDetail(industryName?: string) {
+  const name = industryName || activeIndustry.value?.name
+  if (!name) return
+  router.push({
+    path: '/fund-flow/industry',
+    query: {
+      keyword: name
+    }
+  })
+}
+
+function goSampleStock(nameOrCode: string) {
+  router.push({
+    path: '/fund-flow/individual',
+    query: {
+      keyword: nameOrCode
+    }
+  })
+}
+
+function goSampleKline(s: any) {
+  if (!s.code) return
+  router.push({
+    path: '/indicator/detail',
+    query: {
+      code: s.code,
+      name: s.name,
+      date: s.date || activeDataDate.value || tradeDateClose.value,
+      strategy: 'cn_stock_fund_flow'
+    }
+  })
 }
 </script>
 
@@ -377,11 +539,11 @@ function go(to?: string) {
         </div>
         <div class="hero-right">
           <div class="trade-date-card">
-            <div class="td-label">最近交易日</div>
+            <div class="td-label">当前交易日</div>
             <div class="td-value">{{ tradeDate }}</div>
             <div class="td-foot">
               <el-icon><Refresh /></el-icon>
-              <span>当前时段：{{ tradeDateLatest }}</span>
+              <span>最近收盘日：{{ tradeDateClose }}</span>
             </div>
           </div>
         </div>
@@ -426,7 +588,7 @@ function go(to?: string) {
         <span class="block-sub">实时跟踪四大主流指数</span>
       </div>
       <div class="index-row">
-        <div v-for="idx in majorIndexes" :key="idx.code" class="index-card">
+        <div v-for="idx in majorIndexes" :key="idx.code" class="index-card clickable" @click="goIndexKline(idx)">
           <el-skeleton v-if="indexLoading" :rows="2" animated />
           <template v-else>
             <div class="idx-name">{{ idx.name }}</div>
@@ -463,7 +625,7 @@ function go(to?: string) {
           <span>当日暂无策略选股结果</span>
         </div>
         <div v-else class="pick-list">
-          <div v-for="(p, i) in picks" :key="p.code" class="pick-item">
+          <div v-for="(p, i) in picks" :key="p.code" class="pick-item clickable" @click="goStockKline(p)">
             <div class="pick-rank" :class="{ top3: i < 3 }">{{ i + 1 }}</div>
             <div class="pick-main">
               <div class="pick-name">{{ p.name || '—' }}</div>
@@ -496,7 +658,7 @@ function go(to?: string) {
           <span>暂无资金流向数据</span>
         </div>
         <div v-else class="fund-list">
-          <div v-for="f in fundFlows" :key="f.name" class="fund-item">
+          <div v-for="f in fundFlows" :key="f.name" class="fund-item clickable" @click="openIndustryFlow(f)">
             <div class="fund-name">
               <span>{{ f.name }}</span>
               <span class="fund-chg" :style="{ color: trendColor(f.changeRate) }">
@@ -517,6 +679,14 @@ function go(to?: string) {
         </div>
       </div>
     </section>
+
+    <IndustryTopStocksDialog
+      v-model="industryDialogVisible"
+      :industry="activeIndustry"
+      @open-industry-detail="goIndustryDetail"
+      @open-stock-flow="goSampleStock($event.code || $event.name)"
+      @open-stock-kline="goSampleKline"
+    />
 
     <!-- ============ 功能矩阵 ============ -->
     <section class="block">
@@ -792,6 +962,8 @@ function go(to?: string) {
     box-shadow: 0 10px 24px rgba(67, 97, 238, 0.16);
   }
 
+  &.clickable { cursor: pointer; }
+
   .idx-name { font-size: 14px; font-weight: 600; color: #1a1f36; }
   .idx-code { font-size: 11px; color: #c0c4cc; margin-bottom: 8px; }
   .idx-price { font-size: 22px; font-weight: 700; line-height: 1.1; }
@@ -836,6 +1008,8 @@ function go(to?: string) {
   transition: background 0.2s;
 
   &:hover { background: #f7f9fc; }
+
+  &.clickable { cursor: pointer; }
 }
 .pick-rank {
   width: 24px;
@@ -869,7 +1043,10 @@ function go(to?: string) {
 
 /* ===== 资金流向 ===== */
 .fund-list { display: flex; flex-direction: column; gap: 12px; }
-.fund-item { font-size: 13px; }
+.fund-item {
+  font-size: 13px;
+  &.clickable { cursor: pointer; }
+}
 .fund-name {
   display: flex;
   justify-content: space-between;
@@ -892,6 +1069,7 @@ function go(to?: string) {
   &.neg { background: linear-gradient(90deg, #95de64, #52c41a); }
 }
 .fund-val { text-align: right; font-size: 12px; font-weight: 500; }
+
 
 /* ===== 功能矩阵 ===== */
 .feature-grid {
