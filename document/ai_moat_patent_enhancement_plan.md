@@ -155,7 +155,7 @@
 ```markdown
 4. `web_search` 使用策略（按优先级）：
    a. 搜索近期新闻: "{股票名} 最新消息 公告"
-   b. 搜索专利/壁垒（仅当 cn_stock_patents 数据缺失/过期 且 行业为科技/医药/制造时）:
+    b. 搜索专利/壁垒（仅当 cn_stock_patents 数据缺失/过期 且 行业为科技/医药/制造/新能源时）:
       - "{公司名} 核心专利 技术壁垒 专利数量 {当前年份}"
    c. 搜索分析师观点: "{股票名} 研报 目标价"（如有余量）
    每次 web_search 限 top_n=3，最多调用 2 次以节省 token。
@@ -163,9 +163,9 @@
 5. `sql_query` 查询 cn_stock_patents 策略:
    - 先查 (**禁止 SELECT ***): 
      ```sql
-     SELECT total_patents, invention_patents, invention_ratio, patent_quality_score,
-            trend_5y_cagr, trend_direction, ipc_primary_desc, tech_domain,
-            avg_citation_count, rd_staff_ratio, key_tech_desc, updated_at
+      SELECT year, total_patents, invention_patents, invention_ratio, patent_quality_score,
+                trend_5y_cagr, trend_direction, ipc_primary_desc, tech_domain,
+                avg_citation_count, pct_international, rd_staff_ratio, key_tech_desc, updated_at
      FROM cn_stock_patents WHERE code='{code}' ORDER BY year DESC LIMIT 1
      ```
    - 如果返回空集或 sql_query 报错（表不存在），标记为"数据缺失"，触发 web_search
@@ -643,7 +643,7 @@ def calculate_trend_metrics(trend_data: list[dict]) -> dict:
     - 新增"四.五、竞争壁垒（护城河）"章节
     - 改造"六、综合判断"为三期限结构
     - web_search 策略增加专利/壁垒查询指引
-    - 约束: 科技/医药/制造行业才查专利
+    - 约束: 科技/医药/制造/新能源行业才查专利
 
 [ ] 1.2 更新结构验证逻辑
     - stockReportHandler._validate_report_structure() 
@@ -659,18 +659,18 @@ def calculate_trend_metrics(trend_data: list[dict]) -> dict:
 ### 3.3 Phase 2 详细任务
 
 ```
-[ ] 2.1 数据库迁移
+[x] 2.1 数据库迁移
     - ALTER TABLE cn_stock_ai_report 新增 10 个字段
     - 新增 2 个索引
 
-[ ] 2.2 后处理模块
+[x] 2.2 后处理模块
     - 新增 quantia/lib/ai/report_parser.py
     - _extract_rating(md) → 'buy'|'hold'|'avoid'
     - _extract_advices(md) → {short, mid, long}
     - _extract_moat(md) → {score, factors}
     - _extract_prices(md) → {target_low, target_high, stop_loss}
 
-[ ] 2.3 Handler 集成
+[x] 2.3 Handler 集成
     - stockReportHandler 生成报告后调用 report_parser
     - 将结构化字段写入数据库
     - report_version 递增逻辑 (需原子操作防并发):
@@ -680,7 +680,7 @@ def calculate_trend_metrics(trend_data: list[dict]) -> dict:
         prev_report_id = 上一版本.id
     - history API 返回新字段供前端筛选
 
-[ ] 2.4 前端（可选）
+[x] 2.4 前端（可选）
     - 报告列表页显示评级标签
     - 报告详情页显示护城河评分条
     - 历史对比: 观点变化时间线
@@ -861,10 +861,10 @@ flowchart TD
 
 1. **第一步**: 用 `sql_query` 查询 cn_stock_patents:
    ```sql
-   SELECT total_patents, invention_patents, invention_ratio, 
+    SELECT year, total_patents, invention_patents, invention_ratio,
           patent_quality_score, trend_5y_cagr, trend_direction,
           ipc_primary_desc, tech_domain, pct_international,
-          avg_citation_count, rd_staff_ratio, key_tech_desc
+             avg_citation_count, rd_staff_ratio, key_tech_desc, updated_at
    FROM cn_stock_patents 
    WHERE code = '{code}' 
    ORDER BY year DESC LIMIT 1
