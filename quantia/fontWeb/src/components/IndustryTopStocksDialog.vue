@@ -145,6 +145,12 @@ function handleOpenKline(s: IndustrySampleStock) {
   visible.value = false
 }
 
+function handleOpenStockDetail(s: IndustrySampleStock) {
+  if (!s.code) return
+  emit('open-stock-kline', s)
+  visible.value = false
+}
+
 function handleOpenIndustryDetail() {
   if (!props.industry?.name) return
   emit('open-industry-detail', props.industry.name)
@@ -175,7 +181,13 @@ function handleOpenIndustryDetail() {
             <div class="stock-left">
               <div class="stock-rank">{{ idx + 1 }}</div>
               <div class="stock-meta">
-                <div class="stock-name">{{ s.name }}</div>
+                <div
+                  class="stock-name"
+                  :class="{ clickable: !!s.code }"
+                  @click.stop="handleOpenStockDetail(s)"
+                >
+                  {{ s.name }}
+                </div>
                 <div class="stock-code">{{ s.code || '--' }}</div>
               </div>
             </div>
@@ -262,6 +274,15 @@ function handleOpenIndustryDetail() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.stock-name.clickable {
+  color: #409eff;
+  cursor: pointer;
+}
+
+.stock-name.clickable:hover {
+  text-decoration: underline;
 }
 .stock-code {
   font-size: 11px;
