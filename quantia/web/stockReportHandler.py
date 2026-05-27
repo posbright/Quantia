@@ -44,6 +44,34 @@ _executor = ThreadPoolExecutor(max_workers=4)
 
 _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
 
+_STRUCTURED_REPORT_FIELDS = [
+    'rating', 'rating_score', 'short_term_advice', 'mid_term_advice',
+    'long_term_advice', 'target_price_low', 'target_price_high',
+    'stop_loss_price', 'moat_score', 'moat_factors',
+    'report_version', 'prev_report_id',
+]
+
+
+def _decode_json_field(raw: Any) -> Any:
+    if raw is None or raw == '':
+        return None
+    if isinstance(raw, (dict, list)):
+        return raw
+    try:
+        return json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return raw
+
+
+def _structured_report_payload(row: tuple, start: int) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    for idx, field in enumerate(_STRUCTURED_REPORT_FIELDS):
+        value = row[start + idx]
+        if field == 'moat_factors':
+            value = _decode_json_field(value) or {}
+        payload[field] = value
+    return payload
+
 
 def _build_fallback_report_from_tools(code: str, stock_name: str, tool_calls: List[Dict[str, Any]]) -> str:
     """Build a deterministic markdown report when LLM returns empty content."""
@@ -191,12 +219,26 @@ def _ensure_report_table():
         tokens_used INT DEFAULT 0,
         latency_ms INT DEFAULT 0,
         quality_score TINYINT DEFAULT NULL COMMENT '结构校验: 100=通过, 50=部分, 0=失败',
+        rating ENUM('buy','hold','avoid') DEFAULT NULL COMMENT '结构化评级',
+        rating_score TINYINT UNSIGNED DEFAULT NULL COMMENT '综合评分(0-100)',
+        short_term_advice VARCHAR(500) DEFAULT NULL COMMENT '短期建议摘要',
+        mid_term_advice VARCHAR(500) DEFAULT NULL COMMENT '中期建议摘要',
+        long_term_advice VARCHAR(500) DEFAULT NULL COMMENT '长期建议摘要',
+        target_price_low FLOAT DEFAULT NULL COMMENT '目标价下限',
+        target_price_high FLOAT DEFAULT NULL COMMENT '目标价上限',
+        stop_loss_price FLOAT DEFAULT NULL COMMENT '止损价',
+        moat_score TINYINT DEFAULT NULL COMMENT '护城河评分(0-5)',
+        moat_factors JSON DEFAULT NULL COMMENT '护城河因素',
+        report_version INT DEFAULT 1 COMMENT '同一股票第N版报告',
+        prev_report_id BIGINT DEFAULT NULL COMMENT '上一版报告ID',
         user_feedback TINYINT DEFAULT NULL COMMENT '1=满意, -1=不满意, NULL=未评',
         feedback_reason VARCHAR(200) DEFAULT NULL,
         data_cutoff_date DATE DEFAULT NULL COMMENT '报告依据的最新数据日期',
         source ENUM('user','cron','batch') DEFAULT 'user' COMMENT '生成来源',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_code_date (code, created_at DESC),
+        INDEX idx_rating (rating, created_at DESC),
+        INDEX idx_moat (moat_score, created_at DESC),
         INDEX idx_source (source, created_at DESC)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """
@@ -227,9 +269,23 @@ def _ensure_missing_columns():
     """幂等添加后续版本新增的列（已有表可能缺少这些列）。"""
     _alter_stmts = [
         f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN quality_score TINYINT DEFAULT NULL COMMENT '结构校验: 100=通过, 50=部分, 0=失败' AFTER latency_ms",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN rating ENUM('buy','hold','avoid') DEFAULT NULL COMMENT '结构化评级' AFTER quality_score",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN rating_score TINYINT UNSIGNED DEFAULT NULL COMMENT '综合评分(0-100)' AFTER rating",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN short_term_advice VARCHAR(500) DEFAULT NULL COMMENT '短期建议摘要' AFTER rating_score",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN mid_term_advice VARCHAR(500) DEFAULT NULL COMMENT '中期建议摘要' AFTER short_term_advice",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN long_term_advice VARCHAR(500) DEFAULT NULL COMMENT '长期建议摘要' AFTER mid_term_advice",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN target_price_low FLOAT DEFAULT NULL COMMENT '目标价下限' AFTER long_term_advice",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN target_price_high FLOAT DEFAULT NULL COMMENT '目标价上限' AFTER target_price_low",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN stop_loss_price FLOAT DEFAULT NULL COMMENT '止损价' AFTER target_price_high",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN moat_score TINYINT DEFAULT NULL COMMENT '护城河评分(0-5)' AFTER stop_loss_price",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN moat_factors JSON DEFAULT NULL COMMENT '护城河因素' AFTER moat_score",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN report_version INT DEFAULT 1 COMMENT '同一股票第N版报告' AFTER moat_factors",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN prev_report_id BIGINT DEFAULT NULL COMMENT '上一版报告ID' AFTER report_version",
         f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN user_feedback TINYINT DEFAULT NULL COMMENT '1=满意, -1=不满意, NULL=未评' AFTER quality_score",
         f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN feedback_reason VARCHAR(200) DEFAULT NULL AFTER user_feedback",
         f"ALTER TABLE `{_REPORT_TABLE}` ADD COLUMN source ENUM('user','cron','batch') DEFAULT 'user' COMMENT '生成来源' AFTER data_cutoff_date",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD INDEX idx_rating (rating, created_at DESC)",
+        f"ALTER TABLE `{_REPORT_TABLE}` ADD INDEX idx_moat (moat_score, created_at DESC)",
         f"ALTER TABLE `{_REPORT_TABLE}` ADD INDEX idx_source (source, created_at DESC)",
     ]
     for stmt in _alter_stmts:
@@ -272,7 +328,11 @@ def _check_cache(code: str) -> Optional[Dict[str, Any]]:
         cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
     sql = f"""
         SELECT id, code, name, report_md, model, provider, tools_used,
-               tokens_used, latency_ms, created_at
+               tokens_used, latency_ms, created_at,
+               rating, rating_score, short_term_advice, mid_term_advice,
+               long_term_advice, target_price_low, target_price_high,
+               stop_loss_price, moat_score, moat_factors,
+               report_version, prev_report_id
         FROM `{_REPORT_TABLE}`
         WHERE code = %s AND created_at >= %s
         ORDER BY created_at DESC LIMIT 1
@@ -281,7 +341,7 @@ def _check_cache(code: str) -> Optional[Dict[str, Any]]:
     if not rows:
         return None
     row = rows[0]
-    return {
+    result = {
         'id': row[0],
         'code': row[1],
         'name': row[2],
@@ -293,6 +353,8 @@ def _check_cache(code: str) -> Optional[Dict[str, Any]]:
         'latency_ms': row[8],
         'created_at': str(row[9]),
     }
+    result.update(_structured_report_payload(row, 10))
+    return result
 
 
 def _has_data_update(code: str, last_report_time: str) -> tuple:
@@ -334,7 +396,7 @@ def _has_data_update(code: str, last_report_time: str) -> tuple:
 def _validate_report_structure(report_md: Optional[str]) -> int:
     """校验报告结构完整性，返回 quality_score (0/50/100)。
 
-    100 = 包含全部 7 节标题 + 多空对比表
+    100 = 包含全部 7 节标题 + 多空对比表 + 短/中/长期建议
      50 = 包含 >= 4 节标题
       0 = 不足 4 节标题
     """
@@ -346,7 +408,9 @@ def _validate_report_structure(report_md: Optional[str]) -> int:
     found_headings = sum(1 for h in required_headings if h in report_md)
     # 检查多空对比表
     has_table = bool(re.search(r'看多因素.*看空因素|看空因素.*看多因素', report_md, re.DOTALL))
-    if found_headings >= 7 and has_table:
+    # Phase 1 后报告应包含短/中/长期建议；缺少时降为部分通过。
+    has_multi_term = all(kw in report_md for kw in ('短期', '中期', '长期'))
+    if found_headings >= 7 and has_table and has_multi_term:
         return 100
     elif found_headings >= 4:
         return 50
@@ -357,21 +421,61 @@ def _save_report(code: str, name: str, report_md: str, model: str,
                  provider: str, tools_used: List[str],
                  tokens_used: int, latency_ms: int) -> int:
     """持久化报告到 DB。"""
+    from quantia.lib.ai.report_parser import extract_structured_fields
+
     _lazy_ensure_table()
     quality_score = _validate_report_structure(report_md)
+    structured = extract_structured_fields(report_md)
+    moat_factors_json = json.dumps(structured.get('moat_factors') or {}, ensure_ascii=False)
     sql = f"""
         INSERT INTO `{_REPORT_TABLE}`
             (code, name, report_md, model, provider, tools_used,
-             tokens_used, latency_ms, quality_score, data_cutoff_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURDATE())
+             tokens_used, latency_ms, quality_score,
+             rating, rating_score, short_term_advice, mid_term_advice,
+             long_term_advice, target_price_low, target_price_high,
+             stop_loss_price, moat_score, moat_factors,
+             report_version, prev_report_id, data_cutoff_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, CURDATE())
     """
     tools_json = json.dumps(tools_used, ensure_ascii=False)
-    # 使用同一 cursor 获取 lastrowid（线程本地连接，autocommit=True）
+    # 使用事务锁住同股票上一版报告，保证 report_version/prev_report_id 在并发下连续。
     with mdb.get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(sql, (code, name, report_md, model, provider,
-                                 tools_json, tokens_used, latency_ms, quality_score))
-            return cursor.lastrowid or 0
+        try:
+            conn.autocommit(False)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT id, report_version
+                    FROM `{_REPORT_TABLE}`
+                    WHERE code = %s
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1 FOR UPDATE
+                    """,
+                    (code,),
+                )
+                prev = cursor.fetchone()
+                prev_report_id = prev[0] if prev else None
+                report_version = int(prev[1] or 1) + 1 if prev else 1
+                cursor.execute(sql, (
+                    code, name, report_md, model, provider, tools_json,
+                    tokens_used, latency_ms, quality_score,
+                    structured.get('rating'), structured.get('rating_score'),
+                    structured.get('short_term_advice'), structured.get('mid_term_advice'),
+                    structured.get('long_term_advice'), structured.get('target_price_low'),
+                    structured.get('target_price_high'), structured.get('stop_loss_price'),
+                    structured.get('moat_score'), moat_factors_json,
+                    report_version, prev_report_id,
+                ))
+                report_id = cursor.lastrowid or 0
+            conn.commit()
+            return report_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.autocommit(True)
 
 
 def _write_json(handler, data: Dict[str, Any], status: int = 200):
@@ -719,7 +823,11 @@ class StockReportHistoryHandler(webBase.BaseHandler, ABC):
         total = count_rows[0][0] if count_rows else 0
 
         sql = f"""
-            SELECT id, code, name, model, tokens_used, latency_ms, created_at
+            SELECT id, code, name, model, tokens_used, latency_ms, created_at,
+                   rating, rating_score, short_term_advice, mid_term_advice,
+                   long_term_advice, target_price_low, target_price_high,
+                   stop_loss_price, moat_score, moat_factors,
+                   report_version, prev_report_id
             FROM `{_REPORT_TABLE}`
             {where}
             ORDER BY created_at DESC
@@ -735,6 +843,7 @@ class StockReportHistoryHandler(webBase.BaseHandler, ABC):
                     'model': r[3], 'tokens_used': r[4],
                     'latency_ms': r[5], 'created_at': str(r[6]),
                 })
+                items[-1].update(_structured_report_payload(r, 7))
         _write_json(self, {'items': items, 'total': total, 'limit': limit, 'offset': offset})
 
 
@@ -755,7 +864,11 @@ class StockReportDetailHandler(webBase.BaseHandler, ABC):
             return
         sql = f"""
             SELECT id, code, name, report_md, model, provider, tools_used,
-                   tokens_used, latency_ms, created_at
+                   tokens_used, latency_ms, created_at,
+                   rating, rating_score, short_term_advice, mid_term_advice,
+                   long_term_advice, target_price_low, target_price_high,
+                   stop_loss_price, moat_score, moat_factors,
+                   report_version, prev_report_id
             FROM `{_REPORT_TABLE}`
             WHERE id = %s
         """
@@ -764,13 +877,15 @@ class StockReportDetailHandler(webBase.BaseHandler, ABC):
             _write_json(self, {'error': '报告不存在'}, 404)
             return
         r = rows[0]
-        _write_json(self, {
+        result = {
             'id': r[0], 'code': r[1], 'name': r[2],
             'report_md': r[3], 'model': r[4], 'provider': r[5],
             'tools_used': json.loads(r[6]) if r[6] else [],
             'tokens_used': r[7], 'latency_ms': r[8],
             'created_at': str(r[9]),
-        })
+        }
+        result.update(_structured_report_payload(r, 10))
+        _write_json(self, result)
 
 
 class StockSearchHandler(webBase.BaseHandler, ABC):
@@ -1287,7 +1402,8 @@ class StockReportTimelineHandler(webBase.BaseHandler, ABC):
 
         sql = f"""
             SELECT id, created_at, model, tokens_used, latency_ms,
-                   LEFT(report_md, 300) AS summary_excerpt
+                 LEFT(report_md, 300) AS summary_excerpt,
+                 rating, rating_score, moat_score, report_version, prev_report_id
             FROM `{_REPORT_TABLE}`
             WHERE code = %s
             ORDER BY created_at DESC
@@ -1299,11 +1415,12 @@ class StockReportTimelineHandler(webBase.BaseHandler, ABC):
             for r in rows:
                 excerpt = r[5] or ''
                 # 提取评级关键词
-                rating = ''
-                for tag in ['🟢买入', '🟡观望', '🔴回避', '买入', '观望', '回避']:
-                    if tag in excerpt:
-                        rating = tag
-                        break
+                rating = r[6] or ''
+                if not rating:
+                    for tag in ['🟢买入', '🟡观望', '🔴回避', '买入', '观望', '回避']:
+                        if tag in excerpt:
+                            rating = tag
+                            break
                 items.append({
                     'id': r[0],
                     'created_at': str(r[1]) if r[1] else '',
@@ -1311,6 +1428,10 @@ class StockReportTimelineHandler(webBase.BaseHandler, ABC):
                     'tokens_used': r[3],
                     'latency_ms': r[4],
                     'rating': rating,
+                    'rating_score': r[7],
+                    'moat_score': r[8],
+                    'report_version': r[9],
+                    'prev_report_id': r[10],
                     'summary': excerpt[:80].replace('\n', ' ').strip(),
                 })
         _write_json(self, {'items': items, 'code': code})
@@ -1378,7 +1499,11 @@ class StockReportSharedViewHandler(webBase.BaseHandler, ABC):
             return
 
         sql = f"""
-            SELECT id, code, name, report_md, model, tokens_used, latency_ms, created_at
+            SELECT id, code, name, report_md, model, tokens_used, latency_ms, created_at,
+                   rating, rating_score, short_term_advice, mid_term_advice,
+                   long_term_advice, target_price_low, target_price_high,
+                   stop_loss_price, moat_score, moat_factors,
+                   report_version, prev_report_id
             FROM `{_REPORT_TABLE}`
             WHERE share_token = %s
         """
@@ -1387,13 +1512,15 @@ class StockReportSharedViewHandler(webBase.BaseHandler, ABC):
             _write_json(self, {'error': '报告不存在或链接已失效'}, 404)
             return
         r = rows[0]
-        _write_json(self, {
+        result = {
             'id': r[0], 'code': r[1], 'name': r[2],
             'report_md': r[3], 'model': r[4],
             'tokens_used': r[5], 'latency_ms': r[6],
             'created_at': str(r[7]),
             'shared': True,
-        })
+        }
+        result.update(_structured_report_payload(r, 8))
+        _write_json(self, result)
 
 
 # ═══════════════════════════════════════════════════════════════════
