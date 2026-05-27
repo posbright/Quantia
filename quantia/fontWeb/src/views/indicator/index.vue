@@ -3,8 +3,10 @@ import { ref, shallowRef, onMounted, onUnmounted, onActivated, onDeactivated, co
 import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
-import { getKlineData, type KlineParams } from '@/api/stock'
+import { getKlineData, getFinancialSummary, type KlineParams, type FinancialSummaryResult } from '@/api/stock'
+import { getReportHistory, type ReportHistoryItem } from '@/api/report'
 import { ElMessage } from 'element-plus'
+import { ChatDotRound } from '@element-plus/icons-vue'
 import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverlay'
 import CustomIndicatorOverlayBar from '@/components/CustomIndicatorOverlayBar.vue'
 import { useResponsive } from '@/composables/useResponsive'
@@ -50,6 +52,25 @@ const subIndicatorOptions = ['MACD', 'KDJ', 'RSI', 'WR', '多空趋势']
 
 // K-line data
 const klineData = ref<any>(null)
+
+// === 财务分析数据 ===
+const financialData = ref<FinancialSummaryResult | null>(null)
+const financialLoading = ref(false)
+const financialChartRef = ref<HTMLDivElement>()
+const expenseChartRef = ref<HTMLDivElement>()
+let financialChartInstance: echarts.ECharts | null = null
+let expenseChartInstance: echarts.ECharts | null = null
+
+// 判断是否有费用数据
+const hasExpenseData = computed(() => {
+  const hist = financialData.value?.history
+  if (!hist?.length) return false
+  return hist.some(h => h.rd_expense != null || h.admin_expense != null)
+})
+
+// === AI 分析历史报告 ===
+const latestReport = ref<ReportHistoryItem | null>(null)
+const reportLoading = ref(false)
 
 // === 自定义指标叠加 (PR-5) ===
 const klineDates = computed<string[]>(() => klineData.value?.dates || [])
@@ -529,7 +550,238 @@ const goBacktest = () => {
   })
 }
 
-const handleResize = () => { chartInstance?.resize() }
+// Navigate to AI analysis
+const goAIAnalysis = () => {
+  router.push({
+    path: '/ai-report/analysis',
+    query: { code: code.value, name: stockName.value }
+  })
+}
+
+// Load financial data
+const loadFinancialData = async () => {
+  if (!code.value) return
+  financialLoading.value = true
+  try {
+    const res = await getFinancialSummary(code.value, 12) as any
+    if (res && !res.error) {
+      financialData.value = res
+      await nextTick()
+      renderFinancialChart()
+      renderExpenseChart()
+    }
+  } catch {
+    financialData.value = null
+  } finally {
+    financialLoading.value = false
+  }
+}
+
+// Render financial trend chart
+const renderFinancialChart = () => {
+  if (!financialChartRef.value || !financialData.value?.history?.length) return
+  const hist = financialData.value.history
+
+  if (financialChartInstance) financialChartInstance.dispose()
+  financialChartInstance = echarts.init(financialChartRef.value, undefined, {
+    devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
+  })
+
+  const dates = hist.map(h => h.report_name || h.report_date)
+  const revenue = hist.map(h => h.revenue != null ? +(h.revenue / 1e8).toFixed(2) : null)
+  const netProfit = hist.map(h => h.net_profit != null ? +(h.net_profit / 1e8).toFixed(2) : null)
+  const eps = hist.map(h => h.eps)
+  const grossMargin = hist.map(h => h.gross_margin)
+  const netMarginPct = hist.map(h => h.net_profit_margin)
+
+  const option: echarts.EChartsOption = {
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross' },
+    },
+    legend: {
+      data: ['营业总收入(亿)', '净利润(亿)', '每股收益', '毛利率(%)', '销售净利率(%)'],
+      top: 0,
+      textStyle: { fontSize: 11 },
+    },
+    grid: { left: 50, right: 50, top: 40, bottom: 30 },
+    xAxis: {
+      type: 'category',
+      data: dates,
+      axisLabel: { fontSize: 10, rotate: 30 },
+    },
+    yAxis: [
+      {
+        type: 'value',
+        name: '金额(亿)',
+        position: 'left',
+        axisLabel: { fontSize: 10 },
+      },
+      {
+        type: 'value',
+        name: '%',
+        position: 'right',
+        axisLabel: { fontSize: 10 },
+      },
+    ],
+    series: [
+      {
+        name: '营业总收入(亿)',
+        type: 'bar',
+        data: revenue,
+        barMaxWidth: 24,
+        itemStyle: { color: '#409eff' },
+      },
+      {
+        name: '净利润(亿)',
+        type: 'bar',
+        data: netProfit,
+        barMaxWidth: 24,
+        itemStyle: { color: (params: any) => (params.data ?? 0) >= 0 ? '#67c23a' : '#f56c6c' },
+      },
+      {
+        name: '每股收益',
+        type: 'line',
+        data: eps,
+        yAxisIndex: 1,
+        symbol: 'circle',
+        symbolSize: 5,
+        lineStyle: { width: 2, color: '#e6a23c' },
+        itemStyle: { color: '#e6a23c' },
+      },
+      {
+        name: '毛利率(%)',
+        type: 'line',
+        data: grossMargin,
+        yAxisIndex: 1,
+        symbol: 'diamond',
+        symbolSize: 5,
+        lineStyle: { width: 2, color: '#9b59b6' },
+        itemStyle: { color: '#9b59b6' },
+      },
+      {
+        name: '销售净利率(%)',
+        type: 'line',
+        data: netMarginPct,
+        yAxisIndex: 1,
+        symbol: 'triangle',
+        symbolSize: 5,
+        lineStyle: { width: 2, color: '#f56c6c', type: 'dashed' },
+        itemStyle: { color: '#f56c6c' },
+      },
+    ],
+  }
+  financialChartInstance.setOption(option)
+}
+
+// Render expense structure trend chart
+const renderExpenseChart = () => {
+  if (!expenseChartRef.value || !financialData.value?.history?.length) return
+  const hist = financialData.value.history
+  // Only render if we have expense data
+  if (!hist.some(h => h.rd_expense != null || h.admin_expense != null)) return
+
+  if (expenseChartInstance) expenseChartInstance.dispose()
+  expenseChartInstance = echarts.init(expenseChartRef.value, undefined, {
+    devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
+  })
+
+  const dates = hist.map(h => h.report_name || h.report_date)
+  // 计算各项费用占营收百分比
+  const rdRatio = hist.map(h => {
+    if (h.rd_expense == null || !h.revenue) return null
+    return +((h.rd_expense / h.revenue) * 100).toFixed(2)
+  })
+  const adminRatio = hist.map(h => {
+    if (h.admin_expense == null || !h.revenue) return null
+    return +((h.admin_expense / h.revenue) * 100).toFixed(2)
+  })
+  const sellRatio = hist.map(h => {
+    if (h.selling_expense == null || !h.revenue) return null
+    return +((h.selling_expense / h.revenue) * 100).toFixed(2)
+  })
+  // 绝对值（亿元）
+  const rdAbs = hist.map(h => h.rd_expense != null ? +(h.rd_expense / 1e8).toFixed(4) : null)
+  const adminAbs = hist.map(h => h.admin_expense != null ? +(h.admin_expense / 1e8).toFixed(4) : null)
+  const sellAbs = hist.map(h => h.selling_expense != null ? +(h.selling_expense / 1e8).toFixed(4) : null)
+  const finAbs = hist.map(h => h.financial_expense != null ? +(h.financial_expense / 1e8).toFixed(4) : null)
+
+  const option: echarts.EChartsOption = {
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross' },
+    },
+    legend: {
+      data: ['研发费用(亿)', '管理费用(亿)', '销售费用(亿)', '财务费用(亿)', '研发占比(%)', '管理占比(%)', '销售占比(%)'],
+      top: 0,
+      textStyle: { fontSize: 10 },
+    },
+    grid: { left: 50, right: 50, top: 50, bottom: 30 },
+    xAxis: {
+      type: 'category',
+      data: dates,
+      axisLabel: { fontSize: 10, rotate: 30 },
+    },
+    yAxis: [
+      { type: 'value', name: '金额(亿)', position: 'left', axisLabel: { fontSize: 10 } },
+      { type: 'value', name: '占比(%)', position: 'right', axisLabel: { fontSize: 10 } },
+    ],
+    series: [
+      { name: '研发费用(亿)', type: 'bar', stack: 'expense', data: rdAbs, barMaxWidth: 20, itemStyle: { color: '#409eff' } },
+      { name: '管理费用(亿)', type: 'bar', stack: 'expense', data: adminAbs, barMaxWidth: 20, itemStyle: { color: '#67c23a' } },
+      { name: '销售费用(亿)', type: 'bar', stack: 'expense', data: sellAbs, barMaxWidth: 20, itemStyle: { color: '#e6a23c' } },
+      { name: '财务费用(亿)', type: 'bar', stack: 'expense', data: finAbs, barMaxWidth: 20, itemStyle: { color: '#909399' } },
+      { name: '研发占比(%)', type: 'line', yAxisIndex: 1, data: rdRatio, symbol: 'circle', symbolSize: 5, lineStyle: { width: 2, color: '#409eff' }, itemStyle: { color: '#409eff' } },
+      { name: '管理占比(%)', type: 'line', yAxisIndex: 1, data: adminRatio, symbol: 'diamond', symbolSize: 5, lineStyle: { width: 2, color: '#67c23a', type: 'dashed' }, itemStyle: { color: '#67c23a' } },
+      { name: '销售占比(%)', type: 'line', yAxisIndex: 1, data: sellRatio, symbol: 'triangle', symbolSize: 5, lineStyle: { width: 2, color: '#e6a23c', type: 'dashed' }, itemStyle: { color: '#e6a23c' } },
+    ],
+  }
+  expenseChartInstance.setOption(option)
+}
+
+// Load latest AI report for this stock
+const loadLatestReport = async () => {
+  if (!code.value) return
+  reportLoading.value = true
+  try {
+    const res = await getReportHistory({ code: code.value, limit: 1, days: 0 }) as any
+    if (res?.items?.length) {
+      latestReport.value = res.items[0]
+    } else {
+      latestReport.value = null
+    }
+  } catch {
+    latestReport.value = null
+  } finally {
+    reportLoading.value = false
+  }
+}
+
+// Format number for display
+const fmtNum = (val: number | undefined | null, decimals = 2): string => {
+  if (val == null || !isFinite(val)) return '-'
+  if (Math.abs(val) >= 1e8) return (val / 1e8).toFixed(decimals) + '亿'
+  if (Math.abs(val) >= 1e4) return (val / 1e4).toFixed(decimals) + '万'
+  return val.toFixed(decimals)
+}
+
+// Format 万元 to 亿 (market_cap stored in 万元)
+const fmtWanToYi = (val: number | undefined | null): string => {
+  if (val == null || !isFinite(val)) return '-'
+  if (Math.abs(val) >= 1e4) return (val / 1e4).toFixed(2) + '亿'
+  return val.toFixed(2) + '万'
+}
+
+const fmtPct = (val: number | undefined | null): string => {
+  if (val == null || !isFinite(val)) return '-'
+  return val.toFixed(2) + '%'
+}
+
+const handleResize = () => {
+  chartInstance?.resize()
+  financialChartInstance?.resize()
+  expenseChartInstance?.resize()
+}
 
 // keep-alive 缓存期间标记，避免无意义的 breakpoint 重渲
 let isActive = true
@@ -540,6 +792,8 @@ watch(() => route.query.code, (newCode, oldCode) => {
     currentPeriod.value = 'daily'
     lastLoadedCode = newCode as string
     loadKlineData()
+    loadFinancialData()
+    loadLatestReport()
   }
 })
 
@@ -558,6 +812,8 @@ watch(breakpoint, () => {
 onMounted(() => {
   lastLoadedCode = code.value || ''
   loadKlineData()
+  loadFinancialData()
+  loadLatestReport()
   window.addEventListener('resize', handleResize)
   ;(window as any).visualViewport?.addEventListener?.('resize', handleResize)
 })
@@ -569,6 +825,8 @@ onActivated(() => {
     lastLoadedCode = code.value
     currentPeriod.value = 'daily'
     loadKlineData()
+    loadFinancialData()
+    loadLatestReport()
   }
 })
 
@@ -582,6 +840,10 @@ onUnmounted(() => {
   ;(window as any).visualViewport?.removeEventListener?.('resize', handleResize)
   chartInstance?.dispose()
   chartInstance = null
+  financialChartInstance?.dispose()
+  financialChartInstance = null
+  expenseChartInstance?.dispose()
+  expenseChartInstance = null
 })
 </script>
 
@@ -595,6 +857,9 @@ onUnmounted(() => {
         <el-tag size="small" effect="plain">{{ date }}</el-tag>
       </div>
       <div class="top-actions">
+        <el-button type="warning" size="small" @click="goAIAnalysis">
+          <el-icon><ChatDotRound /></el-icon>&nbsp;AI 分析
+        </el-button>
         <el-button type="primary" size="small" @click="goBacktest">查看回测</el-button>
       </div>
     </div>
@@ -641,6 +906,140 @@ onUnmounted(() => {
           :class="['sub-tab', { active: currentSubIndicator === ind }]"
           @click="currentSubIndicator = ind"
         >{{ ind }}</span>
+      </div>
+    </div>
+
+    <!-- 财务分析 -->
+    <div class="section-card" v-loading="financialLoading">
+      <div class="section-title">财务分析</div>
+      <div v-if="financialData?.latest || financialData?.valuation" class="financial-content">
+        <!-- 估值与核心指标网格 -->
+        <div class="financial-grid">
+          <!-- 估值指标（来自 cn_stock_spot） -->
+          <template v-if="financialData?.valuation">
+            <div class="fin-item">
+              <span class="fin-label">市盈率 (PE)</span>
+              <span class="fin-value">{{ financialData.valuation.pe ? fmtNum(financialData.valuation.pe) : '-' }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">市净率 (PB)</span>
+              <span class="fin-value">{{ fmtNum(financialData.valuation.pb) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">总市值</span>
+              <span class="fin-value">{{ fmtWanToYi(financialData.valuation.market_cap) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">换手率</span>
+              <span class="fin-value">{{ fmtPct(financialData.valuation.turnover_rate) }}</span>
+            </div>
+          </template>
+          <!-- 核心财务指标（来自 cn_stock_financial 最新一期） -->
+          <template v-if="financialData?.latest">
+            <div class="fin-item">
+              <span class="fin-label">每股收益 (EPS)</span>
+              <span class="fin-value">{{ fmtNum(financialData.latest.eps, 4) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">每股净资产 (BPS)</span>
+              <span class="fin-value">{{ fmtNum(financialData.latest.bps) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">净资产收益率 (ROE)</span>
+              <span class="fin-value">{{ fmtPct(financialData.latest.roe) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">营业收入</span>
+              <span class="fin-value">{{ fmtNum(financialData.latest.revenue) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">净利润</span>
+              <span class="fin-value">{{ fmtNum(financialData.latest.net_profit) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">营收同比</span>
+              <span class="fin-value" :class="{ 'val-up': (financialData.latest.revenue_yoy ?? 0) > 0, 'val-down': (financialData.latest.revenue_yoy ?? 0) < 0 }">{{ fmtPct(financialData.latest.revenue_yoy) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">净利润同比</span>
+              <span class="fin-value" :class="{ 'val-up': (financialData.latest.net_profit_yoy ?? 0) > 0, 'val-down': (financialData.latest.net_profit_yoy ?? 0) < 0 }">{{ fmtPct(financialData.latest.net_profit_yoy) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">毛利率</span>
+              <span class="fin-value">{{ fmtPct(financialData.latest.gross_margin) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">销售净利率</span>
+              <span class="fin-value">{{ fmtPct(financialData.latest.net_profit_margin) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">资产负债率</span>
+              <span class="fin-value">{{ fmtPct(financialData.latest.asset_liability_ratio) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">流动比率</span>
+              <span class="fin-value">{{ fmtNum(financialData.latest.current_ratio) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">每股经营现金流</span>
+              <span class="fin-value">{{ fmtNum(financialData.latest.ocfps, 4) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">研发费用</span>
+              <span class="fin-value">{{ fmtNum(financialData.latest.rd_expense) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">研发费用率</span>
+              <span class="fin-value">{{ fmtPct(financialData.latest.rd_ratio) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">管理费用</span>
+              <span class="fin-value">{{ fmtNum(financialData.latest.admin_expense) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">销售费用</span>
+              <span class="fin-value">{{ fmtNum(financialData.latest.selling_expense) }}</span>
+            </div>
+            <div class="fin-item">
+              <span class="fin-label">财务费用</span>
+              <span class="fin-value">{{ fmtNum(financialData.latest.financial_expense) }}</span>
+            </div>
+            <div class="fin-item fin-item-full">
+              <span class="fin-label">报告期</span>
+              <span class="fin-value">{{ financialData.latest.report_name || financialData.latest.report_date || '-' }}</span>
+            </div>
+          </template>
+        </div>
+        <!-- 季度/年度趋势图表 -->
+        <div v-if="financialData?.history?.length" class="financial-chart-wrap">
+          <div class="chart-subtitle">季度/年度财务趋势（营收·净利润·EPS·利润率）</div>
+          <div ref="financialChartRef" class="financial-chart"></div>
+        </div>
+        <!-- 费用结构趋势图表 -->
+        <div v-if="financialData?.history?.length && hasExpenseData" class="financial-chart-wrap">
+          <div class="chart-subtitle">费用结构趋势（研发·管理·销售·财务费用占营收比）</div>
+          <div ref="expenseChartRef" class="financial-chart"></div>
+        </div>
+      </div>
+      <el-empty v-else description="暂无财务数据" :image-size="60" />
+    </div>
+
+    <!-- 最新 AI 分析报告 -->
+    <div v-if="latestReport" class="section-card">
+      <div class="section-title">
+        <span>最新 AI 分析</span>
+        <el-button type="primary" link size="small" @click="goAIAnalysis">查看完整报告 →</el-button>
+      </div>
+      <div class="report-summary">
+        <div class="report-meta">
+          <el-tag size="small" type="info">{{ latestReport.model }}</el-tag>
+          <span class="report-time">{{ latestReport.created_at }}</span>
+        </div>
+        <div class="report-action">
+          <el-button type="primary" size="small" @click="goAIAnalysis">
+            <el-icon><ChatDotRound /></el-icon>&nbsp;生成/查看完整分析
+          </el-button>
+        </div>
       </div>
     </div>
   </div>
@@ -739,5 +1138,85 @@ onUnmounted(() => {
   .top-bar, .toolbar { display: none; }
   .chart-wrapper .chart-main { height: calc(100dvh - 40px) !important; }
   .sub-indicator-bar, .sub-indicator-segmented { padding: 2px 6px; }
+}
+
+/* 财务分析 & AI报告 区块 */
+.section-card {
+  margin: 12px 16px;
+  padding: 16px;
+  background: #fafbfc;
+  border: 1px solid #eee;
+  border-radius: 8px;
+}
+.section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.financial-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+.fin-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: #fff;
+  border-radius: 6px;
+  border: 1px solid #f0f0f0;
+}
+.fin-item-full {
+  grid-column: 1 / -1;
+}
+.fin-label {
+  font-size: 12px;
+  color: #909399;
+}
+.fin-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+.val-up { color: #ec0000; }
+.val-down { color: #00da3c; }
+.financial-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.financial-chart-wrap {
+  margin-top: 4px;
+}
+.chart-subtitle {
+  font-size: 13px;
+  color: #606266;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+.financial-chart {
+  width: 100%;
+  height: 320px;
+}
+.report-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.report-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.report-time {
+  font-size: 12px;
+  color: #909399;
 }
 </style>

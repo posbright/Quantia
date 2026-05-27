@@ -171,6 +171,52 @@ export function getKlineData(params: KlineParams) {
   return request({ url: '/api/kline', method: 'get', params })
 }
 
+/** 股票财务摘要（估值 + 最新财务 + 历史序列） */
+export interface FinancialHistoryItem {
+  report_date: string
+  report_name: string
+  eps: number | null
+  bps: number | null
+  revenue: number | null
+  net_profit: number | null
+  revenue_yoy: number | null
+  net_profit_yoy: number | null
+  roe: number | null
+  gross_margin: number | null
+  net_profit_margin: number | null
+  asset_liability_ratio: number | null
+  current_ratio: number | null
+  quick_ratio: number | null
+  total_asset_turnover: number | null
+  ocfps: number | null
+  rd_expense: number | null
+  admin_expense: number | null
+  selling_expense: number | null
+  financial_expense: number | null
+  rd_ratio: number | null
+}
+
+export interface FinancialSummaryResult {
+  code: string
+  latest: FinancialHistoryItem | null
+  history: FinancialHistoryItem[]
+  valuation?: {
+    name: string
+    price: number
+    change_pct: number
+    pe: number
+    pb: number
+    market_cap: number   // 万元
+    turnover_rate: number
+    total_shares: number // 万股
+    free_shares: number  // 万股
+  }
+}
+
+export function getFinancialSummary(code: string, limit = 12) {
+  return request<FinancialSummaryResult>({ url: '/api/stock/financial_summary', method: 'get', params: { code, limit } })
+}
+
 // ============= 组合回测 & 策略管理 API =============
 
 /** 获取内置策略模板 */
