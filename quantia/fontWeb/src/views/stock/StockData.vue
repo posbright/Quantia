@@ -6,6 +6,7 @@ import { getStockData, toggleAttention, getTradeDate } from '@/api/stock'
 import { getColumnTooltip, strategyDescriptions } from '@/utils/columnTooltips'
 import { buildBacktestDashboardQuery } from '@/utils/backtestDashboardLinks'
 import { useResponsive } from '@/composables/useResponsive'
+import IndustryTopStocksDialog from '@/components/IndustryTopStocksDialog.vue'
 import dayjs from 'dayjs'
 
 // 列定义接口
@@ -19,6 +20,22 @@ interface ColumnDef {
   group?: string      // 列分组: 'ind' = 筛选指标列
   headerStyle?: any
   conditionalFormats?: any[]
+}
+
+interface FundFlowRow {
+  name: string
+  changeRate: number | null
+  netInflow: number | null
+  sampleStocks: string[]
+}
+
+interface IndustrySampleStock {
+  code: string
+  name: string
+  date: string
+  price: number | null
+  changeRate: number | null
+  fundAmount: number | null
 }
 
 const route = useRoute()
@@ -41,6 +58,10 @@ const tableName = computed(() => route.meta.tableName as string || 'cn_stock_spo
 const pageTitle = computed(() => route.meta.title as string || '股票数据')
 const noDateFilter = computed(() => route.meta.noDateFilter as boolean ?? false)
 const isBacktestSummary = computed(() => tableName.value === 'cn_stock_backtest')
+const isFundFlowIndustry = computed(() => tableName.value === 'cn_stock_fund_flow_industry')
+
+const industryDialogVisible = ref(false)
+const activeIndustry = ref<FundFlowRow | null>(null)
 
 // 策略说明（仅策略页面显示）
 const strategyDesc = computed(() => {
@@ -192,6 +213,78 @@ const viewIndicators = (row: any) => {
       date: row.date || selectedDate.value,
       name: row.name,
       strategy: tableName.value
+    }
+  })
+}
+
+const pickField = (row: any, keys: string[]): any => {
+  for (const k of keys) {
+    const v = row?.[k]
+    if (v !== undefined && v !== null && `${v}`.trim() !== '') return v
+  }
+  return null
+}
+
+const toIndustryRow = (row: any): FundFlowRow | null => {
+  const name = String(row?.name || row?.industry || '').trim()
+  if (!name) return null
+  const changeRate = pickField(row, ['change_rate', 'changepercent'])
+  const netInflow = pickField(row, [
+    'fund_amount',
+    'today_main_net_inflow',
+    'main_net_inflow',
+    'today_main_net_inflow_ratio',
+    'net_inflow'
+  ])
+  const sampleStocks = [
+    pickField(row, ['stock_name']),
+    pickField(row, ['stock_name_5']),
+    pickField(row, ['stock_name_10'])
+  ]
+    .map((x) => String(x || '').trim())
+    .filter(Boolean)
+  return {
+    name,
+    changeRate: changeRate === null ? null : Number(changeRate),
+    netInflow: netInflow === null ? null : Number(netInflow),
+    sampleStocks: Array.from(new Set(sampleStocks)).slice(0, 6)
+  }
+}
+
+const handleIndustryRowClick = (row: any) => {
+  if (!isFundFlowIndustry.value) return
+  const industry = toIndustryRow(row)
+  if (!industry) return
+  activeIndustry.value = industry
+  industryDialogVisible.value = true
+}
+
+const goIndustryDetail = (industryName?: string) => {
+  const name = industryName || activeIndustry.value?.name
+  if (!name) return
+  router.push({
+    path: '/fund-flow/industry',
+    query: { keyword: name }
+  })
+}
+
+const goSampleStock = (nameOrCode: string) => {
+  if (!nameOrCode) return
+  router.push({
+    path: '/fund-flow/individual',
+    query: { keyword: nameOrCode }
+  })
+}
+
+const goSampleKline = (s: IndustrySampleStock) => {
+  if (!s?.code) return
+  router.push({
+    path: '/indicator/detail',
+    query: {
+      code: s.code,
+      name: s.name,
+      date: s.date || selectedDate.value,
+      strategy: 'cn_stock_fund_flow'
     }
   })
 }
@@ -381,7 +474,10 @@ const exportExcel = () => {
 
 // 获取行样式类名
 const getRowClassName = ({ row }: { row: any }) => {
-  return row.cdatetime ? 'attention-row' : ''
+  const classes: string[] = []
+  if (row.cdatetime) classes.push('attention-row')
+  if (isFundFlowIndustry.value) classes.push('industry-clickable-row')
+  return classes.join(' ')
 }
 
 // 监听路由变化
@@ -495,6 +591,7 @@ onMounted(async () => {
         border
         :height="isMobile ? 'calc(100dvh - 340px)' : 'calc(100dvh - 280px)'"
         :row-class-name="getRowClassName"
+        @row-click="handleIndustryRowClick"
       >
         <el-table-column type="index" label="#" width="50" fixed="left" />
         
@@ -711,7 +808,8 @@ onMounted(async () => {
           v-for="(row, idx) in tableData"
           :key="(row.code || '') + '_' + (row.date || '') + '_' + idx"
           class="stock-card"
-          :class="getRowClassName({ row })"
+          :class="[getRowClassName({ row }), { 'industry-clickable': isFundFlowIndustry }]"
+          @click="handleIndustryRowClick(row)"
         >
           <div class="card-head">
             <div class="card-title">
@@ -771,6 +869,14 @@ onMounted(async () => {
         />
       </div>
     </el-card>
+
+    <IndustryTopStocksDialog
+      v-model="industryDialogVisible"
+      :industry="activeIndustry"
+      @open-industry-detail="goIndustryDetail"
+      @open-stock-flow="goSampleStock($event.code || $event.name)"
+      @open-stock-kline="goSampleKline"
+    />
   </div>
 </template>
 
@@ -846,6 +952,20 @@ onMounted(async () => {
   td {
     font-weight: 500;
   }
+}
+
+:deep(.el-table__row) {
+  &.industry-clickable-row {
+    cursor: pointer;
+  }
+}
+
+:deep(.el-table__row.industry-clickable-row:hover) {
+  cursor: pointer;
+}
+
+.industry-clickable {
+  cursor: pointer;
 }
 
 .header-with-tooltip {
