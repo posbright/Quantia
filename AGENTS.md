@@ -39,6 +39,8 @@ Env: copy `.env` template; required keys are `QUANTIA_DB_HOST/QUANTIA_DB_USER/QU
 4. **Index cache invariant** — `cache/hist/index/{code}.gzip.pickle` holds the *full* history. `quantia/core/backtest/data_feed.py::_save_index_cache` MERGES new rows (drop_duplicates by date, keep='last'). Never blind-overwrite with a date-bounded slice. Source of truth for repair: `akshare.stock_zh_index_daily(symbol='sh000300')`.
 5. **Dynamic universe strategies** (fundamental selectors) discover candidates after preload. Backtest and paper-trading `history` / `attribute_history` paths require lazy K-line loading + normalized daily timestamps for order price lookup.
 6. **Paper-trading display truth**: latest `cn_stock_paper_nav` row is authoritative for current asset/cash/profit. `cn_stock_paper_trading.current_value/current_cash` may be stale. Use `initial_cash` (not first NAV) as full-life baseline for metrics/charts.
+7. **Validate-first data access** — All SQL queries (in AI tools, handlers, jobs) must validate referenced columns against the real DB schema **before** execution. The `sql_query` tool uses `INFORMATION_SCHEMA.COLUMNS` to pre-check; other tools use explicit column lists in their SELECT statements. Never assume `tablestructure.py` definitions are deployed (e.g. `concept` column is defined but doesn't exist in prod DB). Field mappings must be verified, not guessed.
+8. **Route registration parity** — Every frontend API call (`quantia/fontWeb/src/api/` + `src/lib/`) must have a corresponding handler registered in `web_service.py`. Before adding a frontend API call, verify the route exists. Before removing a handler, verify no frontend code depends on it.
 
 ## DB write hygiene
 
@@ -169,3 +171,6 @@ Streaming analysis ([quantia/job/streaming_analysis_job.py]) processes 4900+ sto
 - Don't delete directories or batch-delete files without listing them and getting user confirmation first (see Destructive file ops).
 - Hard-rule expressions (composite): AST sandbox blocks `__import__`, dunders, lambda, file ops, exec/eval, attribute access on dicts. Don't try to "improve" the sandbox by relaxing these.
 - Fusion v2 fund/flow items must pass `_parse_item_expr` whitelist — don't accept raw SQL fragments. Shapley sum invariant must hold (`∑φ_k = v(N)`); subset weights must be renormalized to 100 in `_fuse_subset_signals`. Use `2026-03~05` for black-box smoke.
+- Don't use vague table/column references in AI prompts — always provide exact column lists + negative constraints ("**没有** X 列"). LLM will hallucinate `concept`/`main_inflow`/`net_flow` if not explicitly told they don't exist.
+- Don't assume `tablestructure.py` columns exist in prod DB — validate against `INFORMATION_SCHEMA.COLUMNS` (rule 7).
+- Don't add frontend API calls without verifying the route exists in `web_service.py` (rule 8).

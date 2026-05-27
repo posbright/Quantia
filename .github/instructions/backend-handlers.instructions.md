@@ -37,5 +37,19 @@ applyTo: "quantia/web/**/*Handler.py, quantia/job/**/*analysis*.py, quantia/job/
 - 单次处理 4900+ 股票时使用流式迭代（参考 [quantia/job/streaming_analysis_job.py](../../quantia/job/streaming_analysis_job.py)），峰值内存 < 100 MB。
 - **不要**在 handler / job 里把全量 DataFrame 一次性 materialize。
 
+## 数据访问验证原则（适用于所有 handler 和工具）
+- 所有 SQL 查询中引用的列名必须来自确认存在的 schema（`tablestructure.py` 定义 + 实际 DB 验证）。
+- **不要**假设 `tablestructure.py` 中定义的列在生产 DB 中一定存在（如 `concept` 列定义了但未迁移）。
+- 新增 handler 中使用 SQL 时，优先使用**显式列列表**而不是 `SELECT *`。
+- 对于动态/用户输入的字段名，必须做白名单校验后再拼入 SQL。
+- 工具/Handler 的字段映射（DB 列名 → 输出 key）必须有明确对应关系，不要猜测。
+
+## 新增 API 路由的 checklist
+- 后端 handler 写在 `quantia/web/<name>Handler.py`
+- 在 `web_service.py` 的 handlers 列表中注册路由
+- 前端若需调用，在 `quantia/fontWeb/src/api/` 对应模块中添加方法
+- 确认前后端路径完全一致（避免 404/405 噪音）
+
 ## 修改后必须做的事
 - Tornado `web_service.py` 是常驻进程并缓存模块，后端任何 Python 改动后必须重启：本地 [quantia/bin/run_web.bat](../../quantia/bin/run_web.bat)，远程 `/root/Quantia/quantia/bin/restart_web.sh`。
+- 重启后必须用黑盒请求验证改动生效（`curl` / `Invoke-RestMethod` 调用对应接口确认 200 + 预期字段）。
