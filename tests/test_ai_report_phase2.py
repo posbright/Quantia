@@ -63,6 +63,30 @@ def test_extract_structured_fields_from_phase2_report():
     assert fields['moat_factors']['tech'] is True
 
 
+def test_rating_option_line_is_not_parsed_as_avoid():
+    from quantia.lib.ai.report_parser import extract_structured_fields
+
+    fields = extract_structured_fields(
+        '#### 六、综合判断与操作建议\n'
+        '##### 评级: 🟢买入 / 🟡观望 / 🔴回避（一句话理由）\n'
+    )
+
+    assert fields['rating'] is None
+    assert fields['rating_score'] is None
+
+
+def test_single_rating_line_is_parsed():
+    from quantia.lib.ai.report_parser import extract_structured_fields
+
+    fields = extract_structured_fields(
+        '#### 六、综合判断与操作建议\n'
+        '##### 评级: 🟡观望（等待趋势确认）\n'
+    )
+
+    assert fields['rating'] == 'hold'
+    assert fields['rating_score'] == 50
+
+
 class _FakeCursor:
     def __init__(self):
         self.calls = []

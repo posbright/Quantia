@@ -46,11 +46,21 @@ def extract_structured_fields(report_md: str) -> Dict[str, Any]:
 def _extract_rating(text: str) -> Optional[str]:
     section = _extract_section(text, '六、') or text[:1200]
     rating_lines = [line for line in section.splitlines() if '评级' in line]
-    haystack = '\n'.join(rating_lines) if rating_lines else section[:600]
-    for value, keywords in _RATING_KEYWORDS:
-        if any(keyword in haystack for keyword in keywords):
-            return value
+    haystacks = rating_lines if rating_lines else [section[:600]]
+    for haystack in haystacks:
+        if _is_rating_option_line(haystack):
+            continue
+        for value, keywords in _RATING_KEYWORDS:
+            if any(keyword in haystack for keyword in keywords):
+                return value
     return None
+
+
+def _is_rating_option_line(text: str) -> bool:
+    has_buy = any(keyword in text for keyword in ('🟢买入', '买入', '增持', '看多'))
+    has_hold = any(keyword in text for keyword in ('🟡观望', '观望', '持有', '中性'))
+    has_avoid = any(keyword in text for keyword in ('🔴回避', '回避', '卖出', '减持', '看空'))
+    return sum((has_buy, has_hold, has_avoid)) >= 2 and bool(re.search(r'[/／|]', text))
 
 
 def _extract_rating_score(text: str) -> Optional[int]:
