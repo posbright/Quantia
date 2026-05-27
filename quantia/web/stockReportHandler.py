@@ -45,6 +45,86 @@ _executor = ThreadPoolExecutor(max_workers=4)
 _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
 
 
+def _build_fallback_report_from_tools(code: str, stock_name: str, tool_calls: List[Dict[str, Any]]) -> str:
+    """Build a deterministic markdown report when LLM returns empty content."""
+    profile = None
+    for tc in (tool_calls or []):
+        if tc.get('name') == 'stock_profile' and tc.get('ok'):
+            profile = tc.get('result') or {}
+            break
+    if not isinstance(profile, dict) or not profile:
+        return ''
+
+    spot = profile.get('spot') or {}
+    indicators = profile.get('indicators') or {}
+    flow = profile.get('fund_flow_recent') or []
+    patterns = profile.get('kline_patterns') or []
+    financials = profile.get('financials') or {}
+
+    resolved_name = stock_name or spot.get('name') or ''
+    title = f"{code} {resolved_name}".strip()
+
+    flow_lines = []
+    for row in flow[:5]:
+        date = row.get('date', '')
+        main = row.get('main_net_inflow')
+        if date and isinstance(main, (int, float)):
+            sign = '+' if main >= 0 else ''
+            flow_lines.append(f"- {date}: {sign}{main:.2f}")
+    if not flow_lines:
+        flow_lines.append('- 暂无近5日资金流数据')
+
+    pattern_line = '、'.join(patterns[:8]) if patterns else '暂无显著 K 线形态信号'
+
+    price = spot.get('new_price')
+    pct = spot.get('change_rate')
+    pe = spot.get('pe')
+    pb = spot.get('pb')
+    roe = financials.get('roe') if isinstance(financials, dict) else None
+
+    macd = indicators.get('macd')
+    macd_signal = indicators.get('macd_signal')
+    rsi6 = indicators.get('rsi_6')
+    kdj_k = indicators.get('kdj_k')
+
+    report_lines = [
+        f"# AI 快速分析（降级版）\n",
+        f"标的：{title}\n",
+        "## 一、行情概览",
+        f"- 最新价：{price if price is not None else '-'}",
+        f"- 涨跌幅：{pct if pct is not None else '-'}%",
+        f"- PE / PB / ROE：{pe if pe is not None else '-'} / {pb if pb is not None else '-'} / {roe if roe is not None else '-'}",
+        "",
+        "## 二、技术面要点",
+        f"- MACD：{macd if macd is not None else '-'}（Signal: {macd_signal if macd_signal is not None else '-'}）",
+        f"- RSI(6)：{rsi6 if rsi6 is not None else '-'}",
+        f"- KDJ(K)：{kdj_k if kdj_k is not None else '-'}",
+        f"- 形态信号：{pattern_line}",
+        "",
+        "## 三、资金面（近5日主力净流）",
+        *flow_lines,
+        "",
+        "## 四、风险提示",
+        "- 当前报告由结构化数据自动生成（AI 正文为空时的降级方案）。",
+        "- 建议结合行业景气度、公告事件与交易计划二次验证后决策。",
+    ]
+    return '\n'.join(report_lines).strip()
+
+
+def _summarize_tool_errors(tool_calls: List[Dict[str, Any]]) -> str:
+    errs: List[str] = []
+    for tc in (tool_calls or []):
+        if tc.get('ok'):
+            continue
+        name = tc.get('name', 'unknown')
+        err = str(tc.get('error') or '')
+        if err:
+            errs.append(f"{name}: {err[:80]}")
+    if not errs:
+        return ''
+    return '；'.join(errs[:3])
+
+
 def _sanitize_error_text(text: str) -> str:
     """Sanitize provider error text before returning to frontend."""
     if not text:
@@ -383,24 +463,36 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
                 break
 
         # 发送报告内容（分块模拟流式）
-        content = result.content or ''
-        chunk_size = 80
-        for i in range(0, len(content), chunk_size):
-            if cancel.is_set():
-                break
-            chunk = content[i:i + chunk_size]
-            q.put(('chunk', chunk))
+        content = (result.content or '').strip()
+        if not content:
+            # Some providers occasionally finish with empty assistant content.
+            # Build a deterministic markdown fallback from tool outputs.
+            content = _build_fallback_report_from_tools(code, stock_name, result.tool_calls or [])
 
-        # 发送元数据
-        q.put(('meta', {
-            'code': code,
-            'name': stock_name,
-            'model': result.model,
-            'provider': result.provider,
-            'tools_used': tools_used,
-            'tokens_used': result.total_tokens or 0,
-            'latency_ms': elapsed_ms,
-        }))
+        if not content:
+            diag = _summarize_tool_errors(result.tool_calls or [])
+            msg = 'AI 本次返回空正文，请稍后重试'
+            if diag:
+                msg = f"{msg}（工具执行信息：{diag}）"
+            q.put(('error', {'msg': msg}))
+        else:
+            chunk_size = 80
+            for i in range(0, len(content), chunk_size):
+                if cancel.is_set():
+                    break
+                chunk = content[i:i + chunk_size]
+                q.put(('chunk', chunk))
+
+            # 发送元数据
+            q.put(('meta', {
+                'code': code,
+                'name': stock_name,
+                'model': result.model,
+                'provider': result.provider,
+                'tools_used': tools_used,
+                'tokens_used': result.total_tokens or 0,
+                'latency_ms': elapsed_ms,
+            }))
 
     except Exception as exc:
         _logger.exception(f'[stockReport] Agent 报告生成失败: {exc}')

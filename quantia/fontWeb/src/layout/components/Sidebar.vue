@@ -77,6 +77,14 @@ const getSingleChildMeta = (item: RouteRecordRaw) => {
   }
   return item.meta
 }
+
+const handleParentClick = (item: RouteRecordRaw) => {
+  const redirectPath = (item.redirect as string) || item.path
+  if (!redirectPath) return
+  if (route.path !== redirectPath) {
+    router.push(redirectPath)
+  }
+}
 </script>
 
 <template>
@@ -100,12 +108,12 @@ const getSingleChildMeta = (item: RouteRecordRaw) => {
       >
         <template v-for="item in menuList" :key="item.path">
           <!-- 有多个子菜单，显示为下拉菜单 -->
-          <el-sub-menu v-if="shouldShowAsSubMenu(item)" :index="item.path">
+          <el-sub-menu v-if="shouldShowAsSubMenu(item)" :index="item.path" @title-click="handleParentClick(item)">
             <template #title>
               <el-icon v-if="item.meta?.icon">
                 <component :is="item.meta.icon" />
               </el-icon>
-              <span>{{ item.meta?.title }}</span>
+              <span class="submenu-title-text" @click.stop="handleParentClick(item)">{{ item.meta?.title }}</span>
             </template>
             
             <el-menu-item

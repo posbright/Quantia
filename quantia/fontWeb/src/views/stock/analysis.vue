@@ -647,7 +647,7 @@ function handleStreamEvent(ev: ReportStreamEvent) {
       if (!reportMeta.value.created_at) {
         reportMeta.value.created_at = new Date().toLocaleString()
       }
-      if (!reportContent.value.trim()) {
+      if (!reportContent.value.trim() && !errorMsg.value) {
         errorMsg.value = 'AI 已返回完成状态，但报告正文为空，请稍后重试'
         loadFallbackData(currentCode.value)
       }
