@@ -55,6 +55,7 @@ import quantia.web.authHandler as authHandler
 import quantia.web.verifyOptimizeHandler as verifyOptimizeHandler
 import quantia.web.verifyFusionHandler as verifyFusionHandler
 import quantia.web.factorLabHandler as factorLabHandler
+import quantia.web.stockFinancialHandler as stockFinancialHandler
 import quantia.web.base as webBase
 
 __author__ = 'Quantia'
@@ -90,6 +91,8 @@ class Application(tornado.web.Application):
             (r"/quantia/api/strategy/filter", strategyParamsHandler.FilterStocksHandler),
             # K线数据JSON API
             (r"/quantia/api/kline", klineHandler.GetKlineDataHandler),
+            # 股票财务数据
+            (r"/quantia/api/stock/financial_summary", stockFinancialHandler.StockFinancialSummaryHandler),
             # 回测验证
             (r"/quantia/api/backtest/config", backtestHandler.GetBacktestConfigHandler),
             (r"/quantia/api/backtest/run", backtestHandler.RunBacktestHandler),
