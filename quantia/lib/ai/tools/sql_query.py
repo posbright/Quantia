@@ -34,6 +34,16 @@ _MAX_LIMIT = 1000
 _MAX_OUTPUT_BYTES = 32 * 1024
 
 
+def _strip_concept_column(sql: str) -> str:
+    """Best-effort rewrite to drop missing concept column from SELECT list."""
+    s = sql
+    # concept, xxx
+    s = re.sub(r'(?i)\bconcept\b\s*,\s*', '', s)
+    # xxx, concept
+    s = re.sub(r'(?i),\s*\bconcept\b(\s|$)', r'\1', s)
+    return s
+
+
 def _normalize_sql(sql: str) -> str:
     sql = (sql or '').strip()
     if sql.endswith(';'):
@@ -131,7 +141,20 @@ class SqlQueryTool(Tool):
         try:
             rows = mdb.executeSqlFetch(sql)
         except Exception as exc:
-            raise ToolError(f'SQL 执行失败: {exc}') from exc
+            msg = str(exc)
+            # Some deployments do not have cn_stock_spot.concept; retry once without this column.
+            if "Unknown column 'concept'" in msg and 'cn_stock_spot' in sql.lower():
+                patched_sql = _strip_concept_column(sql)
+                if patched_sql != sql:
+                    try:
+                        rows = mdb.executeSqlFetch(patched_sql)
+                        sql = patched_sql
+                    except Exception as exc2:
+                        raise ToolError(f'SQL 执行失败: {exc2}') from exc2
+                else:
+                    raise ToolError(f'SQL 执行失败: {exc}') from exc
+            else:
+                raise ToolError(f'SQL 执行失败: {exc}') from exc
         # 标准化为 list[dict]
         out_rows: List[Dict[str, Any]] = []
         for r in rows or []:

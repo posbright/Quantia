@@ -89,6 +89,10 @@
         <el-icon class="is-loading"><Loading /></el-icon>
         分析中：{{ currentCode }} {{ currentName }}
       </div>
+      <div class="progress-subtitle">
+        <span>{{ runStageText }}</span>
+        <span>已耗时 {{ generateElapsedSec }}s</span>
+      </div>
       <div class="progress-steps">
         <div v-for="step in progressSteps" :key="step.name" class="step-item">
           <el-icon v-if="step.status === 'done'" class="step-icon done"><CircleCheckFilled /></el-icon>
@@ -318,6 +322,10 @@ const currentName = ref('')
 const generating = ref(false)
 const reportContent = ref('')
 const errorMsg = ref('')
+const runStage = ref<'idle' | 'connecting' | 'streaming'>('idle')
+const firstStreamEventAt = ref<number | null>(null)
+const generateElapsedMs = ref(0)
+let generateElapsedTimer: number | null = null
 const fromCache = ref(false)
 const dataUpdateReason = ref('')
 const reportRef = ref<HTMLElement | null>(null)
@@ -357,6 +365,64 @@ interface ReportMeta {
   model?: string
 }
 const reportMeta = ref<ReportMeta>({})
+
+const generateElapsedSec = computed(() => Math.max(0, Math.floor(generateElapsedMs.value / 1000)))
+const runStageText = computed(() => {
+  if (runStage.value === 'connecting') return '正在连接 AI 服务并准备分析任务...'
+  if (runStage.value === 'streaming') return '正在调用数据工具并生成报告，请勿关闭页面'
+  return '准备中...'
+})
+
+function startGenerateTimer() {
+  const startAt = Date.now()
+  generateElapsedMs.value = 0
+  if (generateElapsedTimer != null) {
+    window.clearInterval(generateElapsedTimer)
+  }
+  generateElapsedTimer = window.setInterval(() => {
+    generateElapsedMs.value = Date.now() - startAt
+  }, 200)
+}
+
+function stopGenerateTimer() {
+  if (generateElapsedTimer != null) {
+    window.clearInterval(generateElapsedTimer)
+    generateElapsedTimer = null
+  }
+}
+
+function normalizeReportError(raw: string): string {
+  const text = (raw || '').trim()
+  if (!text) return '报告生成失败，请稍后重试'
+
+  let parsed = text
+  if (text.startsWith('{')) {
+    try {
+      const obj = JSON.parse(text)
+      parsed = String(obj?.error || obj?.msg || text)
+    } catch {
+      parsed = text
+    }
+  }
+
+  const lower = parsed.toLowerCase()
+  if (parsed.includes('code 必须是6位数字股票代码')) {
+    return '股票代码格式不正确，请从下拉建议中选择后再试'
+  }
+  if (parsed.includes('已被管理员禁用')) {
+    return 'AI 分析功能当前被管理员关闭，请稍后再试'
+  }
+  if (parsed.includes('预算已耗尽') || lower.includes('quota') || lower.includes('rate limit')) {
+    return 'AI 当日额度已用尽，请稍后再试'
+  }
+  if (lower.includes('provider') || lower.includes('api key') || lower.includes('api_key') || lower.includes('authentication')) {
+    return 'AI 服务配置异常，请联系管理员检查 API 配置'
+  }
+  if (lower.includes('timeout') || parsed.includes('超时')) {
+    return 'AI 服务响应超时，请稍后重试'
+  }
+  return parsed
+}
 
 // ---- Feedback State ----
 const feedbackSubmitted = ref<0 | 1 | -1>(0)
@@ -493,9 +559,12 @@ async function handleGenerate(force?: boolean | MouseEvent) {
   followupAnswers.value = []
   feedbackSubmitted.value = 0
   fallbackData.value = null
+  runStage.value = 'connecting'
+  firstStreamEventAt.value = null
   isTranslated.value = false
   originalReportMd.value = ''
   progressSteps.value = progressSteps.value.map(s => ({ ...s, status: 'pending' as const, elapsed: undefined }))
+  startGenerateTimer()
 
   // Init markdown-it
   await ensureMarkdownIt()
@@ -514,15 +583,24 @@ async function handleGenerate(force?: boolean | MouseEvent) {
     )
   } catch (e: unknown) {
     if (e instanceof Error && e.name !== 'AbortError') {
-      errorMsg.value = e.message || '生成报告失败'
+      errorMsg.value = normalizeReportError(e.message || '生成报告失败')
       loadFallbackData(currentCode.value)
     }
   } finally {
+    stopGenerateTimer()
     generating.value = false
+    runStage.value = 'idle'
   }
 }
 
 function handleStreamEvent(ev: ReportStreamEvent) {
+  if (!firstStreamEventAt.value) {
+    firstStreamEventAt.value = Date.now()
+  }
+  if (ev.type === 'progress' || ev.type === 'chunk') {
+    runStage.value = 'streaming'
+  }
+
   switch (ev.type) {
     case 'progress':
       updateProgress(ev.step || '', ev.status || '', ev.elapsed_ms)
@@ -569,6 +647,10 @@ function handleStreamEvent(ev: ReportStreamEvent) {
       if (!reportMeta.value.created_at) {
         reportMeta.value.created_at = new Date().toLocaleString()
       }
+      if (!reportContent.value.trim()) {
+        errorMsg.value = 'AI 已返回完成状态，但报告正文为空，请稍后重试'
+        loadFallbackData(currentCode.value)
+      }
       generating.value = false
       loadScoreHistory(currentCode.value)
       loadReportTimeline(currentCode.value)
@@ -579,7 +661,7 @@ function handleStreamEvent(ev: ReportStreamEvent) {
       }
       break
     case 'error':
-      errorMsg.value = ev.msg || '生成失败'
+      errorMsg.value = normalizeReportError(ev.msg || '生成失败')
       generating.value = false
       loadFallbackData(currentCode.value)
       break
@@ -1216,6 +1298,14 @@ watch(klineCollapsed, (collapsed) => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.progress-subtitle {
+  display: flex;
+  justify-content: space-between;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  margin-bottom: 10px;
 }
 
 .step-item {

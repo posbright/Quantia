@@ -79,6 +79,21 @@ export interface StockFallbackData {
   }
 }
 
+function _extractApiError(text: string, status: number): string {
+  const raw = (text || '').trim()
+  if (!raw) return `HTTP ${status}`
+  if (raw.startsWith('{')) {
+    try {
+      const obj = JSON.parse(raw)
+      const msg = obj?.error || obj?.msg || obj?.message
+      if (typeof msg === 'string' && msg.trim()) return msg.trim()
+    } catch {
+      // ignore and fallback to raw text
+    }
+  }
+  return raw
+}
+
 // ---- API functions ----
 
 /**
@@ -124,7 +139,7 @@ export async function generateReportStream(
   })
   if (!resp.ok) {
     const text = await resp.text()
-    onEvent({ type: 'error', msg: text || `HTTP ${resp.status}` })
+    onEvent({ type: 'error', msg: _extractApiError(text, resp.status) })
     return
   }
   const reader = resp.body!.getReader()
@@ -171,7 +186,7 @@ export async function followupReportStream(
   })
   if (!resp.ok) {
     const text = await resp.text()
-    onEvent({ type: 'error', msg: text || `HTTP ${resp.status}` })
+    onEvent({ type: 'error', msg: _extractApiError(text, resp.status) })
     return
   }
   const reader = resp.body!.getReader()

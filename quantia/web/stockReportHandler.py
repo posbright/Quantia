@@ -45,6 +45,38 @@ _executor = ThreadPoolExecutor(max_workers=4)
 _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
 
 
+def _sanitize_error_text(text: str) -> str:
+    """Sanitize provider error text before returning to frontend."""
+    if not text:
+        return ''
+    out = text.strip()
+    # Mask common key/token fragments
+    out = re.sub(r'(sk-[A-Za-z0-9_-]{8,})', 'sk-***', out)
+    out = re.sub(r'(api[_-]?key\s*[=:]\s*)([^\s,;]+)', r'\1***', out, flags=re.IGNORECASE)
+    out = re.sub(r'(Authorization\s*[:=]\s*Bearer\s+)([^\s,;]+)', r'\1***', out, flags=re.IGNORECASE)
+    return out[:160]
+
+
+def _to_user_friendly_error(exc: Exception) -> str:
+    """Map backend exceptions to actionable user-facing messages."""
+    raw = _sanitize_error_text(str(exc))
+    lower = (raw or '').lower()
+    if not raw:
+        return '报告生成失败，请稍后重试'
+
+    if 'code 必须是6位数字股票代码' in raw:
+        return raw
+    if '已被管理员禁用' in raw or '预算已耗尽' in raw:
+        return raw
+    if 'timeout' in lower or 'timed out' in lower or '超时' in raw:
+        return 'AI 服务响应超时，请稍后重试'
+    if '未注册的 provider' in raw or 'provider' in lower or 'api_key' in lower or 'authentication' in lower:
+        return 'AI 服务配置异常，请联系管理员检查 Provider/API Key'
+    if 'quota' in lower or 'rate limit' in lower or '429' in lower:
+        return 'AI 服务请求过于频繁，请稍后重试'
+    return f'报告生成失败：{raw}'
+
+
 def _get_effective_tools() -> list:
     """根据环境配置过滤实际可用的工具列表。
 
@@ -372,7 +404,7 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
 
     except Exception as exc:
         _logger.exception(f'[stockReport] Agent 报告生成失败: {exc}')
-        q.put(('error', {'msg': '报告生成失败，请稍后重试'}))
+        q.put(('error', {'msg': _to_user_friendly_error(exc)}))
     finally:
         q.put((_STREAM_SENTINEL, None))
 
