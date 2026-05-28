@@ -4,7 +4,9 @@
 
 优先级：
 1. 若配置了 QUANTIA_AI_WEB_SEARCH_URL → 调用自建搜索代理（SearXNG 等）
-2. 否则使用内置 DuckDuckGo HTML 搜索作为 fallback（零配置可用）
+2. 否则使用内置 Bing CN 搜索（国内可用，无需配置）
+3. Bing 失败时降级到 DuckDuckGo（海外环境可用）
+4. 全部失败时优雅降级，返回空结果 + warning
 
 约定的搜索 endpoint 协议（极简）：
   GET <URL>?q=<query>&n=<top_n>
@@ -17,7 +19,9 @@ import json
 import logging
 import os
 import re
+from html import unescape as html_unescape
 from typing import Any, Dict, List
+from urllib.parse import unquote, quote_plus
 
 import requests
 
@@ -33,9 +37,7 @@ _MAX_RESULTS = 10
 _MAX_RESPONSE_BYTES = 16 * 1024
 _MAX_QUERY_LEN = 256
 
-# DuckDuckGo HTML endpoint（lite 版，轻量易解析）
-_DDG_URL = 'https://html.duckduckgo.com/html/'
-_DDG_HEADERS = {
+_COMMON_HEADERS = {
     'User-Agent': (
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
         'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -45,14 +47,95 @@ _DDG_HEADERS = {
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 }
 
+# ── Bing CN ──────────────────────────────────────────────────────────────────
+_BING_URL = 'https://www.bing.com/search'
+
+
+def _search_bing_cn(query: str, top_n: int) -> List[Dict[str, str]]:
+    """Bing 搜索（国内外均可访问，优先返回中文结果）。"""
+    try:
+        resp = requests.get(
+            _BING_URL,
+            params={'q': query, 'count': top_n},
+            headers=_COMMON_HEADERS,
+            timeout=_TIMEOUT_SEC,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise ToolError(f'web_search(Bing CN) 网络错误: {exc}') from exc
+
+    html = resp.text
+    results: List[Dict[str, str]] = []
+
+    # Bing 搜索结果块: <li class="b_algo">
+    #   <h2><a href="URL">Title</a></h2>
+    #   <div class="b_caption"><p>Snippet</p></div>
+    blocks = re.findall(
+        r'<li\s+class="b_algo"[^>]*>(.*?)</li>',
+        html, re.DOTALL
+    )
+    for block in blocks[:top_n]:
+        # 提取标题和链接
+        title_match = re.search(
+            r'<h2[^>]*>\s*<a[^>]+href="([^"]*)"[^>]*>(.*?)</a>',
+            block, re.DOTALL
+        )
+        if not title_match:
+            continue
+        url = html_unescape(title_match.group(1))
+        title = re.sub(r'<[^>]+>', '', title_match.group(2)).strip()
+        title = html_unescape(title)
+
+        # 尝试从 <cite> 提取原始 URL（比 bing.com/ck/a 跳转链接更有意义）
+        cite_match = re.search(r'<cite[^>]*>(.*?)</cite>', block, re.DOTALL)
+        if cite_match:
+            cite_url = re.sub(r'<[^>]+>', '', cite_match.group(1)).strip()
+            cite_url = html_unescape(cite_url)
+            # cite 通常是 "example.com › path" 格式，转换为 URL
+            if cite_url and not cite_url.startswith('http'):
+                cite_url = 'https://' + cite_url.replace(' › ', '/').replace('›', '/')
+            if cite_url:
+                url = cite_url
+
+        # 提取摘要 — Bing 有多种 snippet 容器
+        snippet = ''
+        snippet_match = re.search(
+            r'<div\s+class="b_caption"[^>]*>.*?<p[^>]*>(.*?)</p>',
+            block, re.DOTALL
+        )
+        if snippet_match:
+            snippet = re.sub(r'<[^>]+>', '', snippet_match.group(1)).strip()
+        else:
+            # 备选: <span class="b_algoSlug">
+            slug_match = re.search(
+                r'<span[^>]*class="[^"]*algoSlug[^"]*"[^>]*>(.*?)</span>',
+                block, re.DOTALL
+            )
+            if slug_match:
+                snippet = re.sub(r'<[^>]+>', '', slug_match.group(1)).strip()
+        snippet = html_unescape(snippet)
+
+        if title or snippet:
+            results.append({
+                'title': title[:300],
+                'url': url[:500],
+                'snippet': snippet[:1000],
+            })
+
+    return results
+
+
+# ── DuckDuckGo (海外备用) ────────────────────────────────────────────────────
+_DDG_URL = 'https://html.duckduckgo.com/html/'
+
 
 def _search_duckduckgo(query: str, top_n: int) -> List[Dict[str, str]]:
-    """内置 DuckDuckGo HTML 搜索，返回 [{title, url, snippet}, ...]。"""
+    """内置 DuckDuckGo HTML 搜索（海外环境备用），返回 [{title, url, snippet}, ...]。"""
     try:
         resp = requests.post(
             _DDG_URL,
             data={'q': query, 'b': '', 'kl': 'cn-zh'},
-            headers=_DDG_HEADERS,
+            headers=_COMMON_HEADERS,
             timeout=_TIMEOUT_SEC,
         )
         resp.raise_for_status()
@@ -75,7 +158,6 @@ def _search_duckduckgo(query: str, top_n: int) -> List[Dict[str, str]]:
         url = href
         uddg_match = re.search(r'uddg=([^&]+)', href)
         if uddg_match:
-            from urllib.parse import unquote
             url = unquote(uddg_match.group(1))
 
         # 清理 HTML 标签
@@ -127,12 +209,25 @@ class WebSearchTool(Tool):
             raise ToolError('top_n 必须是整数')
 
         url = (os.environ.get('QUANTIA_AI_WEB_SEARCH_URL') or '').strip()
+        # 安全校验在 try 外面：配置错误（如 http:// 不允许）应立即报错
         if url:
-            # 使用自建搜索代理
-            out = self._search_via_proxy(url, query, top_n)
-        else:
-            # 内置 DuckDuckGo 搜索 fallback
-            out = _search_duckduckgo(query, top_n)
+            self._validate_proxy_url(url)
+        try:
+            if url:
+                out = self._search_via_proxy(url, query, top_n)
+            else:
+                out = self._search_with_fallback(query, top_n)
+        except ToolError as exc:
+            # 网络不可达 / 超时 / 被屏蔽时优雅降级：返回空结果 + 提示，
+            # 让 Agent 继续生成报告（"近期事件"一节标注暂无数据即可），
+            # 而非中断整个工具链。
+            _logger.warning(f'[web_search] 搜索失败（降级为空结果）: {exc}')
+            return {
+                'query': query,
+                'result_count': 0,
+                'results': [],
+                'warning': f'搜索服务暂不可用: {exc}',
+            }
 
         # 整体截断
         encoded = json.dumps(out, ensure_ascii=False).encode('utf-8')
@@ -141,8 +236,9 @@ class WebSearchTool(Tool):
                 out.pop()
         return {'query': query, 'result_count': len(out), 'results': out}
 
-    def _search_via_proxy(self, url: str, query: str, top_n: int) -> List[Dict[str, str]]:
-        """通过自建搜索代理获取结果。"""
+    @staticmethod
+    def _validate_proxy_url(url: str) -> None:
+        """校验代理 URL 协议安全性（配置错误应立即报错，不降级）。"""
         allow_http = os.environ.get('QUANTIA_AI_WEB_SEARCH_ALLOW_HTTP', '0').lower() in ('1', 'true', 'yes')
         if allow_http:
             if not (url.startswith('https://') or url.startswith('http://')):
@@ -150,6 +246,28 @@ class WebSearchTool(Tool):
         else:
             if not url.startswith('https://'):
                 raise ToolError('QUANTIA_AI_WEB_SEARCH_URL 必须是 https（设 QUANTIA_AI_WEB_SEARCH_ALLOW_HTTP=1 放行 http）')
+
+    @staticmethod
+    def _search_with_fallback(query: str, top_n: int) -> List[Dict[str, str]]:
+        """内置搜索 fallback 链：Bing CN → DuckDuckGo。
+
+        国内服务器优先用 Bing CN（cn.bing.com 不受 GFW 影响）；
+        海外环境若 Bing 国际版有问题，退到 DuckDuckGo。
+        """
+        try:
+            results = _search_bing_cn(query, top_n)
+            if results:
+                return results
+            # Bing 返回空结果（可能被临时限流），尝试 DuckDuckGo
+            _logger.info('[web_search] Bing CN 返回空结果，尝试 DuckDuckGo fallback')
+        except ToolError as exc:
+            _logger.info(f'[web_search] Bing CN 失败 ({exc})，尝试 DuckDuckGo fallback')
+
+        # 第二梯队：DuckDuckGo（海外环境可用，国内大概率被墙）
+        return _search_duckduckgo(query, top_n)
+
+    def _search_via_proxy(self, url: str, query: str, top_n: int) -> List[Dict[str, str]]:
+        """通过自建搜索代理获取结果。"""
 
         api_key = os.environ.get('QUANTIA_AI_WEB_SEARCH_KEY') or ''
         headers = {'Accept': 'application/json'}

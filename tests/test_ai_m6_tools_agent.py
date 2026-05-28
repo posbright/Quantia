@@ -8,6 +8,8 @@ import sys
 import unittest
 from unittest import mock
 
+import requests
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from quantia.lib.ai import tools as tools_pkg
@@ -93,8 +95,27 @@ class CodeValidateToolTests(unittest.TestCase):
 
 # ── web_search tool ──────────────────────────────────────────────────
 class WebSearchToolTests(unittest.TestCase):
+    def test_bing_cn_primary_fallback(self):
+        """未配置 URL 时优先使用 Bing CN 搜索。"""
+        os.environ.pop('QUANTIA_AI_WEB_SEARCH_URL', None)
+        fake_resp = mock.Mock()
+        fake_resp.status_code = 200
+        fake_resp.text = (
+            '<li class="b_algo">'
+            '<h2><a href="https://example.com/news">贵州茅台最新消息</a></h2>'
+            '<div class="b_caption"><p>茅台集团发布2026年Q1财报</p></div>'
+            '</li>'
+        )
+        fake_resp.raise_for_status = mock.Mock()
+        with mock.patch('quantia.lib.ai.tools.web_search.requests.get',
+                        return_value=fake_resp):
+            out = WebSearchTool().run({'query': '茅台 新闻'})
+        self.assertEqual(out['result_count'], 1)
+        self.assertEqual(out['results'][0]['title'], '贵州茅台最新消息')
+        self.assertIn('茅台集团', out['results'][0]['snippet'])
+
     def test_fallback_to_duckduckgo_when_no_url(self):
-        """未配置 URL 时使用内置 DuckDuckGo 搜索。"""
+        """未配置 URL 时使用内置搜索（Bing 失败时降级到 DuckDuckGo）。"""
         os.environ.pop('QUANTIA_AI_WEB_SEARCH_URL', None)
         fake_resp = mock.Mock()
         fake_resp.status_code = 200
@@ -103,9 +124,12 @@ class WebSearchToolTests(unittest.TestCase):
             '<a class="result__snippet" href="#">A snippet here</a>'
         )
         fake_resp.raise_for_status = mock.Mock()
-        with mock.patch('quantia.lib.ai.tools.web_search.requests.post',
-                        return_value=fake_resp):
-            out = WebSearchTool().run({'query': 'btc price'})
+        # Bing GET 失败 → 降级到 DuckDuckGo POST
+        with mock.patch('quantia.lib.ai.tools.web_search.requests.get',
+                        side_effect=requests.RequestException('timeout')):
+            with mock.patch('quantia.lib.ai.tools.web_search.requests.post',
+                            return_value=fake_resp):
+                out = WebSearchTool().run({'query': 'btc price'})
         self.assertIn('results', out)
         self.assertEqual(out['result_count'], 1)
         self.assertEqual(out['results'][0]['title'], 'Example Title')
@@ -154,6 +178,18 @@ class WebSearchToolTests(unittest.TestCase):
         finally:
             del os.environ['QUANTIA_AI_WEB_SEARCH_URL']
             del os.environ['QUANTIA_AI_WEB_SEARCH_ALLOW_HTTP']
+
+    def test_graceful_degradation_all_backends_fail(self):
+        """Bing + DuckDuckGo 都失败时优雅降级为空结果 + warning。"""
+        os.environ.pop('QUANTIA_AI_WEB_SEARCH_URL', None)
+        with mock.patch('quantia.lib.ai.tools.web_search.requests.get',
+                        side_effect=requests.RequestException('bing timeout')):
+            with mock.patch('quantia.lib.ai.tools.web_search.requests.post',
+                            side_effect=requests.RequestException('ddg blocked')):
+                out = WebSearchTool().run({'query': 'test'})
+        self.assertEqual(out['result_count'], 0)
+        self.assertEqual(out['results'], [])
+        self.assertIn('搜索服务暂不可用', out['warning'])
 
 
 # ── Tool registry ────────────────────────────────────────────────────
