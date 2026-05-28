@@ -35,6 +35,8 @@ def check_high_tight(code_name, data, date=None, threshold=60, istop=False):
     data = data.tail(n=24)
     data = data.head(n=14)
     low = data['low'].values.min()
+    if low == 0:
+        return False
     ratio_increase = current_close / low  # 当日收盘价/区间最低价
     if ratio_increase < 1.9:
         return False

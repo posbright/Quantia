@@ -59,12 +59,13 @@ def check_internal(data, limitup_row):
     consolidation_day23 = limitup_end.tail(n=2)
 
     if not (consolidation_day1['close'] > limitup_price and consolidation_day1['open'] > limitup_price and
+            consolidation_day1['open'] != 0 and
             0.97 < consolidation_day1['close'] / consolidation_day1['open'] < 1.03):
         return False
 
     for _close, _p_change, _open in zip(consolidation_day23['close'].values, consolidation_day23['p_change'].values, consolidation_day23['open'].values):
         if not (0.97 < (_close / _open) < 1.03 and -5 < _p_change < 5
-                and _close > limitup_price and _open > limitup_price):
+                and _close > limitup_price and _open > limitup_price and _open != 0):
             return False
 
     return True

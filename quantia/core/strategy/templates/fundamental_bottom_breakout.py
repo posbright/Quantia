@@ -147,7 +147,10 @@ def check_buy_signal(code, data):
 
         # 条件2：近期整理 — 近20日振幅 < 30%
         recent_20 = close_arr[-g.ma_long:]
-        amplitude = (recent_20.max() - recent_20.min()) / recent_20.min()
+        recent_20_min = recent_20.min()
+        if recent_20_min == 0:
+            return False
+        amplitude = (recent_20.max() - recent_20_min) / recent_20_min
         if amplitude > 0.30:
             return False
 

@@ -60,7 +60,7 @@ def check_low_increase(code_name, data, date=None, ma_short=30, ma_long=250, thr
     if atr > 10:
         return False
 
-    ratio = (highest_row - lowest_row) / lowest_row
+    ratio = (highest_row - lowest_row) / lowest_row if lowest_row != 0 else 0
 
     if ratio > 0.1:
         p_change = data.iloc[-1]['p_change'] if 'p_change' in data.columns else 0.0

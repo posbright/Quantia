@@ -143,6 +143,7 @@ class ParkingApronStrategy(PatternStrategy):
         # 第一天检查
         if not (consolidation_day1['close'] > limitup_price and
                 consolidation_day1['open'] > limitup_price and
+                consolidation_day1['open'] != 0 and
                 0.97 < consolidation_day1['close'] / consolidation_day1['open'] < 1.03):
             return False
 
@@ -151,7 +152,7 @@ class ParkingApronStrategy(PatternStrategy):
                                             consolidation_day23['p_change'].values,
                                             consolidation_day23['open'].values):
             if not (0.97 < (_close / _open) < 1.03 and -5 < _p_change < 5
-                    and _close > limitup_price and _open > limitup_price):
+                    and _close > limitup_price and _open > limitup_price and _open != 0):
                 return False
 
         return True
@@ -198,6 +199,8 @@ class HighTightFlagStrategy(PatternStrategy):
         data = data.head(n=14)
 
         low = data['low'].values.min()
+        if low == 0:
+            return False
         ratio_increase = current_close / low  # 当日收盘价/区间最低价
         if ratio_increase < 1.9:
             return False
@@ -248,7 +251,10 @@ class LowBacktraceIncreaseStrategy(PatternStrategy):
         data = data.tail(n=self.threshold)
 
         # 涨幅检查
-        ratio_increase = (data.iloc[-1]['close'] - data.iloc[0]['close']) / data.iloc[0]['close']
+        first_close = data.iloc[0]['close']
+        if first_close == 0:
+            return False
+        ratio_increase = (data.iloc[-1]['close'] - first_close) / first_close
         if ratio_increase < 0.6:
             return False
 
@@ -257,9 +263,9 @@ class LowBacktraceIncreaseStrategy(PatternStrategy):
         previous_open = data.iloc[0]['open']  # 用首日开盘价初始化，避免-1000000导致首次迭代永远返回False
         for _p_change, _close, _open in zip(data['p_change'].values, data['close'].values, data['open'].values):
             if (_p_change < -7 or
-                (_close - _open) / _open * 100 < -7 or
+                (_open != 0 and (_close - _open) / _open * 100 < -7) or
                 previous_p_change + _p_change < -10 or
-                (_close - previous_open) / previous_open * 100 < -10):
+                (previous_open != 0 and (_close - previous_open) / previous_open * 100 < -10)):
                 return False
             previous_p_change = _p_change
             previous_open = _open

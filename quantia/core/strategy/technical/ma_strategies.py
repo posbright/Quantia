@@ -133,7 +133,7 @@ class MA250PullbackStrategy(TechnicalStrategy):
             return False
 
         # 回踩伴随缩量
-        if recent_lowest_row[1] == 0:
+        if recent_lowest_row[1] == 0 or highest_row[0] == 0:
             return False
         vol_ratio = highest_row[1] / recent_lowest_row[1]
         back_ratio = recent_lowest_row[0] / highest_row[0]
