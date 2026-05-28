@@ -414,7 +414,8 @@ class M3RetryTests(AsyncHTTPTestCase):
         bad = [(_UNSAFE_CODE, 'm1'), (_UNSAFE_CODE_2, 'm1'),
                (_UNSAFE_CODE_3, 'm1'), (_UNSAFE_CODE, 'm1')]
         with mock.patch('quantia.web.aiAssistantHandler._call_ai_blocking',
-                        side_effect=bad):
+                        side_effect=bad), \
+             mock.patch.dict(os.environ, {'QUANTIA_AI_REPAIR_MAX_ATTEMPTS': '3'}):
             resp = self.fetch('/quantia/api/ai/strategy/generate', method='POST',
                               body=json.dumps({'prompt': 'x'}))
         body = json.loads(resp.body)

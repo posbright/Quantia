@@ -245,6 +245,55 @@ def _run_runtime_preflight(
     return True, ''
 
 
+def _quick_trade_count(code: str) -> int:
+    """快速检查策略在短窗口回测中的交易笔数。
+
+    使用 30 天窗口（比 _PREFLIGHT_DEFAULT_DAYS=7 更长），给策略更多机会产生信号。
+    若引擎异常则返回 -1（表示无法判断，不触发零交易修复）。
+    """
+    import datetime as _dt
+    try:
+        end_date = _dt.date.today().strftime('%Y-%m-%d')
+        start_date = (_dt.date.today() - _dt.timedelta(days=30)).strftime('%Y-%m-%d')
+        from quantia.core.backtest.portfolio_engine import PortfolioBacktestEngine
+        engine = PortfolioBacktestEngine()
+        result = engine.run(code, start_date, end_date,
+                            initial_cash=_PREFLIGHT_DEFAULT_CASH,
+                            benchmark=_PREFLIGHT_DEFAULT_BENCHMARK)
+    except Exception:
+        return -1
+    finally:
+        try:
+            import quantia.lib.database as _mdb
+            _mdb.close_thread_connection()
+        except Exception:
+            pass
+    if not result or result.get('status') != 'completed':
+        return -1
+    metrics = result.get('metrics') or {}
+    return metrics.get('trade_count', 0)
+
+
+def _build_zero_trade_repair_prompt(code: str, user_prompt: str) -> str:
+    """构建"零交易修复"的 LLM prompt，要求放宽触发条件。"""
+    return (
+        f"以下策略代码在 30 天回测窗口内产生了 **0 笔交易**，说明买入条件过于严格、"
+        f"几乎不可能同时满足。请修改代码，使信号更容易触发：\n\n"
+        f"**常见原因与修复方向**：\n"
+        f"1. 多个技术指标 AND 条件同时要求（如均线粘合 + 横盘 + 放量 + 突破），"
+        f"实际行情很难在同一天全部满足 → 放宽阈值（如 `abs(ma5-ma20)/close < 0.03` 改 0.05）"
+        f"或改为部分条件用 OR 逻辑（满足其中 N-1 个即可）；\n"
+        f"2. `get_fundamentals` 筛选条件过严导致 `g.pool` 为空列表 → 放宽 ROE/PE 阈值或增大 limit；\n"
+        f"3. `history` 返回长度不足被 `if len(closes) < N: continue` 跳过 → 减小所需的 N 或在"
+        f"initialize 里将 g.pool 设置为至少 5 只大盘蓝筹兜底；\n"
+        f"4. 止损/止盈阈值过紧导致当天买入就卖出 → 去掉或放宽。\n\n"
+        f"**用户原始需求**：{user_prompt}\n\n"
+        f"**当前代码**：\n{code}\n\n"
+        f"请输出修改后的完整策略代码（保留用户核心逻辑意图，只调整阈值/条件组合方式使其能产生交易）。"
+        f"不要输出解释，只输出纯 Python 代码。"
+    )
+
+
 def _verify_strategy_code(code: str, body: Optional[dict] = None) -> Tuple[bool, str, str]:
     """静态沙箱校验 + 运行期预演的组合验收。
 
@@ -319,6 +368,16 @@ def _call_ai_blocking(prompt: str, system: str, scene: str, agent: str, user_id:
     """
     from quantia.lib.ai.config import load_config as _load_cfg
     cfg = _load_cfg(overrides)
+    # 策略生成/修改场景需要更长超时：prompt 含大量系统指令 + 用户代码，
+    # 慢模型 (qwen3.7-max/kimi) 生成完整策略代码可达 90-120s。
+    # 仅在用户未自定义 timeout 且当前是策略场景时拉长到 180s。
+    _STRATEGY_SCENES = ('strategy_gen', 'strategy_refine', 'strategy_repair',
+                        'strategy_gen_repair', 'strategy_refine_repair')
+    if (scene in _STRATEGY_SCENES
+            and not (overrides or {}).get('timeout')
+            and cfg.timeout <= 60):
+        overrides = dict(overrides or {})
+        overrides['timeout'] = 180
     content = run_chat(
         prompt, scene=scene, system=system, agent=agent,
         user_id=user_id, overrides=overrides,
@@ -329,11 +388,15 @@ def _call_ai_blocking(prompt: str, system: str, scene: str, agent: str, user_id:
 
 
 def _get_max_repair_attempts() -> int:
-    """M3：strict 校验失败自动重试上限。每次调用读环境变量，便于测试。"""
+    """M3：strict 校验失败自动重试上限。每次调用读环境变量，便于测试。
+
+    默认 2 轮（曾为 3 轮，但慢模型 qwen3.7-max/kimi 单次调用可达 90-120s，
+    3 轮修复 + preflight 总耗时容易超 5 分钟导致前端超时）。
+    """
     try:
-        return max(0, int(os.environ.get('QUANTIA_AI_REPAIR_MAX_ATTEMPTS', '3')))
+        return max(0, int(os.environ.get('QUANTIA_AI_REPAIR_MAX_ATTEMPTS', '2')))
     except (TypeError, ValueError):
-        return 3
+        return 2
 
 
 # 单次生成上限（防止内存/带宽攻击）—— L2
@@ -481,6 +544,42 @@ class GenerateStrategyHandler(webBase.BaseHandler, ABC):
                 prev_signature = signature
             else:
                 repair_status = 'max_attempts'
+
+        # ── 零交易检测 + 自动修复（仅 static 校验通过时触发）────────────
+        # 避免用户拿到一个"验证通过但收益=0"的策略却不知道原因。
+        # _quick_trade_count 内部跑 30 天回测，崩溃返回 -1 不触发修复。
+        zero_trade_warning = False
+        if ok and _should_run_preflight():
+            zt_count = _quick_trade_count(code)
+            if zt_count == 0:
+                # 尝试一次"放宽条件"修复
+                relax_prompt = _build_zero_trade_repair_prompt(code, user_prompt)
+                repairer_sys = prompt_loader.load('strategy_repairer')
+                try:
+                    raw2, _model2 = yield IOLoop.current().run_in_executor(
+                        _get_executor(),
+                        _call_ai_blocking,
+                        relax_prompt, repairer_sys,
+                        'strategy_gen_repair', 'strategy_repairer',
+                        _client_ip(self), overrides, True,
+                    )
+                    code2 = _strip_code_fence(raw2)
+                    ok2, err2 = _validate_or_msg(code2)
+                    if ok2:
+                        zt2 = _quick_trade_count(code2)
+                        if zt2 > 0:
+                            code = code2
+                            raw = raw2
+                            resolved_model = _model2
+                            repair_status = 'zero_trade_fixed'
+                        else:
+                            zero_trade_warning = True
+                    else:
+                        zero_trade_warning = True
+                except Exception as exc:
+                    logging.warning(f'零交易修复 AI 调用失败: {exc}')
+                    zero_trade_warning = True
+
         payload = {
             'code': 0 if ok else -2,
             'msg': '' if ok else f'代码沙箱校验失败: {err}',
@@ -492,6 +591,7 @@ class GenerateStrategyHandler(webBase.BaseHandler, ABC):
                 'model': resolved_model,
                 'repair_attempts': attempts,
                 'repair_status': repair_status,
+                'zero_trade_warning': zero_trade_warning,
             },
         }
         self.set_header('Content-Type', 'application/json')

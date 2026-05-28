@@ -69,9 +69,10 @@ export interface StrategyAiResponse {
   }
 }
 
-// AI 策略接口的超时单独拉长到 5 分钟——闭环验收最多包含 3 轮 AI 调用
-// (单次 Kimi 可达 60s) + 3 次运行期预演回测，全局 60s 超时不够用。
-const AI_LONG_TIMEOUT = 5 * 60 * 1000
+// AI 策略接口的超时拉长到 10 分钟——闭环验收最多包含 3 轮 AI 调用
+// (单次 qwen3.7-max 可达 90-120s) + 3 次运行期预演回测 + 自动修复循环，
+// 慢模型 (qwen/kimi) 总耗时可达 6-8 分钟，5 分钟不够用。
+const AI_LONG_TIMEOUT = 10 * 60 * 1000
 
 export function aiGenerateStrategy(data: GenerateRequest) {
   return request({ url: '/api/ai/strategy/generate', method: 'post', data,
