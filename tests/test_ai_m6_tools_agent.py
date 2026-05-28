@@ -114,25 +114,25 @@ class WebSearchToolTests(unittest.TestCase):
         self.assertEqual(out['results'][0]['title'], '贵州茅台最新消息')
         self.assertIn('茅台集团', out['results'][0]['snippet'])
 
-    def test_fallback_to_duckduckgo_when_no_url(self):
-        """未配置 URL 时使用内置搜索（Bing 失败时降级到 DuckDuckGo）。"""
+    def test_fallback_to_bing_when_bocha_not_configured(self):
+        """未配置 Bocha Key 时降级到 Bing CN。"""
         os.environ.pop('QUANTIA_AI_WEB_SEARCH_URL', None)
+        os.environ.pop('QUANTIA_AI_BOCHA_API_KEY', None)
         fake_resp = mock.Mock()
         fake_resp.status_code = 200
         fake_resp.text = (
-            '<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com">Example Title</a>'
-            '<a class="result__snippet" href="#">A snippet here</a>'
+            '<li class="b_algo">'
+            '<h2><a href="https://example.com">Bing Result</a></h2>'
+            '<div class="b_caption"><p>Bing snippet</p></div>'
+            '</li>'
         )
         fake_resp.raise_for_status = mock.Mock()
-        # Bing GET 失败 → 降级到 DuckDuckGo POST
         with mock.patch('quantia.lib.ai.tools.web_search.requests.get',
-                        side_effect=requests.RequestException('timeout')):
-            with mock.patch('quantia.lib.ai.tools.web_search.requests.post',
-                            return_value=fake_resp):
-                out = WebSearchTool().run({'query': 'btc price'})
+                        return_value=fake_resp):
+            out = WebSearchTool().run({'query': 'btc price'})
         self.assertIn('results', out)
         self.assertEqual(out['result_count'], 1)
-        self.assertEqual(out['results'][0]['title'], 'Example Title')
+        self.assertEqual(out['results'][0]['title'], 'Bing Result')
 
     def test_calls_endpoint_when_configured(self):
         os.environ['QUANTIA_AI_WEB_SEARCH_URL'] = 'https://example.test/search'
@@ -180,16 +180,50 @@ class WebSearchToolTests(unittest.TestCase):
             del os.environ['QUANTIA_AI_WEB_SEARCH_ALLOW_HTTP']
 
     def test_graceful_degradation_all_backends_fail(self):
-        """Bing + DuckDuckGo 都失败时优雅降级为空结果 + warning。"""
+        """Bocha + Bing 都失败时优雅降级为空结果 + warning。"""
         os.environ.pop('QUANTIA_AI_WEB_SEARCH_URL', None)
-        with mock.patch('quantia.lib.ai.tools.web_search.requests.get',
-                        side_effect=requests.RequestException('bing timeout')):
+        os.environ['QUANTIA_AI_BOCHA_API_KEY'] = 'test-key'
+        try:
             with mock.patch('quantia.lib.ai.tools.web_search.requests.post',
-                            side_effect=requests.RequestException('ddg blocked')):
-                out = WebSearchTool().run({'query': 'test'})
-        self.assertEqual(out['result_count'], 0)
-        self.assertEqual(out['results'], [])
-        self.assertIn('搜索服务暂不可用', out['warning'])
+                            side_effect=requests.RequestException('bocha timeout')):
+                with mock.patch('quantia.lib.ai.tools.web_search.requests.get',
+                                side_effect=requests.RequestException('bing timeout')):
+                    out = WebSearchTool().run({'query': 'test'})
+            self.assertEqual(out['result_count'], 0)
+            self.assertEqual(out['results'], [])
+            self.assertIn('搜索服务暂不可用', out['warning'])
+        finally:
+            del os.environ['QUANTIA_AI_BOCHA_API_KEY']
+
+    def test_bocha_primary_when_key_configured(self):
+        """配置了 Bocha Key 时优先使用博查搜索。"""
+        os.environ.pop('QUANTIA_AI_WEB_SEARCH_URL', None)
+        os.environ['QUANTIA_AI_BOCHA_API_KEY'] = 'sk-test-bocha-key'
+        try:
+            fake_resp = mock.Mock()
+            fake_resp.status_code = 200
+            fake_resp.json.return_value = {
+                'webPages': {
+                    'value': [
+                        {
+                            'name': '贵州茅台2026年Q1财报发布',
+                            'url': 'https://finance.sina.com.cn/stock/xxx',
+                            'snippet': '贵州茅台发布2026年一季度财报',
+                            'summary': '贵州茅台2026年Q1营收同比增长15%，净利润达218亿元。',
+                        }
+                    ]
+                }
+            }
+            with mock.patch('quantia.lib.ai.tools.web_search.requests.post',
+                            return_value=fake_resp) as m:
+                out = WebSearchTool().run({'query': '贵州茅台 最新财报'})
+            m.assert_called_once()
+            self.assertEqual(out['result_count'], 1)
+            self.assertEqual(out['results'][0]['title'], '贵州茅台2026年Q1财报发布')
+            # 优先使用 summary 而非 snippet
+            self.assertIn('营收同比增长', out['results'][0]['snippet'])
+        finally:
+            del os.environ['QUANTIA_AI_BOCHA_API_KEY']
 
 
 # ── Tool registry ────────────────────────────────────────────────────

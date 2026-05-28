@@ -4,15 +4,19 @@
 
 优先级：
 1. 若配置了 QUANTIA_AI_WEB_SEARCH_URL → 调用自建搜索代理（SearXNG 等）
-2. 否则使用内置 Bing CN 搜索（国内可用，无需配置）
-3. Bing 失败时降级到 DuckDuckGo（海外环境可用）
+2. 若配置了 QUANTIA_AI_BOCHA_API_KEY → 使用博查 (Bocha) AI 搜索（首选，国内专用）
+3. 否则使用 Bing CN 搜索作为零配置 fallback
 4. 全部失败时优雅降级，返回空结果 + warning
 
-约定的搜索 endpoint 协议（极简）：
+博查 API（推荐）：
+  - 专为 AI 设计的搜索引擎，结构化 JSON + summary 摘要
+  - 支持 freshness 时间过滤、语义排序
+  - 国内 ICP 备案，稳定可达
+  - 注册获取 Key：https://open.bochaai.com/dashboard
+
+自建代理 endpoint 协议（极简）：
   GET <URL>?q=<query>&n=<top_n>
   返回 JSON: {"results": [{"title": ..., "url": ..., "snippet": ...}, ...]}
-
-兼容 SearXNG / brave search wrapper / 自建代理等。
 """
 
 import json
@@ -21,7 +25,6 @@ import os
 import re
 from html import unescape as html_unescape
 from typing import Any, Dict, List
-from urllib.parse import unquote, quote_plus
 
 import requests
 
@@ -46,6 +49,71 @@ _COMMON_HEADERS = {
     'Accept': 'text/html,application/xhtml+xml',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
 }
+
+# ── 博查 (Bocha) AI 搜索 ────────────────────────────────────────────────────
+_BOCHA_API_URL = 'https://api.bochaai.com/v1/web-search'
+
+
+def _search_bocha(query: str, top_n: int) -> List[Dict[str, str]]:
+    """博查 AI 搜索（国内首选，结构化 JSON + 语义排序 + 摘要）。"""
+    api_key = os.environ.get('QUANTIA_AI_BOCHA_API_KEY', '').strip()
+    if not api_key:
+        raise ToolError('QUANTIA_AI_BOCHA_API_KEY 未配置')
+
+    headers = {
+        'Authorization': f'Bearer {api_key}',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+    payload = {
+        'query': query,
+        'count': top_n,
+        'freshness': 'oneMonth',  # 近一个月（适合"近期事件"场景）
+        'summary': True,
+    }
+    try:
+        resp = requests.post(
+            _BOCHA_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        raise ToolError(f'web_search(Bocha) 网络错误: {exc}') from exc
+
+    if resp.status_code == 401:
+        raise ToolError('web_search(Bocha) API Key 无效或已过期')
+    if resp.status_code >= 400:
+        raise ToolError(f'web_search(Bocha) HTTP {resp.status_code}: {resp.text[:200]}')
+
+    try:
+        data = resp.json()
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ToolError(f'web_search(Bocha) 非 JSON 响应: {resp.text[:200]}') from exc
+
+    # 解析博查响应格式
+    web_pages = data.get('webPages') or {}
+    values = web_pages.get('value') or []
+    if not isinstance(values, list):
+        return []
+
+    results: List[Dict[str, str]] = []
+    for item in values[:top_n]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get('name') or '').strip()
+        url = str(item.get('url') or '').strip()
+        # 优先用 summary（AI 摘要），否则用 snippet
+        snippet = str(item.get('summary') or item.get('snippet') or '').strip()
+        if title or snippet:
+            results.append({
+                'title': title[:300],
+                'url': url[:500],
+                'snippet': snippet[:1000],
+            })
+
+    return results
+
 
 # ── Bing CN ──────────────────────────────────────────────────────────────────
 _BING_URL = 'https://www.bing.com/search'
@@ -125,60 +193,11 @@ def _search_bing_cn(query: str, top_n: int) -> List[Dict[str, str]]:
     return results
 
 
-# ── DuckDuckGo (海外备用) ────────────────────────────────────────────────────
-_DDG_URL = 'https://html.duckduckgo.com/html/'
-
-
-def _search_duckduckgo(query: str, top_n: int) -> List[Dict[str, str]]:
-    """内置 DuckDuckGo HTML 搜索（海外环境备用），返回 [{title, url, snippet}, ...]。"""
-    try:
-        resp = requests.post(
-            _DDG_URL,
-            data={'q': query, 'b': '', 'kl': 'cn-zh'},
-            headers=_COMMON_HEADERS,
-            timeout=_TIMEOUT_SEC,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise ToolError(f'web_search(DuckDuckGo) 网络错误: {exc}') from exc
-
-    html = resp.text
-    results: List[Dict[str, str]] = []
-
-    # 解析 DuckDuckGo HTML lite 结果
-    # 每个结果块: <a rel="nofollow" class="result__a" href="...">title</a>
-    #             <a class="result__snippet" ...>snippet</a>
-    result_blocks = re.findall(
-        r'<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>.*?'
-        r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
-        html, re.DOTALL
-    )
-    for href, title_html, snippet_html in result_blocks[:top_n]:
-        # 提取真实 URL（DuckDuckGo 会包装为 //duckduckgo.com/l/?uddg=<encoded>）
-        url = href
-        uddg_match = re.search(r'uddg=([^&]+)', href)
-        if uddg_match:
-            url = unquote(uddg_match.group(1))
-
-        # 清理 HTML 标签
-        title = re.sub(r'<[^>]+>', '', title_html).strip()
-        snippet = re.sub(r'<[^>]+>', '', snippet_html).strip()
-
-        if title or snippet:
-            results.append({
-                'title': title[:300],
-                'url': url[:500],
-                'snippet': snippet[:1000],
-            })
-
-    return results
-
-
 class WebSearchTool(Tool):
     name = 'web_search'
     description = (
         '搜索互联网获取实时新闻、公告、行业动态等信息。'
-        '支持自建搜索代理或内置 DuckDuckGo 搜索。'
+        '支持博查AI搜索（推荐）、Bing CN 或自建搜索代理。'
     )
     parameters = {
         'type': 'object',
@@ -249,22 +268,24 @@ class WebSearchTool(Tool):
 
     @staticmethod
     def _search_with_fallback(query: str, top_n: int) -> List[Dict[str, str]]:
-        """内置搜索 fallback 链：Bing CN → DuckDuckGo。
+        """内置搜索 fallback 链：博查 (Bocha) → Bing CN。
 
-        国内服务器优先用 Bing CN（cn.bing.com 不受 GFW 影响）；
-        海外环境若 Bing 国际版有问题，退到 DuckDuckGo。
+        优先用博查 AI 搜索（需 QUANTIA_AI_BOCHA_API_KEY）；
+        未配置或失败时降级到 Bing CN（零配置即可用）。
         """
-        try:
-            results = _search_bing_cn(query, top_n)
-            if results:
-                return results
-            # Bing 返回空结果（可能被临时限流），尝试 DuckDuckGo
-            _logger.info('[web_search] Bing CN 返回空结果，尝试 DuckDuckGo fallback')
-        except ToolError as exc:
-            _logger.info(f'[web_search] Bing CN 失败 ({exc})，尝试 DuckDuckGo fallback')
+        # 第一梯队：博查 AI 搜索（国内首选，结构化 + 语义排序）
+        bocha_key = os.environ.get('QUANTIA_AI_BOCHA_API_KEY', '').strip()
+        if bocha_key:
+            try:
+                results = _search_bocha(query, top_n)
+                if results:
+                    return results
+                _logger.info('[web_search] Bocha 返回空结果，尝试 Bing CN fallback')
+            except ToolError as exc:
+                _logger.info(f'[web_search] Bocha 失败 ({exc})，尝试 Bing CN fallback')
 
-        # 第二梯队：DuckDuckGo（海外环境可用，国内大概率被墙）
-        return _search_duckduckgo(query, top_n)
+        # 第二梯队：Bing CN（零配置，国内可达）
+        return _search_bing_cn(query, top_n)
 
     def _search_via_proxy(self, url: str, query: str, top_n: int) -> List[Dict[str, str]]:
         """通过自建搜索代理获取结果。"""
