@@ -209,7 +209,7 @@ def create_financial_table():
 
 
 def _alter_add_expense_columns():
-    """为已有表添加费用相关列（幂等，忽略已存在的列）"""
+    """为已有表添加费用相关列（幂等，先检查列是否存在再 ALTER）"""
     new_cols = [
         ("rd_expense", "FLOAT COMMENT '研发费用(元)'"),
         ("admin_expense", "FLOAT COMMENT '管理费用(元)'"),
@@ -217,17 +217,26 @@ def _alter_add_expense_columns():
         ("financial_expense", "FLOAT COMMENT '财务费用(元)'"),
         ("rd_ratio", "FLOAT COMMENT '研发占营收比'"),
     ]
-    for col_name, col_def in new_cols:
-        try:
-            mdb.executeSql(
-                f"ALTER TABLE `cn_stock_financial` ADD COLUMN `{col_name}` {col_def}"
+    import pymysql
+    with pymysql.connect(**mdb.MYSQL_CONN_DBAPI) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'cn_stock_financial'"
             )
-            log.info(f"添加列 {col_name} 成功")
-        except Exception as e:
-            if 'Duplicate column' in str(e):
-                pass  # 列已存在，跳过
-            else:
-                log.debug(f"添加列 {col_name} 跳过: {e}")
+            existing = {row[0] for row in cur.fetchall()}
+        for col_name, col_def in new_cols:
+            if col_name in existing:
+                continue
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"ALTER TABLE `cn_stock_financial` ADD COLUMN `{col_name}` {col_def}"
+                    )
+                log.info(f"添加列 {col_name} 成功")
+            except Exception as e:
+                if 'Duplicate column' not in str(e):
+                    log.debug(f"添加列 {col_name} 跳过: {e}")
 
 
 def _upsert_batch(rows):

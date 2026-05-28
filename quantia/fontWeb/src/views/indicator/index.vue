@@ -619,7 +619,7 @@ const renderFinancialChart = () => {
       },
       {
         type: 'value',
-        name: '%',
+        name: '% / 元',
         position: 'right',
         axisLabel: { fontSize: 10 },
       },
@@ -820,7 +820,7 @@ onMounted(() => {
 
 onActivated(() => {
   isActive = true
-  nextTick(() => { chartInstance?.resize() })
+  nextTick(() => { chartInstance?.resize(); financialChartInstance?.resize(); expenseChartInstance?.resize() })
   if (code.value && code.value !== lastLoadedCode) {
     lastLoadedCode = code.value
     currentPeriod.value = 'daily'
@@ -833,6 +833,8 @@ onActivated(() => {
 onDeactivated(() => {
   isActive = false
   chartInstance?.clear()
+  financialChartInstance?.clear()
+  expenseChartInstance?.clear()
 })
 
 onUnmounted(() => {
