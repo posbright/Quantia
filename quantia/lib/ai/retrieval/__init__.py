@@ -9,6 +9,14 @@
 """
 
 from quantia.lib.ai.retrieval.db import KbStore, KbDoc  # noqa: F401
-from quantia.lib.ai.retrieval.indexer import run_indexer  # noqa: F401
+
+
+def __getattr__(name):
+    """延迟导入 indexer，避免 python -m 执行时触发 RuntimeWarning。"""
+    if name == 'run_indexer':
+        from quantia.lib.ai.retrieval.indexer import run_indexer
+        return run_indexer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = ['KbStore', 'KbDoc', 'run_indexer']
