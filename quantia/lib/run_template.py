@@ -6,6 +6,7 @@ import logging
 import datetime
 import concurrent.futures
 import os
+import re
 import sys
 import time
 import quantia.lib.trade_time as trd
@@ -16,6 +17,12 @@ __author__ = 'Quantia'
 __date__ = '2026/02/14'
 
 _BATCH_DATE_WORKERS = _cfg.get_int('QUANTIA_BATCH_DATE_WORKERS', 3)
+_DATE_RE = re.compile(r'^\d{4}-\d{1,2}-\d{1,2}$')
+
+
+def _looks_like_date(s: str) -> bool:
+    """Check if a string looks like YYYY-MM-DD format."""
+    return bool(_DATE_RE.match(s.strip())) if s else False
 
 
 # 通用函数，获得日期参数，支持批量作业。
@@ -37,13 +44,11 @@ def run_with_args(run_fun, *args):
                 level=logging.INFO,
             )
 
-    if len(sys.argv) == 3:
+    if len(sys.argv) == 3 and _looks_like_date(sys.argv[1]) and _looks_like_date(sys.argv[2]):
         # 区间作业 python xxx.py 2023-03-01 2023-03-21
         try:
-            tmp_year, tmp_month, tmp_day = sys.argv[1].split("-")
-            start_date = datetime.datetime(int(tmp_year), int(tmp_month), int(tmp_day)).date()
-            tmp_year, tmp_month, tmp_day = sys.argv[2].split("-")
-            end_date = datetime.datetime(int(tmp_year), int(tmp_month), int(tmp_day)).date()
+            start_date = datetime.datetime.strptime(sys.argv[1].strip(), '%Y-%m-%d').date()
+            end_date = datetime.datetime.strptime(sys.argv[2].strip(), '%Y-%m-%d').date()
         except (ValueError, TypeError) as e:
             logging.error(f"run_template: 日期参数格式错误，期望 YYYY-MM-DD，实际 sys.argv={sys.argv}: {e}")
             sys.exit(1)
@@ -69,15 +74,14 @@ def run_with_args(run_fun, *args):
         except Exception as e:
             logging.error(f"run_template.run_with_args处理异常：{run_fun}{sys.argv}", exc_info=True)
             sys.exit(1)
-    elif len(sys.argv) == 2:
+    elif len(sys.argv) == 2 and all(_looks_like_date(d) for d in sys.argv[1].split(',')):
         # N个时间作业 python xxx.py 2023-03-01,2023-03-02
         dates = sys.argv[1].split(',')
         try:
             futures = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=_BATCH_DATE_WORKERS) as executor:
                 for date in dates:
-                    tmp_year, tmp_month, tmp_day = date.split("-")
-                    run_date = datetime.datetime(int(tmp_year), int(tmp_month), int(tmp_day)).date()
+                    run_date = datetime.datetime.strptime(date.strip(), '%Y-%m-%d').date()
                     if trd.is_trade_date(run_date):
                         if run_fun.__name__.startswith('save_nph'):
                             futures.append(executor.submit(run_fun, run_date, False, *args))
