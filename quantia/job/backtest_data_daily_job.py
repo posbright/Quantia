@@ -69,6 +69,66 @@ def prepare():
     logging.info(f"backtest.prepare 完成：共 {total_tables} 张表，总耗时 {elapsed:.1f}s")
 
 
+"""
+里程碑调度（Milestone-based scheduling）:
+每条记录仅在关键年龄阈值处理，而非每天重复处理直到 rate_100 填满。
+get_rates() 一次性填充所有可用 rate，因此处理一条 20 天前的记录会填充 rate_1~rate_20。
+无需每天再次处理它——等到 rate_100 需要时（140+ 自然日后）再做最终计算。
+
+分层设计（按信号距今自然日）：
+  Tier 1 (任意年龄): rate_1 IS NULL → 全新未处理记录
+  Tier 2 (7~27天):   rate_5 IS NULL AND rate_1 IS NOT NULL → 5日里程碑
+  Tier 3 (28~139天): rate_20 IS NULL AND rate_1 IS NOT NULL → 20日里程碑
+  Tier 4 (140+天):   rate_100 IS NULL AND rate_1 IS NOT NULL → 最终完成 [LIMIT 300]
+
+每条记录一生最多经过 4 次处理（vs 旧方案 ~100 次），日处理量降低 ~95%。
+"""
+# (target_col, prereq_col, min_age_days, max_age_days, limit)
+_MILESTONE_TIERS = [
+    ('rate_1',   None,     None, None, None),   # 全新记录
+    ('rate_5',   'rate_1', 7,    27,   None),   # 5日里程碑
+    ('rate_20',  'rate_1', 28,   139,  None),   # 20日里程碑
+    ('rate_100', 'rate_1', 140,  None, 300),    # 最终完成（限批防超时）
+]
+
+
+def _build_milestone_query(table_name, now_date):
+    """
+    构建里程碑调度的 UNION ALL 查询，返回 (sql, params) 元组。
+    各 tier 互斥（通过年龄窗口或前置条件），同一记录同一天只匹配一个 tier。
+    """
+    parts = []
+    params = []
+    for target_col, prereq_col, min_age, max_age, limit in _MILESTONE_TIERS:
+        conditions = [f"`{target_col}` IS NULL"]
+        if prereq_col:
+            conditions.append(f"`{prereq_col}` IS NOT NULL")
+        if min_age is not None:
+            # date <= now_date - min_age_days  (信号足够老)
+            cutoff = now_date - datetime.timedelta(days=min_age)
+            conditions.append("`date` <= %s")
+            params.append(cutoff)
+        if max_age is not None:
+            # date > now_date - (max_age+1) days  (不超过上界，留给下一个 tier)
+            cutoff = now_date - datetime.timedelta(days=max_age + 1)
+            conditions.append("`date` > %s")
+            params.append(cutoff)
+        else:
+            # 无上界但需要 date < today（排除当天信号）
+            if min_age is None:
+                conditions.append("`date` < %s")
+                params.append(now_date)
+
+        where = " AND ".join(conditions)
+        order = "ORDER BY `date` ASC" if limit else ""
+        limit_clause = f"LIMIT {limit}" if limit else ""
+        parts.append(
+            f"(SELECT * FROM `{table_name}` WHERE {where} {order} {limit_clause})"
+        )
+    sql = " UNION ALL ".join(parts)
+    return sql, params
+
+
 def process(table, date_start, date_end, backtest_column, idx=0, total=0):
     table_name = table['name']
     tag = f"[{idx}/{total}] {table_name}" if total else table_name
@@ -77,11 +137,10 @@ def process(table, date_start, date_end, backtest_column, idx=0, total=0):
         logging.info(f"backtest {tag} 跳过：表不存在")
         return
 
-    column_tail = tuple(table['columns'])[-1]
     now_date = datetime.datetime.now().date()
-    sql = f"SELECT * FROM `{table_name}` WHERE `date` < %s AND `{column_tail}` is NULL"
+    sql, params = _build_milestone_query(table_name, now_date)
     try:
-        data = pd.read_sql(sql=sql, con=mdb.engine(), params=(now_date,))
+        data = pd.read_sql(sql=sql, con=mdb.engine(), params=params)
         read_sec = (datetime.datetime.now() - t0).total_seconds()
         if data is None or len(data.index) == 0:
             logging.info(f"backtest {tag} 无待回测记录（read_sql {read_sec:.1f}s）")

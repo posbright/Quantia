@@ -405,7 +405,8 @@ class TestSurvivorshipBiasAwareness(unittest.TestCase):
         # 确认 process 从策略表读取 code，而非从 cn_stock_spot
         source = inspect.getsource(bdj.process)
         self.assertNotIn('cn_stock_spot', source)
-        self.assertIn('SELECT * FROM', source)
+        # 查询逻辑已移至 _build_milestone_query，验证 process 调用该函数
+        self.assertIn('_build_milestone_query', source)
 
 
 class TestQfqAdjustment(unittest.TestCase):
