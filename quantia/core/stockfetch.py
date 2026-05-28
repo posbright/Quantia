@@ -1978,12 +1978,23 @@ def update_all_caches(stocks, date_start, date_end, workers=2, spot_df=None):
         _today_str = _now.strftime("%Y%m%d")
 
         if date_end != _today_str:
-            # date_end不是今天：spot数据不匹配目标日期（可能是手动指定历史日期或周末补跑）
-            SPOT_APPEND_ENABLED = False
-            logging.info(
-                f"Spot快速追加已禁用：date_end({date_end}) ≠ 今天({_today_str})，"
-                f"spot数据不匹配目标日期，回退到传统API模式"
-            )
+            # date_end 不是今天 — 两种情况：
+            # (a) 凌晨运行，date_end 是前一交易日 → spot 数据有效（收盘后 API 返回完整日K）
+            # (b) 手动指定历史日期或周末补跑 → spot 数据不匹配，必须禁用
+            _prev_trade_date = trd.get_previous_trade_date(_now.date())
+            _prev_trade_str = _prev_trade_date.strftime("%Y%m%d")
+            if date_end == _prev_trade_str and _now.hour < 9:
+                # 凌晨执行前一交易日任务：市场已收盘，spot 数据对应 date_end
+                logging.info(
+                    f"Spot快速追加：date_end({date_end}) 是前一交易日，"
+                    f"当前凌晨 {_now.strftime('%H:%M')}，市场已收盘，spot数据有效"
+                )
+            else:
+                SPOT_APPEND_ENABLED = False
+                logging.info(
+                    f"Spot快速追加已禁用：date_end({date_end}) ≠ 今天({_today_str})，"
+                    f"spot数据不匹配目标日期，回退到传统API模式"
+                )
         elif not trd.is_close(_now):
             # 市场未收盘：spot数据是不完整的盘中快照，不可用于日K缓存追加
             SPOT_APPEND_ENABLED = False
