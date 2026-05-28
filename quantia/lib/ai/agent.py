@@ -180,6 +180,26 @@ class AgentRuntime:
             except Exception as exc:
                 logging.warning(f'[ai.agent] 最终总结调用失败（保留原始空 content）: {exc}')
 
+        # P1-3：工具调用全部成功但最终 content 为空（某些模型如 qwen 在 tool calling
+        # 后可能返回空正文）。追加一条 user 消息明确要求生成报告文本，再调一次。
+        if not (last_result.content or '').strip() and tools_used:
+            has_successful_tools = any(t.get('ok') for t in tools_used)
+            if has_successful_tools:
+                try:
+                    messages.append(ChatMessage(
+                        role='user',
+                        content='请根据上述工具获取到的数据，直接输出完整的分析报告正文（Markdown 格式）。不要再调用工具。',
+                    ))
+                    kwargs3 = dict(chat_kwargs)
+                    kwargs3.pop('tools', None)
+                    kwargs3.pop('tool_choice', None)
+                    retry_result = self.provider.chat(messages, **kwargs3)
+                    if (retry_result.content or '').strip():
+                        last_result = retry_result
+                        logging.info('[ai.agent] 空 content 重试成功，获取到报告正文')
+                except Exception as exc:
+                    logging.warning(f'[ai.agent] 空 content 重试失败: {exc}')
+
         return AgentRunResult(
             content=last_result.content or '',
             tool_calls=tools_used,

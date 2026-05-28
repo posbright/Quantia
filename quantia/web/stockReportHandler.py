@@ -315,7 +315,11 @@ def _lazy_ensure_table():
 
 
 def _check_cache(code: str) -> Optional[Dict[str, Any]]:
-    """检查缓存：盘中30min/收盘后当日有效。"""
+    """检查缓存：盘中30min/收盘后当日有效。
+
+    quality_score=0 的报告（降级版）不作为有效缓存返回，
+    允许用户再次点击"生成报告"时触发真正的 AI 分析。
+    """
     _lazy_ensure_table()
     now = datetime.now()
     hour = now.hour
@@ -335,6 +339,7 @@ def _check_cache(code: str) -> Optional[Dict[str, Any]]:
                report_version, prev_report_id
         FROM `{_REPORT_TABLE}`
         WHERE code = %s AND created_at >= %s
+              AND (quality_score IS NULL OR quality_score > 0)
         ORDER BY created_at DESC LIMIT 1
     """
     rows = mdb.executeSqlFetch(sql, (code, cutoff.strftime('%Y-%m-%d %H:%M:%S')))
@@ -544,6 +549,7 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
             agent='stock_analyst',
             system=_load_analyst_prompt(),
             allowed_tools=_get_effective_tools(),
+            overrides={'max_tokens': 10240, 'timeout': 360},
         )
 
         elapsed_ms = int((time.time() - started) * 1000)
@@ -1138,6 +1144,7 @@ def _run_batch_summary(codes: List[str], q: queue.Queue, cancel: threading.Event
                     '不要使用 markdown 标题，仅纯文本段落。'
                 ),
                 allowed_tools=_get_effective_tools(),
+                overrides={'max_tokens': 4096, 'timeout': 120},
             )
             elapsed_ms = int((time.time() - started) * 1000)
 
@@ -1587,6 +1594,7 @@ class StockReportCompareHandler(webBase.BaseHandler, ABC):
                         '格式要求：Markdown，包含对比表格和总结建议。'
                     ),
                     allowed_tools=_get_effective_tools(),
+                    overrides={'max_tokens': 4096, 'timeout': 120},
                 )
                 content = result.content or ''
                 q_out.put(('done', {

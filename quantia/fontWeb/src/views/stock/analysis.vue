@@ -196,6 +196,18 @@
           <el-button size="small" type="primary" link @click="handleGenerate(true)">刷新分析</el-button>
         </template>
       </el-alert>
+      <!-- 降级版提示横幅：AI 正文为空时的结构化降级报告，鼓励用户重试 -->
+      <el-alert
+        v-if="isDegradedReport && !generating"
+        type="warning"
+        :closable="false"
+        class="data-update-banner"
+      >
+        <template #title>
+          ⚠️ 当前为降级版快速分析（AI 模型未返回正文），建议重新生成获取完整报告
+          <el-button size="small" type="primary" link @click="handleGenerate(true)">重新生成</el-button>
+        </template>
+      </el-alert>
       <div class="report-header">
         <el-tag v-if="fromCache" type="info" size="small">缓存</el-tag>
         <span class="report-meta" v-if="reportMeta.created_at">
@@ -486,6 +498,11 @@ const renderedHtml = computed(() => {
   let html = mdInstance.value.render(reportContent.value)
   html = _injectMetricTooltips(html)
   return html
+})
+
+/** 检测当前报告是否为降级版（AI 正文为空时的结构化数据替代） */
+const isDegradedReport = computed(() => {
+  return reportContent.value.includes('降级版')
 })
 
 // ---- TOC 目录锚点 (§10.8) ----
