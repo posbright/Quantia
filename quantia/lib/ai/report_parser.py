@@ -86,7 +86,7 @@ def _extract_rating_score(text: str) -> Optional[int]:
 
 def _extract_advice(text: str, label: str) -> Optional[str]:
     pattern = re.compile(
-        rf'(?m)^\s*#{{1,6}}\s*{re.escape(label)}[^\n]*\n(?P<body>.*?)(?=^\s*#{{1,6}}\s*(?:短期|中期|长期|七、)|\Z)',
+        rf'(?m)^\s*#{{1,6}}\s*{re.escape(label)}[^\n]*\n(?P<body>.*?)(?=^\s*#{{1,6}}\s|\Z)',
         re.DOTALL,
     )
     match = pattern.search(text)
@@ -138,25 +138,43 @@ def _extract_target_range(text: str) -> tuple[Optional[float], Optional[float]]:
 
 
 def _extract_stop_loss(text: str) -> Optional[float]:
-    match = re.search(r'(?:止损价|止损位|止损线|止损|风控价|跌破)[^\n\d]{0,20}(\d+(?:\.\d+)?)\s*(?:元|块)?', text)
-    if match:
-        return float(match.group(1))
+    patterns = (
+        r'止损(?:参考|目标)?(?:价|位|线)[^\n\d]{0,15}(\d+(?:\.\d+)?)\s*(?:元|块|¥)?',
+        r'风控价[^\n\d]{0,15}(\d+(?:\.\d+)?)\s*(?:元|块|¥)?',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        tail = text[match.end():match.end() + 2]
+        if tail.startswith((':', '：')):
+            continue
+        value = float(match.group(1))
+        if 0 < value < 100000:
+            return value
     return None
 
 
 def _extract_moat_score(text: str) -> Optional[int]:
     section = _extract_section(text, '四.五') or _extract_section(text, '竞争壁垒') or _extract_section(text, '护城河')
     section = f'{section}\n{text}' if section else text
-    numeric = re.search(r'(?:护城河(?:强度)?评分|护城河评分|壁垒评分)[^\n\d]{0,20}(\d)\s*(?:/\s*5|分)?', section)
-    if numeric:
-        value = int(numeric.group(1))
-        if 0 <= value <= 5:
-            return value
     level_map = {'强': 5, '中': 3, '弱': 1, '无': 0, '暂缺': 0}
-    level = re.search(r'(?:护城河(?:强度)?评分|护城河强度|壁垒强度)[^\n:：]*[:：]?\s*(强|中|弱|无|暂缺)', section)
-    if level:
-        return level_map.get(level.group(1))
+    for line in section.splitlines():
+        if _is_moat_option_line(line):
+            continue
+        numeric = re.search(r'(?:护城河(?:强度)?评分|护城河评分|壁垒评分)[^\n\d]{0,20}(\d)\s*(?:/\s*5|分)?', line)
+        if numeric:
+            value = int(numeric.group(1))
+            if 0 <= value <= 5:
+                return value
+        level = re.search(r'(?:护城河(?:强度)?评分|护城河强度|壁垒强度)[^\n:：]*[:：]?\s*(强|中|弱|无|暂缺)', line)
+        if level:
+            return level_map.get(level.group(1))
     return None
+
+
+def _is_moat_option_line(line: str) -> bool:
+    return bool(re.search(r'强\s*[/／|]\s*中\s*[/／|]\s*弱', line))
 
 
 def _extract_moat_factors(text: str) -> Dict[str, bool]:

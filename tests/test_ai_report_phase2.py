@@ -87,6 +87,43 @@ def test_single_rating_line_is_parsed():
     assert fields['rating_score'] == 50
 
 
+def test_moat_option_line_is_not_parsed_as_strong():
+    from quantia.lib.ai.report_parser import extract_structured_fields
+
+    fields = extract_structured_fields(
+        '#### 四.五、竞争壁垒（护城河）\n'
+        '- **护城河强度**: 强 / 中 / 弱 / 无（一句话理由）\n'
+    )
+
+    assert fields['moat_score'] is None
+
+
+def test_stop_loss_does_not_match_risk_reward_ratio():
+    from quantia.lib.ai.report_parser import extract_structured_fields
+
+    fields = extract_structured_fields(
+        '##### 短期（1-4周）\n'
+        '- 止损-止盈策略 风险报酬比 1:3。\n'
+    )
+
+    assert fields['stop_loss_price'] is None
+
+
+def test_mid_term_advice_stops_at_next_heading():
+    from quantia.lib.ai.report_parser import extract_structured_fields
+
+    fields = extract_structured_fields(
+        '##### 中期（1-6个月）\n'
+        '- 目标价区间 22-26 元。\n'
+        '#### 四.五、竞争壁垒（护城河）\n'
+        '- **护城河强度**: 中。\n'
+    )
+
+    assert fields['mid_term_advice'] is not None
+    assert '护城河' not in fields['mid_term_advice']
+    assert '四.五' not in fields['mid_term_advice']
+
+
 class _FakeCursor:
     def __init__(self):
         self.calls = []
