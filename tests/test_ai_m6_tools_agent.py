@@ -96,8 +96,9 @@ class CodeValidateToolTests(unittest.TestCase):
 # ── web_search tool ──────────────────────────────────────────────────
 class WebSearchToolTests(unittest.TestCase):
     def test_bing_cn_primary_fallback(self):
-        """未配置 URL 时优先使用 Bing CN 搜索。"""
+        """未配置 URL 和 Bocha Key 时优先使用 Bing CN 搜索。"""
         os.environ.pop('QUANTIA_AI_WEB_SEARCH_URL', None)
+        os.environ.pop('QUANTIA_AI_BOCHA_API_KEY', None)
         fake_resp = mock.Mock()
         fake_resp.status_code = 200
         fake_resp.text = (

@@ -91,8 +91,9 @@ def _search_bocha(query: str, top_n: int) -> List[Dict[str, str]]:
     except (ValueError, json.JSONDecodeError) as exc:
         raise ToolError(f'web_search(Bocha) 非 JSON 响应: {resp.text[:200]}') from exc
 
-    # 解析博查响应格式
-    web_pages = data.get('webPages') or {}
+    # 博查响应格式: {"code":200, "data": {"_type":"SearchResponse", "webPages": {"value": [...]}}}
+    inner = data.get('data') or data  # 兼容两种格式
+    web_pages = inner.get('webPages') or {}
     values = web_pages.get('value') or []
     if not isinstance(values, list):
         return []
