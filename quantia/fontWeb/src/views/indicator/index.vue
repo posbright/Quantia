@@ -820,13 +820,21 @@ onMounted(() => {
 
 onActivated(() => {
   isActive = true
-  nextTick(() => { chartInstance?.resize(); financialChartInstance?.resize(); expenseChartInstance?.resize() })
   if (code.value && code.value !== lastLoadedCode) {
     lastLoadedCode = code.value
     currentPeriod.value = 'daily'
     loadKlineData()
     loadFinancialData()
     loadLatestReport()
+  } else {
+    // Same stock: re-render charts that were clear()ed during deactivation
+    nextTick(() => {
+      if (klineData.value) renderChart()
+      if (financialData.value?.history?.length) {
+        renderFinancialChart()
+        renderExpenseChart()
+      }
+    })
   }
 })
 
