@@ -27,7 +27,10 @@ def check(code_name, data, date=None, threshold=60):
 
     data = data.tail(n=threshold)
 
-    ratio_increase = (data.iloc[-1]['close'] - data.iloc[0]['close']) / data.iloc[0]['close']
+    first_close = data.iloc[0]['close']
+    if first_close == 0:
+        return False
+    ratio_increase = (data.iloc[-1]['close'] - first_close) / first_close
     if ratio_increase < 0.6:
         return False
 
@@ -42,9 +45,7 @@ def check(code_name, data, date=None, threshold=60):
         max_single_drop = min(max_single_drop, single_drop)
         max_2day_drop = min(max_2day_drop, two_day_drop)
         # 单日跌幅超7%；高开低走7%；两日累计跌幅10%；两日高开低走累计10%
-        if _p_change < -7 or (_close - _open) / _open * 100 < -7 \
-                or previous_p_change + _p_change < -10 \
-                or (_close - previous_open)/previous_open * 100 < -10:
+        if single_drop < -7 or two_day_drop < -10:
             return False
         previous_p_change = _p_change
         previous_open = _open
