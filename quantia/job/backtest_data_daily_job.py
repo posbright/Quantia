@@ -126,7 +126,10 @@ def _build_milestone_query(table_name, now_date):
             f"(SELECT * FROM `{table_name}` WHERE {where} {order} {limit_clause})"
         )
     sql = " UNION ALL ".join(parts)
+<<<<<<< Updated upstream
     # SQLAlchemy 2.x treats list params as executemany payload; use tuple for one query.
+=======
+>>>>>>> Stashed changes
     return sql, tuple(params)
 
 
