@@ -48,6 +48,7 @@ import quantia.web.aiDecisionConfigHandler as aiDecisionConfigHandler
 import quantia.web.aiAssistantHandler as aiAssistantHandler
 import quantia.web.aiTokenUsageHandler as aiTokenUsageHandler
 import quantia.web.stockReportHandler as stockReportHandler
+import quantia.web.stockPatentHandler as stockPatentHandler
 import quantia.web.imCommandHandler as imCommandHandler
 import quantia.web.liveTradingHandler as liveTradingHandler
 import quantia.web.customIndicatorHandler as customIndicatorHandler
@@ -195,6 +196,10 @@ class Application(tornado.web.Application):
             (r"/quantia/api/ai/report/translate", stockReportHandler.StockReportTranslateHandler),
             (r"/quantia/api/ai/report/speech_text", stockReportHandler.StockReportSpeechTextHandler),
             (r"/quantia/api/ai/report/industry_percentile", stockReportHandler.StockIndustryPercentileHandler),
+            # Phase 3a / 4: 专利数据查询 (cn_stock_patents)
+            (r"/quantia/api/stock/patents", stockPatentHandler.StockPatentsHandler),
+            (r"/quantia/api/stock/patents/history", stockPatentHandler.StockPatentsHistoryHandler),
+            (r"/quantia/api/stock/patents/compare", stockPatentHandler.StockPatentsCompareHandler),
             # Phase 6: IM 指令确认（默认关闭，由 QUANTIA_IM_COMMAND_ENABLED=1 启用；仅落库 trade_command，不直接调券商）
             (r"/quantia/api/im/status", imCommandHandler.IMStatusHandler),
             (r"/quantia/api/im/dingtalk/callback", imCommandHandler.DingtalkCallbackHandler),
