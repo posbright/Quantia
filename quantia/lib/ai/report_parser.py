@@ -122,7 +122,7 @@ def _summarize_advice(body: str) -> Optional[str]:
 
 def _extract_target_range(text: str) -> tuple[Optional[float], Optional[float]]:
     patterns = (
-        r'(?:目标(?:价|区间|价格)|目标位)[^\n\d]{0,20}(\d+(?:\.\d+)?)\s*(?:-|~|至|到|—|－)\s*(\d+(?:\.\d+)?)\s*(?:元|块)?',
+        r'(?:目标(?:价|区间|价格)|目标位)[^\n\d]{0,20}(\d+(?:\.\d+)?)\s*(?:-|~|\u2013|\u2014|至|到|—|－)\s*(\d+(?:\.\d+)?)\s*(?:元|块)?',
         r'(?:目标(?:价|价格)|目标位)[^\n\d]{0,20}(\d+(?:\.\d+)?)\s*(?:元|块)',
     )
     for pattern in patterns:
@@ -162,12 +162,14 @@ def _extract_moat_score(text: str) -> Optional[int]:
     for line in section.splitlines():
         if _is_moat_option_line(line):
             continue
-        numeric = re.search(r'(?:护城河(?:强度)?评分|护城河评分|壁垒评分)[^\n\d]{0,20}(\d)\s*(?:/\s*5|分)?', line)
+        # Strip markdown bold markers for reliable matching
+        clean = re.sub(r'\*{1,3}', '', line)
+        numeric = re.search(r'(?:护城河(?:强度)?评分|护城河评分|壁垒评分)[^\n\d]{0,20}(\d)\s*(?:/\s*5|分)?', clean)
         if numeric:
             value = int(numeric.group(1))
             if 0 <= value <= 5:
                 return value
-        level = re.search(r'(?:护城河(?:强度)?评分|护城河强度|壁垒强度)[^\n:：]*[:：]?\s*(强|中|弱|无|暂缺)', line)
+        level = re.search(r'(?:护城河(?:强度)?评分|护城河强度|壁垒强度)[^\n:：]*[:：]?\s*(强|中|弱|无|暂缺)', clean)
         if level:
             return level_map.get(level.group(1))
     return None

@@ -124,6 +124,27 @@ def test_mid_term_advice_stops_at_next_heading():
     assert '四.五' not in fields['mid_term_advice']
 
 
+def test_moat_score_with_markdown_bold():
+    from quantia.lib.ai.report_parser import extract_structured_fields
+
+    fields = extract_structured_fields(
+        '#### 四.五、竞争壁垒（护城河）\n'
+        '- **护城河强度**：**中**（规模+技术双驱动）\n'
+    )
+    assert fields['moat_score'] == 3
+
+
+def test_target_price_with_en_dash():
+    from quantia.lib.ai.report_parser import extract_structured_fields
+
+    fields = extract_structured_fields(
+        '##### 中期（1-6个月）\n'
+        '- 目标价区间：4.10\u20134.70元（对应PB 1.35\u20131.55倍）\n'
+    )
+    assert fields['target_price_low'] == 4.1
+    assert fields['target_price_high'] == 4.7
+
+
 class _FakeCursor:
     def __init__(self):
         self.calls = []
