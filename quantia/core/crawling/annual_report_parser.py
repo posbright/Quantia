@@ -126,14 +126,25 @@ def _first_match(pattern: str, text: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _coalesce(*values):
+    """返回第一个非 None 的值 (0 也算有效值)。"""
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
 def extract_patent_counts(text: str) -> Dict[str, Optional[int]]:
     """从文本中提取专利数量字段。"""
     return {
-        'total_patents': _to_int(_first_match(
-            r'(?:累计|拥有|共有|已获得).{0,10}?专利\s*' + _NUM + r'\s*[项件个]', text
-        )) or _to_int(_first_match(
-            r'专利\s*总数.{0,5}?' + _NUM + r'\s*[项件个]', text
-        )),
+        'total_patents': _coalesce(
+            _to_int(_first_match(
+                r'(?:累计|拥有|共有|已获得).{0,10}?专利\s*' + _NUM + r'\s*[项件个]', text
+            )),
+            _to_int(_first_match(
+                r'专利\s*总数.{0,5}?' + _NUM + r'\s*[项件个]', text
+            )),
+        ),
         'invention_patents': _to_int(_first_match(
             r'发明专利\s*' + _NUM + r'\s*[项件个]', text
         )),
@@ -201,12 +212,15 @@ def extract_ipc_info(text: str) -> Dict[str, Any]:
 
 def extract_key_tech_desc(text: str, max_len: int = 500) -> Optional[str]:
     """提取"核心技术"段落首句, 截断到 max_len 字符。"""
-    for anchor in ('核心技术', '核心技术及其先进性', '关键技术', '主要技术'):
+    # 长前缀优先: 避免 '核心技术' 抢占 '核心技术及其先进性' 的匹配
+    for anchor in ('核心技术及其先进性', '关键技术', '主要技术', '核心技术'):
         idx = text.find(anchor)
         if idx >= 0:
             snippet = text[idx:idx + max_len + 100]
-            # 找到段落第一个句号
-            end = max(snippet.find('。'), snippet.find('\n\n'))
+            # 取最早出现的终止符 (句号或双换行), 两者都不存在时 end=-1
+            candidates = [snippet.find('。'), snippet.find('\n\n')]
+            positives = [i for i in candidates if i > 0]
+            end = min(positives) if positives else -1
             if end > 0:
                 snippet = snippet[:end + 1]
             return snippet.strip()[:max_len]

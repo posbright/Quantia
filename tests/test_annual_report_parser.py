@@ -124,5 +124,36 @@ class TestParseAnnualReport:
             arp.parse_annual_report(12345)  # type: ignore
 
 
+class TestRegressionFixes:
+    """覆盖本次审查发现的 Bug 以防回归。"""
+
+    def test_total_patents_zero_value_not_short_circuited(self):
+        # 主正则返回 0 (有效), 不应被 fallback 覆盖
+        text = '拥有专利 0 项'
+        r = arp.extract_patent_counts(text)
+        assert r['total_patents'] == 0
+
+    def test_key_tech_anchor_longer_prefix_wins(self):
+        text = '核心技术及其先进性: 公司拥有 5G 技术。其他。'
+        desc = arp.extract_key_tech_desc(text)
+        assert desc is not None
+        assert '5G' in desc
+
+    def test_key_tech_takes_earliest_terminator(self):
+        # 句号在前, 双换行在后 — 应取句号位置裁断
+        text = '核心技术: 是一句。后续段落较长的填充文本应当被裁掉。'
+        text += '\n\n第二段不应包含'
+        desc = arp.extract_key_tech_desc(text)
+        assert desc is not None
+        assert '是一句。' in desc
+        assert '第二段不应包含' not in desc
+
+    def test_parse_annual_report_long_string_not_treated_as_path(self):
+        # 超长文本含换行 — 应当作文本解析, 不得抛 OSError
+        long_text = '拥有专利 100 项。\n' * 100
+        r = arp.parse_annual_report(long_text, code='000003', year=2024)
+        assert r['total_patents'] == 100
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

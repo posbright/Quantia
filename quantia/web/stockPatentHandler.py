@@ -65,11 +65,15 @@ def _table_exists() -> bool:
 
 def _fetch_latest(code: str) -> Optional[Dict[str, Any]]:
     cols = ', '.join(f'`{c}`' for c in _LIST_COLUMNS)
-    rows = mdb.executeSqlFetch(
-        f"SELECT {cols} FROM `{PATENTS_TABLE}` WHERE code=%s "
-        f"ORDER BY year DESC LIMIT 1",
-        (code,),
-    )
+    try:
+        rows = mdb.executeSqlFetch(
+            f"SELECT {cols} FROM `{PATENTS_TABLE}` WHERE code=%s "
+            f"ORDER BY year DESC LIMIT 1",
+            (code,),
+        )
+    except Exception as exc:  # pragma: no cover - depends on live DB
+        _logger.warning('[patent] _fetch_latest failed: %s', exc)
+        return None
     if not rows:
         return None
     return _row_to_dict(rows[0])
@@ -77,11 +81,15 @@ def _fetch_latest(code: str) -> Optional[Dict[str, Any]]:
 
 def _fetch_history(code: str, limit: int = 10) -> List[Dict[str, Any]]:
     cols = ', '.join(f'`{c}`' for c in _LIST_COLUMNS)
-    rows = mdb.executeSqlFetch(
-        f"SELECT {cols} FROM `{PATENTS_TABLE}` WHERE code=%s "
-        f"ORDER BY year DESC LIMIT %s",
-        (code, limit),
-    ) or []
+    try:
+        rows = mdb.executeSqlFetch(
+            f"SELECT {cols} FROM `{PATENTS_TABLE}` WHERE code=%s "
+            f"ORDER BY year DESC LIMIT %s",
+            (code, limit),
+        ) or []
+    except Exception as exc:  # pragma: no cover
+        _logger.warning('[patent] _fetch_history failed: %s', exc)
+        rows = []
     return [_row_to_dict(r) for r in rows]
 
 
