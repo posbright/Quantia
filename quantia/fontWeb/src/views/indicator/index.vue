@@ -12,6 +12,7 @@ import CustomIndicatorOverlayBar from '@/components/CustomIndicatorOverlayBar.vu
 import { useResponsive } from '@/composables/useResponsive'
 import { useChartFullscreen } from '@/composables/useChartFullscreen'
 import ChartFullscreenBtn from '@/components/ChartFullscreenBtn.vue'
+import PatentCard from '@/components/PatentCard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -1032,6 +1033,11 @@ onUnmounted(() => {
         </div>
       </div>
       <el-empty v-else description="暂无财务数据" :image-size="60" />
+    </div>
+
+    <!-- 知识产权 / 专利护城河 (Phase 3a/4) -->
+    <div v-if="code" class="section-card">
+      <PatentCard :code="code" />
     </div>
 
     <!-- 最新 AI 分析报告 -->

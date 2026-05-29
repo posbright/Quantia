@@ -229,10 +229,24 @@ def parse_annual_report(
         dict 含字段: code, year, total_patents, invention_patents, ...
                    解析失败的字段值为 None。
     """
-    if isinstance(source, (str, Path)) and Path(str(source)).is_file():
-        text = extract_text_from_pdf(Path(str(source)))
+    if isinstance(source, Path):
+        text = extract_text_from_pdf(source)
     elif isinstance(source, str):
-        text = source
+        # 区分文件路径与纯文本: 路径通常较短且不含换行/NUL
+        is_path_like = (
+            len(source) < 1024 and '\n' not in source and '\x00' not in source
+        )
+        if is_path_like:
+            try:
+                p = Path(source)
+                if p.is_file():
+                    text = extract_text_from_pdf(p)
+                else:
+                    text = source
+            except (OSError, ValueError):
+                text = source
+        else:
+            text = source
     else:
         raise TypeError(f'source 必须是文件路径或文本, 收到: {type(source).__name__}')
 
