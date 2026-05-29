@@ -203,16 +203,21 @@ class WebSearchToolTests(unittest.TestCase):
         try:
             fake_resp = mock.Mock()
             fake_resp.status_code = 200
+            # 博查实际响应格式: {"code":200, "data": {"webPages": {"value": [...]}}}
             fake_resp.json.return_value = {
-                'webPages': {
-                    'value': [
-                        {
-                            'name': '贵州茅台2026年Q1财报发布',
-                            'url': 'https://finance.sina.com.cn/stock/xxx',
-                            'snippet': '贵州茅台发布2026年一季度财报',
-                            'summary': '贵州茅台2026年Q1营收同比增长15%，净利润达218亿元。',
-                        }
-                    ]
+                'code': 200,
+                'data': {
+                    '_type': 'SearchResponse',
+                    'webPages': {
+                        'value': [
+                            {
+                                'name': '贵州茅台2026年Q1财报发布',
+                                'url': 'https://finance.sina.com.cn/stock/xxx',
+                                'snippet': '贵州茅台发布2026年一季度财报',
+                                'summary': '贵州茅台2026年Q1营收同比增长15%，净利润达218亿元。',
+                            }
+                        ]
+                    }
                 }
             }
             with mock.patch('quantia.lib.ai.tools.web_search.requests.post',

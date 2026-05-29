@@ -631,8 +631,10 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
             return
 
         # 缓存检查
+        # 用户指定了 provider/model 时跳过缓存（期望用新模型重新生成）
         force = body.get('force', False) is True
-        if not force:
+        has_model_override = bool((body.get('provider') or '').strip() or (body.get('model') or '').strip())
+        if not force and not has_model_override:
             cached = _check_cache(code)
             if cached:
                 # 检查数据是否有更新
