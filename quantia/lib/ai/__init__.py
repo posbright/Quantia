@@ -45,6 +45,7 @@ _OPENAI_COMPAT_ALIASES = {
     'default', 'openai', 'deepseek', 'qwen', 'dashscope',
     'azure_openai', 'moonshot', 'zhipu', 'glm', 'local', 'ollama',
     'siliconflow', 'kimi', 'baichuan', 'minimax', 'doubao',
+    'openrouter',
 }
 
 

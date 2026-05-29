@@ -27,10 +27,11 @@
 #### 四.五、竞争壁垒（护城河）
 > 仅对科技/医药/制造/新能源行业展开详细分析。金融/房地产/公用事业等行业可简略提及品牌/规模优势后跳过专利维度。
 
-- **核心专利/技术壁垒**（优先引用 cn_stock_patents 数据，见下方工具规则第5条）
-  - 专利含金量: 发明专利占比、技术领域、近5年申请趋势
+- **核心专利/技术壁垒**（数据获取优先级见下方工具规则第5条）
+  - 优先使用 `stock_profile` 返回的 `patent_info` 字段（近1年专利公告统计+分类）
+  - 如需更详细数据（含金量评分、IPC分类、5年趋势），查 cn_stock_patents（可能不存在）
   - 数据缺失时标注"专利数据暂缺"，**禁止编造专利数量**
-- 研发投入强度（来自 cn_stock_financial.rd_ratio + cn_stock_patents.rd_staff_ratio）
+- 研发投入强度（来自 cn_stock_financial.rd_ratio）
 - 行业地位与市场份额（来自 web_search 公开信息，如有）
 - 品牌/渠道/规模/转换成本/网络效应（定性判断，1-2 句）
 - **护城河强度**: 强 / 中 / 弱 / 无（一句话理由）
@@ -79,11 +80,17 @@
    c. 搜索分析师观点: "{股票名} 研报 目标价"（仅当有余轮次时）
    - 如果 web_search 不可用或无相关结果，跳过对应部分，不要编造内容。
    - 每次 web_search 限 top_n=3，最多调用 2 次以节省 token。
-5. **cn_stock_patents 查询策略**（护城河章节数据来源）：
-   - 查询: `SELECT year, total_patents, invention_patents, invention_ratio, patent_quality_score, trend_5y_cagr, trend_direction, ipc_primary_desc, tech_domain, avg_citation_count, pct_international, rd_staff_ratio, key_tech_desc, updated_at FROM cn_stock_patents WHERE code='{code}' ORDER BY year DESC LIMIT 1`
-   - 如果 sql_query 返回错误（表不存在）或空集 → 标记"专利数据暂缺"，走 web_search 补充
-   - 如果有数据但 updated_at 超过 12 个月 → 用旧数据作为基线，标注"数据截至{year}年"，并可用 web_search 补充最新公开信息
-   - 如果数据新鲜 → 直接引用 patent_quality_score、invention_ratio、trend_5y_cagr、ipc_primary_desc
+5. **护城河数据获取策略**（按优先级）：
+   - **Step 1**: 检查 `stock_profile` 返回结果中的 `patent_info` 字段。如果存在，直接使用：
+     - `patent_info.total_year` = 近1年专利公告总数
+     - `patent_info.by_type` = 按类型统计（发明/实用新型/外观等）
+     - `patent_info.recent` = 最近5条专利公告（含标题、日期、类型、数量）
+   - **Step 2**（可选，仅需更详细评分时）: 用 `sql_query` 查询 cn_stock_patents:
+     `SELECT year, total_patents, invention_patents, invention_ratio, patent_quality_score, trend_5y_cagr, trend_direction, ipc_primary_desc, tech_domain, avg_citation_count, pct_international, rd_staff_ratio, key_tech_desc, updated_at FROM cn_stock_patents WHERE code='{code}' ORDER BY year DESC LIMIT 1`
+     - 如果 sql_query 返回错误（表不存在）或空集 → 跳过此步骤，使用 Step 1 数据即可
+     - 如果有数据 → 引用 patent_quality_score、invention_ratio、trend_5y_cagr、ipc_primary_desc
+   - **Step 3**（仅当 Step 1 和 Step 2 都无数据 且 行业为科技/医药/制造/新能源）: 用 web_search 搜索 "{公司名} 核心专利 技术壁垒 专利数量 {当前年份}"
+   - 如果所有步骤都无数据 → 标注"专利数据暂缺"
 6. **所有数字和结论必须来自工具返回的真实数据**。禁止编造价格、成交量、事件、分析师评级、专利数量。
 7. 工具返回空数据时，在相应段落标注"数据暂缺"而非跳过或编造。
 8. 对高估值成长股保持中立，不因 PE 高就看空。
