@@ -61,6 +61,7 @@ export interface ReportStreamEvent {
   report_id?: number
   tokens_used?: number
   latency_ms?: number
+  model?: string
   msg?: string
 }
 
@@ -157,12 +158,15 @@ export function getReportDetail(id: number) {
 export async function generateReportStream(
   code: string,
   onEvent: (ev: ReportStreamEvent) => void,
-  options?: { force?: boolean; signal?: AbortSignal }
+  options?: { force?: boolean; signal?: AbortSignal; provider?: string; model?: string }
 ): Promise<void> {
+  const payload: Record<string, unknown> = { code, force: options?.force || false }
+  if (options?.provider) payload.provider = options.provider
+  if (options?.model) payload.model = options.model
   const resp = await fetch('/quantia/api/ai/report/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ code, force: options?.force || false }),
+    body: JSON.stringify(payload),
     signal: options?.signal,
   })
   if (!resp.ok) {

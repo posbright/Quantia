@@ -514,7 +514,8 @@ def _get_previous_report_summary(code: str) -> Optional[str]:
 
 def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
                       prev_summary: Optional[str] = None,
-                      focus_dims: Optional[List[str]] = None):
+                      focus_dims: Optional[List[str]] = None,
+                      model_overrides: Optional[Dict[str, Any]] = None):
     """在线程中运行 Agent 生成报告，通过 queue 推送进度和文本。"""
     try:
         from quantia.lib.ai import run_agent
@@ -543,13 +544,17 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
             )
         started = time.time()
 
+        agent_overrides: Dict[str, Any] = {'max_tokens': 10240, 'timeout': 360}
+        if model_overrides:
+            agent_overrides.update(model_overrides)
+
         result = run_agent(
             user_message=user_message,
             scene='stock_report',
             agent='stock_analyst',
             system=_load_analyst_prompt(),
             allowed_tools=_get_effective_tools(),
-            overrides={'max_tokens': 10240, 'timeout': 360},
+            overrides=agent_overrides,
         )
 
         elapsed_ms = int((time.time() - started) * 1000)
@@ -696,12 +701,23 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
         except Exception:
             pass
 
+        # 用户选择的模型/provider
+        model_overrides: Optional[Dict[str, Any]] = None
+        req_provider = (body.get('provider') or '').strip()
+        req_model = (body.get('model') or '').strip()
+        if req_provider or req_model:
+            model_overrides = {}
+            if req_provider:
+                model_overrides['provider'] = req_provider
+            if req_model:
+                model_overrides['model'] = req_model
+
         q_out = queue.Queue(maxsize=128)
         cancel_event = threading.Event()
 
         # Start producer
         t = threading.Thread(
-            target=_run_agent_report, args=(code, q_out, cancel_event, prev_summary, focus_dims), daemon=True)
+            target=_run_agent_report, args=(code, q_out, cancel_event, prev_summary, focus_dims, model_overrides), daemon=True)
         t.start()
 
         loop = IOLoop.current()
@@ -775,6 +791,7 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
                 'report_id': report_id,
                 'tokens_used': meta_info.get('tokens_used', 0),
                 'latency_ms': meta_info.get('latency_ms', 0),
+                'model': meta_info.get('model', ''),
             }, ensure_ascii=False) + '\n\n')
             yield self.flush()
         except Exception as exc:

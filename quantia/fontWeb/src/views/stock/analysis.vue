@@ -19,6 +19,7 @@
             <span v-if="item.industry" class="suggestion-industry">{{ item.industry }}</span>
           </template>
         </el-autocomplete>
+        <AiModelPicker v-model="selectedAiModel" @change="onModelChange" />
         <el-button type="primary" :loading="generating" :disabled="!currentCode" @click="handleGenerate">
           <el-icon><VideoPlay /></el-icon>
           生成报告
@@ -210,6 +211,9 @@
       </el-alert>
       <div class="report-header">
         <el-tag v-if="fromCache" type="info" size="small">缓存</el-tag>
+        <span class="report-meta" v-if="reportMeta.model">
+          模型：{{ reportMeta.model }}
+        </span>
         <span class="report-meta" v-if="reportMeta.created_at">
           生成时间：{{ reportMeta.created_at }}
         </span>
@@ -315,6 +319,7 @@ import { ElMessage } from 'element-plus'
 import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData, getAttentionList, batchSummaryStream, getScoreHistory, getReportTimeline, getReportDetail, createShareLink, translateReport, getSpeechText, getReportPreference, getIndustryPercentile } from '@/api/report'
 import { getKlineData } from '@/api/stock'
 import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent, StockFallbackData, BatchSummaryEvent, ScoreHistoryItem, ReportTimelineItem, IndustryPercentileResult } from '@/api/report'
+import AiModelPicker from '@/components/AiModelPicker.vue'
 import * as echarts from 'echarts'
 
 // ---- markdown-it setup (dynamic import for code-split) ----
@@ -342,6 +347,12 @@ const fromCache = ref(false)
 const dataUpdateReason = ref('')
 const reportRef = ref<HTMLElement | null>(null)
 const abortController = ref<AbortController | null>(null)
+
+// ---- AI Model Selection ----
+const selectedAiModel = ref<{ provider?: string; model?: string }>({})
+function onModelChange(val: { provider: string; model: string }) {
+  selectedAiModel.value = val
+}
 
 // ---- K-line Chart State ----
 const klineChartRef = ref<HTMLElement | null>(null)
@@ -596,7 +607,12 @@ async function handleGenerate(force?: boolean | MouseEvent) {
     await generateReportStream(
       currentCode.value,
       (ev: ReportStreamEvent) => handleStreamEvent(ev),
-      { force: forceRefresh, signal: abortController.value!.signal }
+      {
+        force: forceRefresh,
+        signal: abortController.value!.signal,
+        provider: selectedAiModel.value.provider || undefined,
+        model: selectedAiModel.value.model || undefined,
+      }
     )
   } catch (e: unknown) {
     if (e instanceof Error && e.name !== 'AbortError') {
@@ -661,6 +677,7 @@ function handleStreamEvent(ev: ReportStreamEvent) {
       if (ev.tokens_used) reportMeta.value.tokens_used = ev.tokens_used
       if (ev.latency_ms) reportMeta.value.latency_ms = ev.latency_ms
       if (ev.report_id) reportMeta.value.report_id = ev.report_id
+      if (ev.model) reportMeta.value.model = ev.model
       if (!reportMeta.value.created_at) {
         reportMeta.value.created_at = new Date().toLocaleString()
       }
