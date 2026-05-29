@@ -246,7 +246,7 @@ def fetch_stocks_trade_date():
                     max_cached = max(dates)
                     if mdb.checkTableIsExist('cn_stock_spot'):
                         sql2 = "SELECT DISTINCT `date` FROM `cn_stock_spot` WHERE `date` > %s"
-                        df2 = pd.read_sql(sql2, con=mdb.engine(), params=[max_cached])
+                        df2 = pd.read_sql(sql2, con=mdb.engine(), params=(max_cached,))
                         if df2 is not None and len(df2) > 0:
                             new_dates = set(pd.to_datetime(df2['date']).dt.date.tolist())
                             dates.update(new_dates)
