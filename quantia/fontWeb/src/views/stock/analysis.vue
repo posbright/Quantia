@@ -725,25 +725,41 @@ async function handleExportPdf() {
     ElMessage.info('正在生成 PDF...')
     const html2canvas = (await import('html2canvas')).default
     const { jsPDF } = await import('jspdf')
-    const canvas = await html2canvas(reportRef.value, { scale: 2, useCORS: true })
-    const imgData = canvas.toDataURL('image/png')
-    const pdf = new jsPDF('p', 'mm', 'a4')
-    const pageWidth = pdf.internal.pageSize.getWidth()
-    const pageHeight = pdf.internal.pageSize.getHeight()
-    const imgWidth = pageWidth - 20
-    const imgHeight = (canvas.height * imgWidth) / canvas.width
-    let heightLeft = imgHeight
-    let position = 10
-    pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight)
-    heightLeft -= pageHeight - 20
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight + 10
-      pdf.addPage()
+    // 临时移除滚动限制，让 html2canvas 捕获完整内容
+    const el = reportRef.value
+    const origMaxH = el.style.maxHeight
+    const origOverflow = el.style.overflow
+    el.style.maxHeight = 'none'
+    el.style.overflow = 'visible'
+    try {
+      const canvas = await html2canvas(el, {
+        scale: 2,
+        useCORS: true,
+        scrollY: -window.scrollY,
+        windowHeight: el.scrollHeight,
+      })
+      const imgData = canvas.toDataURL('image/png')
+      const pdf = new jsPDF('p', 'mm', 'a4')
+      const pageWidth = pdf.internal.pageSize.getWidth()
+      const pageHeight = pdf.internal.pageSize.getHeight()
+      const imgWidth = pageWidth - 20
+      const imgHeight = (canvas.height * imgWidth) / canvas.width
+      let heightLeft = imgHeight
+      let position = 10
       pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight)
       heightLeft -= pageHeight - 20
+      while (heightLeft > 0) {
+        position = heightLeft - imgHeight + 10
+        pdf.addPage()
+        pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight)
+        heightLeft -= pageHeight - 20
+      }
+      pdf.save(`AI分析报告_${currentCode.value}_${currentName.value}.pdf`)
+      ElMessage.success('PDF 已下载')
+    } finally {
+      el.style.maxHeight = origMaxH
+      el.style.overflow = origOverflow
     }
-    pdf.save(`AI分析报告_${currentCode.value}_${currentName.value}.pdf`)
-    ElMessage.success('PDF 已下载')
   } catch (e) {
     ElMessage.error('PDF 导出失败')
     console.error(e)
@@ -755,12 +771,28 @@ async function handleExportImage() {
   try {
     ElMessage.info('正在生成图片...')
     const html2canvas = (await import('html2canvas')).default
-    const canvas = await html2canvas(reportRef.value, { scale: 2, useCORS: true })
-    const link = document.createElement('a')
-    link.download = `AI分析报告_${currentCode.value}_${currentName.value}.png`
-    link.href = canvas.toDataURL('image/png')
-    link.click()
-    ElMessage.success('图片已下载')
+    // 临时移除滚动限制，让 html2canvas 捕获完整内容
+    const el = reportRef.value
+    const origMaxH = el.style.maxHeight
+    const origOverflow = el.style.overflow
+    el.style.maxHeight = 'none'
+    el.style.overflow = 'visible'
+    try {
+      const canvas = await html2canvas(el, {
+        scale: 2,
+        useCORS: true,
+        scrollY: -window.scrollY,
+        windowHeight: el.scrollHeight,
+      })
+      const link = document.createElement('a')
+      link.download = `AI分析报告_${currentCode.value}_${currentName.value}.png`
+      link.href = canvas.toDataURL('image/png')
+      link.click()
+      ElMessage.success('图片已下载')
+    } finally {
+      el.style.maxHeight = origMaxH
+      el.style.overflow = origOverflow
+    }
   } catch (e) {
     ElMessage.error('图片导出失败')
     console.error(e)
@@ -773,10 +805,23 @@ async function handleShare() {
   try {
     const res = await createShareLink(reportId) as any
     const shareUrl = `${window.location.origin}${res.share_url}`
-    await navigator.clipboard.writeText(shareUrl)
+    // 优先使用 clipboard API，fallback 到 execCommand
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+    } catch {
+      const textarea = document.createElement('textarea')
+      textarea.value = shareUrl
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
     ElMessage.success('分享链接已复制到剪贴板')
-  } catch {
-    ElMessage.error('生成分享链接失败')
+  } catch (e: unknown) {
+    const msg = (e as any)?.response?.data?.error || '生成分享链接失败'
+    ElMessage.error(msg)
   }
 }
 
