@@ -69,13 +69,13 @@
 
 | # | 功能 | 优先级 |
 |---|------|--------|
-| F7 | **排名方案 B**：`analysis` 管道多因子截面打分（B1 动量+费率+规模无需历史；B2 叠加夏普/Calmar 依赖 F8），按类型分桶，写 `cn_fund_rank_score` | P2 |
+| F7 | ✅ **已交付（PR-4）** **排名方案 B**：`analysis_fund_score_job.py` 多因子截面打分（B1 动量+费率+规模；B2 叠加夏普/Calmar 依赖 F8），按 `fund_type` 分桶截面 `rank(pct)`，逐基金算夏普/回撤/5y（货币型免风险项），写 `cn_fund_rank_score`；纯函数在 `quantia/core/fund/scoring.py` | P2 |
 | F8 | ✅ **已交付（PR-3）** 净值历史回填 + 增量缓存：`fetch_fund_nav_history_job.py`，逐基金拓史（**仅 Top-N ∪ 按需点开，非全市场；跳过货币型**），写 `cn_fund_nav_history`（供回撤/夏普/净值曲线） | P1 |
 | F10 | ✅ **已交付（PR-3）** 规模+画像缓存：`fetch_fund_profile_job.py`，`fund_individual_basic_info_xq` 拓最新规模/公司/经理/评级/策略，周/月频写 `cn_fund_profile`（规模因子 + 投资价值分析数据源） | P1 |
-| F11 | **同类基金评比 + 投资价值分析**：同 `fund_type` 桶内多维雷达对比 + 价值标签（Handler） | P1 |
+| F11 | ✅ **已交付（PR-4）** **同类基金评比 + 投资价值分析**：`fundPeerCompareHandler.py`（`GET /quantia/api/fund/peer_compare?code=`）同 `fund_type` 桶内 5 维（收益/抗跌/稳定/成本/规模）截面百分位雷达 + `labels.value_labels` 价值标签 | P1 |
 | F9 | **前端基金中心页**（直观、人性化）：排行榜 + 同类评比雷达 + 净值曲线 + 价值分析卡片 + AI 工具 | P1 |
 | F12 | ✅ **已交付（PR-3）** 持仓股缓存：`fetch_fund_holding_job.py`，`fund_portfolio_hold_em` 拓季度前十大重仓股，写 `cn_fund_holding`；LEFT JOIN `cn_stock_selection.industry` 得行业分布（支持「按行业筛选/对比」+ 详情持仓展示） | P1 |
-| F13 | **综合分析与建议（规则引擎）**：融合「历史业绩（夏普/回撤/多周期收益/基准超额）+ 持仓（集中度/行业分布/风格）」生成结构化解读 + 风险等级标签（**非买卖建议**） | P1 |
+| F13 | ✅ **已交付（PR-4）** **综合分析与建议（规则引擎）**：`fundCompositeAnalysisHandler.py`（`GET /quantia/api/fund/composite_analysis?code=`）融合历史业绩（夏普/回撤/多周期收益/超额）+ 持仓（集中度/行业分布/风格）+ 规模，规则化生成结构化解读 + 风险等级标签（`labels.risk_level`，**非买卖建议**，含免责声明） | P1 |
 | F14 | **AI 综合分析（按需触发）**：用户点击才运行的 LLM 分析——喂入该基金所有已落库数据（净值/收益/夏普/回撤/持仓/画像/基准）+ `web_search` 检索的相关资讯，产出自然语言综合分析。懒加载、异步、结果可缓存 | P2 |
 
 > 用户已明确：**需要前端（直观/人性化）、需要回填净值历史、需要规模因子、需要同类评比+投资价值分析、需要夏普/最大回撤/近1/3/5年/基准收益、需要按行业筛选对比、需要持仓股、需要综合分析+建议、需要按需 AI 分析**。故 F8~F14 均纳入交付。

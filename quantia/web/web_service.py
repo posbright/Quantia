@@ -57,6 +57,8 @@ import quantia.web.verifyOptimizeHandler as verifyOptimizeHandler
 import quantia.web.verifyFusionHandler as verifyFusionHandler
 import quantia.web.factorLabHandler as factorLabHandler
 import quantia.web.fundRankHandler as fundRankHandler
+import quantia.web.fundPeerCompareHandler as fundPeerCompareHandler
+import quantia.web.fundCompositeAnalysisHandler as fundCompositeAnalysisHandler
 import quantia.web.stockFinancialHandler as stockFinancialHandler
 import quantia.web.base as webBase
 
@@ -262,9 +264,11 @@ class Application(tornado.web.Application):
             (r"/quantia/api/factor_lab/my_configs", factorLabHandler.FactorLabConfigsHandler),
             (r"/quantia/api/factor_lab/configs/(\d+)", factorLabHandler.FactorLabDeleteConfigHandler),
             (r"/quantia/api/factor_lab/export_code", factorLabHandler.FactorLabExportCodeHandler),
-            # ── 场外基金排名（F6 方案 A）──
+            # ── 场外基金排名（F6 方案 A）+ 同类评比 F11 + 综合分析 F13 ──
             (r"/quantia/api/fund/rank/meta", fundRankHandler.FundRankMetaHandler),
             (r"/quantia/api/fund/rank", fundRankHandler.FundRankHandler),
+            (r"/quantia/api/fund/peer_compare", fundPeerCompareHandler.FundPeerCompareHandler),
+            (r"/quantia/api/fund/composite_analysis", fundCompositeAnalysisHandler.FundCompositeAnalysisHandler),
             # ── 性能监控（前端 web-vitals 上报，仅接收不处理）──
             (r"/quantia/api/metric/web_vitals", WebVitalsHandler),
             # ── Vue SPA 路由 ──
