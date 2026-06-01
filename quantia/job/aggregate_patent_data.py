@@ -21,6 +21,7 @@ import quantia.lib.database as mdb
 from quantia.core.patent_analytics import (
     calculate_patent_quality_score,
     calculate_trend_metrics,
+    ensure_patents_table,
     percentiles_from_values,
     validate_patent_data,
 )
@@ -31,43 +32,15 @@ _AGGREGATED_TABLE = 'cn_stock_patents'
 
 
 def ensure_aggregated_table():
-    """确保聚合表存在。"""
-    if mdb.checkTableIsExist(_AGGREGATED_TABLE):
-        return
-    # NOTE: DDL 中不能用 % 符号，PyMySQL 会误认为格式化占位符
-    ddl = (
-        "CREATE TABLE IF NOT EXISTS `" + _AGGREGATED_TABLE + "` ("
-        "`code` VARCHAR(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '股票代码',"
-        "`year` SMALLINT NOT NULL COMMENT '统计年份',"
-        "`total_patents` INT DEFAULT 0 COMMENT '专利公告总数',"
-        "`invention_patents` INT DEFAULT 0 COMMENT '发明专利数',"
-        "`utility_patents` INT DEFAULT 0 COMMENT '实用新型专利数',"
-        "`design_patents` INT DEFAULT 0 COMMENT '外观设计专利数',"
-        "`invention_ratio` FLOAT DEFAULT NULL COMMENT '发明专利占比',"
-        "`patent_quality_score` TINYINT UNSIGNED DEFAULT NULL COMMENT '含金量评分0-100',"
-        "`trend_5y_cagr` FLOAT DEFAULT NULL COMMENT '5年专利申请复合增长率',"
-        "`trend_direction` ENUM('accelerating','stable','decelerating','declining')"
-        " DEFAULT NULL COMMENT '趋势方向',"
-        "`ipc_primary` VARCHAR(10) DEFAULT NULL COMMENT 'IPC主分类号',"
-        "`ipc_primary_desc` VARCHAR(50) DEFAULT NULL COMMENT 'IPC主分类中文',"
-        "`tech_domain` VARCHAR(50) DEFAULT NULL COMMENT '技术领域',"
-        "`avg_citation_count` FLOAT DEFAULT NULL COMMENT '平均被引次数',"
-        "`pct_international` INT DEFAULT NULL COMMENT 'PCT国际专利数',"
-        "`rd_staff_ratio` FLOAT DEFAULT NULL COMMENT '研发人员占比(来自财报)',"
-        "`key_tech_desc` TEXT DEFAULT NULL COMMENT '核心技术描述',"
-        "`confidence_score` TINYINT UNSIGNED DEFAULT 70"
-        " COMMENT '数据可信度0-100: 公告聚合70 年报95',"
-        "`updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
-        "PRIMARY KEY (`code`, `year`),"
-        "INDEX `idx_quality` (`patent_quality_score` DESC),"
-        "INDEX `idx_total` (`total_patents` DESC),"
-        "INDEX `idx_trend` (`trend_5y_cagr` DESC),"
-        "INDEX `idx_updated` (`updated_at`)"
-        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
-        " COMMENT='上市公司专利数据聚合表'"
-    )
-    mdb.executeSql(ddl)
-    _logger.info(f'[专利聚合] 创建表 {_AGGREGATED_TABLE}')
+    """确保聚合表存在 (统一走 patent_analytics 的权威 DDL)。
+
+    历史上本函数自带一套精简 DDL（仅 19 列），与 fetch_patent_data 走的
+    patent_analytics._CREATE_SQL（28 列）分叉：谁先建表谁定 schema，
+    导致生产表缺 new_patents_year / patent_yoy / core_patents 等列，
+    stockPatentHandler SELECT 报 1054。现统一委托 ensure_patents_table，
+    并对历史精简表做幂等列补齐 (reconcile_patents_columns)。
+    """
+    ensure_patents_table()
 
 
 def _fetch_yearly_stats(code: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -207,6 +180,9 @@ def aggregate_patent_data(code: Optional[str] = None) -> Dict[str, int]:
         rd_ratio = rd_ratios.get(stock_code)
         stock_industry_pct = industry_percentiles.get(industry_map.get(stock_code))
 
+        # 上一年专利总数映射, 用于计算同比增长率 patent_yoy
+        total_by_year = {d['year']: d['total_patents'] for d in years_data}
+
         for yr_data in years_data:
             # invention_ratio = 发明专利 / 总专利数 (含general/ip_transfer)
             total = yr_data['total_patents']
@@ -214,6 +190,13 @@ def aggregate_patent_data(code: Optional[str] = None) -> Dict[str, int]:
             inv_ratio = round(inv / total * 100, 2) if total > 0 and inv > 0 else (
                 0.0 if total > 0 else None
             )
+
+            # 专利同比增长率 (%): (本年 - 去年) / 去年 * 100, 去年缺失或为 0 时留空
+            prev_total = total_by_year.get(yr_data['year'] - 1)
+            if prev_total and prev_total > 0:
+                patent_yoy = round((total - prev_total) / prev_total * 100, 2)
+            else:
+                patent_yoy = None
 
             # 含金量评分（数量规模维度按行业分位数校准, 不足样本回退绝对阈值）
             score_input = {
@@ -234,6 +217,7 @@ def aggregate_patent_data(code: Optional[str] = None) -> Dict[str, int]:
                 'utility_patents': yr_data['utility_patents'],
                 'design_patents': yr_data['design_patents'],
                 'invention_ratio': inv_ratio,
+                'patent_yoy': patent_yoy,
                 'patent_quality_score': quality_score,
                 'trend_5y_cagr': trend_result['trend_5y_cagr'],
                 'trend_direction': trend_result['trend_direction'],
@@ -255,7 +239,12 @@ def aggregate_patent_data(code: Optional[str] = None) -> Dict[str, int]:
 
 
 def _upsert_records(records: List[Dict[str, Any]]) -> int:
-    """批量 UPSERT 到 cn_stock_patents。"""
+    """批量 UPSERT 到 cn_stock_patents。
+
+    master/slave 守卫: 公告聚合路径 confidence=70。若目标行已被
+    fetch_patent_data 的年报/Google 路径写入更高可信度 (confidence>70)，
+    则不覆盖其数量/趋势字段，避免每日 workday 聚合把每月权威数据冲掉。
+    """
     if not records:
         return 0
 
@@ -265,34 +254,36 @@ def _upsert_records(records: List[Dict[str, Any]]) -> int:
         values = []
         params = []
         for r in chunk:
-            values.append('(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)')
+            values.append('(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)')
             params.extend([
                 r['code'], r['year'],
                 r['total_patents'], r['invention_patents'],
                 r['utility_patents'], r['design_patents'],
-                r['invention_ratio'], r['patent_quality_score'],
+                r['invention_ratio'], r['patent_yoy'], r['patent_quality_score'],
                 r['trend_5y_cagr'], r['trend_direction'],
                 r['rd_staff_ratio'], r['confidence_score'],
             ])
 
+        # IF(confidence_score > 70, 旧值, 新值): 保护更高可信度的年报/Google 数据
         sql = f"""
             INSERT INTO `{_AGGREGATED_TABLE}`
                 (code, year, total_patents, invention_patents,
-                 utility_patents, design_patents, invention_ratio,
+                 utility_patents, design_patents, invention_ratio, patent_yoy,
                  patent_quality_score, trend_5y_cagr, trend_direction,
                  rd_staff_ratio, confidence_score)
             VALUES {', '.join(values)}
             ON DUPLICATE KEY UPDATE
-                total_patents = VALUES(total_patents),
-                invention_patents = VALUES(invention_patents),
-                utility_patents = VALUES(utility_patents),
-                design_patents = VALUES(design_patents),
-                invention_ratio = VALUES(invention_ratio),
-                patent_quality_score = VALUES(patent_quality_score),
-                trend_5y_cagr = VALUES(trend_5y_cagr),
-                trend_direction = VALUES(trend_direction),
-                rd_staff_ratio = VALUES(rd_staff_ratio),
-                confidence_score = VALUES(confidence_score)
+                total_patents = IF(confidence_score > 70, total_patents, VALUES(total_patents)),
+                invention_patents = IF(confidence_score > 70, invention_patents, VALUES(invention_patents)),
+                utility_patents = IF(confidence_score > 70, utility_patents, VALUES(utility_patents)),
+                design_patents = IF(confidence_score > 70, design_patents, VALUES(design_patents)),
+                invention_ratio = IF(confidence_score > 70, invention_ratio, VALUES(invention_ratio)),
+                patent_yoy = IF(confidence_score > 70, patent_yoy, VALUES(patent_yoy)),
+                patent_quality_score = IF(confidence_score > 70, patent_quality_score, VALUES(patent_quality_score)),
+                trend_5y_cagr = IF(confidence_score > 70, trend_5y_cagr, VALUES(trend_5y_cagr)),
+                trend_direction = IF(confidence_score > 70, trend_direction, VALUES(trend_direction)),
+                rd_staff_ratio = IF(confidence_score > 70, rd_staff_ratio, VALUES(rd_staff_ratio)),
+                confidence_score = IF(confidence_score > 70, confidence_score, VALUES(confidence_score))
         """
         try:
             mdb.executeSql(sql, tuple(params))

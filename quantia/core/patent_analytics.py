@@ -26,14 +26,14 @@ CREATE TABLE IF NOT EXISTS `{PATENTS_TABLE}` (
     `design_patents` INT DEFAULT NULL COMMENT '外观设计专利数',
     `total_patents` INT DEFAULT NULL COMMENT '专利总数',
     `new_patents_year` INT DEFAULT NULL COMMENT '当年新增专利',
-    `patent_yoy` FLOAT DEFAULT NULL COMMENT '专利同比增长率(%)',
+    `patent_yoy` FLOAT DEFAULT NULL COMMENT '专利同比增长率(百分比)',
 
-    `invention_ratio` FLOAT DEFAULT NULL COMMENT '发明专利占比(%)',
+    `invention_ratio` FLOAT DEFAULT NULL COMMENT '发明专利占比(百分比)',
     `patent_quality_score` TINYINT UNSIGNED DEFAULT NULL COMMENT '专利含金量评分(0-100)',
     `avg_citation_count` FLOAT DEFAULT NULL COMMENT '平均被引用次数',
     `pct_international` INT DEFAULT NULL COMMENT 'PCT国际专利数量',
     `core_patents` INT DEFAULT NULL COMMENT '核心专利数',
-    `patent_maintenance_rate` FLOAT DEFAULT NULL COMMENT '专利维持率(%)',
+    `patent_maintenance_rate` FLOAT DEFAULT NULL COMMENT '专利维持率(百分比)',
 
     `ipc_primary` VARCHAR(20) DEFAULT NULL COMMENT '主IPC分类号',
     `ipc_primary_desc` VARCHAR(100) DEFAULT NULL COMMENT '主IPC中文描述',
@@ -41,12 +41,12 @@ CREATE TABLE IF NOT EXISTS `{PATENTS_TABLE}` (
     `tech_domain` VARCHAR(50) DEFAULT NULL COMMENT '技术领域归类',
 
     `trend_5y` JSON DEFAULT NULL COMMENT '近5年申请数列表',
-    `trend_5y_cagr` FLOAT DEFAULT NULL COMMENT '5年专利申请复合增长率(%)',
+    `trend_5y_cagr` FLOAT DEFAULT NULL COMMENT '5年专利申请复合增长率(百分比)',
     `trend_direction` ENUM('accelerating','stable','decelerating','declining') DEFAULT NULL
         COMMENT '趋势方向',
 
     `rd_staff_count` INT DEFAULT NULL COMMENT '研发人员数量',
-    `rd_staff_ratio` FLOAT DEFAULT NULL COMMENT '研发人员占比(%)',
+    `rd_staff_ratio` FLOAT DEFAULT NULL COMMENT '研发人员占比(百分比)',
 
     `key_tech_desc` TEXT COMMENT '核心技术描述',
     `competitive_position` VARCHAR(200) DEFAULT NULL COMMENT '行业专利排名描述',
@@ -70,12 +70,87 @@ CREATE TABLE IF NOT EXISTS `{PATENTS_TABLE}` (
 '''
 
 
+# 完整列定义 (除主键 code/year 外)。reconcile_patents_columns 用它对历史精简表
+# 做幂等 ALTER ADD，弥补早期 aggregate_patent_data 建表只含 19 列、缺失下列字段
+# 导致 stockPatentHandler SELECT 报 1054 的问题。顺序与 _CREATE_SQL 保持一致。
+_PATENT_COLUMN_DEFS: List[Tuple[str, str]] = [
+    ('invention_patents', "INT DEFAULT NULL COMMENT '发明专利数'"),
+    ('utility_patents', "INT DEFAULT NULL COMMENT '实用新型专利数'"),
+    ('design_patents', "INT DEFAULT NULL COMMENT '外观设计专利数'"),
+    ('total_patents', "INT DEFAULT NULL COMMENT '专利总数'"),
+    ('new_patents_year', "INT DEFAULT NULL COMMENT '当年新增专利'"),
+    ('patent_yoy', "FLOAT DEFAULT NULL COMMENT '专利同比增长率(百分比)'"),
+    ('invention_ratio', "FLOAT DEFAULT NULL COMMENT '发明专利占比(百分比)'"),
+    ('patent_quality_score', "TINYINT UNSIGNED DEFAULT NULL COMMENT '专利含金量评分(0-100)'"),
+    ('avg_citation_count', "FLOAT DEFAULT NULL COMMENT '平均被引用次数'"),
+    ('pct_international', "INT DEFAULT NULL COMMENT 'PCT国际专利数量'"),
+    ('core_patents', "INT DEFAULT NULL COMMENT '核心专利数'"),
+    ('patent_maintenance_rate', "FLOAT DEFAULT NULL COMMENT '专利维持率(百分比)'"),
+    ('ipc_primary', "VARCHAR(20) DEFAULT NULL COMMENT '主IPC分类号'"),
+    ('ipc_primary_desc', "VARCHAR(100) DEFAULT NULL COMMENT '主IPC中文描述'"),
+    ('ipc_distribution', "JSON DEFAULT NULL COMMENT 'IPC分布'"),
+    ('tech_domain', "VARCHAR(50) DEFAULT NULL COMMENT '技术领域归类'"),
+    ('trend_5y', "JSON DEFAULT NULL COMMENT '近5年申请数列表'"),
+    ('trend_5y_cagr', "FLOAT DEFAULT NULL COMMENT '5年专利申请复合增长率(百分比)'"),
+    ('trend_direction',
+     "ENUM('accelerating','stable','decelerating','declining') DEFAULT NULL COMMENT '趋势方向'"),
+    ('rd_staff_count', "INT DEFAULT NULL COMMENT '研发人员数量'"),
+    ('rd_staff_ratio', "FLOAT DEFAULT NULL COMMENT '研发人员占比(百分比)'"),
+    ('key_tech_desc', "TEXT COMMENT '核心技术描述'"),
+    ('competitive_position', "VARCHAR(200) DEFAULT NULL COMMENT '行业专利排名描述'"),
+    ('data_source',
+     "ENUM('annual_report','google_patents','mixed') DEFAULT 'annual_report' COMMENT '数据来源'"),
+    ('source_detail', "JSON DEFAULT NULL COMMENT '来源明细'"),
+    ('confidence_score', "TINYINT UNSIGNED DEFAULT 80 COMMENT '数据可信度(0-100)'"),
+    ('created_at', "DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '首次入库时间'"),
+    ('updated_at', "DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+]
+
+
+def reconcile_patents_columns() -> None:
+    """对已存在的 cn_stock_patents 表做幂等列补齐。
+
+    历史上 aggregate_patent_data 用精简 DDL 抢先建表（仅 19 列），
+    使完整 schema 的 new_patents_year / patent_yoy / core_patents /
+    patent_maintenance_rate / ipc_distribution / trend_5y / rd_staff_count /
+    competitive_position / data_source / source_detail / created_at 等列缺失，
+    导致 stockPatentHandler 的 SELECT 报 1054、fetch_patent_data 写入崩溃。
+    本函数比对 INFORMATION_SCHEMA，仅对缺失列执行 ALTER ADD COLUMN。
+    """
+    import quantia.lib.database as mdb  # 延迟导入
+    try:
+        rows = mdb.executeSqlFetch(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_NAME=%s AND TABLE_SCHEMA=DATABASE()",
+            (PATENTS_TABLE,),
+        ) or []
+    except Exception as exc:
+        _logger.warning('[patent_analytics] 读取列信息失败, 跳过补齐: %s', exc)
+        return
+    existing = {r[0] for r in rows}
+    missing = [(name, ddl) for name, ddl in _PATENT_COLUMN_DEFS if name not in existing]
+    if not missing:
+        return
+    for name, ddl in missing:
+        try:
+            mdb.executeSql(f"ALTER TABLE `{PATENTS_TABLE}` ADD COLUMN `{name}` {ddl}")
+            _logger.info('[patent_analytics] 补齐缺失列 %s.%s', PATENTS_TABLE, name)
+        except Exception as exc:
+            _logger.warning('[patent_analytics] 补齐列 %s 失败: %s', name, exc)
+
+
 def ensure_patents_table() -> None:
-    """确保 cn_stock_patents 表存在。"""
+    """确保 cn_stock_patents 表存在且 schema 完整 (单一权威建表入口)。
+
+    aggregate_patent_data 与 fetch_patent_data 均经此函数建表，
+    避免两套 DDL 分叉。表已存在时做幂等列补齐 (reconcile_patents_columns)。
+    """
     import quantia.lib.database as mdb  # 延迟导入, 避免单测/无 DB 环境失败
     if not mdb.checkTableIsExist(PATENTS_TABLE):
         mdb.executeSql(_CREATE_SQL)
         _logger.info('[patent_analytics] 已创建表 %s', PATENTS_TABLE)
+    else:
+        reconcile_patents_columns()
 
 
 # ---------------------------------------------------------------------------

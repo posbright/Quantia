@@ -1266,7 +1266,7 @@ WHERE s.industry = '电子' AND p.year = 2025
 | 1 | §9.7 | **专利含金量行业分位数评分** `score_by_industry_percentile` / `get_industry_patent_percentiles` / `percentiles_from_values` | ✅ **已实现** | `patent_analytics.calculate_patent_quality_score(row, industry_percentiles=...)` 新增可选行业校准；样本 ≥ `MIN_INDUSTRY_SAMPLES`(=5) 用行业 P25/P50/P75/P90，否则回退绝对阈值。`aggregate_patent_data` 按行业计算分位数并传入评分 |
 | 2 | §9.7 注 | 注意：现有 `StockIndustryPercentileHandler`（`/api/ai/report/industry_percentile`）计算的是 **PE/PB/ROE** 行业分位（报告 Tooltip 用），**与专利无关**，不要误当作 §9.7 | ℹ️ 说明 | 二者独立，互不影响 |
 | 3 | §2.4.6 | Google Patents **Playwright headless + 代理池** | ⚠️ **部分（本次未动）** | 实际仅用轻量 XHR JSON 接口 + 本地缓存，**未启用** Playwright / 代理池（失败直接降级返回 `[]`）|
-| 4 | §2.4.2 | `cn_stock_patents` 的部分字段（`core_patents`、`patent_maintenance_rate`、`new_patents_year`、`patent_yoy` 等）| ⚠️ **按需** | 取决于年报/Google 实际能解析到的字段，缺失时为 null，未做强保证 |
+| 4 | §2.4.2 | `cn_stock_patents` 的部分字段（`core_patents`、`patent_maintenance_rate`、`new_patents_year`、`patent_yoy` 等）| ✅ **部分落地 / 部分硬依赖** | 2026 复核：① `patent_yoy` 现由 `aggregate_patent_data` 按相邻年度 total 计算并写入（此前从未计算）；② `new_patents_year` 由年报解析路径 (`annual_report_parser`) 提供；③ `core_patents` / `patent_maintenance_rate` 需 Google Patents **法律状态 + 被引** 数据（依赖 §10.3#3 Playwright 源，未启用时保持 null，非代码缺口）|
 | 5 | §9.4 | 行业对标 API `/patents/compare` 的"分位数"口径 | ✅ **已升级** | 在 TOP10 + 排名基础上新增 `percentiles`(P25/P50/P75/P90)、`self_total_patents`、`self_percentile`（当前股票所处分位）|
 | 6 | §2.4 / 架构 | `cn_stock_patent_info` / `cn_stock_patents` 登记进 `tablestructure.py` | ✅ **已登记** | 新增 `TABLE_CN_STOCK_PATENT_INFO` / `TABLE_CN_STOCK_PATENTS` 元数据（运行时仍由各 job 建表，元数据作单一事实源）|
 | 7 | §3.4 | `aggregate_patent_data.py` 定时调度 | ✅ **已接 cron** | `cron/cron.workdayly/run_workdayly` Phase 1.7 在专利采集后运行 `python -m quantia.job.aggregate_patent_data` |
@@ -1281,10 +1281,20 @@ WHERE s.industry = '电子' AND p.year = 2025
 
 ### 10.5 后续待办（如需收口）
 
-1. **统一 `cn_stock_patents` 写入路径**：明确 `aggregate_patent_data`（从公告聚合）与 `fetch_patent_data`（年报/Google）二者主从关系，避免互相覆盖。（cron 已接入 `aggregate_patent_data`，但与 `fetch_patent_data` 的主从仍需明确）
+> 📌 **2026 复核落地（验证优先）**：对待办 2/4/5 + §10.3#4 做了真实 DB 核验并落地修复。关键发现：
+> `cn_stock_patents` 存在**两套互相冲突的建表 DDL** —— `aggregate_patent_data.ensure_aggregated_table()`（精简 19 列）
+> 与 `patent_analytics._CREATE_SQL`（完整 28 列）。生产环境 workday 聚合 job 抢先建了精简表，
+> 导致缺失 `new_patents_year`/`patent_yoy`/`core_patents`/`patent_maintenance_rate`/`ipc_distribution`/
+> `trend_5y`/`rd_staff_count`/`competitive_position`/`data_source`/`source_detail`/`created_at` 共 11 列，
+> 使 `stockPatentHandler` 的 `SELECT` 报 1054、专利详情接口 **生产 500**。已修复（见下）。
+
+1. **统一 `cn_stock_patents` 写入路径** ✅ **已收口**：
+   - 删除 `aggregate_patent_data` 自带的精简 DDL，统一委托 `patent_analytics.ensure_patents_table()`（单一权威建表入口）。
+   - 新增 `patent_analytics.reconcile_patents_columns()`：对历史精简表比对 `INFORMATION_SCHEMA.COLUMNS` 做**幂等 `ALTER ADD COLUMN`**，补齐缺失 11 列（修复生产 500）。
+   - **主从关系明确**：`fetch_patent_data`（年报 conf 95 / Google 混合）为权威源；`aggregate_patent_data`（公告聚合 conf 70）为兜底源。aggregate 的 `ON DUPLICATE KEY UPDATE` 加 `IF(confidence_score > 70, 旧值, 新值)` 守卫，**不覆盖**更高可信度的年报/Google 行，避免每日 workday 聚合冲掉每月权威数据。
 2. ~~实现 §9.7 行业分位数评分~~ ✅ 已完成（数据不足的行业自动回退绝对阈值；当前 prod 125 条专利中 6 个行业已满足 ≥5 样本）。
 3. ~~把 `cn_stock_patent_info` / `cn_stock_patents` 的列定义补进 `tablestructure.py`~~ ✅ 已完成。
 4. ~~校准 `/patents/compare` 是否需要从 TOP10 升级为真正分位数~~ ✅ 已升级（返回 P25/P50/P75/P90 + 当前股票分位）。
-5. **行业数据积累**：当前仅 125 条专利、6 个行业满足分位数样本量。待 `stock_patent_crawler` + `aggregate_patent_data` 工作日 cron 持续积累后，分位数覆盖面会扩大。
-6. **（可选）Google Patents Playwright + 代理池**：本轮未实现，仍走轻量 XHR 降级。
-7. **（可选）历史回补 `cn_stock_spot.industry`** 或统一行业字段：本轮已改用 `cn_stock_selection.industry` 规避，spot 最新快照 industry 为空的根因（采集未回填）仍可后续修复。
+5. **行业数据积累** ✅ **结论：非代码缺口，纯数据积累**。2026 复核：38 个行业有专利，仅 6 个满足 ≥5 样本（化学制品 8 / 计算机软件 7 / 汽车 6 / 生物医药 6 / 化学制药 6 / 医疗器械 5）。代码已对样本不足行业优雅回退绝对阈值 (`_score_quantity_absolute`)，**无需改代码**；随 `stock_patent_crawler` + `aggregate_patent_data` 工作日 cron 持续积累，覆盖面自然扩大。
+6. **（可选）Google Patents Playwright + 代理池**：本轮未实现，仍走轻量 XHR 降级。`core_patents`/`patent_maintenance_rate` 依赖此源的法律状态数据。
+7. **（可选）历史回补 `cn_stock_spot.industry`** ✅ **结论：保留 selection 规避方案，不强改**。2026 复核：spot 最新快照（2026-06-01，4927 行）industry **100% 为空**（采集未回填）；`cn_stock_selection`（2026-05-29，4448 行）industry **0 空**。规避方案（`_fetch_industry_map` / `get_industry_patent_percentiles` / handler 均改用 selection）已全面落地且覆盖率 100%。回填 spot.industry 需动 Fetch 爬虫（AGENTS.md 规则 1），收益边际，暂不强改。
