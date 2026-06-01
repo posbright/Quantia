@@ -60,8 +60,8 @@ class TrendPullbackStrategy(TechnicalStrategy):
             # 计算RSI
             rsi = tl.RSI(close, timeperiod=14)
 
-            # 计算成交量均线（使用20日均量作为基准）
-            vol_ma20 = tl.MA(volume.astype(float), timeperiod=20)
+            # 计算成交量均线（5日均量，与策略说明口径一致：缩量回调判断）
+            vol_ma5 = tl.MA(volume.astype(float), timeperiod=5)
 
             # 获取最新数据
             last_close = close[-1]
@@ -69,12 +69,12 @@ class TrendPullbackStrategy(TechnicalStrategy):
             last_ma60 = ma60[-1]
             last_rsi = rsi[-1]
             last_vol = volume[-1]
-            last_vol_ma20 = vol_ma20[-1]
+            last_vol_ma5 = vol_ma5[-1]
 
             # 处理NaN值
             if np.isnan(last_ma20) or np.isnan(last_ma60) or np.isnan(last_rsi):
                 return False
-            if np.isnan(last_vol_ma20) or last_vol_ma20 == 0:
+            if np.isnan(last_vol_ma5) or last_vol_ma5 == 0:
                 return False
 
             # 条件1: MA20 > MA60（趋势向上）
@@ -90,8 +90,8 @@ class TrendPullbackStrategy(TechnicalStrategy):
             if not (35 <= last_rsi <= 55):
                 return False
 
-            # 条件4: 缩量回调（成交量低于20日均量的80%）
-            if last_vol >= last_vol_ma20 * 0.8:
+            # 条件4: 缩量回调（成交量低于5日均量的80%）
+            if last_vol >= last_vol_ma5 * 0.8:
                 return False
 
             p_change = data.iloc[-1]['p_change'] if 'p_change' in data.columns else 0.0
@@ -103,7 +103,7 @@ class TrendPullbackStrategy(TechnicalStrategy):
                 'ma20_dev': round(float(ma20_deviation * 100), 2),
                 'rsi14': round(float(last_rsi), 2),
                 'volume': int(last_vol),
-                'vol_ma20': int(round(last_vol_ma20)),
+                'vol_ma5': int(round(last_vol_ma5)),
             }
 
         except Exception:
