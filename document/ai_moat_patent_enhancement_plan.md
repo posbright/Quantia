@@ -23,12 +23,16 @@
 | 项目 | 现状 |
 |------|------|
 | 工具位置 | `quantia/lib/ai/tools/web_search.py` |
-| 搜索引擎 | 自定义代理（`QUANTIA_AI_WEB_SEARCH_URL`）或 DuckDuckGo 兜底 |
+| 搜索引擎 | 优先级链：自建代理（`QUANTIA_AI_WEB_SEARCH_URL`）→ 博查 Bocha AI 搜索（`QUANTIA_AI_BOCHA_API_KEY`，国内首选）→ Bing CN 零配置兜底；全部失败时优雅降级返回空结果 + warning（原文 DuckDuckGo 因 GFW 屏蔽已移除）|
 | 专利查询 | ❌ **未专门搜索专利信息** |
 | 搜索策略 | 通用搜索，由 LLM 自行决定搜索关键词 |
 | Prompt 指引 | 仅指示搜索"近期重大新闻/公告" |
 
 **结论**: 当前 `web_search` 是通用工具，stock_analyst prompt 中没有引导 LLM 搜索专利/护城河信息。LLM 自行决策时也不会主动查询专利数据。
+
+> 📌 **实现现状校对（2026）**: 本节描述的是 **Phase 1 改造前** 的现状。当前实现已变化：
+> - 「搜索引擎」行已按实际代码更正（博查 Bocha → Bing CN，无 DuckDuckGo）。
+> - 「专利查询 / 搜索策略 / Prompt 指引 / 结论」描述的是改造前状态；P1 完成后 `stock_analyst.md` 已新增「四.五 竞争壁垒（护城河）」章节、工具规则第 4/5 条已引导按"DB优先→web_search兜底"查询专利。详见 §10.2 验证表。
 
 ### 1.2 投资建议现状
 
@@ -915,7 +919,7 @@ flowchart TD
 
 如果 LLM 自行调用 `web_search("TCL科技 核心专利 技术壁垒")`并返回有效结果，说明 Phase 1 的核心假设成立 — Prompt 引导即可。
 
-如果 DuckDuckGo 对中文专利查询结果较差，则需考虑：
+如果内置搜索后端（博查 Bocha / Bing CN）对中文专利查询结果较差，则需考虑：
 - 搜索 query 混合中英文: `"TCL Technology patents 专利"`
 - 加速推进 Phase 3a（巨潮年报路线），让 DB 有数据后不再依赖 web_search
 

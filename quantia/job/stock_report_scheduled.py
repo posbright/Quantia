@@ -43,7 +43,7 @@ _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
 
 
 def _get_effective_tools() -> list:
-    """根据环境配置过滤实际可用的工具列表。web_search 已内置 DuckDuckGo 后端，始终可用。"""
+    """根据环境配置过滤实际可用的工具列表。web_search 内置博查 Bocha → Bing CN 后端链，始终可用。"""
     return list(_ALLOWED_TOOLS)
 
 

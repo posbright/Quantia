@@ -188,7 +188,7 @@ def _to_user_friendly_error(exc: Exception) -> str:
 def _get_effective_tools() -> list:
     """根据环境配置过滤实际可用的工具列表。
 
-    web_search 已内置 DuckDuckGo 搜索后端，始终可用。
+    web_search 内置搌查 Bocha → Bing CN 后端链（零配置也可用），始终可用。
     """
     return list(_ALLOWED_TOOLS)
 
