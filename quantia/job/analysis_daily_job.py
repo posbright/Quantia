@@ -187,16 +187,43 @@ def _run_stock_spot_buy(date):
                              f"（ROE阈值={roe_threshold}%）")
 
         # 降级：从 cn_stock_spot 筛选
+        # 注意：降级行情源（腾讯/新浪）不提供 TTM 市盈率(pe9)与加权ROE(roe_weight)，
+        # 二者在 cn_stock_spot 中恒为 0。此时：
+        #   1) 用动态市盈率(dtsyl)替代 pe9 做 PE 估值过滤；
+        #   2) 若该日 spot 无任何有效 roe_weight，则放弃 ROE 约束（仅按 PE+PB 估值降级筛选），
+        #      避免因 pe9/roe_weight=0 导致降级时选不出任何股票。
         if qualified_codes is None:
             spot_table = tbs.TABLE_CN_STOCK_SPOT['name']
             if mdb.checkTableIsExist(spot_table):
-                spot_sql = (f'SELECT `code` FROM `{spot_table}` WHERE `date` = %s '
-                            f'AND `pe9` > 0 AND `pe9` <= 20 AND `pbnewmrq` <= 10 AND `roe_weight` >= %s')
-                spot_data = pd.read_sql(sql=spot_sql, con=mdb.engine(), params=(date_str, roe_threshold))
+                # PE：优先 TTM(pe9)，缺失时回退动态市盈率(dtsyl)
+                pe_expr = ('CASE WHEN `pe9` > 0 THEN `pe9` '
+                           'WHEN `dtsyl` > 0 THEN `dtsyl` ELSE NULL END')
+                try:
+                    roe_cnt = mdb.executeSqlFetch(
+                        f'SELECT COUNT(*) FROM `{spot_table}` WHERE `date` = %s AND `roe_weight` != 0',
+                        (date_str,))
+                    has_roe = bool(roe_cnt and (roe_cnt[0][0] or 0) > 0)
+                except Exception:
+                    has_roe = False
+
+                if has_roe:
+                    spot_sql = (f'SELECT `code` FROM `{spot_table}` WHERE `date` = %s '
+                                f'AND ({pe_expr}) > 0 AND ({pe_expr}) <= 20 '
+                                f'AND `pbnewmrq` > 0 AND `pbnewmrq` <= 10 AND `roe_weight` >= %s')
+                    spot_params = (date_str, roe_threshold)
+                else:
+                    spot_sql = (f'SELECT `code` FROM `{spot_table}` WHERE `date` = %s '
+                                f'AND ({pe_expr}) > 0 AND ({pe_expr}) <= 20 '
+                                f'AND `pbnewmrq` > 0 AND `pbnewmrq` <= 10')
+                    spot_params = (date_str,)
+                    logging.warning("基本面选股：降级行情源缺少 ROE/TTM 市盈率数据，"
+                                    "改用 动态市盈率(dtsyl)+PB 估值降级筛选（无 ROE 约束）")
+
+                spot_data = pd.read_sql(sql=spot_sql, con=mdb.engine(), params=spot_params)
                 if len(spot_data) > 0:
                     qualified_codes = set(spot_data['code'].values)
                     logging.info(f"基本面选股：降级从 cn_stock_spot 筛出 {len(qualified_codes)} 只符合条件"
-                                 f"（ROE阈值={roe_threshold}%）")
+                                 f"（ROE阈值={roe_threshold if has_roe else 'N/A'}）")
 
         if not qualified_codes:
             logging.info("基本面选股：无符合条件的股票")

@@ -30,6 +30,19 @@ def _write_json(handler, data: Any, status: int = 200):
     handler.write(json.dumps(data, ensure_ascii=False, default=str))
 
 
+def _pick_pe(pe_ttm, pe_dyn, pe_static):
+    """按优先级挑选可展示的市盈率：TTM(pe9) → 动态(dtsyl) → 静态(pe)。
+
+    部分行情源（腾讯/新浪）不提供 TTM/静态市盈率，会落库为 0，
+    此时回退到动态市盈率(dtsyl)，保证前端"市盈率(PE)"有可展示的数值。
+    返回 None 表示三者均无有效值。
+    """
+    for cand in (pe_ttm, pe_dyn, pe_static):
+        if cand is not None and cand != 0:
+            return cand
+    return None
+
+
 class StockFinancialSummaryHandler(webBase.BaseHandler, ABC):
     """GET /quantia/api/stock/financial_summary
 
@@ -112,7 +125,8 @@ class StockFinancialSummaryHandler(webBase.BaseHandler, ABC):
         try:
             sql = """
                 SELECT name, new_price, change_rate, pe9, pbnewmrq,
-                       total_market_cap, turnoverrate, total_shares, free_shares
+                       total_market_cap, turnoverrate, total_shares, free_shares,
+                       dtsyl, pe
                 FROM cn_stock_spot
                 WHERE code = %s
                 ORDER BY date DESC LIMIT 1
@@ -120,11 +134,13 @@ class StockFinancialSummaryHandler(webBase.BaseHandler, ABC):
             spot_rows = mdb.executeSqlFetch(sql, (code,))
             if spot_rows:
                 r = spot_rows[0]
+                # 市盈率优先级：TTM(pe9) → 动态(dtsyl) → 静态(pe)。
+                pe_val = _pick_pe(r[3], r[9], r[10])
                 result['valuation'] = {
                     'name': r[0],
                     'price': r[1],
                     'change_pct': r[2],
-                    'pe': r[3],
+                    'pe': pe_val,
                     'pb': r[4],
                     'market_cap': r[5],        # 万元
                     'turnover_rate': r[6],
