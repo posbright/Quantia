@@ -63,7 +63,7 @@
 | F3 | `tablestructure` 新增**单表** `TABLE_CN_FUND_RANK`（净值+收益率+类型，自动建表） | P0 |
 | F4 | `basic_data_daily_job.save_nph_fund_data(date)` 入库（DELETE by date + upsert，chunksize=500） | P0 |
 | F5 | `fetch_daily_job` 新增 Phase + 基金专属新鲜度/结算时间 + job 追踪 | P0 |
-| F6 | **排名方案 A**：直接读 `cn_fund_rank`，按 `fund_type` 分桶按周期收益率排序（Handler + 路由 + 最小展示） | P1 |
+| F6 | ✅ **排名方案 A**：直接读 `cn_fund_rank`，按 `fund_type` 分桶按周期收益率排序（`fundRankHandler` + 路由 + 前端 api + 单测） | P1 |
 
 ### 1.2 第二期（增量，后续 PR）
 
