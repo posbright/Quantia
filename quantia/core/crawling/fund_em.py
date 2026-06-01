@@ -148,3 +148,207 @@ def fund_rank_all() -> pd.DataFrame:
         return None
 
     return pd.concat(frames, ignore_index=True)
+
+
+# ── F8 净值历史（回撤/夏普/净值曲线）─────────────────────────────────
+# 来源 fund_open_fund_info_em(symbol=code, indicator='单位净值走势' / '累计净值走势')。
+# ⚠️ 长期收益/夏普/回撤一律用 acc_nav（累计净值，已还原分红拆分），unit_nav 仅展示。
+
+_NAV_UNIT_COL_MAP = {
+    '净值日期': 'nav_date',
+    '单位净值': 'unit_nav',
+    '日增长率': 'day_growth',
+}
+_NAV_ACC_COL_MAP = {
+    '净值日期': 'nav_date',
+    '累计净值': 'acc_nav',
+}
+
+
+def _map_nav_history(unit_df, acc_df, code) -> pd.DataFrame:
+    """合并单位净值走势 + 累计净值走势为一行/日，对齐 TABLE_CN_FUND_NAV_HISTORY 列。
+
+    纯函数（不调外部 API），供单测直接传样例 DataFrame。
+    """
+    if unit_df is None or len(unit_df.index) == 0:
+        return None
+    keep_u = {cn: en for cn, en in _NAV_UNIT_COL_MAP.items() if cn in unit_df.columns}
+    out = unit_df[list(keep_u)].rename(columns=keep_u).copy()
+
+    if acc_df is not None and len(acc_df.index) > 0:
+        keep_a = {cn: en for cn, en in _NAV_ACC_COL_MAP.items() if cn in acc_df.columns}
+        acc = acc_df[list(keep_a)].rename(columns=keep_a).copy()
+        out = out.merge(acc, on='nav_date', how='left')
+    if 'acc_nav' not in out.columns:
+        out['acc_nav'] = pd.NA
+
+    out['nav_date'] = pd.to_datetime(out['nav_date'], errors='coerce').dt.date
+    for col in ('unit_nav', 'acc_nav', 'day_growth'):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors='coerce')
+        else:
+            out[col] = pd.NA
+    out.insert(0, 'code', str(code))
+    out = out.dropna(subset=['nav_date'])
+    out = out[['code', 'nav_date', 'unit_nav', 'acc_nav', 'day_growth']]
+    return out
+
+
+def fund_nav_history(code) -> pd.DataFrame:
+    """逐基金净值历史（单位+累计净值走势合并）。netvalue 型适用，货币型应在调用方跳过。"""
+    import akshare as ak
+
+    try:
+        unit = ak.fund_open_fund_info_em(symbol=str(code), indicator='单位净值走势')
+    except Exception:
+        logging.warning(f"fund_em.fund_nav_history: {code} 单位净值走势抓取失败", exc_info=True)
+        return None
+    try:
+        acc = ak.fund_open_fund_info_em(symbol=str(code), indicator='累计净值走势')
+    except Exception:
+        logging.warning(f"fund_em.fund_nav_history: {code} 累计净值走势抓取失败（仅用单位净值）", exc_info=True)
+        acc = None
+    return _map_nav_history(unit, acc, code)
+
+
+# ── F10 规模 + 画像（规模因子 & 投资价值分析）─────────────────────────
+# 来源 fund_individual_basic_info_xq(symbol=code) → item/value 透视为一行。
+
+# 画像 item 中文名 → 英文列（容错：缺失 item 留 None）
+_PROFILE_ITEM_MAP = {
+    '基金名称': 'name',
+    '基金全称': 'full_name',
+    '成立时间': 'setup_date',
+    '最新规模': 'scale_yi',
+    '基金公司': 'company',
+    '基金经理': 'manager',
+    '基金类型': 'fund_type_detail',
+    '基金评级': 'rating',
+    '投资策略': 'strategy',
+    '投资目标': 'objective',
+    '业绩比较基准': 'benchmark',
+}
+
+
+def _parse_scale_yi(value):
+    """规模解析：'26.44亿' → 26.44；'5000万' → 0.05（亿）；空/无效 → None。"""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s in ('---', '--', '-', '<NA>', 'nan', 'None', '暂无数据'):
+        return None
+    m = re.search(r'-?\d+(\.\d+)?', s)
+    if not m:
+        return None
+    try:
+        num = float(m.group(0))
+    except (TypeError, ValueError):
+        return None
+    if '万' in s and '亿' not in s:
+        return round(num * 1e-4, 6)  # 万元 → 亿元
+    return num
+
+
+def _pivot_profile(info_df, code) -> dict:
+    """item/value 画像透视为单行 dict，对齐 TABLE_CN_FUND_PROFILE 列。纯函数。"""
+    if info_df is None or len(info_df.index) == 0:
+        return None
+    if 'item' not in info_df.columns or 'value' not in info_df.columns:
+        return None
+    kv = dict(zip(info_df['item'].astype(str), info_df['value']))
+    row = {'code': str(code)}
+    for cn, en in _PROFILE_ITEM_MAP.items():
+        val = kv.get(cn)
+        if en == 'scale_yi':
+            row[en] = _parse_scale_yi(val)
+        elif en == 'setup_date':
+            d = pd.to_datetime(val, errors='coerce')
+            row[en] = d.date() if pd.notna(d) else None
+        else:
+            s = None if val is None else str(val).strip()
+            row[en] = s if s and s not in ('<NA>', 'nan', 'None', '---') else None
+    return row
+
+
+def fund_profile(code) -> dict:
+    """逐基金规模/画像。返回单行 dict（不含 update_date，由 job 补入库日）。"""
+    import akshare as ak
+
+    try:
+        info = ak.fund_individual_basic_info_xq(symbol=str(code))
+    except Exception:
+        logging.warning(f"fund_em.fund_profile: {code} 画像抓取失败", exc_info=True)
+        return None
+    return _pivot_profile(info, code)
+
+
+# ── F12 季度前十大重仓股（持仓展示 + 行业筛选/对比）──────────────────
+# 来源 fund_portfolio_hold_em(symbol=code, date=年份)，取最新季度。
+
+_HOLDING_COL_MAP = {
+    '股票代码': 'stock_code',
+    '股票名称': 'stock_name',
+    '占净值比例': 'hold_ratio',
+    '持股数': 'hold_shares',
+    '持仓市值': 'hold_value',
+    '季度': 'quarter',
+}
+
+
+def _parse_ratio(value):
+    """占净值比例解析：'5.21%' / '5.21' → 5.21；空/无效 → None。"""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s in ('---', '--', '-', '<NA>', 'nan', 'None'):
+        return None
+    m = re.search(r'-?\d+(\.\d+)?', s)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _pick_latest_quarter(df: pd.DataFrame) -> pd.DataFrame:
+    """从含多季度的持仓表里取最新季度（季度字符串字典序最大即最新，如 '2025年1季度'）。"""
+    if df is None or len(df.index) == 0 or '季度' not in df.columns:
+        return df
+    latest = sorted(df['季度'].dropna().astype(str).unique())[-1]
+    return df[df['季度'].astype(str) == latest].copy()
+
+
+def _map_holding_columns(df: pd.DataFrame, code) -> pd.DataFrame:
+    """最新季度前十大重仓股列映射 + 比例解析（行业留待 job 读库回填）。纯函数。"""
+    if df is None or len(df.index) == 0:
+        return None
+    latest = _pick_latest_quarter(df)
+    keep = {cn: en for cn, en in _HOLDING_COL_MAP.items() if cn in latest.columns}
+    out = latest[list(keep)].rename(columns=keep).copy()
+    if 'hold_ratio' in out.columns:
+        out['hold_ratio'] = out['hold_ratio'].map(_parse_ratio)
+    for col in ('hold_shares', 'hold_value'):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors='coerce')
+    out['stock_code'] = out['stock_code'].astype(str).str.zfill(6) if 'stock_code' in out.columns else None
+    out.insert(0, 'code', str(code))
+    return out
+
+
+def fund_holding_latest(code, year) -> pd.DataFrame:
+    """逐基金最新季度前十大重仓股；当年无披露则回退上一年。"""
+    import akshare as ak
+
+    df = None
+    for y in (year, year - 1):
+        try:
+            df = ak.fund_portfolio_hold_em(symbol=str(code), date=str(y))
+        except Exception:
+            logging.warning(f"fund_em.fund_holding_latest: {code}/{y} 抓取失败", exc_info=True)
+            df = None
+        if df is not None and len(df.index) > 0:
+            break
+    if df is None or len(df.index) == 0:
+        return None
+    return _map_holding_columns(df, code)

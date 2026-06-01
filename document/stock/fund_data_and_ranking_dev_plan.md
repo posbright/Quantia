@@ -70,11 +70,11 @@
 | # | 功能 | 优先级 |
 |---|------|--------|
 | F7 | **排名方案 B**：`analysis` 管道多因子截面打分（B1 动量+费率+规模无需历史；B2 叠加夏普/Calmar 依赖 F8），按类型分桶，写 `cn_fund_rank_score` | P2 |
-| F8 | **净值历史回填 + 增量缓存**：`fund_open_fund_info_em` 逐基金拓史（**仅 B1-Top-N ∪ 按需点开，非全市场；跳过货币型**），写 `cn_fund_nav_history`（供回撤/夏普/净值曲线） | P1 |
-| F10 | **规模+画像缓存**：`fund_individual_basic_info_xq` 拓最新规模/公司/经理/评级/策略，周/月频写 `cn_fund_profile`（规模因子 + 投资价值分析数据源） | P1 |
+| F8 | ✅ **已交付（PR-3）** 净值历史回填 + 增量缓存：`fetch_fund_nav_history_job.py`，逐基金拓史（**仅 Top-N ∪ 按需点开，非全市场；跳过货币型**），写 `cn_fund_nav_history`（供回撤/夏普/净值曲线） | P1 |
+| F10 | ✅ **已交付（PR-3）** 规模+画像缓存：`fetch_fund_profile_job.py`，`fund_individual_basic_info_xq` 拓最新规模/公司/经理/评级/策略，周/月频写 `cn_fund_profile`（规模因子 + 投资价值分析数据源） | P1 |
 | F11 | **同类基金评比 + 投资价值分析**：同 `fund_type` 桶内多维雷达对比 + 价值标签（Handler） | P1 |
 | F9 | **前端基金中心页**（直观、人性化）：排行榜 + 同类评比雷达 + 净值曲线 + 价值分析卡片 + AI 工具 | P1 |
-| F12 | **持仓股缓存**：`fund_portfolio_hold_em` 拓季度前十大重仓股，写 `cn_fund_holding`；LEFT JOIN 行业表得行业分布（支持「按行业筛选/对比」+ 详情持仓展示） | P1 |
+| F12 | ✅ **已交付（PR-3）** 持仓股缓存：`fetch_fund_holding_job.py`，`fund_portfolio_hold_em` 拓季度前十大重仓股，写 `cn_fund_holding`；LEFT JOIN `cn_stock_selection.industry` 得行业分布（支持「按行业筛选/对比」+ 详情持仓展示） | P1 |
 | F13 | **综合分析与建议（规则引擎）**：融合「历史业绩（夏普/回撤/多周期收益/基准超额）+ 持仓（集中度/行业分布/风格）」生成结构化解读 + 风险等级标签（**非买卖建议**） | P1 |
 | F14 | **AI 综合分析（按需触发）**：用户点击才运行的 LLM 分析——喂入该基金所有已落库数据（净值/收益/夏普/回撤/持仓/画像/基准）+ `web_search` 检索的相关资讯，产出自然语言综合分析。懒加载、异步、结果可缓存 | P2 |
 
@@ -274,6 +274,8 @@ def fetch_funds(date):
 > **结算时间坑（已核实）**：`_check_and_skip(table_name, date_str, task_label)` 内部硬编码调 `trd.is_post_settlement(date_str)`（默认结算小时 `QUANTIA_SETTLEMENT_HOUR`=18，见 [trade_time.py](../../quantia/lib/trade_time.py#L206)）。**基金净值多在当晚 20:00–23:00 才披露、QDII T+2**，沿用 18:00 会在未披露时误跳过、入空。`is_post_settlement` **已支持 `settlement_hour` 入参**，但 `_check_and_skip` 当前未透传 → 落地修法：给 `_check_and_skip` 增加可选 `settlement_hour` 形参并透传，基金 Phase 调用时传 `settlement_hour=_cfg.get_int('QUANTIA_FUND_SETTLEMENT_HOUR', 23)`，不复用股票 18:00 结算门。
 
 ### 3.5 净值历史回填 + 画像缓存（F8 / F10，独立 job）
+
+> **交付状态（PR-3，已实现）**：`quantia/job/fetch_fund_nav_history_job.py`（F8）、`fetch_fund_profile_job.py`（F10）、`fetch_fund_holding_job.py`（F12）三个独立慢 job 已落地，均**不进每日 `fetch_daily_job` 主链**，通过 `cron.workdayly`（F8 续抓）/ `cron.monthly`（F10/F12 季频）或 `python -m`/直接脚本手动触发。抓取范围按本节口径取每桶 Top-N（默认 200，`QUANTIA_FUND_NAV_TOPN` / `QUANTIA_FUND_PROFILE_TOPN` / `QUANTIA_FUND_HOLDING_TOPN` 可调），支持显式传 code 列表懒抓。纯函数 + 编排单测见 `tests/test_fund_data_pr3.py`（20 用例，mock akshare + DB，禁真实网络/DB）。
 
 这两类是**逐基金分页**抓取，量大耗时，**不放进每日 `fetch_daily_job` 主链**，单列脚本 + 低频 cron：
 
