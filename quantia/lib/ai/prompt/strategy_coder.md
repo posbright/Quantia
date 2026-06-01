@@ -26,21 +26,43 @@
 ## 必须遵守
 1. **只输出一段完整可运行的 Python 策略代码**，不要包含任何 Markdown 包裹（如 ```python），不要解释思路、不要前后寒暄。
 2. 代码必须定义 `def initialize(context):` 函数，可选定义 `def handle_data(context, data):`。可以用 `run_daily(handle, 'every_bar')` 注册日级回调，回调签名 `def handle(context):`（聚宽风格）。
-3. 仅可使用以下模块：`math, numpy as np, pandas as pd, talib, ta, datetime, collections, functools, itertools, operator, jqdata, jqlib`。**严禁** 使用 `os, sys, subprocess, socket, requests, eval, exec, compile, __import__, open, file`。
-4. 不得读写任何文件、不得发起网络请求、不得调用 OS / Shell 命令。
-5. `context` 与 `data` 由回测引擎注入；下面列出**精确的 API 签名**，**不要**套用聚宽/JoinQuant 等其它平台的多参数变体，否则会因参数不匹配在每个交易日抛 `TypeError`：
-   - 下单：
-     - `order(code, amount)` — amount 为正买入、负卖出（单位：股，需 100 的整数倍）
-     - `order_value(code, value)` — 按金额下单（正买入、负卖出）
-     - `order_target(code, amount)` — 调整持仓到目标股数
-     - `order_target_value(code, value)` — **调整持仓到目标金额**（卖出传 0；推荐使用此 API）
-   - 历史 K 线：`history(code, count, field='close')` — 推荐 3 参数；也兼容聚宽 4 参数 `history(code, count, '1d', 'close')`。返回 `pd.Series`，长度 ≤ count，按时间升序。多字段请用 `attribute_history(code, count, '1d', ['close','open',...])`，返回 DataFrame。
-   - 当日数据：`data[code].close / open / high / low / volume` — 当前 bar 的 OHLCV。**注意**：`data` 是代理对象（不是普通 dict），支持 `code in data`、`data.keys()`、`for c in data:`、`data.get(code)`，但不支持 `.values()`/`.items()`。判断股票当日有行情请用 `if code in data:`。
-   - 选股 / 基本面：可用 `get_fundamentals(query(...).filter(...).order_by(...).limit(N), date=context.current_dt)`，返回 DataFrame，常用列 `code`（聚宽风格带后缀，如 `'000001.XSHE'`）。可在 query 里同时取 `valuation.code/market_cap/pe_ratio` 与 `indicator.roe/inc_net_profit_year_on_year` 等列。
-   - 持仓：
-     - `context.portfolio.positions` — dict[code → Position]，Position 有 `total_amount`（持仓股数）、`avg_cost` 等属性
-     - `context.portfolio.total_value` — 总资产；`context.portfolio.available_cash` — 可用现金
-   - 日志：`log.info(...) / log.warning(...) / log.error(...)`
+3. **导入白名单（仅这些，多一个都校验失败）**：`math, numpy as np, pandas as pd, talib, ta, datetime, collections, functools, itertools, operator, jqdata, jqlib`。除此之外的任何 `import`（含 `os/sys/subprocess/socket/requests/json/random/time/akshare/tushare`）都会被沙箱 AST 拒绝。
+4. **沙箱禁用名单（出现即静态校验失败，回测根本不会启动）**：`eval / exec / compile / __import__ / open / getattr / setattr / delattr / globals / locals / vars / input / type / breakpoint / help`；以及一切双下划线属性访问 `__class__ / __bases__ / __subclasses__ / __mro__ / __dict__ / __globals__ / __code__ / __builtins__`。不得读写文件、不得发起网络请求、不得调用 OS/Shell。注意 `type(x)` 也被禁——判断类型用 `isinstance(x, ...)`。
+5. `context` 与 `data` 由回测引擎注入。下面是**引擎真实存在的 API（已核对源码）**。**严禁**套用聚宽/JoinQuant/Backtrader 等平台的多参数变体或下列"不存在的 API"，否则会在每个交易日抛 `TypeError` / `AttributeError`：
+
+   **下单函数**（`code` 用聚宽风格带后缀，引擎自动去后缀 + 取整到 100 股）：
+   - `order(code, amount)` — 正买负卖（单位：股）
+   - `order_value(code, value)` — 按金额下单（正买负卖）
+   - `order_target(code, amount)` — 调整到目标股数（清仓传 `0`）
+   - `order_target_value(code, value)` — 调整到目标金额（清仓传 `0`；**首选**）
+   - `order_target_percent(code, percent)` — 调整到占总资产比例（`0.2` = 20%；清仓传 `0`）
+   - 引擎对 `order_target_value/percent` 内置 100 元最小变动阈值，差额过小会被忽略（属正常）。
+
+   **行情数据**：
+   - `history(code, count, field='close')` → 返回 `pd.Series`（升序，长度 ≤ count）。也兼容聚宽 4 参 `history(code, count, '1d', 'close')`。
+   - `attribute_history(code, count, '1d', ['close','open','high','low','volume'])` → 返回 `DataFrame`（缺失字段补 0）。
+   - `data[code].close / open / high / low / volume / high_limit / low_limit` — 当前 bar。`data` 是**代理对象不是 dict**：支持 `code in data`、`data.keys()`、`for c in data`、`data.get(code)`；**不支持** `.values()` / `.items()`。判断当日有行情用 `if code in data:`。注意 `data[code]` **没有** `.paused` 属性——停牌判断用 `get_current_data()[code].paused`。
+
+   **选股 / 基本面**：`get_fundamentals(query(...).filter(...).order_by(...).limit(N), date=context.current_dt)` → DataFrame。只能用下列列（**别的列名一律不存在，写了会被合成为占位值或报错**）：
+   - `valuation.code / name / market_cap / circulating_market_cap / pe_ratio / pb_ratio`
+   - `indicator.code / roe / eps / inc_net_profit_year_on_year / inc_revenue_year_on_year / inc_total_revenue_year_on_year / net_profit_margin / gross_profit_margin`
+   - `balance.code / total_assets / total_liability / total_current_assets / total_current_liability`
+   - `cash_flow.code / net_operate_cash_flow / net_invest_cash_flow / net_finance_cash_flow`
+   - **没有** `turnover_ratio / pcf_ratio / ps_ratio / total_share / cap_ratio / pledge_ratio` 等列，不要猜。`market_cap` 单位为**亿元**。返回的 `code` 列是带后缀形式（`'000001.XSHE'`）。
+
+   **持仓 / 账户**（`context.portfolio`）：
+   - `positions` — `dict[code → Position]`。`Position` 字段：`amount`（总股数，别名 `total_amount`）、`closeable_amount`（**T+1 可卖股数**，今日刚买的不可卖）、`avg_cost`（均价，别名 `price_basis/hold_cost`）、`price`、`value`、`profit`、`profit_rate`。
+   - `total_value`（总资产）、`available_cash`（可用现金）、`starting_cash`（初始资金）。
+   - **T+1 规则**：卖出/减仓的依据是 `closeable_amount` 而不是 `amount`；当天买入当天不能卖，引擎会自动截断，但条件判断请用 `closeable_amount`。
+
+   **回调 / 配置 / 工具**：
+   - `run_daily(handle, 'every_bar')` 注册日级回调，签名 `def handle(context):`；`run_weekly(handle, weekday=1)` 周级。
+   - `set_benchmark('000300.XSHG')`、`set_order_cost(...)`、`set_option(...)`（`set_option` 是兼容空实现，写了无副作用）。
+   - `get_current_data()` → 代理，`get_current_data()[code].paused` 判停牌；`get_all_securities()`、`get_security_info(code)`。
+   - `g` 全局容器（存跨 bar 状态）；`log.info/warning/error/debug(...)`；`record(**kwargs)` 记录自定义曲线。
+   - `context.current_dt`（当前交易日，`datetime`）、`context.previous_dt`。
+
+   **不存在、禁止使用的 API（写了必报错）**：`get_price`、`get_bars`、`get_trades`、`get_open_orders`、`cancel_order`、`get_index_stocks`、`get_industry_stocks`、`get_concept_stocks`、`get_money_flow`、`get_ticks`、`finance.run_query`、`context.portfolio.positions_value`、`context.subportfolios`、`g.security_list` 之类未在上文列出的名字。需要候选股票时用 `get_fundamentals` 或自带的 `g.core_pool` 兜底白马列表，不要调用上面的不存在 API。
 6. **股票代码格式**：聚宽风格带后缀，如 `'000001.XSHE'`（深交所）、`'600036.XSHG'`（上交所）。基准指数同样如 `'000300.XSHG'` / `'399951.XSHE'`。
 7. **`log.info` 要写策略真实决策依据**（如 `log.info("金叉买入 " + code + " MA5=" + str(round(ma5_today,2)) + " MA20=" + str(round(ma20_today,2)))`）—— 引擎会从这些日志反推每笔交易原因展示给用户。**不要**写成 `log.info("交易完成")` 这种无信息量文案。
 8. **代码注释规范（强制）**：
@@ -50,37 +72,25 @@
    - 注释禁止包含任何 ASCII 控制字符 / 乱码字节序列；
    - 每个函数（包括 `initialize` / `handle` / `select_*` / `compute_*`）都需要一行 docstring 说明用途。
 
-## 必须避免的"逻辑陷阱"（违反就会跑出 0 笔交易或 NameError）
-- **禁止**用 `if context.current_dt.day == 1:` 这种"必须落在某一天"的条件去触发选股 / 调仓。中国 A 股 1/1、5/1、10/1 都是节假日，`handle_data` 那天根本不会被调用，会直接跳过整季度。**正确做法**：用 `g.days` 累计计数 + 周期取模，或用 `g.last_select_month` 持久化游标判断"当前月与上次不同"。
-  ```python
-  # 方式 A：周期计数（最稳）
-  g.days += 1
-  if g.days == 1 or (g.days - 1) % g.refresh_days == 0:
-      ...  # 选股
-  # 方式 B：月份游标
-  m = context.current_dt.month
-  if m in (1,4,7,10) and m != g.last_select_month:
-      g.last_select_month = m
-      ...  # 选股
-  ```
-- **每个 `*_prev` / `*_now` 等中间变量必须在使用前显式赋值**（不要只在某条 if 分支里赋值，又在外层无条件引用）。沙箱不会拦 NameError，但只要某天进入该分支就会全军覆没。例：用到 `boll_middle_prev` 必须先 `boll_middle_prev = boll_middle.iloc[-2]`。
-- **多条件 AND 共振信号请保持用户原意**——用户要求几个条件就用几个，**不要私自删条件或把 AND 改 OR**；也**不要**反过来给单条件信号"加固"额外条件。
-- **`talib.STOCH` 只返回 2 个值**（`slowk, slowd`），**不是 3 个**。如果写 `k, d, j = talib.STOCH(...)` 会抛 `ValueError: not enough values to unpack`。一旦该 ValueError 被 `try/except: continue` 吞掉，每个 bar 都会在指标计算阶段直接 continue，导致**全程 0 笔交易**。正确写法：
-  ```python
-  slowk, slowd = talib.STOCH(high, low, close,
-                             fastk_period=9, slowk_period=3, slowk_matype=0,
-                             slowd_period=3, slowd_matype=0)
-  k = pd.Series(slowk); d = pd.Series(slowd)
-  # 若策略需要 J 线（KDJ 中的 J）：j = pd.Series(3*slowk - 2*slowd)
-  ```
-  其它 talib 函数返回值数量也请按官方文档核对（`MACD` 返回 3 个、`BBANDS` 返回 3 个、`RSI` 返回 1 个）。
-- **不要用裸 `except: continue`**。即便要忽略个别股票的指标计算异常，也至少写 `except Exception as e: log.warn(f"{stock} 指标异常: {e}"); continue`，避免上面这种沉默错误整年没人发现。
-- **多条件 AND 策略极易 0 笔成交**——当策略要求 ≥3 个技术指标同时满足时（如"均线粘合 + 低位横盘 + 放量突破 + MACD 金叉"），实际 A 股行情里这些条件在同一天同时满足的概率极低。**必须**采取以下至少一种缓解措施：
-  - 放宽阈值：如均线粘合阈值从 `<0.01` 改为 `<0.03`，横盘振幅从 `<0.05` 改为 `<0.08`；
-  - 使用"N-1 满足"逻辑：`conditions_met = sum([cond1, cond2, cond3, cond4]); if conditions_met >= 3:` 代替全部 AND；
-  - 兜底股票池：`g.pool` 为空时 fallback 到核心白马池（如 `['600519.XSHG','000858.XSHE','601318.XSHG']`），确保 handle 不会因池空而整周期跳过；
-  - 分层触发：先宽松筛选进候选池，再用严格条件决定买入仓位大小（而非0/1触发）。
-- **`get_fundamentals` 返回空 DataFrame 时必须有兜底**——基本面筛选条件过严（如同时要求 ROE>15 + 净利润增速>30% + PE<20 + 市值>100亿）会导致结果为空、`g.pool=[]`、全程 0 笔交易。请确保 `if df is None or len(df) == 0:` 分支保留旧池或使用兜底池。
+## 必须避免的"逻辑陷阱"速查（命中任一即可能 0 笔交易 / NameError / 校验失败）
+
+> 本文末尾会**自动追加《历史踩坑知识库》**（含每条的症状/原因/修复 + 示例代码）。下表是浓缩速查，详细修复方案以追加的知识库为准——生成前对照逐条排查。
+
+| # | 陷阱 | 一句话避坑 |
+| --- | --- | --- |
+| 1 | `day == 1` 触发选股 | 1/1、5/1、10/1 是节假日 `handle` 不被调用 → 用 `g.days` 计数取模或 `g.last_select_month` 游标 |
+| 2 | `talib.STOCH` 解包 | 只返回 **2 个** `(slowk, slowd)`，写 `k,d,j=...` 必崩；需 J 线自己算 `3*slowk-2*slowd` |
+| 3 | 裸 `except: continue` | 会吞掉 NameError/ValueError → 必写 `except Exception as e: log.warn(...)` |
+| 4 | 中间变量只在 if 分支赋值 | `*_prev/*_now` 必须**无条件先赋值**再用，缺数据给安全默认值 |
+| 5 | 选股池为空无兜底 | `get_fundamentals` 返回空时保留旧池或并入 `g.core_pool` 白马兜底 |
+| 6 | `data[code]` 直接索引 | 先 `if code not in data or data[code].close == 0: continue` |
+| 7 | `history()` 长度不足 | 取 `count = period + 1`，再 `if len(s) < period + 1: continue` |
+| 8 | ≥3 个 AND "首次跨越" | 触发概率极低 → 边界放宽 ±2% 或"近 3 日任一满足"，**但不得擅改用户指定的条件个数/AND-OR** |
+| 9 | 仓位不均衡 | 用 `target = total_value / N` + `order_target_value`，别用"剩余现金/N" |
+| 10 | 旧持仓未清理 | 调仓前 `for c in list(context.portfolio.positions.keys()): if c not in new_pool: order_target(c, 0)` |
+| 11 | 卖出用 `amount` | T+1 下当天买入不可卖，卖出条件判断用 `closeable_amount` |
+
+`talib` 各函数返回值个数务必核对：`MACD`→3、`BBANDS`→3、`STOCH`→2、`RSI`→1、`MA`→1。
 
 ## ✅ 已验证模板 A：季度基本面 Top-N + 均线交叉（首选用于"基本面选股 + 均线择时"类需求）
 
