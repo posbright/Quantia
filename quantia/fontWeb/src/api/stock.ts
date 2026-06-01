@@ -217,6 +217,87 @@ export function getFinancialSummary(code: string, limit = 12) {
   return request<FinancialSummaryResult>({ url: '/api/stock/financial_summary', method: 'get', params: { code, limit } })
 }
 
+// ============= 专利数据 API (Phase 3a/4) =============
+
+export interface PatentTrendItem {
+  year: number
+  count: number
+  invention?: number | null
+}
+
+export interface PatentData {
+  code: string
+  year: number | null
+  total_patents: number | null
+  invention_patents: number | null
+  utility_patents: number | null
+  design_patents: number | null
+  new_patents_year: number | null
+  invention_ratio: number | null
+  patent_quality_score: number | null
+  avg_citation_count: number | null
+  pct_international: number | null
+  patent_maintenance_rate: number | null
+  ipc_primary: string | null
+  ipc_primary_desc: string | null
+  ipc_distribution: Record<string, number> | null
+  tech_domain: string | null
+  trend_5y: PatentTrendItem[] | null
+  trend_5y_cagr: number | null
+  trend_direction: 'accelerating' | 'stable' | 'decelerating' | 'declining' | null
+  rd_staff_count: number | null
+  rd_staff_ratio: number | null
+  key_tech_desc: string | null
+  data_source: string | null
+  confidence_score: number | null
+  updated_at: string | null
+}
+
+export interface PatentLatestResp {
+  code: string
+  latest_year?: number | null
+  data: PatentData | null
+  trend?: PatentTrendItem[]
+  ipc_distribution?: Record<string, number>
+  reason?: string
+}
+
+export interface PatentHistoryResp {
+  code: string
+  items: PatentData[]
+  count: number
+}
+
+export interface PatentCompareItem {
+  code: string
+  name: string
+  year: number
+  total_patents: number | null
+  invention_patents: number | null
+  patent_quality_score: number | null
+  tech_domain: string | null
+}
+
+export interface PatentCompareResp {
+  code: string
+  industry: string | null
+  top: PatentCompareItem[]
+  rank: number | null
+  total_in_industry?: number
+}
+
+export function getStockPatents(code: string) {
+  return request<PatentLatestResp>({ url: '/api/stock/patents', method: 'get', params: { code } })
+}
+
+export function getStockPatentsHistory(code: string, years = 5) {
+  return request<PatentHistoryResp>({ url: '/api/stock/patents/history', method: 'get', params: { code, years } })
+}
+
+export function getStockPatentsCompare(code: string) {
+  return request<PatentCompareResp>({ url: '/api/stock/patents/compare', method: 'get', params: { code } })
+}
+
 // ============= 组合回测 & 策略管理 API =============
 
 /** 获取内置策略模板 */

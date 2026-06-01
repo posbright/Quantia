@@ -1,0 +1,20 @@
+#!/bin/bash
+# 年度专利数据采集 — 每年 5 月底执行，扫描全市场最近 5 年年报
+# 触发条件: 年报披露窗口 (1-4 月) 结束后
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/patents_annual.log
+
+log_info "开始年度专利数据采集"
+cd "$PROJECT_ROOT"
+"$PYTHON_BIN" -m quantia.job.fetch_patent_data >> "$LOG_FILE" 2>&1
+RC=$?
+if [ $RC -eq 0 ]; then
+    log_info "年度专利数据采集完成"
+else
+    log_error "年度专利数据采集失败 (exit=$RC)"
+fi
+exit $RC
