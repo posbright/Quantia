@@ -52,6 +52,15 @@
 - ❌ 无目标价位区间
 - ❌ 无止损建议
 
+> 📌 **实现现状校对（2026-06-01）**: 本节描述的是 **Phase 1 改造前** 的现状，上述 4 项**均已实现**，原因与落地见下：
+> - **缺失根因**: 改造前 `stock_analyst.md` 第六节只有"评级 / 已持仓 / 观望者 / 短线"扁平结构，没有按投资期限拆分，也没有目标价 / 止损字段——纯 Prompt 设计限制，非技术障碍。
+> - **是否可实现 → 已实现（P1/P2 落地）**:
+>   - 中期 / 长期建议: 当前 prompt 第六节已拆为「短期（1-4周）/ 中期（1-6个月）/ 长期（1年以上）」三段。
+>   - 目标价区间: 中期段「目标价区间（如可估算）」。
+>   - 止损建议: 短期段「止损参考价」。
+>   - 结构化落库: `quantia/lib/ai/report_parser.py` 已提取 `mid_term_advice` / `long_term_advice` / `target_price_low` / `target_price_high` / `stop_loss_price` 写入 `cn_stock_ai_report`。
+> - 详见 §10.2 / §10.4 验证表。
+
 ### 1.3 表结构现状
 
 **cn_stock_ai_report** (16列, 4条记录):
@@ -81,6 +90,8 @@
 3. **无结构化评级** — 评级嵌入文本中，难以做统计或可视化
 4. **无版本/更新机制** — 同一股票多次生成的报告互相独立，无法看到"观点变化"
 5. **无专利/护城河结构化字段** — 即使 LLM 分析了，结果也混在 markdown 里
+
+> 📌 **实现现状校对（2026-06-01）**: 本节同为 **Phase 2 改造前** 现状。问题 1/2/3/5 已通过 P2 解决：`cn_stock_ai_report` 已新增 `rating` / `rating_score` / `short_term_advice` / `mid_term_advice` / `long_term_advice` / `target_price_low|high` / `stop_loss_price` / `moat_score` / `moat_factors` 等结构化字段，由 `report_parser.extract_structured_fields` 解析写入（见 §10.2 P2 行）。问题 4（版本/观点变化）对应 `report_version` / `prev_report_id` 字段设计见 §2.3，落地以 §10 为准。
 
 ---
 
