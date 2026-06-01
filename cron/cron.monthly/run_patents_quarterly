@@ -1,0 +1,41 @@
+#!/bin/bash
+# 季度专利数据增量采集 (Phase 3b) — Google Patents 备份源
+# 触发: 每季度执行一次, 补充年报之间的 IPC/引用/趋势/PCT 增量
+# 只更新 Google 擅长字段, 不覆盖年报权威数量字段
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/patents_quarterly.log
+
+# 仅在每季度首月 (1/4/7/10 月) 执行, 其余月份跳过
+MONTH=$(date +%-m)
+case "$MONTH" in
+    1|4|7|10) ;;
+    *)
+        log_info "非季度首月 (month=$MONTH)，跳过 Google Patents 增量采集"
+        exit 0
+        ;;
+esac
+
+# 财年 = 年报最近披露年度 (5 月后为去年, 否则前年)
+DAY_OF_YEAR_MONTH=$(date +%-m)
+if [ "$DAY_OF_YEAR_MONTH" -ge 5 ]; then
+    FISCAL_YEAR=$(( $(date +%Y) - 1 ))
+else
+    FISCAL_YEAR=$(( $(date +%Y) - 2 ))
+fi
+
+log_info "开始季度 Google Patents 增量采集 (fiscal_year=$FISCAL_YEAR)"
+cd "$PROJECT_ROOT"
+"$PYTHON_BIN" -m quantia.job.fetch_patent_data \
+    --source google_patents \
+    --years "$FISCAL_YEAR" >> "$LOG_FILE" 2>&1
+RC=$?
+if [ $RC -eq 0 ]; then
+    log_info "季度 Google Patents 增量采集完成"
+else
+    log_error "季度 Google Patents 增量采集失败 (exit=$RC)"
+fi
+exit $RC

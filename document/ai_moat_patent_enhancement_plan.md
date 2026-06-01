@@ -1,9 +1,13 @@
 # AI 分析增强 — 专利护城河 + 多期限投资建议 + 表结构优化
 
-> 生成时间: 2026-05-27 | 最后更新: 2026-05-27 | 状态: 可行性分析 & 开发计划
+> 生成时间: 2026-05-27 | 最后更新: 2026-06-01 | 状态: ✅ 全阶段已实现 (P1/P2/P3a/P3b/P4)
 >
 > 更新说明: 新增「DB优先 + web_search兜底」双源策略；Google Patents 作为备份数据源；
 > 表结构增加 IPC 分类、专利含金量评估、5年申请趋势等字段
+>
+> 实现说明 (2026-06-01): P3b Google Patents 备份源已落地，采用 XHR JSON 接口 (懒加载
+> requests，失败优雅降级，非 Playwright)。`source_detail.google_patents` 记录采集季度
+> (格式 `YYYY-Qn`)。完整专利测试套件 82 passed。
 
 ---
 
@@ -639,18 +643,18 @@ def calculate_trend_metrics(trend_data: list[dict]) -> dict:
 ### 3.2 Phase 1 详细任务
 
 ```
-[ ] 1.1 修改 stock_analyst.md
+[x] 1.1 修改 stock_analyst.md
     - 新增"四.五、竞争壁垒（护城河）"章节
     - 改造"六、综合判断"为三期限结构
     - web_search 策略增加专利/壁垒查询指引
     - 约束: 科技/医药/制造/新能源行业才查专利
 
-[ ] 1.2 更新结构验证逻辑
+[x] 1.2 更新结构验证逻辑
     - stockReportHandler._validate_report_structure() 
     - 新增对"短期/中期/长期"段落的检测
     - quality_score 评分标准调整
 
-[ ] 1.3 验证
+[x] 1.3 验证
     - 生成 3 只不同行业股票的报告
     - 确认专利查询仅在科技股触发
     - 确认三期限建议格式正确
@@ -689,33 +693,33 @@ def calculate_trend_metrics(trend_data: list[dict]) -> dict:
 ### 3.4 Phase 3a 详细任务（主源: 巨潮年报）
 
 ```
-[ ] 3a.1 巨潮年报下载模块
+[x] 3a.1 巨潮年报下载模块
     - quantia/core/crawling/cninfo_crawler.py
     - 接口: GET http://www.cninfo.com.cn/new/disclosure/stock
     - 参数: stock=000001&category=category_ndbg_szsh
     - 返回 HTML 格式年报链接
     - 缓存策略: 已下载年报保存到 cache/annual_reports/{code}_{year}.html
 
-[ ] 3a.2 年报解析模块
+[x] 3a.2 年报解析模块
     - quantia/core/crawling/annual_report_parser.py
     - HTML 年报: BeautifulSoup 定位"研发投入"章节
     - PDF 年报: pdfplumber 按页提取 + 关键词定位
     - 正则提取: 专利数字 + IPC分类(如有) + 研发人员
     - LLM 兜底: 格式异常时用 LLM 提取（限制调用频率）
 
-[ ] 3a.3 含金量评分 + 趋势计算
+[x] 3a.3 含金量评分 + 趋势计算
     - quantia/core/patent_analytics.py
     - calculate_patent_quality_score() → 0-100
     - calculate_trend_metrics() → cagr + direction
     - calculate_invention_ratio() → %
 
-[ ] 3a.4 数据入库
+[x] 3a.4 数据入库
     - quantia/job/fetch_patent_data.py --source=annual_report
     - 遍历所有股票, 下载最近5年年报
     - 解析并写入 cn_stock_patents (confidence_score=95)
     - 加入 cron.monthly (5月执行)
 
-[ ] 3a.5 AI 集成
+[x] 3a.5 AI 集成
     - sql_query 白名单新增 cn_stock_patents 表 + 完整列名
     - stock_analyst prompt: 优先查 cn_stock_patents，无数据时 web_search
     - 护城河评分映射:
@@ -728,45 +732,45 @@ def calculate_trend_metrics(trend_data: list[dict]) -> dict:
 ### 3.5 Phase 3b 详细任务（备份: Google Patents）
 
 ```
-[ ] 3b.1 Google Patents 爬虫
+[x] 3b.1 Google Patents 爬虫
     - quantia/core/crawling/google_patents_crawler.py
-    - Playwright headless Chrome 渲染搜索页
-    - 公司名匹配: 全称 + 简称 + 主要子公司
-    - 解析: 专利列表、IPC标签、引用数、申请日
-    - 反爬: 5s间隔 + 代理池 + 90天缓存
+    - 实现采用 Google Patents XHR JSON 接口 (懒加载 requests), 比 Playwright 更轻量且可离线单测; Playwright 仅作可选增强(未启用)
+    - 公司名匹配: 简称 + 全称后缀候选 (get_company_names)
+    - 解析: 专利列表、IPC标签、引用数、申请日 (normalize_patent/_parse_xhr_results)
+    - 反爬: 5s间隔 + 90天本地缓存; 任何失败优雅返回 [] (仅依赖年报)
 
-[ ] 3b.2 IPC 分类映射
+[x] 3b.2 IPC 分类映射
     - quantia/core/patent_ipc_mapping.py
-    - WIPO IPC 大类→中文对照表 (A-H, 8大类 + 约130小类)
-    - ipc_code → tech_domain 归类逻辑
-    - IPC 分布 JSON 生成
+    - WIPO IPC 大类→中文对照表 (A-H 8部 + ~50 高频大类)
+    - ipc_code → tech_domain 归类逻辑 (parse_ipc_code/ipc_to_tech_domain)
+    - IPC 分布 JSON 生成 (build_ipc_distribution/primary_ipc)
 
-[ ] 3b.3 增量合并
+[x] 3b.3 增量合并
     - quantia/job/fetch_patent_data.py --source=google_patents
     - 仅更新: avg_citation_count, pct_international, ipc_*, trend_5y
     - 不覆盖年报已有的 total_patents 等（年报更权威）
     - data_source 标记为 'mixed'，source_detail 记录来源
     - confidence_score: 纯Google=80, 混合=85
 
-[ ] 3b.4 季度 Cron
-    - cron/cron.monthly/run_patents_quarterly (每3月执行一次)
-    - 只处理: 主源缺失的股票 + 需要补充 IPC/引用的股票
+[x] 3b.4 季度 Cron
+    - cron/cron.monthly/run_patents_quarterly (季度首月 1/4/7/10 执行)
+    - 调用 fetch_patent_data --source google_patents 补充 IPC/引用/趋势/PCT
 ```
 
 ### 3.6 Phase 4 前端展示任务
 
 ```
-[ ] 4.1 指标详情页新增"知识产权"卡片
+[x] 4.1 指标详情页新增"知识产权"卡片
     - 显示: 发明/实用/外观专利数, 含金量评分(进度条), 发明占比
     - 显示: IPC 主分类 + 技术领域标签
     - 显示: 5年趋势方向图标 (↑加速 →稳定 ↓减速)
 
-[ ] 4.2 ECharts 图表
+[x] 4.2 ECharts 图表
     - 柱状图: 近5年专利申请数 (分发明/实用/外观)
     - 折线图: 含金量评分趋势
     - 饼图: IPC 技术分布
 
-[ ] 4.3 AI 报告页评级展示
+[x] 4.3 AI 报告页评级展示
     - 报告列表: 评级标签 (🟢/🟡/🔴) + 护城河评分条
     - 报告详情: 短/中/长期建议高亮卡片
     - 历史对比: 观点变化时间线

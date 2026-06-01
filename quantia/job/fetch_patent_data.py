@@ -35,6 +35,7 @@ import quantia.lib.database as mdb
 from quantia.core import patent_analytics as pa
 from quantia.core.crawling import cninfo_annual_report as cninfo
 from quantia.core.crawling import annual_report_parser as parser
+from quantia.core.crawling import google_patents_crawler as gpatents
 
 _logger = logging.getLogger(__name__)
 
@@ -111,6 +112,97 @@ def process_stock_year(code: str, year: int, force: bool = False) -> Dict[str, A
     return {'code': code, 'year': year, 'status': 'ok'}
 
 
+# ---------------------------------------------------------------------------
+# Phase 3b: Google Patents 备份源 (增量补充 IPC/引用/趋势/PCT)
+# ---------------------------------------------------------------------------
+
+def get_company_names(code: str) -> List[str]:
+    """获取用于 Google Patents 搜索的公司名候选 (简称 + 全称)。
+
+    上市公司简称 != 专利申请人全称, 这里尽量给出多个候选以提高命中率。
+    数据源: cn_stock_spot.name (简称)。全称需额外数据源, 暂用简称兜底。
+    """
+    names: List[str] = []
+    try:
+        rows = mdb.executeSqlFetch(
+            "SELECT `name` FROM `cn_stock_spot` WHERE `code`=%s "
+            "ORDER BY `date` DESC LIMIT 1",
+            (code,),
+        ) or []
+    except Exception as exc:
+        _logger.warning('[fetch_patent] 获取公司名失败 %s: %s', code, exc)
+        rows = []
+    short = rows[0][0] if rows and rows[0] and rows[0][0] else None
+    if short:
+        names.append(short)
+        # 常见全称后缀, 提高申请人匹配率
+        for suffix in ('股份有限公司', '有限公司'):
+            names.append(f'{short}{suffix}')
+    return names
+
+
+def _fetch_annual_row(code: str, year: int) -> Optional[Dict[str, Any]]:
+    """读取已入库的年报数据行 (用于双源合并基线)。"""
+    fields = (
+        'total_patents', 'invention_patents', 'utility_patents', 'design_patents',
+        'new_patents_year', 'rd_staff_count', 'rd_staff_ratio', 'key_tech_desc',
+        'ipc_primary', 'ipc_primary_desc', 'tech_domain',
+    )
+    cols = ', '.join(f'`{f}`' for f in fields)
+    try:
+        rows = mdb.executeSqlFetch(
+            f"SELECT {cols} FROM `{pa.PATENTS_TABLE}` WHERE code=%s AND year=%s LIMIT 1",
+            (code, year),
+        ) or []
+    except Exception:
+        return None
+    if not rows:
+        return None
+    return dict(zip(fields, rows[0]))
+
+
+def process_google_patents(code: str, year: int) -> Dict[str, Any]:
+    """Google Patents 增量采集: 搜索→聚合→与年报合并→入库。
+
+    只补充 Google 擅长字段 (IPC/引用/趋势/PCT), 不覆盖年报权威数量字段。
+    """
+    names = get_company_names(code)
+    if not names:
+        return {'code': code, 'year': year, 'status': 'skipped', 'reason': '无公司名'}
+
+    google = gpatents.fetch_and_aggregate(names, years=5)
+    if not google:
+        return {'code': code, 'year': year, 'status': 'skipped', 'reason': 'Google 无结果'}
+
+    annual = _fetch_annual_row(code, year)
+    merged = pa.merge_patent_data(annual, google)
+    merged['code'] = code
+    merged['year'] = year
+
+    # 衍生指标 (基于合并后数据重算)
+    if merged.get('invention_ratio') is None:
+        merged['invention_ratio'] = pa.calculate_invention_ratio(merged)
+    trend = pa.calculate_trend_metrics(google.get('trend_5y') or [])
+    merged['trend_5y'] = trend['trend_5y']
+    merged['trend_5y_cagr'] = trend['trend_5y_cagr']
+    merged['trend_direction'] = trend['trend_direction']
+    merged['patent_quality_score'] = pa.calculate_patent_quality_score(merged)
+    today = datetime.date.today()
+    quarter_label = f'{today.year}-Q{(today.month - 1) // 3 + 1}'
+    merged['source_detail'] = {
+        'google_patents': quarter_label,
+        **({'annual_report': str(year)} if annual else {}),
+    }
+
+    ok, reason = pa.validate_patent_data(merged)
+    if not ok:
+        _logger.warning('[fetch_patent] Google 校验失败 %s/%s: %s', code, year, reason)
+        return {'code': code, 'year': year, 'status': 'failed', 'reason': reason}
+
+    upsert_patents(merged)
+    return {'code': code, 'year': year, 'status': 'ok'}
+
+
 _UPSERT_FIELDS = (
     'code', 'year',
     'invention_patents', 'utility_patents', 'design_patents', 'total_patents',
@@ -161,8 +253,13 @@ def run(
     years: Optional[List[int]] = None,
     limit: Optional[int] = None,
     force: bool = False,
+    source: str = 'annual_report',
 ) -> Dict[str, int]:
-    """主流程。"""
+    """主流程。
+
+    Args:
+        source: 'annual_report' (主源/默认) 或 'google_patents' (季度增量备份)。
+    """
     pa.ensure_patents_table()
 
     if not codes:
@@ -180,12 +277,15 @@ def run(
     stats = {'ok': 0, 'skipped': 0, 'failed': 0}
     for code in codes:
         for year in years:
-            r = process_stock_year(code, year, force=force)
+            if source == 'google_patents':
+                r = process_google_patents(code, year)
+            else:
+                r = process_stock_year(code, year, force=force)
             stats[r['status']] = stats.get(r['status'], 0) + 1
             if r['status'] != 'ok':
                 _logger.info('[fetch_patent] %s/%s %s: %s',
                              code, year, r['status'], r.get('reason', ''))
-    _logger.info('[fetch_patent] 完成 %s', stats)
+    _logger.info('[fetch_patent] 完成 (source=%s) %s', source, stats)
     return stats
 
 
@@ -197,11 +297,15 @@ def main():
     ap.add_argument('--years', help='年份, 逗号分隔, e.g. 2024,2023')
     ap.add_argument('--limit', type=int, default=None, help='测试: 只跑前 N 只股票')
     ap.add_argument('--force', action='store_true', help='强制重新下载年报')
+    ap.add_argument('--source', choices=['annual_report', 'google_patents'],
+                    default='annual_report',
+                    help='数据源: annual_report(主源,默认) 或 google_patents(季度增量)')
     args = ap.parse_args()
 
     codes = [c.strip() for c in args.code.split(',')] if args.code else None
     years = [int(y) for y in args.years.split(',')] if args.years else None
-    stats = run(codes=codes, years=years, limit=args.limit, force=args.force)
+    stats = run(codes=codes, years=years, limit=args.limit,
+                force=args.force, source=args.source)
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     except AttributeError:
