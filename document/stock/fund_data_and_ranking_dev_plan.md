@@ -70,7 +70,7 @@
 | # | 功能 | 优先级 |
 |---|------|--------|
 | F7 | **排名方案 B**：`analysis` 管道多因子截面打分（B1 动量+费率+规模无需历史；B2 叠加夏普/Calmar 依赖 F8），按类型分桶，写 `cn_fund_rank_score` | P2 |
-| F8 | **净值历史回填 + 增量缓存**：`fund_open_fund_info_em` 逐基金拓史，写 `cn_fund_nav_history`（供回撤/夏普/净值曲线） | P1 |
+| F8 | **净值历史回填 + 增量缓存**：`fund_open_fund_info_em` 逐基金拓史（**仅 B1-Top-N ∪ 按需点开，非全市场；跳过货币型**），写 `cn_fund_nav_history`（供回撤/夏普/净值曲线） | P1 |
 | F10 | **规模+画像缓存**：`fund_individual_basic_info_xq` 拓最新规模/公司/经理/评级/策略，周/月频写 `cn_fund_profile`（规模因子 + 投资价值分析数据源） | P1 |
 | F11 | **同类基金评比 + 投资价值分析**：同 `fund_type` 桶内多维雷达对比 + 价值标签（Handler） | P1 |
 | F9 | **前端基金中心页**（直观、人性化）：排行榜 + 同类评比雷达 + 净值曲线 + 价值分析卡片 + AI 工具 | P1 |
@@ -271,7 +271,7 @@ def fetch_funds(date):
 - `_FRESHNESS_THRESHOLDS` 新增一行 `'cn_fund_rank': _cfg.get_int('QUANTIA_FRESH_FUND_RANK', 8000)`（与现有 config-key 模式一致；净值型+货币型合计约 1.5万+）；
 - `record_task_start/end` 追踪；失败仅记录不阻塞整体作业（仿现有 enrich_spot Phase 的 try/except）。
 
-> **结算时间坑（已核实）**：`_check_and_skip` 内部调 `trd.is_post_settlement(date_str)`，默认 18:00 结算。**基金净值多在当晚 20:00–23:00 才披露、QDII T+2**，沿用 18:00 会在未披露时误跳过。需为基金单独结算阈值（或抽参），不复用股票结算门。
+> **结算时间坑（已核实）**：`_check_and_skip(table_name, date_str, task_label)` 内部硬编码调 `trd.is_post_settlement(date_str)`（默认结算小时 `QUANTIA_SETTLEMENT_HOUR`=18，见 [trade_time.py](../../quantia/lib/trade_time.py#L206)）。**基金净值多在当晚 20:00–23:00 才披露、QDII T+2**，沿用 18:00 会在未披露时误跳过、入空。`is_post_settlement` **已支持 `settlement_hour` 入参**，但 `_check_and_skip` 当前未透传 → 落地修法：给 `_check_and_skip` 增加可选 `settlement_hour` 形参并透传，基金 Phase 调用时传 `settlement_hour=_cfg.get_int('QUANTIA_FUND_SETTLEMENT_HOUR', 23)`，不复用股票 18:00 结算门。
 
 ### 3.5 净值历史回填 + 画像缓存（F8 / F10，独立 job）
 
@@ -280,15 +280,19 @@ def fetch_funds(date):
 **F8 `fetch_fund_nav_history_job.py`（净值历史）**
 ```python
 import akshare as ak
-for code in fund_codes:                      # 来自 cn_fund_rank distinct code
+for code in target_codes:                     # 见下「抓取范围」，非全市场 distinct code
+    if is_money_fund(code):                   # 货币型无单位/累计净值走势序列，跳过
+        continue
     unit = ak.fund_open_fund_info_em(symbol=code, indicator='单位净值走势')
     acc  = ak.fund_open_fund_info_em(symbol=code, indicator='累计净值走势')  # 长期口径
     hist = merge_on_navdate(unit, acc)       # unit_nav + acc_nav 合并到一行/日
     # 首次：全史回填；之后：只取 nav_date > 库内 MAX(nav_date) 的增量
     save_fund_nav_history(code, hist)         # insert_db_from_df 主键(code,nav_date)
-    time.sleep(random.uniform(0.5, 1.5))      # 限速，~1.5万只分批跑
+    time.sleep(random.uniform(0.5, 1.5))      # 限速，分批跑
 ```
-- 首期全量回填一次（可分多日/分批，断点续抓：跳过库中已有最新日的 code）。
+- **⚠️ 审计修正（抓取范围，重要）**：原「`fund_codes` = `cn_fund_rank` 全部 distinct code」需对 ~1.3万只净值型基金各拓净值历史，逐只 2 次 akshare 调用 + 限速 sleep。**真正瓶颈是回填壁钟时间 + akshare 限流/改版风险**，不是存储：全量约 20–30M 行×~50B ≈ 1.5–3GB，磁盘 30GB+ 轻松容纳；RAM 1.6GB 也不是问题，因为是**逐基金**处理（单只 ~6000 行极小）、`insert_db_from_df` 已 chunksize=500，不会一次物化全市场 DataFrame。但 13000 只×2 调用×~1s sleep ≈ **数小时**，且 akshare 可能限流。故采双轨：首期先用 **F7-B1**（动量+费率+规模，**不需净值历史**）对每桶全量打分排序 → 取每桶 **Top-N（如前 200）∪ 用户点开过详情的基金**（懒抓+缓存）**优先拓净值历史**，立即点亮 Top-N 的夏普/回撤展示；**全市场回填作为可续抓的多夜后台 cron**（`cron.workdayly`、跳过已有最新日 code）逐步补齐，不阻塞主链。与 F12 持仓股抓取范围口径一致（§3.5 F12）。
+- **⚠️ 货币型跳过**：`fund_open_fund_info_em(indicator='单位净值走势'/'累计净值走势')` 仅适用净值型；货币型基金没有单位/累计净值走势（其 indicator 是「每万份收益」「7日年化收益率」），调用会报错或空 → F8 循环须 `is_money_fund(code)` 跳过（货币型本就不算夏普/回撤，§4.2/§4.B2）。
+- 首期对 `target_codes` 全史回填一次（可分多日/分批，断点续抓：跳过库中已有最新日的 code）。
 - 之后每日只补增量行（1 行/基金），或直接复用 `cn_fund_rank.unit_nav` 累积，省一次抓取。
 - 放 `cron.workdayly` 或独立慢任务，**不阻塞**主 fetch。
 
@@ -476,7 +480,7 @@ $$\text{score} = \sum_i w_i \cdot r_i,\quad \sum_i w_i = 1$$
 - 输出结构：① 业绩与风险概览（引用本地数字）② 持仓与行业解读 ③ 近期资讯影响（引用 web_search，带链接）④ 风险点 ⑤ 适合的投资者画像描述（非荐买）。
 
 **工程约束**：
-- 复用既有多 provider LLM 接入（`quantia/lib/ai/providers/`）与**已注册的 `web_search` 工具**（[`WebSearchTool`](../../quantia/lib/ai/tools/web_search.py)，name=`web_search`，支持博查/Bing CN/自建代理，`top_n` 限流），不新造轮子。新增一个 `fund_analyst` 提示词（`quantia/lib/ai/prompt/fund_analyst.md`）+ 在 `prompt_loader` 注册（仿 `stock_analyst`），`allowed_tools=['sql_query','web_search']`。
+- 复用既有多 provider LLM 接入（`quantia/lib/ai/providers/`）与**已注册的 `web_search` 工具**（[`WebSearchTool`](../../quantia/lib/ai/tools/web_search.py)，`name='web_search'`，支持博查/Bing CN/自建代理，`top_n` 限流），不新造轮子。新增提示词文件 `quantia/lib/ai/prompt/fund_analyst.md`——`prompt_loader` **无显式注册表**，[`prompt_loader.load('fund_analyst')`](../../quantia/lib/ai/prompt_loader.py) 按文件名直接读取即可（与 `stock_analyst` 同机制）；由调用 Handler 经 `agent.run(..., allowed_tools=['web_search'])` 注入工具白名单。**`sql_query` 可选**：本特性数字全部由后端预先算好装配进 user 上下文（反幻觉），LLM 不需要也不应自由查库，故默认 `allowed_tools=['web_search']`；仅当确需让模型补查时再加 `'sql_query'`（受 validate-first 列校验门控）。
 - 结果写 `cn_fund_ai_analysis`（§2，`(code,data_date)` 缓存）。
 - 调用失败/超时 → 降级展示 F13 的规则化综合分析（已确定性可得），并提示「AI 暂不可用」。
 - 严守管道分离：web_search 属 AI 工具运行时（非 fetch 数据落库管道），仅服务于即时分析，不写入基金数据表（缓存表 `cn_fund_ai_analysis` 是分析结果非原始金融数据）。
@@ -501,6 +505,7 @@ $$\text{score} = \sum_i w_i \cdot r_i,\quad \sum_i w_i = 1$$
 | 11 | 规模因子需额外拓（rank 表无此列） | F10 由 `fund_individual_basic_info_xq` 周/月频拓「最新规模」入 `cn_fund_profile`；evaluate 时 LEFT JOIN，缺失填中性 |
 | 12 | 费率字段含 `'---'`/空；规模含“亿/万”单位/`<NA>` | 解析容错→None，不报错；评分时桶内填中性 |
 | 13 | F8/F10 逐基金拓史耗时（~1.5万只） | 独立慢 job + 限速 + 断点续抓（跳过已有最新日 code），不进主 fetch 链 |
+| 13b | **F8 全市场回填壁钟时间长（~13000只×2调用×限速≈数小时）+ akshare 可能限流** | 首期 F8 仅拓 B1-Top-N ∪ 按需点开（同 F12）快速点亮夏普/回撤；全市场回填作为可续抓多夜后台 cron 逐步补齐。**存储非瓶颈**：~20–30M 行≈1.5–3GB，30GB+ 磁盘容纳；RAM 1.6GB 不受影响（逐基金处理 + chunksize=500）。货币型无净值走势序列须 `is_money_fund` 跳过（§3.5 F8） |
 | 14 | 投资价值标签被误读为投资建议 | 纯规则分位标签，禁“买/卖”措辞；每卡片带风险提示；AI 只读已算数值防幻觉 |
 | 15 | 前端排行榜性能（万级行） | 后端分页+桶过滤，不一次返回全量；ECharts 雷达/曲线在 tab 切换后 `resize()`（见 AGENTS ECharts 条） |
 | 16 | 持仓股仅前十大、季度滞后、非全持仓 | 明确标注「季度前十大重仓（截至 X 季度）」；集中度只算前十大；货币/纯债无股票持仓时空态占位 |

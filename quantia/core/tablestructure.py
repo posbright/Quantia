@@ -77,6 +77,97 @@ TABLE_CN_INDEX_SPOT = {'name': 'cn_index_spot', 'cn': '每日指数数据',
                                    'total_market_cap': {'type': BIGINT, 'cn': '总市值', 'size': 120},
                                    'free_cap': {'type': BIGINT, 'cn': '流通市值', 'size': 120}}}
 
+# ===== 场外开放式基金（净值型 + 货币型）数据域 =====
+# 每日净值 + 多周期收益率排名（净值型与货币型合一，互斥列 nullable）。
+# date=入库快照日（运行日），nav_date=akshare 披露净值日（可能滞后/各基金不一）。主键 (date, code)。
+TABLE_CN_FUND_RANK = {'name': 'cn_fund_rank', 'cn': '每日基金净值与收益率排名',
+                      'columns': {'date': {'type': DATE, 'cn': '日期', 'size': 0},
+                                  'code': {'type': VARCHAR(6, _COLLATE), 'cn': '基金代码', 'size': 70},
+                                  'name': {'type': VARCHAR(60, _COLLATE), 'cn': '基金简称', 'size': 160},
+                                  'nav_date': {'type': DATE, 'cn': '净值日期', 'size': 90},
+                                  'fund_type': {'type': VARCHAR(20, _COLLATE), 'cn': '基金类型', 'size': 90},
+                                  'unit_nav': {'type': FLOAT, 'cn': '单位净值', 'size': 80},
+                                  'acc_nav': {'type': FLOAT, 'cn': '累计净值', 'size': 80},
+                                  'day_growth': {'type': FLOAT, 'cn': '日增长率', 'size': 80},
+                                  'million_unit_income': {'type': FLOAT, 'cn': '万份收益', 'size': 80},
+                                  'seven_day_annual': {'type': FLOAT, 'cn': '7日年化', 'size': 80},
+                                  'rate_1w': {'type': FLOAT, 'cn': '近1周', 'size': 70},
+                                  'rate_1m': {'type': FLOAT, 'cn': '近1月', 'size': 70},
+                                  'rate_3m': {'type': FLOAT, 'cn': '近3月', 'size': 70},
+                                  'rate_6m': {'type': FLOAT, 'cn': '近6月', 'size': 70},
+                                  'rate_1y': {'type': FLOAT, 'cn': '近1年', 'size': 70},
+                                  'rate_2y': {'type': FLOAT, 'cn': '近2年', 'size': 70},
+                                  'rate_3y': {'type': FLOAT, 'cn': '近3年', 'size': 70},
+                                  'rate_ytd': {'type': FLOAT, 'cn': '今年来', 'size': 70},
+                                  'rate_since': {'type': FLOAT, 'cn': '成立来', 'size': 70},
+                                  'fee': {'type': FLOAT, 'cn': '手续费', 'size': 70}}}
+
+# 单位/累计净值历史（F8，供回撤/夏普/净值曲线）。主键 (code, nav_date)。
+# 长期收益/夏普/回撤一律用 acc_nav（累计净值，已还原分红拆分），unit_nav 仅展示。
+TABLE_CN_FUND_NAV_HISTORY = {'name': 'cn_fund_nav_history', 'cn': '基金净值历史',
+                             'columns': {'code': {'type': VARCHAR(6, _COLLATE), 'cn': '基金代码', 'size': 70},
+                                         'nav_date': {'type': DATE, 'cn': '净值日期', 'size': 90},
+                                         'unit_nav': {'type': FLOAT, 'cn': '单位净值', 'size': 80},
+                                         'acc_nav': {'type': FLOAT, 'cn': '累计净值', 'size': 80},
+                                         'day_growth': {'type': FLOAT, 'cn': '日增长率', 'size': 80}}}
+
+# 规模 + 画像（F10，规模因子 & 投资价值分析）。周/月频更新。主键 code（覆盖）。
+TABLE_CN_FUND_PROFILE = {'name': 'cn_fund_profile', 'cn': '基金规模与画像',
+                         'columns': {'code': {'type': VARCHAR(6, _COLLATE), 'cn': '基金代码', 'size': 70},
+                                     'name': {'type': VARCHAR(60, _COLLATE), 'cn': '基金名称', 'size': 160},
+                                     'full_name': {'type': VARCHAR(120, _COLLATE), 'cn': '基金全称', 'size': 220},
+                                     'setup_date': {'type': DATE, 'cn': '成立时间', 'size': 100},
+                                     'scale_yi': {'type': FLOAT, 'cn': '最新规模(亿)', 'size': 100},
+                                     'company': {'type': VARCHAR(60, _COLLATE), 'cn': '基金公司', 'size': 160},
+                                     'manager': {'type': VARCHAR(120, _COLLATE), 'cn': '基金经理', 'size': 180},
+                                     'fund_type_detail': {'type': VARCHAR(40, _COLLATE), 'cn': '基金类型', 'size': 120},
+                                     'rating': {'type': VARCHAR(20, _COLLATE), 'cn': '基金评级', 'size': 90},
+                                     'strategy': {'type': TEXT, 'cn': '投资策略', 'size': 0},
+                                     'objective': {'type': TEXT, 'cn': '投资目标', 'size': 0},
+                                     'benchmark': {'type': VARCHAR(200, _COLLATE), 'cn': '业绩比较基准', 'size': 0},
+                                     'update_date': {'type': DATE, 'cn': '更新日', 'size': 100}}}
+
+# 季度前十大重仓股（F12，持仓展示 + 行业筛选/对比）。主键 (code, quarter, stock_code)。
+# industry 由 LEFT JOIN 股票行业表回填（仅 A 股有效），缺失填 "未分类"。
+TABLE_CN_FUND_HOLDING = {'name': 'cn_fund_holding', 'cn': '基金季度前十大重仓股',
+                         'columns': {'code': {'type': VARCHAR(6, _COLLATE), 'cn': '基金代码', 'size': 70},
+                                     'quarter': {'type': VARCHAR(20, _COLLATE), 'cn': '季度', 'size': 120},
+                                     'stock_code': {'type': VARCHAR(8, _COLLATE), 'cn': '股票代码', 'size': 80},
+                                     'stock_name': {'type': VARCHAR(40, _COLLATE), 'cn': '股票名称', 'size': 120},
+                                     'hold_ratio': {'type': FLOAT, 'cn': '占净值比例', 'size': 90},
+                                     'hold_shares': {'type': FLOAT, 'cn': '持股数(万股)', 'size': 100},
+                                     'hold_value': {'type': FLOAT, 'cn': '持仓市值(万元)', 'size': 110},
+                                     'industry': {'type': VARCHAR(40, _COLLATE), 'cn': '所属行业', 'size': 120},
+                                     'update_date': {'type': DATE, 'cn': '更新日', 'size': 100}}}
+
+# 多因子综合得分（F7，analysis 管道计算）。主键 (date, code)。
+TABLE_CN_FUND_RANK_SCORE = {'name': 'cn_fund_rank_score', 'cn': '基金多因子综合得分',
+                            'columns': {'date': {'type': DATE, 'cn': '计算日', 'size': 0},
+                                        'code': {'type': VARCHAR(6, _COLLATE), 'cn': '基金代码', 'size': 70},
+                                        'fund_type': {'type': VARCHAR(20, _COLLATE), 'cn': '基金类型', 'size': 90},
+                                        'score': {'type': FLOAT, 'cn': '综合得分', 'size': 90},
+                                        'momentum_score': {'type': FLOAT, 'cn': '动量分', 'size': 80},
+                                        'fee_score': {'type': FLOAT, 'cn': '费率分', 'size': 80},
+                                        'scale_score': {'type': FLOAT, 'cn': '规模分', 'size': 80},
+                                        'sharpe_score': {'type': FLOAT, 'cn': '夏普分', 'size': 80},
+                                        'calmar_score': {'type': FLOAT, 'cn': 'Calmar分', 'size': 80},
+                                        'sharpe': {'type': FLOAT, 'cn': '夏普比率', 'size': 80},
+                                        'max_drawdown': {'type': FLOAT, 'cn': '最大回撤', 'size': 90},
+                                        'rate_3y': {'type': FLOAT, 'cn': '近3年', 'size': 70},
+                                        'rate_5y': {'type': FLOAT, 'cn': '近5年', 'size': 70},
+                                        'excess_1y': {'type': FLOAT, 'cn': '近1年超额', 'size': 90},
+                                        'main_industry': {'type': VARCHAR(40, _COLLATE), 'cn': '主行业', 'size': 120},
+                                        'rank_in_type': {'type': Integer, 'cn': '桶内名次', 'size': 80}}}
+
+# AI 按需分析结果缓存（F14，web/AI 管道写入，非原始金融数据）。主键 (code, data_date)。
+TABLE_CN_FUND_AI_ANALYSIS = {'name': 'cn_fund_ai_analysis', 'cn': '基金AI分析缓存',
+                             'columns': {'code': {'type': VARCHAR(6, _COLLATE), 'cn': '基金代码', 'size': 70},
+                                         'data_date': {'type': DATE, 'cn': '数据快照日', 'size': 100},
+                                         'content': {'type': TEXT, 'cn': '分析内容', 'size': 0},
+                                         'sources': {'type': TEXT, 'cn': '引用来源', 'size': 0},
+                                         'model': {'type': VARCHAR(40, _COLLATE), 'cn': '模型', 'size': 120},
+                                         'created_at': {'type': DATETIME, 'cn': '生成时间', 'size': 0}}}
+
 TABLE_CN_STOCK_SPOT = {'name': 'cn_stock_spot', 'cn': '每日股票数据',
                        'columns': {'date': {'type': DATE, 'cn': '日期', 'size': 0},
                                    'code': {'type': VARCHAR(6, _COLLATE), 'cn': '代码', 'size': 60},

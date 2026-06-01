@@ -13,6 +13,7 @@ import quantia.core.tablestructure as tbs
 import quantia.lib.trade_time as trd
 import quantia.core.crawling.trade_date_hist as tdh
 import quantia.core.crawling.fund_etf_em as fee
+import quantia.core.crawling.fund_em as fem  # 场外开放式基金（净值型+货币型）
 import quantia.core.crawling.stock_index_em as sie  # 指数行情
 import quantia.core.crawling.stock_selection as sst
 import quantia.core.crawling.stock_lhb_em as sle
@@ -367,6 +368,42 @@ def fetch_etfs(date):
         return data
     except Exception as e:
         logging.error(f"stockfetch.fetch_etfs处理异常", exc_info=True)
+    return None
+
+
+def fetch_funds(date):
+    """场外开放式基金（净值型 + 货币型）每日净值与多周期收益率。
+
+    数据源 akshare 单源（fund_em.fund_rank_all），属 fetch 管道。
+    - date 写运行日（入库快照日），nav_date 保留 akshare 披露净值日。
+    - 防跨类型桶重复：按 code 去重（keep='first'）。
+    - 对齐 TABLE_CN_FUND_RANK 列序，缺失列补 NaN。
+    """
+    try:
+        data = fem.fund_rank_all()
+        if data is None or len(data.index) == 0:
+            logging.error("所有基金数据源均获取失败")
+            return None
+
+        if date is None:
+            date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        else:
+            date_str = date.strftime("%Y-%m-%d")
+        data.insert(0, 'date', date_str)
+
+        # 防跨类型桶重复（同一 code 理论只属一个桶，防御性去重）
+        data = data.drop_duplicates(subset=['code'], keep='first')
+
+        # 对齐表列序，缺失的互斥列（净值型无万份收益、货币型无单位净值）补 NaN
+        cols = list(tbs.TABLE_CN_FUND_RANK['columns'])
+        for col in cols:
+            if col not in data.columns:
+                data[col] = np.nan
+        data = data[cols]
+        logging.info(f"成功获取 {len(data)} 条基金数据")
+        return data
+    except Exception as e:
+        logging.error(f"stockfetch.fetch_funds处理异常", exc_info=True)
     return None
 
 
