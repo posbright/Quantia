@@ -68,7 +68,7 @@ def _query_latest_spot(code: str) -> Dict[str, Any]:
                turnoverrate, volume, amplitude, high_price, low_price, open_price,
                total_market_cap, free_cap,
                pe9, pbnewmrq, basic_eps, roe_weight, sale_gpr,
-               debt_asset_ratio, toi_yoy_ratio, netprofit_yoy_ratio, date
+               debt_asset_ratio, toi_yoy_ratio, netprofit_yoy_ratio, date, dtsyl
         FROM cn_stock_spot
         WHERE code = %s
         ORDER BY date DESC LIMIT 1
@@ -80,8 +80,41 @@ def _query_latest_spot(code: str) -> Dict[str, Any]:
             'turnover', 'volume', 'amplitude', 'high', 'low', 'open',
             'total_market_cap', 'current_market_cap',
             'pe', 'pb', 'eps', 'roe', 'gross_profit_margin',
-            'debt_asset_ratio', 'revenue_growth', 'profit_growth', 'date']
-    return _row_to_dict(rows[0], keys)
+            'debt_asset_ratio', 'revenue_growth', 'profit_growth', 'date', 'pe_dyn']
+    result = _row_to_dict(rows[0], keys)
+
+    # 估值字段降级修正：行情源降级到腾讯/新浪时 cn_stock_spot 的
+    # pe9/roe_weight 恒为 0，优先取 cn_stock_selection（东方财富选股器，可靠），
+    # PE 再按 TTM(pe9) → 动态(dtsyl) 兜底。
+    def _pick_pe(*cands):
+        for c in cands:
+            if c is not None and c != 0:
+                return c
+        return None
+
+    result['pe'] = _pick_pe(result.get('pe'), result.get('pe_dyn'))
+    if not result.get('roe'):
+        result['roe'] = None
+    try:
+        sel = executeSqlFetch(
+            """SELECT pe9, dtsyl, roe_weight, pbnewmrq
+               FROM cn_stock_selection WHERE code = %s
+               ORDER BY date DESC LIMIT 1""", (code,))
+        if sel:
+            s = sel[0]
+            sel_pe = _pick_pe(s[0], s[1])
+            if sel_pe is not None:
+                result['pe'] = round(float(sel_pe), 4)
+            if s[2] is not None and s[2] != 0:
+                result['roe'] = round(float(s[2]), 4)
+            if not result.get('pb') and s[3]:
+                result['pb'] = round(float(s[3]), 4)
+    except Exception:
+        pass
+
+    result.pop('pe_dyn', None)
+    return result
+
 
 
 def _query_indicators(code: str) -> Dict[str, Any]:

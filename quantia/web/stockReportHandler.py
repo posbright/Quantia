@@ -489,6 +489,18 @@ def _write_json(handler, data: Dict[str, Any], status: int = 200):
     handler.write(json.dumps(data, ensure_ascii=False, default=str))
 
 
+def _pick_pe(pe_ttm, pe_dyn):
+    """市盈率按 TTM(pe9) → 动态(dtsyl) 优先级取首个非0有效值，均无则 None。
+
+    背景：行情源降级到腾讯/新浪时 cn_stock_spot.pe9 恒为 0，需回退动态市盈率。
+    估值类数据优先取 cn_stock_selection（东方财富选股器，更可靠）。
+    """
+    for cand in (pe_ttm, pe_dyn):
+        if cand is not None and cand != 0:
+            return cand
+    return None
+
+
 def _get_previous_report_summary(code: str) -> Optional[str]:
     """获取上一次报告的摘要（用于增量对比提示），仅取前600字。"""
     try:
@@ -1288,7 +1300,7 @@ class StockDataFallbackHandler(webBase.BaseHandler, ABC):
         try:
             sql = """
                 SELECT name, new_price, change_rate, pe9, pbnewmrq, roe_weight,
-                       bvps, basic_eps, total_market_cap, turnoverrate
+                       bvps, basic_eps, total_market_cap, turnoverrate, dtsyl
                 FROM cn_stock_spot
                 WHERE code = %s
                 ORDER BY date DESC LIMIT 1
@@ -1296,9 +1308,30 @@ class StockDataFallbackHandler(webBase.BaseHandler, ABC):
             rows = mdb.executeSqlFetch(sql, (code,))
             if rows:
                 r = rows[0]
+                # 估值字段优先取 cn_stock_selection（东方财富选股器，可靠）；
+                # 行情源降级到腾讯/新浪时 spot 的 pe9/roe_weight 恒为 0。
+                pe_val = _pick_pe(r[3], r[10])   # spot pe9 → spot dtsyl 兜底
+                roe_val = r[5] if (r[5] is not None and r[5] != 0) else None
+                pb_val = r[4]
+                try:
+                    sel = mdb.executeSqlFetch(
+                        """SELECT pe9, dtsyl, roe_weight, pbnewmrq
+                           FROM cn_stock_selection WHERE code = %s
+                           ORDER BY date DESC LIMIT 1""", (code,))
+                    if sel:
+                        s = sel[0]
+                        sel_pe = _pick_pe(s[0], s[1])
+                        if sel_pe is not None:
+                            pe_val = sel_pe
+                        if s[2] is not None and s[2] != 0:
+                            roe_val = s[2]
+                        if (pb_val is None or pb_val == 0) and s[3]:
+                            pb_val = s[3]
+                except Exception as sel_exc:
+                    _logger.debug(f'[stockReport] fallback selection 查询异常: {sel_exc}')
                 result['spot'] = {
                     'name': r[0], 'close': r[1], 'change_pct': r[2],
-                    'pe': r[3], 'pb': r[4], 'roe': r[5],
+                    'pe': pe_val, 'pb': pb_val, 'roe': roe_val,
                     'bps': r[6], 'eps': r[7],
                     'market_cap': r[8], 'turnover': r[9],
                 }
@@ -1977,10 +2010,12 @@ class StockIndustryPercentileHandler(webBase.BaseHandler, ABC):
         """计算 PE/PB/ROE 在同行业中的百分位排名。"""
         import math
 
-        # 1. 获取该股票的行业分类
+        # 1. 获取该股票的行业分类与估值
+        # 数据源用 cn_stock_selection（东方财富选股器）：行情源降级时
+        # cn_stock_spot 的 industry 常为空、pe9/roe_weight 恒为 0，分位数会失真。
         sql_industry = """
-            SELECT industry, pe9, pbnewmrq, roe_weight, name
-            FROM cn_stock_spot
+            SELECT industry, pe9, dtsyl, pbnewmrq, roe_weight, name
+            FROM cn_stock_selection
             WHERE code = %s
             ORDER BY date DESC LIMIT 1
         """
@@ -1989,24 +2024,25 @@ class StockIndustryPercentileHandler(webBase.BaseHandler, ABC):
             return {'code': code, 'industry': None, 'metrics': {}}
 
         industry = rows[0][0]
-        my_pe = rows[0][1]
-        my_pb = rows[0][2]
-        my_roe = rows[0][3]
-        name = rows[0][4] or ''
+        my_pe = _pick_pe(rows[0][1], rows[0][2])   # pe9 → dtsyl
+        my_pb = rows[0][3]
+        my_roe = rows[0][4]
+        name = rows[0][5] or ''
 
         if not industry:
             return {'code': code, 'name': name, 'industry': None, 'metrics': {}}
 
         # 2. 获取同行业所有股票的 PE/PB/ROE（最新交易日）
         sql_peers = """
-            SELECT pe9, pbnewmrq, roe_weight
-            FROM cn_stock_spot
+            SELECT pe9, dtsyl, pbnewmrq, roe_weight
+            FROM cn_stock_selection
             WHERE industry = %s
-              AND date = (SELECT MAX(date) FROM cn_stock_spot WHERE code = %s)
+              AND date = (SELECT MAX(date) FROM cn_stock_selection WHERE code = %s)
         """
         peers = mdb.executeSqlFetch(sql_peers, (industry, code))
         if not peers:
             return {'code': code, 'name': name, 'industry': industry, 'metrics': {}}
+
 
         def _percentile(my_val, all_vals):
             """计算百分位排名（0~100），越低表示越便宜/越低。"""
@@ -2030,9 +2066,10 @@ class StockIndustryPercentileHandler(webBase.BaseHandler, ABC):
                 return round(valid[n // 2], 2)
             return round((valid[n // 2 - 1] + valid[n // 2]) / 2, 2)
 
-        pe_vals = [r[0] for r in peers if r[0] is not None and r[0] > 0]
-        pb_vals = [r[1] for r in peers if r[1] is not None and r[1] > 0]
-        roe_vals = [r[2] for r in peers if r[2] is not None]
+        pe_vals = [_pick_pe(r[0], r[1]) for r in peers]
+        pe_vals = [v for v in pe_vals if v is not None and v > 0]
+        pb_vals = [r[2] for r in peers if r[2] is not None and r[2] > 0]
+        roe_vals = [r[3] for r in peers if r[3] is not None and r[3] != 0]
 
         metrics = {}
         if my_pe is not None and my_pe > 0:
