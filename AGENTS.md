@@ -31,6 +31,16 @@ Web service:
 
 Env: copy `.env` template; required keys are `QUANTIA_DB_HOST/QUANTIA_DB_USER/QUANTIA_DB_PASSWORD/QUANTIA_DB_DATABASE`. AI provider keys (`QUANTIA_AI_PROVIDER_*`) are only needed for AI features. `QUANTIA_LOCAL_MODE=1` enables higher concurrency.
 
+## 开发工作流期望（验证优先，必须遵循）
+
+修 bug / 审查改动 / 看日志类请求默认走"验证优先"工作流（详见 skill `diagnose-verify-fix`）：
+
+1. **先证实问题真实存在 + 定位根因**，再动手——禁止按用户描述表面补丁。无法复现就如实说明、不要瞎改。
+2. **多方案择优**：≥2 个方案时列优缺点对比，主动评估"是否有更优解"，选最优最合理的（用户高频要求）。
+3. **回归自检**：每次改完显式回答"是否引入新 bug / 不符合预期行为"，跑相关 `pytest` + 黑盒接口验证后才声明完成。
+4. **文档/Phase 一致性**：按 `document/*.md` 当前 phase 推进，改动与需求文档核对。
+5. 生产根因诊断常基于阿里云 `115.29.213.22`（库 `instockdb`）的 `quantia/log/*.log`；分析时仍守管道分离（规则 1）。
+
 ## Architecture rules (do not violate)
 
 1. **Fetch / Analysis / Web separation** — only the Fetch pipeline ([quantia/job/fetch_*](quantia/job), `quantia/core/stockfetch.py`, `quantia/core/crawling/`) may call external APIs. Analysis and Web pipelines must read from MySQL + `cache/hist/` only. Never add `requests`/`akshare` calls inside `quantia/web/*Handler.py` or analysis jobs.
@@ -168,6 +178,7 @@ Streaming analysis ([quantia/job/streaming_analysis_job.py]) processes 4900+ sto
 - Don't compute Sharpe / win-rate on overlapping rolling windows — use non-overlapping `nav[::d]`, return null when `len(samples) < 3`.
 - Don't fabricate OOS train/test metrics with fixed multipliers — split the real NAV.
 - Don't forget to ask about commit & push when a user-facing change is finished (see Commit workflow).
+- Don't surface-patch a reported bug — first prove it's real and find the root cause, then evaluate alternatives and pick the optimal fix, then regression-check (see skill `diagnose-verify-fix`).
 - Don't delete directories or batch-delete files without listing them and getting user confirmation first (see Destructive file ops).
 - Hard-rule expressions (composite): AST sandbox blocks `__import__`, dunders, lambda, file ops, exec/eval, attribute access on dicts. Don't try to "improve" the sandbox by relaxing these.
 - Fusion v2 fund/flow items must pass `_parse_item_expr` whitelist — don't accept raw SQL fragments. Shapley sum invariant must hold (`∑φ_k = v(N)`); subset weights must be renormalized to 100 in `_fuse_subset_signals`. Use `2026-03~05` for black-box smoke.
