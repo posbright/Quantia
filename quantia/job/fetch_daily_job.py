@@ -71,6 +71,7 @@ _FRESHNESS_THRESHOLDS = {
     'cn_etf_spot': _cfg.get_int('QUANTIA_FRESH_ETF_SPOT', 200),
     'cn_stock_selection': _cfg.get_int('QUANTIA_FRESH_SELECTION', 100),
     'cn_stock_fund_flow': _cfg.get_int('QUANTIA_FRESH_FUND_FLOW', 2000),
+    'cn_fund_rank': _cfg.get_int('QUANTIA_FRESH_FUND_RANK', 8000),
     'cn_stock_lhb': 1,  # 龙虎榜数据量不固定，有数据即可
     'cn_stock_bonus': 1,
     'cn_stock_blocktrade': 1,
@@ -163,13 +164,17 @@ def _run_job_subprocess(script_name, label, timeout=_JOB_TIMEOUT):
         return False
 
 
-def _check_and_skip(table_name, date_str, task_label):
+def _check_and_skip(table_name, date_str, task_label, settlement_hour=None):
     """检查 API 数据新鲜度，决定是否跳过该任务。
 
     跳过条件（同时满足）：
     1. 未设置 QUANTIA_FORCE_FETCH=1
     2. 当前时间已过结算时间（默认 18:00），API 数据不再变化
     3. 表中当日数据行数 >= 阈值
+
+    Args:
+        settlement_hour: 可选，覆盖默认结算小时。基金净值多在 20:00-23:00 才披露、
+            QDII T+2，需传入更晚的结算小时（如 23），避免未披露时误判已结算而入空。
 
     Returns:
         bool: True 表示数据已完整且已结算，应跳过该任务。
@@ -178,7 +183,7 @@ def _check_and_skip(table_name, date_str, task_label):
         return False
 
     # API 数据仅在结算时间后（默认 18:00）才可信赖跳过
-    if not trd.is_post_settlement(date_str):
+    if not trd.is_post_settlement(date_str, settlement_hour=settlement_hour):
         logging.info(f"[{task_label}] 尚未过结算时间，需更新 API 数据")
         return False
 
@@ -257,6 +262,21 @@ def main():
     except Exception as e:
         logging.error("数据获取 enrich_spot 异常", exc_info=True)
         record_task_end(_JOB_NAME, 'enrich_spot', run_date_nph, t2b, success=False, message=str(e))
+
+    # Phase 2.6: 场外基金排名入库（净值型+货币型）
+    # 基金净值多在 20:00-23:00 才披露、QDII T+2，结算门用 QUANTIA_FUND_SETTLEMENT_HOUR(默认23)。
+    # 非关键增强：失败不影响整体作业完成判定，仅记录。
+    _fund_settle_hour = _cfg.get_int('QUANTIA_FUND_SETTLEMENT_HOUR', 23)
+    if _check_and_skip('cn_fund_rank', date_str, '基金排名', settlement_hour=_fund_settle_hour):
+        record_task_skipped(_JOB_NAME, 'fund_rank', run_date_nph, '数据已完整')
+    else:
+        t2c = record_task_start(_JOB_NAME, 'fund_rank', run_date_nph)
+        try:
+            hdj.save_nph_fund_data(run_date_nph, before=False)
+            record_task_end(_JOB_NAME, 'fund_rank', run_date_nph, t2c, success=True)
+        except Exception as e:
+            logging.error("数据获取 fund_rank 异常", exc_info=True)
+            record_task_end(_JOB_NAME, 'fund_rank', run_date_nph, t2c, success=False, message=str(e))
 
     # Phase 3: 扩展数据（资金流向、龙虎榜等）
     # 以独立子进程运行，防止 OOM 波及当前进程

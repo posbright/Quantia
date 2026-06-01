@@ -245,6 +245,37 @@ class TestBasicDataDailyJob(unittest.TestCase):
     @patch(f'{_mdb}.insert_db_from_df')
     @patch(f'{_mdb}.executeSql')
     @patch(f'{_mdb}.checkTableIsExist', return_value=True)
+    @patch(f'{_stf}.fetch_funds')
+    def test_save_nph_fund_data(self, mock_fetch, mock_exists, mock_exec, mock_insert):
+        """save_nph_fund_data calls fetch_funds + DELETE + insert."""
+        m = self._mod()
+        mock_fetch.return_value = pd.DataFrame({'code': ['000001'], 'date': [TEST_DATE_STR]})
+        m.save_nph_fund_data(TEST_DATE, before=False)
+        mock_fetch.assert_called_once_with(TEST_DATE)
+        mock_exec.assert_called_once()
+        mock_insert.assert_called_once()
+
+    def test_save_nph_fund_data_before_returns(self):
+        """before=True → return immediately, no fetch/insert."""
+        m = self._mod()
+        with patch(f'{_stf}.fetch_funds') as mock_fetch, \
+             patch(f'{_mdb}.insert_db_from_df') as mock_insert:
+            m.save_nph_fund_data(TEST_DATE, before=True)
+            mock_fetch.assert_not_called()
+            mock_insert.assert_not_called()
+
+    @patch(f'{_mdb}.insert_db_from_df')
+    @patch(f'{_mdb}.checkTableIsExist', return_value=True)
+    @patch(f'{_stf}.fetch_funds', return_value=None)
+    def test_save_nph_fund_data_no_data(self, mock_fetch, mock_exists, mock_insert):
+        """fetch returns None → no DB write."""
+        m = self._mod()
+        m.save_nph_fund_data(TEST_DATE, before=False)
+        mock_insert.assert_not_called()
+
+    @patch(f'{_mdb}.insert_db_from_df')
+    @patch(f'{_mdb}.executeSql')
+    @patch(f'{_mdb}.checkTableIsExist', return_value=True)
     @patch(f'{_stf}.fetch_index_spots')
     def test_save_nph_index_spot_data(self, mock_fetch, mock_exists, mock_exec, mock_insert):
         """save_nph_index_spot_data calls fetch_index_spots + insert."""
@@ -505,13 +536,24 @@ class TestFetchDailyJob(unittest.TestCase):
              patch.object(m, 'record_task_start', return_value=time.time()), \
              patch.object(m, 'record_task_end'), \
              patch.object(m, 'record_task_skipped'), \
+             patch.object(m, '_enrich_stock_spot_from_selection'), \
              patch.object(m.bj, 'main'), \
              patch.object(m.hdj, 'main') as mock_hdj, \
+             patch.object(m.hdj, 'save_nph_fund_data') as mock_fund, \
              patch.object(m.sddj, 'main') as mock_sddj:
             m.main()
             mock_hdj.assert_called()
             mock_sddj.assert_called()
+            mock_fund.assert_called_once()
             self.assertGreaterEqual(mock_sub.call_count, 2)
+
+    def test_check_and_skip_passes_fund_settlement_hour(self):
+        """基金 Phase 传入的 settlement_hour 须透传给 is_post_settlement。"""
+        m = self._mod()
+        with patch.object(m._cfg, 'get_bool', return_value=False), \
+             patch(f'{_trd}.is_post_settlement', return_value=False) as mock_settle:
+            m._check_and_skip('cn_fund_rank', TEST_DATE_STR, '基金排名', settlement_hour=23)
+            mock_settle.assert_called_once_with(TEST_DATE_STR, settlement_hour=23)
 
 
 # ============================================================================
