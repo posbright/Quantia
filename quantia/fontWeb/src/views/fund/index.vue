@@ -40,7 +40,7 @@
             :key="p.value"
             :label="p.label"
             :value="p.value"
-            :disabled="isMoneyType && p.value === 'rate_1w'"
+            :disabled="periodDisabled(p.value)"
           />
         </el-select>
         <span class="toolbar-label">显示数量</span>
@@ -128,7 +128,7 @@
       </el-table-column>
 
       <el-table-column label="手续费" width="84" align="right" prop="fee">
-        <template #default="{ row }">{{ fmtPct(row.fee) }}</template>
+        <template #default="{ row }">{{ fmtFee(row.fee) }}</template>
       </el-table-column>
     </el-table>
 
@@ -203,6 +203,18 @@ function fmtNum(v: number | null | undefined, digits = 2): string {
   return v.toFixed(digits)
 }
 
+// 手续费是成本、非收益：不加 +/- 号、不着色
+function fmtFee(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  return `${v.toFixed(2)}%`
+}
+
+// 货币型仅有 seven_day_annual，净值型仅有 rate_1w：按类型禁用不适用周期
+function periodDisabled(value: string): boolean {
+  if (isMoneyType.value) return value === 'rate_1w'
+  return value === 'seven_day_annual'
+}
+
 // A 股惯例：红涨绿跌
 function returnStyle(v: number | null | undefined): Record<string, string> {
   if (v === null || v === undefined || Number.isNaN(v) || v === 0) return {}
@@ -212,8 +224,8 @@ function returnStyle(v: number | null | undefined): Record<string, string> {
 function selectType(t: string) {
   if (t === fundType.value) return
   fundType.value = t
-  // 货币型无 rate_1w，若当前排序在该列则回退到默认周期
-  if (isMoneyType.value && period.value === 'rate_1w') {
+  // 切换类型后，若当前排序周期不适用于新类型（货币无 rate_1w / 净值无 7日年化）则回退默认
+  if (periodDisabled(period.value)) {
     period.value = meta.value?.default_period || 'rate_1y'
   }
   loadRank()
