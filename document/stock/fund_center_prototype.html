@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>基金中心 · 原型 (Fund Center Prototype)</title>
+<!-- 仅原型：ECharts 走 CDN；正式实现用 quantia/fontWeb 的本地依赖（Vue3+ElementPlus+ECharts），见 fund_data_and_ranking_dev_plan.md §9 -->
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --card: #ffffff;
+    --line: #ebeef5;
+    --text: #303133;
+    --sub: #909399;
+    --primary: #409eff;
+    --up: #f56c6c;     /* 红涨 */
+    --down: #1ec28b;   /* 绿跌 */
+    --gold: #f7ba2a;
+    --silver: #b6c2cf;
+    --bronze: #d68f4a;
+    --shadow: 0 2px 12px rgba(0,0,0,.06);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px;
+  }
+  header {
+    background: linear-gradient(135deg, #4b6cb7, #182848);
+    color: #fff; padding: 20px 28px;
+  }
+  header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  header p { margin: 6px 0 0; opacity: .8; font-size: 13px; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 18px; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+  .tab {
+    padding: 9px 18px; border-radius: 8px 8px 0 0; cursor: pointer;
+    background: transparent; color: var(--sub); font-weight: 500; user-select: none;
+  }
+  .tab.active { background: var(--card); color: var(--primary); box-shadow: var(--shadow); }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* Toolbar */
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+    background: var(--card); padding: 14px 16px; border-radius: 0 8px 8px 8px;
+    box-shadow: var(--shadow); margin-bottom: 14px;
+  }
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pill {
+    padding: 6px 14px; border-radius: 999px; border: 1px solid var(--line);
+    cursor: pointer; background: #fff; color: var(--sub); font-size: 13px; transition: .15s;
+  }
+  .pill.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .toolbar .right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  select, input[type=search] {
+    padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; outline: none;
+  }
+  select:focus, input:focus { border-color: var(--primary); }
+
+  /* Card / table */
+  .card { background: var(--card); border-radius: 8px; box-shadow: var(--shadow); padding: 4px 0; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 12px 14px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--sub); font-weight: 500; font-size: 12px; background: #fafafa; position: sticky; top: 0; }
+  th:first-child, td:first-child { text-align: center; }
+  th:nth-child(2), td:nth-child(2) { text-align: left; }
+  tbody tr { cursor: pointer; transition: background .12s; }
+  tbody tr:hover { background: #f5faff; }
+
+  .medal { font-size: 18px; }
+  .rank-num { color: var(--sub); font-weight: 600; }
+  .fund-name { font-weight: 600; color: var(--text); }
+  .fund-code { color: var(--sub); font-size: 12px; margin-left: 6px; }
+  .up { color: var(--up); }
+  .down { color: var(--down); }
+  .muted { color: var(--sub); }
+
+  /* Score bar */
+  .score-cell { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+  .score-bar { width: 70px; height: 8px; border-radius: 4px; background: #eee; overflow: hidden; }
+  .score-bar > i { display: block; height: 100%; border-radius: 4px; }
+  .score-val { font-weight: 700; width: 30px; text-align: right; }
+
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+  .tag-rating { background: #fdf6ec; color: #e6a23c; }
+
+  /* Drawer */
+  .drawer-mask {
+    position: fixed; inset: 0; background: rgba(0,0,0,.4); display: none; z-index: 50;
+  }
+  .drawer-mask.open { display: block; }
+  .drawer {
+    position: fixed; top: 0; right: -560px; width: 560px; max-width: 92vw; height: 100%;
+    background: var(--bg); box-shadow: -4px 0 24px rgba(0,0,0,.18); transition: right .28s;
+    z-index: 51; overflow-y: auto;
+  }
+  .drawer.open { right: 0; }
+  .drawer-head {
+    padding: 18px 20px; background: var(--card); display: flex; align-items: center; justify-content: space-between;
+    position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--line);
+  }
+  .drawer-head .close { cursor: pointer; font-size: 22px; color: var(--sub); line-height: 1; }
+  .drawer-body { padding: 16px 20px 40px; }
+  .sec { background: var(--card); border-radius: 8px; box-shadow: var(--shadow); padding: 16px; margin-bottom: 14px; }
+  .sec h3 { margin: 0 0 12px; font-size: 15px; }
+  .chart { width: 100%; height: 260px; }
+  .range-btns { display: flex; gap: 6px; margin-bottom: 8px; }
+  .range-btns span { padding: 4px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; color: var(--sub); border: 1px solid var(--line); }
+  .range-btns span.active { color: var(--primary); border-color: var(--primary); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { padding: 5px 12px; border-radius: 999px; font-size: 12px; background: #eef5ff; color: #3a78d6; }
+  .chip.good { background: #eafaf3; color: #1ec28b; }
+  .chip.warn { background: #fdf3ef; color: #f56c6c; }
+
+  .kv { display: grid; grid-template-columns: 90px 1fr; row-gap: 8px; font-size: 13px; }
+  .kv .k { color: var(--sub); }
+  .summary { line-height: 1.7; color: #555; margin: 10px 0 0; font-size: 13px; }
+
+  .risk {
+    margin-top: 10px; padding: 10px 12px; background: #fff8e6; border: 1px solid #faecc0;
+    border-radius: 6px; color: #b88230; font-size: 12px; line-height: 1.6;
+  }
+
+  /* KPI cards */
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .kpi { background: #f8fafc; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; text-align: center; }
+  .kpi .lbl { color: var(--sub); font-size: 12px; }
+  .kpi .val { font-size: 17px; font-weight: 700; margin-top: 4px; }
+
+  /* Composite analysis */
+  .ca-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+  .ca-row:last-child { border-bottom: none; }
+  .ca-k { width: 84px; color: var(--sub); flex: none; }
+  .ca-v { color: #444; line-height: 1.6; }
+  .risk-badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .rb-low { background: #eafaf3; color: #1ec28b; }
+  .rb-mid { background: #eef5ff; color: #3a78d6; }
+  .rb-midhigh { background: #fff3e6; color: #e6a23c; }
+  .rb-high { background: #fdeeee; color: #f56c6c; }
+
+  /* AI */
+  .ai-btn {
+    padding: 9px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;
+    color: #fff; background: linear-gradient(135deg,#6a5af9,#8f7bff);
+  }
+  .ai-btn:disabled { opacity: .6; cursor: default; }
+  .ai-loading { display: flex; align-items: center; gap: 8px; color: var(--sub); font-size: 13px; }
+  .ai-spinner { width: 16px; height: 16px; border: 2px solid #ddd; border-top-color: #6a5af9; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .ai-result h4 { margin: 12px 0 4px; font-size: 13px; color: #6a5af9; }
+  .ai-result p { margin: 0 0 6px; font-size: 13px; line-height: 1.7; color: #444; }
+  .ai-result a { color: #3a78d6; font-size: 12px; }
+  .ai-src { font-size: 12px; color: var(--sub); margin-top: 8px; }
+
+  /* Compare tab */
+  .cmp-pickers { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 820px) {
+    .grid2 { grid-template-columns: 1fr; }
+    .drawer { width: 100%; }
+    th:nth-child(n+6), td:nth-child(n+6) { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>基金中心 · 原型</h1>
+  <p>场外开放式基金排行 · 同类评比 · 投资价值分析 ｜ 静态原型（mock 数据），对应开发计划 §9</p>
+</header>
+
+<div class="wrap">
+  <div class="tabs">
+    <div class="tab active" data-tab="rank">① 排行榜</div>
+    <div class="tab" data-tab="compare">③ 同类评比</div>
+  </div>
+
+  <!-- ===== 排行榜 ===== -->
+  <div class="panel active" id="panel-rank">
+    <div class="toolbar">
+      <div class="pills" id="typePills">
+        <span class="pill" data-t="股票型">股票型</span>
+        <span class="pill active" data-t="混合型">混合型</span>
+        <span class="pill" data-t="债券型">债券型</span>
+        <span class="pill" data-t="指数型">指数型</span>
+        <span class="pill" data-t="QDII">QDII</span>
+        <span class="pill" data-t="FOF">FOF</span>
+        <span class="pill" data-t="货币型">货币型</span>
+      </div>
+      <div class="right">
+        <input type="search" id="searchBox" placeholder="搜索基金名称/代码" />
+        <select id="industrySel">
+          <option value="">全部行业</option>
+        </select>
+        <select id="sortSel">
+          <option value="score">综合评分</option>
+          <option value="r1m">近1月</option>
+          <option value="r3m">近3月</option>
+          <option value="r6m">近6月</option>
+          <option value="r1y">近1年</option>
+          <option value="r3y">近3年</option>
+          <option value="r5y">近5年</option>
+          <option value="rytd">今年来</option>
+          <option value="sharpe">夏普比率</option>
+          <option value="maxdd">最大回撤</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card" style="overflow:auto; max-height: 70vh;">
+      <table id="rankTable">
+        <thead id="rankHead"></thead>
+        <tbody id="rankBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ===== 同类评比 ===== -->
+  <div class="panel" id="panel-compare">
+    <div class="toolbar">
+      <div class="cmp-pickers">
+        <select id="cmpType">
+          <option>混合型</option><option>股票型</option><option>债券型</option><option>指数型</option>
+        </select>
+        <select class="cmpFund"></select>
+        <select class="cmpFund"></select>
+        <select class="cmpFund"></select>
+      </div>
+      <div class="right muted">仅同类型可对比，跨类型不可比</div>
+    </div>
+    <div class="grid2">
+      <div class="sec"><h3>五维雷达对比</h3><div id="cmpRadar" class="chart"></div></div>
+      <div class="sec"><h3>净值增长对比（近1年）</h3><div id="cmpLine" class="chart"></div></div>
+    </div>
+    <div class="sec">
+      <h3>关键指标并排</h3>
+      <div style="overflow:auto"><table id="cmpTable"></table></div>
+      <div class="risk">历史业绩不代表未来表现，本页为数据分析，非投资建议。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 详情抽屉 ===== -->
+<div class="drawer-mask" id="mask"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div>
+      <div class="fund-name" id="dName" style="font-size:16px"></div>
+      <div class="muted" id="dMeta" style="font-size:12px;margin-top:4px"></div>
+    </div>
+    <div class="close" id="closeDrawer">×</div>
+  </div>
+  <div class="drawer-body">
+    <div class="sec">
+      <h3>关键指标</h3>
+      <div class="kpis" id="dKpis"></div>
+    </div>
+    <div class="sec">
+      <h3>净值走势 <span class="muted" style="font-size:12px">（对照基线=同类平均/基准）</span></h3>
+      <div class="range-btns" id="navRanges">
+        <span data-r="1m">近1月</span><span data-r="3m">近3月</span>
+        <span class="active" data-r="1y">近1年</span><span data-r="all">成立来</span>
+      </div>
+      <div id="dNav" class="chart"></div>
+    </div>
+    <div class="grid2">
+      <div class="sec"><h3>同类评比（vs 同类平均）</h3><div id="dRadar" class="chart" style="height:240px"></div></div>
+      <div class="sec">
+        <h3>投资价值分析</h3>
+        <div class="chips" id="dChips"></div>
+        <p class="summary" id="dSummary"></p>
+        <div class="risk">历史业绩不代表未来表现，本页为数据分析，非投资建议。</div>
+      </div>
+    </div>
+    <div class="sec" id="dHoldSec">
+      <h3>持仓股 <span class="muted" style="font-size:12px">（季度前十大重仓 · 集中度 <span id="dConc"></span>）</span></h3>
+      <div class="grid2">
+        <div><div id="dHoldBar" class="chart" style="height:240px"></div></div>
+        <div><div id="dIndPie" class="chart" style="height:240px"></div></div>
+      </div>
+    </div>
+    <div class="sec">
+      <h3>综合分析与建议 <span class="muted" style="font-size:12px">（规则引擎 · 非投资建议）</span></h3>
+      <div id="dComposite"></div>
+      <div class="risk">基于历史业绩 + 持仓数据的规则化解读，不构成任何买卖建议。</div>
+    </div>
+    <div class="sec">
+      <h3>🤖 AI 综合分析 <span class="muted" style="font-size:12px">（按需运行 · 基于全量数据 + 联网检索）</span></h3>
+      <div id="dAiBox">
+        <button class="ai-btn" id="dAiRun">运行 AI 分析</button>
+        <p class="muted" style="font-size:12px;margin:10px 0 0">点击后才会调用 LLM + web_search 综合分析该基金（净值/收益/夏普/回撤/持仓/画像 + 相关资讯），不点击不消耗算力。</p>
+      </div>
+    </div>
+    <div class="sec">
+      <h3>基金画像</h3>
+      <div class="kv" id="dProfile"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ Mock 数据（仅原型；正式版来自 /quantia/api/fund/* 接口）============
+const RADAR_DIMS = ['收益', '抗跌', '稳定', '成本', '规模'];
+const NAMES = ['易方达蓝筹精选','兴全合润','华夏成长','富国天惠成长','景顺长城新兴成长',
+  '中欧时代先锋','睿远成长价值','广发稳健增长','汇添富价值精选','交银新成长',
+  '招商安泽','南方品质优选','嘉实远见','工银瑞信文体','银华富裕主题'];
+const RATINGS = ['★★★★★','★★★★☆','★★★★☆','★★★☆☆','暂无评级'];
+const INDUSTRIES = ['食品饮料','医药生物','电子','新能源','银行','计算机','机械','消费','半导体','军工'];
+const STOCKS = ['贵州茅台','宁德时代','五粮液','招商银行','比亚迪','隆基绿能','中芯国际','立讯精密',
+  '迈瑞医疗','东方财富','美的集团','药明康德','海康威视','京东方A','中国中免','韦尔股份'];
+
+function rnd(a, b, d=2){ return +(a + Math.random()*(b-a)).toFixed(d); }
+function genHoldings(){
+  // 前十大重仓股 + 行业 + 占比（降序，合计为集中度）
+  const picks = [...STOCKS].sort(()=>Math.random()-0.5).slice(0,10);
+  let rs = picks.map(()=> rnd(2, 9, 2)).sort((a,b)=>b-a);
+  return picks.map((s,i)=>({ name:s, code:String(600000+Math.floor(Math.random()*399999)),
+    ratio:rs[i], industry:INDUSTRIES[Math.floor(Math.random()*INDUSTRIES.length)] }));
+}
+function buildFunds(type){
+  const money = type==='货币型';
+  return NAMES.map((n,i)=>{
+    const r1y = money? rnd(1.2, 3.2) : rnd(-18, 65);
+    const holdings = money? [] : genHoldings();
+    // 主行业 = 持仓按占比加权后占比最高的行业（货币型无持仓）
+    let mainInd='—', concentration=0;
+    if(!money){
+      const indAgg = {}; holdings.forEach(h=> indAgg[h.industry]=(indAgg[h.industry]||0)+h.ratio);
+      mainInd = Object.entries(indAgg).sort((a,b)=>b[1]-a[1])[0][0];
+      concentration = +holdings.reduce((s,h)=>s+h.ratio,0).toFixed(1);
+    }
+    const maxdd = money? null : rnd(-42, -6);      // 最大回撤（货币型无意义）
+    const benchR1y = rnd(-12, 38);   // 对照基线（同类平均/基准）近1年
+    return {
+      code: String(100000 + Math.floor(Math.random()*899999)),
+      name: n + (money?'货币':''), type, isMoney: money,
+      score: rnd(35, 98, 0),
+      r1m: rnd(-8, 12), r3m: rnd(-15, 28), r6m: rnd(-20, 40),
+      r1y, r3y: money? rnd(4, 9) : rnd(-25, 120), r5y: money? rnd(8, 16) : rnd(-30, 220),
+      rytd: money? rnd(0.6, 1.8) : rnd(-16, 45),
+      seven: money? rnd(1.4, 3.2, 4) : null,    // 年化收益率7日(%)
+      wfsy: money? rnd(0.30, 0.95, 4) : null,   // 万份收益
+      sharpe: money? null : rnd(-0.6, 2.8, 2), maxdd, vol: money? null : rnd(8, 38, 1),
+      benchR1y, excess: money? null : +(r1y - benchR1y).toFixed(2),
+      scale: rnd(0.6, 320, 1), fee: rnd(0, 1.5),
+      rating: RATINGS[Math.floor(Math.random()*RATINGS.length)],
+      industry: mainInd, holdings, concentration,
+      radar: RADAR_DIMS.map(()=> rnd(30, 98, 0)),
+      company: ['易方达基金','兴证全球','华夏基金','富国基金'][i%4],
+      manager: ['张坤','谢治宇','刘睿聪','朱少醒'][i%4],
+      setup: '20'+(10+i%9)+'-0'+(1+i%8)+'-15',
+      typeDetail: money? '货币市场型' : type+'-偏股',
+      benchmark: money? '七天通知存款利率（税后）' : '沪深300指数收益率×80% + 中证综合债指数收益率×20%',
+      nav: genNav()
+    };
+  });
+}
+function genNav(){
+  const pts=[]; let v=1+Math.random(); const today=new Date('2026-06-01');
+  for(let i=365;i>=0;i--){ v*= (1+ (Math.random()-0.48)*0.02); const d=new Date(today); d.setDate(d.getDate()-i);
+    pts.push([d.toISOString().slice(0,10), +v.toFixed(4)]); }
+  return pts;
+}
+const STORE = {}; ['股票型','混合型','债券型','指数型','QDII','FOF','货币型'].forEach(t=> STORE[t]=buildFunds(t));
+
+let curType = '混合型', curSort = 'score', curRows = [], curIndustry = '';
+const fmtPct = v => (v>0?'+':'') + v.toFixed(2) + '%';
+const cls = v => v>0?'up':(v<0?'down':'muted');
+const scoreColor = s => s>=80?'#1ec28b':s>=60?'#409eff':s>=40?'#e6a23c':'#f56c6c';
+const sharpeCls = v => v>=1.5?'up':(v<0?'down':'muted');
+const ddCls = v => v>-15?'down':(v<-30?'up':'muted'); // 回撤小→绿，深→红
+const isMoneyType = t => t==='货币型';
+const isEquityAType = t => ['股票型','混合型','指数型'].includes(t); // 行业映射仅 A 股权益类
+
+// 动态列配置（按 fund_type 决定列集，与文档 §9.2 一致）
+const pctTd = v => `<td class="${cls(v)}">${fmtPct(v)}</td>`;
+const COL = {
+  rank:   {l:'名次',   c:(f,i)=>`<td>${i<3?`<span class="medal">${['🥇','🥈','🥉'][i]}</span>`:`<span class="rank-num">${i+1}</span>`}</td>`},
+  name:   {l:'基金',   c:f=>`<td><span class="fund-name">${f.name}</span><span class="fund-code">${f.code}</span></td>`},
+  score:  {l:'综合评分', c:f=>`<td><div class="score-cell"><div class="score-bar"><i style="width:${f.score}%;background:${scoreColor(f.score)}"></i></div><span class="score-val" style="color:${scoreColor(f.score)}">${f.score}</span></div></td>`},
+  seven:  {l:'7日年化', c:f=>`<td class="up">${f.seven}%</td>`},
+  wfsy:   {l:'万份收益', c:f=>`<td>${f.wfsy}</td>`},
+  r1y:    {l:'近1年',  c:f=>pctTd(f.r1y)},
+  r3y:    {l:'近3年',  c:f=>pctTd(f.r3y)},
+  r5y:    {l:'近5年',  c:f=>pctTd(f.r5y)},
+  sharpe: {l:'夏普',   c:f=>`<td class="${sharpeCls(f.sharpe)}">${f.sharpe}</td>`},
+  maxdd:  {l:'最大回撤', c:f=>`<td class="${ddCls(f.maxdd)}">${f.maxdd}%</td>`},
+  excess: {l:'基准超额', c:f=>pctTd(f.excess)},
+  scale:  {l:'规模(亿)', c:f=>`<td>${f.scale}</td>`},
+  fee:    {l:'费率',   c:f=>`<td class="muted">${f.fee}%</td>`},
+  ind:    {l:'主行业', c:f=>`<td><span class="tag" style="background:#eef5ff;color:#3a78d6">${f.industry}</span></td>`},
+  rating: {l:'评级',   c:f=>`<td><span class="tag tag-rating">${f.rating}</span></td>`},
+};
+function colKeys(t){
+  if(isMoneyType(t)) return ['rank','name','score','seven','wfsy','r1y','r3y','r5y','scale','fee','rating'];
+  const mid = ['rank','name','score','r1y','r3y','r5y','sharpe','maxdd','excess','scale','fee'];
+  return isEquityAType(t) ? [...mid,'ind','rating'] : [...mid,'rating']; // QDII/债券/FOF 无行业列
+}
+// 各类型可用排序键（货币型无夏普/回撤/超额）
+function sortOptions(t){
+  if(isMoneyType(t)) return [['score','综合评分'],['seven','7日年化'],['wfsy','万份收益'],['r1y','近1年'],['r3y','近3年'],['r5y','近5年'],['rytd','今年来']];
+  return [['score','综合评分'],['r1m','近1月'],['r3m','近3月'],['r6m','近6月'],['r1y','近1年'],['r3y','近3年'],['r5y','近5年'],['rytd','今年来'],['sharpe','夏普比率'],['maxdd','最大回撤']];
+}
+
+function updateToolbarForType(){
+  // 排序下拉按类型重建
+  const ss=document.getElementById('sortSel');
+  const opts=sortOptions(curType);
+  ss.innerHTML=opts.map(o=>`<option value="${o[0]}">${o[1]}</option>`).join('');
+  if(!opts.some(o=>o[0]===curSort)) curSort='score';
+  ss.value=curSort;
+  // 行业过滤仅 A 股权益类显示
+  const isel=document.getElementById('industrySel');
+  if(isEquityAType(curType)){ isel.style.display=''; fillIndustryFilter(); }
+  else { isel.style.display='none'; curIndustry=''; }
+}
+
+function fillIndustryFilter(){
+  const sel=document.getElementById('industrySel');
+  const inds=[...new Set(STORE[curType].map(f=>f.industry))].sort();
+  sel.innerHTML='<option value="">全部行业</option>'+inds.map(i=>`<option value="${i}">${i}</option>`).join('');
+  sel.value = inds.includes(curIndustry)? curIndustry : ''; curIndustry = sel.value;
+}
+
+function renderRank(){
+  const kw = document.getElementById('searchBox').value.trim();
+  curRows = STORE[curType].slice();
+  if(curIndustry) curRows = curRows.filter(f=> f.industry===curIndustry);
+  if(kw) curRows = curRows.filter(f=> f.name.includes(kw) || f.code.includes(kw));
+  curRows.sort((a,b)=> b[curSort]-a[curSort]);
+  const keys = colKeys(curType);
+  document.getElementById('rankHead').innerHTML = `<tr>${keys.map(k=>`<th>${COL[k].l}</th>`).join('')}</tr>`;
+  document.getElementById('rankBody').innerHTML = curRows.map((f,i)=>
+    `<tr data-code="${f.code}">${keys.map(k=>COL[k].c(f,i)).join('')}</tr>`).join('');
+  document.querySelectorAll('#rankBody tr').forEach(tr=> tr.onclick=()=> openDrawer(tr.dataset.code));
+}
+
+// ====== Tabs ======
+document.querySelectorAll('.tab').forEach(t=> t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
+  t.classList.add('active');
+  document.getElementById('panel-'+t.dataset.tab).classList.add('active');
+  if(t.dataset.tab==='compare') setTimeout(initCompare, 50); // 切 tab 后 resize/init，防 0 尺寸
+});
+
+// ====== Pills / sort / search ======
+document.querySelectorAll('#typePills .pill').forEach(p=> p.onclick=()=>{
+  document.querySelectorAll('#typePills .pill').forEach(x=>x.classList.remove('active'));
+  p.classList.add('active'); curType = p.dataset.t; curIndustry=''; updateToolbarForType(); renderRank();
+});
+document.getElementById('sortSel').onchange = e=>{ curSort=e.target.value; renderRank(); };
+document.getElementById('industrySel').onchange = e=>{ curIndustry=e.target.value; renderRank(); };
+document.getElementById('searchBox').oninput = renderRank;
+
+// ====== Drawer ======
+const mask=document.getElementById('mask'), drawer=document.getElementById('drawer');
+let dNavChart, dRadarChart, dCurFund, dRange='1y';
+function openDrawer(code){
+  const f = curRows.find(x=>x.code===code) || STORE[curType].find(x=>x.code===code);
+  dCurFund=f;
+  document.getElementById('dName').textContent = f.name;
+  document.getElementById('dMeta').textContent = `${f.code} · ${f.typeDetail} · ${f.company}`;
+  // 价值标签（规则生成，非投资建议）
+  const chips=[]; 
+  if(f.radar[0]>=85) chips.push(['同类收益前列','good']);
+  if(!f.isMoney && f.radar[1]>=80) chips.push([`回撤控制优于同类${f.radar[1]}%`,'good']);
+  if(f.fee<0.5) chips.push(['费率低于同类中位','']);
+  if(f.isMoney) chips.push(['流动性管理工具·低波动','good']);
+  if(f.scale>=2 && f.scale<=150) chips.push(['规模适中','']);
+  else if(f.scale<1) chips.push(['规模偏小需留意','warn']);
+  chips.push([`评级 ${f.rating}`,'']);
+  document.getElementById('dChips').innerHTML = chips.map(c=>`<span class="chip ${c[1]}">${c[0]}</span>`).join('');
+  document.getElementById('dSummary').textContent = f.isMoney
+    ? `${f.name} 7日年化 ${f.seven}%、万份收益 ${f.wfsy}，近一年 ${fmtPct(f.r1y)}，费率 ${f.fee}%，规模 ${f.scale} 亿元，属低波动现金管理工具。`
+    : `${f.name} 近一年收益 ${fmtPct(f.r1y)}，综合评分 ${f.score}（同类截面）。${f.radar[2]>=70?'风险调整后收益稳定':'波动相对偏大'}，费率 ${f.fee}%，最新规模 ${f.scale} 亿元。`;
+  document.getElementById('dProfile').innerHTML = `
+    <div class="k">基金公司</div><div>${f.company}</div>
+    <div class="k">基金经理</div><div>${f.manager}</div>
+    <div class="k">基金类型</div><div>${f.typeDetail}</div>
+    <div class="k">成立日期</div><div>${f.setup}</div>
+    <div class="k">最新规模</div><div>${f.scale} 亿元</div>
+    <div class="k">基金评级</div><div>${f.rating}</div>
+    <div class="k">比较基准</div><div>${f.benchmark}</div>`;
+  // KPI 指标条（货币型动态：无夏普/回撤/超额）
+  const kpi = (lbl,val,c)=>`<div class="kpi"><div class="lbl">${lbl}</div><div class="val ${c||''}">${val}</div></div>`;
+  document.getElementById('dKpis').innerHTML = f.isMoney
+    ? kpi('7日年化', f.seven+'%', 'up') + kpi('万份收益', f.wfsy, '') +
+      kpi('近1年', fmtPct(f.r1y), cls(f.r1y)) + kpi('近3年', fmtPct(f.r3y), cls(f.r3y)) +
+      kpi('近5年', fmtPct(f.r5y), cls(f.r5y)) + kpi('费率', f.fee+'%', 'muted') +
+      kpi('规模(亿)', f.scale, '') + kpi('综合评分', f.score, '')
+    : kpi('近1年', fmtPct(f.r1y), cls(f.r1y)) + kpi('近3年', fmtPct(f.r3y), cls(f.r3y)) +
+      kpi('近5年', fmtPct(f.r5y), cls(f.r5y)) + kpi('基准超额', fmtPct(f.excess), cls(f.excess)) +
+      kpi('夏普比率', f.sharpe, sharpeCls(f.sharpe)) + kpi('最大回撤', f.maxdd+'%', ddCls(f.maxdd)) +
+      kpi('年化波动', f.vol+'%', 'muted') + kpi('综合评分', f.score, '');
+  // 持仓股区（货币型无股票持仓 → 隐藏）
+  document.getElementById('dHoldSec').style.display = f.isMoney ? 'none' : '';
+  if(!f.isMoney) document.getElementById('dConc').textContent = f.concentration + '%';
+  renderComposite(f);
+  // AI 卡片复位
+  resetAi(f);
+  mask.classList.add('open'); drawer.classList.add('open');
+  setTimeout(()=>{ drawNav(); drawRadar(); if(!f.isMoney){ drawHoldings(f); drawIndPie(f); } }, 60); // 等抽屉展开后再 init，防容器 0 尺寸
+}
+
+// 综合分析与建议（规则引擎，非投资建议）
+function riskLevel(f){
+  if(f.isMoney) return ['低','rb-low'];
+  let s=0; if(f.vol>28)s+=2; else if(f.vol>18)s+=1; if(f.maxdd<-30)s+=2; else if(f.maxdd<-18)s+=1;
+  if(f.concentration>60)s+=1;
+  return s>=4?['高','rb-high']:s>=3?['中高','rb-midhigh']:s>=1?['中','rb-mid']:['低','rb-low'];
+}
+function renderComposite(f){
+  const [lv,cl]=riskLevel(f);
+  const row=(k,v)=>`<div class="ca-row"><div class="ca-k">${k}</div><div class="ca-v">${v}</div></div>`;
+  if(f.isMoney){
+    document.getElementById('dComposite').innerHTML =
+      row('历史业绩', `7日年化 ${f.seven}%、万份收益 ${f.wfsy}，近1年 ${fmtPct(f.r1y)}、近3年 ${fmtPct(f.r3y)}，收益平稳。`) +
+      row('产品定位', '货币市场基金，主投短久期债券与同业存单，无股票持仓，T+0/T+1 流动性。') +
+      row('风格', `${f.typeDetail} · 现金管理 / 低波动`) +
+      row('费率', `综合费率 ${f.fee}%（货币型通常无申赎费，仅计管理/托管费）`) +
+      row('规模/成立', `规模 ${f.scale} 亿（${f.scale<10?'偏小':'充裕'}）· 成立于 ${f.setup}`) +
+      row('风险等级', `<span class="risk-badge ${cl}">${lv}</span>`);
+    return;
+  }
+  const conc = f.concentration>60?`集中（前十大占 ${f.concentration}%，高弹性高风险）`:
+    f.concentration>40?`适中（前十大占 ${f.concentration}%）`:`分散（前十大占 ${f.concentration}%）`;
+  const indAgg={}; f.holdings.forEach(h=> indAgg[h.industry]=(indAgg[h.industry]||0)+h.ratio);
+  const indTop=Object.entries(indAgg).sort((a,b)=>b[1]-a[1]).slice(0,3);
+  const perf = `近3年 ${fmtPct(f.r3y)}、夏普 ${f.sharpe}、最大回撤 ${f.maxdd}%，${f.excess>=0?`跑赢对照基线 ${fmtPct(f.excess)}`:`落后对照基线 ${fmtPct(f.excess)}`}。`;
+  document.getElementById('dComposite').innerHTML =
+    row('历史业绩', perf) +
+    row('持仓集中度', conc) +
+    row('行业分布', `主配 ${indTop.map(x=>`${x[0]}(${x[1].toFixed(1)}%)`).join('、')}`) +
+    row('风格', `${f.typeDetail} · ${f.r3y>50?'成长进攻':'稳健均衡'}`) +
+    row('规模/成立', `规模 ${f.scale} 亿（${f.scale<1?'偏小需留意':'适中'}）· 成立于 ${f.setup}`) +
+    row('风险等级', `<span class="risk-badge ${cl}">${lv}</span>`);
+}
+
+// 持仓股条形图 + 行业分布饼图
+let dHoldChart, dIndChart;
+function drawHoldings(f){
+  dHoldChart = dHoldChart || echarts.init(document.getElementById('dHoldBar'));
+  const hs=[...f.holdings].sort((a,b)=>a.ratio-b.ratio);
+  dHoldChart.setOption({
+    title:{text:'前十大重仓股',left:'center',textStyle:{fontSize:13,color:'#909399'}},
+    tooltip:{trigger:'axis',formatter:p=>`${p[0].name}<br/>占净值 ${p[0].value}%`},
+    grid:{left:70,right:30,top:36,bottom:10},
+    xAxis:{type:'value',axisLabel:{formatter:'{value}%'}},
+    yAxis:{type:'category',data:hs.map(h=>h.name),axisLabel:{fontSize:11}},
+    series:[{type:'bar',data:hs.map(h=>h.ratio),itemStyle:{color:'#409eff',borderRadius:[0,4,4,0]},
+      label:{show:true,position:'right',formatter:'{c}%',fontSize:11}}]
+  });
+  dHoldChart.resize();
+}
+function drawIndPie(f){
+  dIndChart = dIndChart || echarts.init(document.getElementById('dIndPie'));
+  const agg={}; f.holdings.forEach(h=> agg[h.industry]=(agg[h.industry]||0)+h.ratio);
+  dIndChart.setOption({
+    title:{text:'重仓行业分布',left:'center',textStyle:{fontSize:13,color:'#909399'}},
+    tooltip:{trigger:'item',formatter:'{b}: {c}% ({d}%)'},
+    legend:{bottom:0,type:'scroll',textStyle:{fontSize:11}},
+    series:[{type:'pie',radius:['38%','62%'],center:['50%','48%'],
+      data:Object.entries(agg).map(([n,v])=>({name:n,value:+v.toFixed(1)})),
+      label:{fontSize:11}}]
+  });
+  dIndChart.resize();
+}
+
+// AI 综合分析（按需触发，mock 异步）
+function resetAi(f){
+  document.getElementById('dAiBox').innerHTML =
+    `<button class="ai-btn" id="dAiRun">运行 AI 分析</button>
+     <p class="muted" style="font-size:12px;margin:10px 0 0">点击后才会调用 LLM + web_search 综合分析该基金（净值/收益/夏普/回撤/持仓/画像 + 相关资讯），不点击不消耗算力。</p>`;
+  document.getElementById('dAiRun').onclick = ()=> runAi(f);
+}
+function runAi(f){
+  const box=document.getElementById('dAiBox');
+  box.innerHTML = `<div class="ai-loading"><div class="ai-spinner"></div>AI 正在综合本地数据并联网检索资讯…（原型 mock，约 1.5s）</div>`;
+  setTimeout(()=>{
+    if(f.isMoney){
+      box.innerHTML = `<div class="ai-result">
+        <h4>① 收益与风险概览</h4>
+        <p>${f.name}（${f.code}）7日年化 ${f.seven}%、万份收益 ${f.wfsy}，近1/3/5年 ${fmtPct(f.r1y)}/${fmtPct(f.r3y)}/${fmtPct(f.r5y)}。货币基金净值稳定，几乎无回撤，风险等级低。</p>
+        <h4>② 产品定位解读</h4>
+        <p>货币市场基金，主投短久期债券、同业存单与回购，无股票持仓；适合现金管理与流动性备用，基金经理 ${f.manager}（${f.company}）。</p>
+        <h4>③ 近期资讯影响（web_search）</h4>
+        <p>检索到资金面与短端利率走势，对万份收益或有小幅扰动（示例摘要）。<a href="javascript:void(0)">来源1</a> <a href="javascript:void(0)">来源2</a></p>
+        <h4>④ 风险点</h4>
+        <p>收益随市场利率波动、极端流动性事件下可能限制大额赎回；历史收益不代表未来。</p>
+        <h4>⑤ 适合的投资者画像</h4>
+        <p>追求低波动、随用随取、用于现金管理的稳健型投资者（非荐买）。</p>
+        <div class="ai-src">⚠️ AI 生成内容仅供参考，数字来自本地已落库数据，资讯来自联网检索，非投资建议。</div>
+      </div>`;
+      return;
+    }
+    const indAgg={}; f.holdings.forEach(h=> indAgg[h.industry]=(indAgg[h.industry]||0)+h.ratio);
+    const topInd=Object.entries(indAgg).sort((a,b)=>b[1]-a[1])[0][0];
+    box.innerHTML = `<div class="ai-result">
+      <h4>① 业绩与风险概览</h4>
+      <p>${f.name}（${f.code}）近1/3/5年收益 ${fmtPct(f.r1y)}/${fmtPct(f.r3y)}/${fmtPct(f.r5y)}，夏普 ${f.sharpe}，最大回撤 ${f.maxdd}%，${f.excess>=0?'跑赢':'落后'}对照基线 ${fmtPct(Math.abs(f.excess))}。风险调整后收益${f.sharpe>=1?'较优':'一般'}。</p>
+      <h4>② 持仓与行业解读</h4>
+      <p>前十大重仓集中度 ${f.concentration}%，主配${topInd}方向，组合${f.concentration>60?'集中、弹性较高':'相对分散、波动可控'}；基金经理 ${f.manager}（${f.company}）。</p>
+      <h4>③ 近期资讯影响（web_search）</h4>
+      <p>检索到行业政策与重仓股近况，对短期净值或有扰动（示例摘要）。<a href="javascript:void(0)">来源1</a> <a href="javascript:void(0)">来源2</a></p>
+      <h4>④ 风险点</h4>
+      <p>行业集中、市场波动、规模变动可能影响表现；历史业绩不代表未来。</p>
+      <h4>⑤ 适合的投资者画像</h4>
+      <p>能承受${riskLevel(f)[0]}风险、投资期限较长、认同${topInd}赛道的投资者（非荐买）。</p>
+      <div class="ai-src">⚠️ AI 生成内容仅供参考，数字来自本地已落库数据，资讯来自联网检索，非投资建议。</div>
+    </div>`;
+  }, 1500);
+}
+function closeDrawer(){ mask.classList.remove('open'); drawer.classList.remove('open'); }
+document.getElementById('closeDrawer').onclick=closeDrawer; mask.onclick=closeDrawer;
+document.querySelectorAll('#navRanges span').forEach(s=> s.onclick=()=>{
+  document.querySelectorAll('#navRanges span').forEach(x=>x.classList.remove('active'));
+  s.classList.add('active'); dRange=s.dataset.r; drawNav();
+});
+function sliceNav(nav, r){ const n=nav.length; const map={'1m':22,'3m':66,'1y':252,'all':n}; return nav.slice(Math.max(0, n-(map[r]||n))); }
+function drawNav(){
+  dNavChart = dNavChart || echarts.init(document.getElementById('dNav'));
+  const data = sliceNav(dCurFund.nav, dRange);
+  // 同类平均基线（mock：缩放一条对比线）
+  const base = data.map((p,i)=> [p[0], +(data[0][1]*(1+ i*0.0003)).toFixed(4)]);
+  dNavChart.setOption({
+    tooltip:{trigger:'axis'}, legend:{data:['本基金','对照基线'],right:0},
+    grid:{left:48,right:16,top:30,bottom:30},
+    xAxis:{type:'category', data:data.map(p=>p[0]), axisLabel:{showMaxLabel:true}},
+    yAxis:{type:'value', scale:true},
+    series:[
+      {name:'本基金', type:'line', smooth:true, showSymbol:false, data:data.map(p=>p[1]), lineStyle:{width:2,color:'#409eff'}, areaStyle:{opacity:.08,color:'#409eff'}},
+      {name:'对照基线', type:'line', smooth:true, showSymbol:false, data:base.map(p=>p[1]), lineStyle:{width:1.5,color:'#b6c2cf',type:'dashed'}}
+    ]
+  });
+  dNavChart.resize();
+}
+function drawRadar(){
+  dRadarChart = dRadarChart || echarts.init(document.getElementById('dRadar'));
+  const avg = RADAR_DIMS.map(()=>60);
+  dRadarChart.setOption({
+    tooltip:{}, legend:{data:['本基金','同类平均'],bottom:0},
+    radar:{indicator:RADAR_DIMS.map(d=>({name:d,max:100})), radius:'62%'},
+    series:[{type:'radar', data:[
+      {value:dCurFund.radar, name:'本基金', areaStyle:{opacity:.25,color:'#409eff'}, lineStyle:{color:'#409eff'}},
+      {value:avg, name:'同类平均', lineStyle:{color:'#b6c2cf'}, areaStyle:{opacity:.1}}
+    ]}]
+  });
+  dRadarChart.resize();
+}
+
+// ====== Compare tab ======
+let cmpRadar, cmpLine;
+function fillCmpFunds(){
+  const type=document.getElementById('cmpType').value;
+  const opts = STORE[type].map(f=>`<option value="${f.code}">${f.name}</option>`).join('');
+  document.querySelectorAll('.cmpFund').forEach((sel,i)=>{ sel.innerHTML=opts; sel.selectedIndex=i; });
+}
+function initCompare(){
+  if(!document.getElementById('cmpType').value) document.getElementById('cmpType').selectedIndex=0;
+  if(!document.querySelector('.cmpFund').options.length) fillCmpFunds();
+  drawCompare();
+}
+function selectedCmp(){
+  const type=document.getElementById('cmpType').value;
+  return [...document.querySelectorAll('.cmpFund')].map(s=> STORE[type].find(f=>f.code===s.value)).filter(Boolean);
+}
+function drawCompare(){
+  const funds=selectedCmp(); const colors=['#409eff','#f7ba2a','#1ec28b'];
+  cmpRadar = cmpRadar || echarts.init(document.getElementById('cmpRadar'));
+  cmpRadar.setOption({
+    tooltip:{}, legend:{data:funds.map(f=>f.name),bottom:0},
+    radar:{indicator:RADAR_DIMS.map(d=>({name:d,max:100})), radius:'60%'},
+    series:[{type:'radar', data:funds.map((f,i)=>({value:f.radar,name:f.name,lineStyle:{color:colors[i]},areaStyle:{opacity:.12,color:colors[i]}}))}]
+  });
+  cmpLine = cmpLine || echarts.init(document.getElementById('cmpLine'));
+  cmpLine.setOption({
+    tooltip:{trigger:'axis'}, legend:{data:funds.map(f=>f.name),right:0}, grid:{left:48,right:16,top:30,bottom:30},
+    xAxis:{type:'category', data:funds[0].nav.map(p=>p[0])},
+    yAxis:{type:'value', scale:true},
+    series:funds.map((f,i)=>({name:f.name,type:'line',smooth:true,showSymbol:false,
+      data:f.nav.map(p=>+(p[1]/f.nav[0][1]*100).toFixed(2)), lineStyle:{color:colors[i],width:2}}))
+  });
+  cmpRadar.resize(); cmpLine.resize();
+  // 并排指标表
+  const pctKeys=['r1y','r3y','r5y','excess','rytd'];
+  const rows=[['综合评分','score'],['近1年','r1y'],['近3年','r3y'],['近5年','r5y'],['基准超额','excess'],
+    ['夏普比率','sharpe'],['最大回撤(%)','maxdd'],['年化波动(%)','vol'],['规模(亿)','scale'],['费率(%)','fee'],['主行业','industry']];
+  document.getElementById('cmpTable').innerHTML =
+    `<thead><tr><th style="text-align:left">指标</th>${funds.map(f=>`<th>${f.name}</th>`).join('')}</tr></thead>`+
+    `<tbody>${rows.map(r=>`<tr><td style="text-align:left" class="muted">${r[0]}</td>${funds.map(f=>{
+      const v=f[r[1]]; const isPct=pctKeys.includes(r[1]); const c = isPct?cls(v):''; const t=isPct?fmtPct(v):v;
+      return `<td class="${c}">${t}</td>`;}).join('')}</tr>`).join('')}</tbody>`;
+}
+document.getElementById('cmpType').onchange = ()=>{ fillCmpFunds(); drawCompare(); };
+document.querySelectorAll('.cmpFund').forEach(s=> s.onchange=drawCompare);
+
+window.addEventListener('resize', ()=>{ [dNavChart,dRadarChart,dHoldChart,dIndChart,cmpRadar,cmpLine].forEach(c=>c&&c.resize()); });
+
+// init
+updateToolbarForType();
+renderRank();
+</script>
+</body>
+</html>
