@@ -409,6 +409,21 @@ const routes: RouteRecordRaw[] = [
       }
     ]
   },
+  // 场外基金中心（F9 排行榜）
+  {
+    path: '/fund',
+    component: Layout,
+    redirect: '/fund/rank',
+    meta: { title: '基金中心', icon: 'Coin' },
+    children: [
+      {
+        path: 'rank',
+        name: 'FundRank',
+        component: () => import('@/views/fund/index.vue'),
+        meta: { title: '基金排行榜' }
+      }
+    ]
+  },
   // Phase 10: 选股验证中心
   {
     path: '/verify',
