@@ -278,12 +278,23 @@ export interface PatentCompareItem {
   tech_domain: string | null
 }
 
+export interface PatentPercentiles {
+  p25: number
+  p50: number
+  p75: number
+  p90: number
+  count: number
+}
+
 export interface PatentCompareResp {
   code: string
   industry: string | null
   top: PatentCompareItem[]
   rank: number | null
   total_in_industry?: number
+  percentiles?: PatentPercentiles | null
+  self_total_patents?: number | null
+  self_percentile?: number | null
 }
 
 export function getStockPatents(code: string) {

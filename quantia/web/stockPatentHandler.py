@@ -18,7 +18,7 @@ from tornado import gen
 
 import quantia.lib.database as mdb
 import quantia.web.base as webBase
-from quantia.core.patent_analytics import PATENTS_TABLE
+from quantia.core.patent_analytics import PATENTS_TABLE, percentiles_from_values
 
 _logger = logging.getLogger(__name__)
 
@@ -147,7 +147,8 @@ class StockPatentsHistoryHandler(webBase.BaseHandler, ABC):
 class StockPatentsCompareHandler(webBase.BaseHandler, ABC):
     """GET /quantia/api/stock/patents/compare?code=XXX — 同行业 TOP 对标。
 
-    返回最新年度同行业按 total_patents 降序前 10 名 + 当前股票的排名。
+    返回最新年度同行业按 total_patents 降序前 10 名 + 当前股票的排名，
+    以及同行业 total_patents 的 P25/P50/P75/P90 分位数 (§9.7) 与当前股票分位位置。
     """
 
     @gen.coroutine
@@ -158,13 +159,15 @@ class StockPatentsCompareHandler(webBase.BaseHandler, ABC):
             return
 
         if not _table_exists():
-            _write_json(self, {'code': code, 'industry': None, 'top': [], 'rank': None})
+            _write_json(self, {'code': code, 'industry': None, 'top': [], 'rank': None,
+                               'percentiles': None, 'self_percentile': None})
             return
 
-        # 通过 cn_stock_spot.industry 获取行业
+        # 通过 cn_stock_selection.industry 获取行业（cn_stock_spot 最新快照 industry 常为空，
+        # cn_stock_selection 最新交易日 industry 覆盖率 100%）
         try:
             ind_rows = mdb.executeSqlFetch(
-                "SELECT industry FROM cn_stock_spot WHERE code=%s "
+                "SELECT industry FROM cn_stock_selection WHERE code=%s AND industry<>'' "
                 "ORDER BY date DESC LIMIT 1",
                 (code,),
             )
@@ -172,26 +175,28 @@ class StockPatentsCompareHandler(webBase.BaseHandler, ABC):
             ind_rows = None
         industry = ind_rows[0][0] if ind_rows and ind_rows[0][0] else None
         if not industry:
-            _write_json(self, {'code': code, 'industry': None, 'top': [], 'rank': None})
+            _write_json(self, {'code': code, 'industry': None, 'top': [], 'rank': None,
+                               'percentiles': None, 'self_percentile': None})
             return
 
         rows = mdb.executeSqlFetch(
             f"""
-            SELECT p.code, s.name, p.year, p.total_patents,
+            SELECT p.code, sel.name, p.year, p.total_patents,
                    p.invention_patents, p.patent_quality_score, p.tech_domain
             FROM `{PATENTS_TABLE}` p
-            JOIN cn_stock_spot s ON p.code = s.code
-            WHERE s.industry = %s
-              AND s.date = (SELECT MAX(date) FROM cn_stock_spot)
+            JOIN cn_stock_selection sel ON p.code = sel.code COLLATE utf8mb4_general_ci
+            WHERE sel.industry = %s
+              AND sel.date = (SELECT MAX(date) FROM cn_stock_selection)
               AND p.year = (SELECT MAX(year) FROM `{PATENTS_TABLE}` p2 WHERE p2.code = p.code)
             ORDER BY p.total_patents DESC
-            LIMIT 50
             """,
             (industry,),
         ) or []
 
         top: List[Dict[str, Any]] = []
         rank: Optional[int] = None
+        totals: List[int] = []
+        self_total: Optional[int] = None
         for i, r in enumerate(rows, start=1):
             entry = {
                 'code': r[0], 'name': r[1], 'year': r[2],
@@ -200,8 +205,18 @@ class StockPatentsCompareHandler(webBase.BaseHandler, ABC):
             }
             if i <= 10:
                 top.append(entry)
+            if r[3] is not None:
+                totals.append(int(r[3]))
             if r[0] == code:
                 rank = i
+                self_total = int(r[3]) if r[3] is not None else None
+
+        # 行业分位数 (§9.7) + 当前股票所处分位
+        percentiles = percentiles_from_values(totals)
+        self_percentile: Optional[float] = None
+        if self_total is not None and totals:
+            n_le = sum(1 for v in totals if v <= self_total)
+            self_percentile = round(n_le / len(totals) * 100, 1)
 
         _write_json(self, {
             'code': code,
@@ -209,4 +224,7 @@ class StockPatentsCompareHandler(webBase.BaseHandler, ABC):
             'top': top,
             'rank': rank,
             'total_in_industry': len(rows),
+            'percentiles': percentiles,
+            'self_total_patents': self_total,
+            'self_percentile': self_percentile,
         })

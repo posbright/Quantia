@@ -219,5 +219,52 @@ class TestTableSql:
         assert 'trend_5y_cagr' in sql
 
 
+class TestIndustryPercentile:
+    """§9.7 行业分位数评分。"""
+
+    def test_percentiles_from_values_basic(self):
+        # 0..100 共 11 个样本
+        pct = pa.percentiles_from_values(list(range(0, 101, 10)))
+        assert pct is not None
+        assert pct['count'] == 11
+        assert pct['p25'] == 25.0
+        assert pct['p50'] == 50.0
+        assert pct['p75'] == 75.0
+        assert pct['p90'] == 90.0
+
+    def test_percentiles_insufficient_sample(self):
+        # 样本不足 MIN_INDUSTRY_SAMPLES 返回 None
+        assert pa.percentiles_from_values([1, 2, 3, 4]) is None
+
+    def test_percentiles_ignores_none(self):
+        pct = pa.percentiles_from_values([10, None, 20, 30, None, 40, 50])
+        assert pct is not None
+        assert pct['count'] == 5
+
+    def test_score_by_industry_percentile_buckets(self):
+        p = {'p25': 10, 'p50': 50, 'p75': 100, 'p90': 200, 'count': 10}
+        assert pa.score_by_industry_percentile(250, p) == 20  # >= p90
+        assert pa.score_by_industry_percentile(120, p) == 16  # >= p75
+        assert pa.score_by_industry_percentile(60, p) == 12   # >= p50
+        assert pa.score_by_industry_percentile(15, p) == 8    # >= p25
+        assert pa.score_by_industry_percentile(5, p) == 3     # < p25
+
+    def test_quality_score_uses_percentile_when_provided(self):
+        # 同一只股票, total=120: 绝对阈值给 16 分 (>=100), 行业分位给 8 分 (>=p25)
+        row = {'total_patents': 120, 'invention_ratio': 50}
+        low_industry = {'p25': 100, 'p50': 300, 'p75': 800, 'p90': 1500, 'count': 10}
+        score_abs = pa.calculate_patent_quality_score(row)
+        score_pct = pa.calculate_patent_quality_score(
+            row, industry_percentiles=low_industry)
+        # 行业巨头林立时同样的专利数得分应更低
+        assert score_pct < score_abs
+
+    def test_quality_score_falls_back_when_sample_insufficient(self):
+        row = {'total_patents': 120, 'invention_ratio': 50}
+        thin = {'p25': 100, 'p50': 300, 'p75': 800, 'p90': 1500, 'count': 2}
+        assert (pa.calculate_patent_quality_score(row, industry_percentiles=thin)
+                == pa.calculate_patent_quality_score(row))
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

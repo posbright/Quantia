@@ -21,6 +21,7 @@ import quantia.lib.database as mdb
 from quantia.core.patent_analytics import (
     calculate_patent_quality_score,
     calculate_trend_metrics,
+    percentiles_from_values,
     validate_patent_data,
 )
 
@@ -36,7 +37,7 @@ def ensure_aggregated_table():
     # NOTE: DDL 中不能用 % 符号，PyMySQL 会误认为格式化占位符
     ddl = (
         "CREATE TABLE IF NOT EXISTS `" + _AGGREGATED_TABLE + "` ("
-        "`code` VARCHAR(10) NOT NULL COMMENT '股票代码',"
+        "`code` VARCHAR(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '股票代码',"
         "`year` SMALLINT NOT NULL COMMENT '统计年份',"
         "`total_patents` INT DEFAULT 0 COMMENT '专利公告总数',"
         "`invention_patents` INT DEFAULT 0 COMMENT '发明专利数',"
@@ -120,6 +121,50 @@ def _fetch_rd_ratios() -> Dict[str, float]:
     return {row[0]: float(row[1]) for row in rows if row[1] is not None}
 
 
+def _fetch_industry_map() -> Dict[str, str]:
+    """从 cn_stock_selection 获取各股票所属行业（取最新交易日）。
+
+    选用 cn_stock_selection 而非 cn_stock_spot：spot 最新快照 industry 常为空，
+    selection 最新交易日 industry 覆盖率 100%。
+    """
+    sql = """
+        SELECT code, industry
+        FROM cn_stock_selection
+        WHERE date = (SELECT MAX(date) FROM cn_stock_selection)
+          AND industry IS NOT NULL AND industry <> ''
+    """
+    try:
+        rows = mdb.executeSqlFetch(sql) or []
+    except Exception:
+        _logger.warning('[专利聚合] 读取 cn_stock_selection.industry 失败，跳过行业分位数评分')
+        return {}
+    return {row[0]: row[1] for row in rows if row[1]}
+
+
+def _build_industry_percentiles(
+    by_code: Dict[str, List[Dict]], industry_map: Dict[str, str]
+) -> Dict[str, Dict[str, Any]]:
+    """从本批聚合结果按行业计算 total_patents 的分位数 (§9.7)。
+
+    每只股票取其最新年度的 total_patents 作为该行业样本，
+    样本不足 MIN_INDUSTRY_SAMPLES 的行业不产出分位数（回退绝对阈值）。
+    """
+    from collections import defaultdict
+    industry_totals: Dict[str, List[int]] = defaultdict(list)
+    for stock_code, years_data in by_code.items():
+        industry = industry_map.get(stock_code)
+        if not industry:
+            continue
+        latest = max(years_data, key=lambda d: d['year'])
+        industry_totals[industry].append(latest['total_patents'])
+    result: Dict[str, Dict[str, Any]] = {}
+    for industry, totals in industry_totals.items():
+        pct = percentiles_from_values(totals)
+        if pct is not None:
+            result[industry] = pct
+    return result
+
+
 def aggregate_patent_data(code: Optional[str] = None) -> Dict[str, int]:
     """主聚合流程。
 
@@ -148,6 +193,10 @@ def aggregate_patent_data(code: Optional[str] = None) -> Dict[str, int]:
     # 获取研发费用率
     rd_ratios = _fetch_rd_ratios()
 
+    # 行业分位数（§9.7）：每只股票取最新年度 total_patents，按行业计算 P25/P50/P75/P90
+    industry_map = _fetch_industry_map()
+    industry_percentiles = _build_industry_percentiles(by_code, industry_map)
+
     # 计算衍生指标
     records_to_write = []
     for stock_code, years_data in by_code.items():
@@ -156,6 +205,7 @@ def aggregate_patent_data(code: Optional[str] = None) -> Dict[str, int]:
         trend_result = calculate_trend_metrics(trend_input)
 
         rd_ratio = rd_ratios.get(stock_code)
+        stock_industry_pct = industry_percentiles.get(industry_map.get(stock_code))
 
         for yr_data in years_data:
             # invention_ratio = 发明专利 / 总专利数 (含general/ip_transfer)
@@ -165,14 +215,16 @@ def aggregate_patent_data(code: Optional[str] = None) -> Dict[str, int]:
                 0.0 if total > 0 else None
             )
 
-            # 含金量评分
+            # 含金量评分（数量规模维度按行业分位数校准, 不足样本回退绝对阈值）
             score_input = {
                 'total_patents': yr_data['total_patents'],
                 'invention_ratio': inv_ratio,
                 'trend_5y_cagr': trend_result['trend_5y_cagr'],
                 'rd_staff_ratio': rd_ratio,
             }
-            quality_score = calculate_patent_quality_score(score_input)
+            quality_score = calculate_patent_quality_score(
+                score_input, industry_percentiles=stock_industry_pct
+            )
 
             record = {
                 'code': stock_code,

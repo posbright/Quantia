@@ -1,6 +1,6 @@
 # AI 分析增强 — 专利护城河 + 多期限投资建议 + 表结构优化
 
-> 生成时间: 2026-05-27 | 最后更新: 2026-06-01 | 状态: ✅ 全阶段已实现 (P1/P2/P3a/P3b/P4)
+> 生成时间: 2026-05-27 | 最后更新: 2026-06-01 | 状态: ✅ P1/P2/P3a/P3b/P4 核心已落地（与代码核对见 §10）
 >
 > 更新说明: 新增「DB优先 + web_search兜底」双源策略；Google Patents 作为备份数据源；
 > 表结构增加 IPC 分类、专利含金量评估、5年申请趋势等字段
@@ -8,6 +8,11 @@
 > 实现说明 (2026-06-01): P3b Google Patents 备份源已落地，采用 XHR JSON 接口 (懒加载
 > requests，失败优雅降级，非 Playwright)。`source_detail.google_patents` 记录采集季度
 > (格式 `YYYY-Qn`)。完整专利测试套件 82 passed。
+>
+> ⚠️ **重要：实际实现与本计划存在架构差异**。落地时采用了「两表 + 公告级原始数据」管道，
+> AI 护城河分析的首选数据源是 `stock_profile.patent_info`（来自 `cn_stock_patent_info`），
+> 而非本文 §六 描述的"直接查 `cn_stock_patents`"。详见文末 **§10 实现现状对照**（含尚未实现项）。
+> 阅读 §1–§9 时请以 §10 为准。
 
 ---
 
@@ -1171,3 +1176,100 @@ WHERE s.industry = '电子' AND p.year = 2025
    - 数据校验通过率
    - 双源冲突标记数
    - 与上次采集的异常变动 (total_patents 单年变动>100% 的股票列表)
+
+---
+
+## 十、实现现状对照（2026-06-01 代码核对）
+
+> 本节按当前代码实际落地情况核对 §1–§9 的设计，列出**已实现 / 与计划差异 / 尚未实现**三类。
+> 如设计文档（§1–§9）与本节冲突，**以本节为准**。
+
+### 10.1 实际架构（与 §2.4.5 计划不同）
+
+落地时采用了 **「公告级原始表 + 年度聚合表」两表管道**，而非计划里"一张 `cn_stock_patents` 表 + 年报/Google 双源直写"：
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  实际数据管道（已落地）                                                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│  主管道（工作日增量，已接入 cron）                                          │
+│  quantia/job/stock_patent_crawler.py   ← 巨潮"公告搜索"API，抓专利类公告    │
+│      → cn_stock_patent_info（公告级原始数据，含标题/日期/类型/数量）         │
+│      接入: cron/cron.workdayly/run_workdayly （--days 7，每个工作日跑）      │
+│                                                                           │
+│  聚合（手动 / 按需，未接 cron）                                              │
+│  quantia/job/aggregate_patent_data.py  ← 读 cn_stock_patent_info 按        │
+│      (code, year) 聚合 + 调 patent_analytics 算含金量/趋势                  │
+│      → cn_stock_patents（年度聚合分析表）                                   │
+│                                                                           │
+│  计划管道（年报/Google 双源，已实现但与上面并存）                            │
+│  quantia/job/fetch_patent_data.py [--source annual_report|google_patents] │
+│      → cn_stock_patents                                                   │
+│      接入: cron/cron.monthly/run_patents_annual（5月，年报全量）            │
+│            cron/cron.monthly/run_patents_quarterly（1/4/7/10月，Google增量）│
+│                                                                           │
+│  AI 消费侧                                                                 │
+│  quantia/lib/ai/tools/stock_profile.py::_query_patent_info()              │
+│      读 cn_stock_patent_info → result['patent_info']（AI 护城河首选源）     │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**关键差异说明**：
+- §2.3/§2.4 计划只描述了 `cn_stock_patents`（聚合表）。实际多了一张 **`cn_stock_patent_info`**（公告级原始表），由工作日爬虫维护，是 AI 分析的**首选数据源**。
+- 两张表均**未**登记进 `quantia/core/tablestructure.py`，而是在各 job 内通过 `ensure_*_table()` / DDL 运行时建表。
+- 存在**两条写入 `cn_stock_patents` 的路径**（`aggregate_patent_data` 与 `fetch_patent_data`），文档需明确二者关系（见 §10.5 待办）。
+
+### 10.2 各阶段落地核对
+
+| 阶段 | 组件 | 文件 | 状态 |
+|------|------|------|------|
+| **P1** | 护城河 + 多期限 prompt | `quantia/lib/ai/prompt/stock_analyst.md` | ✅ 已实现（含"四.五 竞争壁垒"、短/中/长期、免责声明）|
+| P1 | 护城河取数策略 | 同上 工具规则第5条 | ⚠️ **与计划不同**：Step1 用 `stock_profile.patent_info`（计划未提），Step2 才查 `cn_stock_patents`，Step3 web_search |
+| P1 | stock_profile 返回专利 | `quantia/lib/ai/tools/stock_profile.py::_query_patent_info` | ✅ 已实现（读 `cn_stock_patent_info`）|
+| **P2** | 报告结构化解析 | `quantia/lib/ai/report_parser.py::extract_structured_fields` | ✅ 已实现（rating/advices/moat/prices）|
+| P2 | Handler 集成 + 建表 | `quantia/web/stockReportHandler.py`（line ~429 调用）| ✅ 已实现（`_ensure_*` 建表 + 写结构化字段）|
+| P2 | 报告结构化测试 | `tests/test_ai_report_phase2.py` | ✅ 已实现 |
+| **P3a** | 年报下载 | `quantia/core/crawling/cninfo_annual_report.py` | ✅ 已实现 |
+| P3a | 年报解析 | `quantia/core/crawling/annual_report_parser.py` | ✅ 已实现 |
+| P3a | 含金量/趋势/校验 | `quantia/core/patent_analytics.py` | ✅ 已实现（`calculate_patent_quality_score`/`calculate_trend_metrics`/`validate_patent_data`/`merge_patent_data`）|
+| P3a | 公告爬虫（实际主管道）| `quantia/job/stock_patent_crawler.py` | ✅ 已实现 + 接入工作日 cron |
+| P3a | 聚合 job | `quantia/job/aggregate_patent_data.py` | ✅ 已实现，⚠️ **未接 cron**（手动/按需）|
+| P3a | 年报采集 job | `quantia/job/fetch_patent_data.py` | ✅ 已实现 + 接入 `run_patents_annual`（5月）|
+| **P3b** | Google Patents 爬虫 | `quantia/core/crawling/google_patents_crawler.py` | ✅ 已实现（XHR JSON，失败降级）|
+| P3b | IPC 映射 | `quantia/core/patent_ipc_mapping.py` | ✅ 已实现 |
+| P3b | 双源合并 + 冲突标记 | `patent_analytics.merge_patent_data`（`_conflict_flag`）| ✅ 已实现（与 §9.3 一致）|
+| P3b | 季度 cron | `cron/cron.monthly/run_patents_quarterly` | ✅ 已实现（1/4/7/10月）|
+| **P4** | 专利 Handler | `quantia/web/stockPatentHandler.py`（patents / history / compare）| ✅ 已实现 + 路由已注册 |
+| P4 | 前端专利卡片 | `quantia/fontWeb/src/components/PatentCard.vue` | ✅ 已实现 |
+| P4 | 前端 API + 类型 | `quantia/fontWeb/src/api/stock.ts`（`getStockPatents*`/`PatentData`）| ✅ 已实现 |
+| P4 | 指标页集成 | `quantia/fontWeb/src/views/indicator/index.vue` | ✅ 已实现（`<PatentCard>`）|
+
+### 10.3 实现进度（2026 增补：§9.7 / 分位数 / cron / 表结构已补齐）
+
+| # | 计划位置 | 内容 | 实际状态 | 说明 |
+|---|----------|------|----------|------|
+| 1 | §9.7 | **专利含金量行业分位数评分** `score_by_industry_percentile` / `get_industry_patent_percentiles` / `percentiles_from_values` | ✅ **已实现** | `patent_analytics.calculate_patent_quality_score(row, industry_percentiles=...)` 新增可选行业校准；样本 ≥ `MIN_INDUSTRY_SAMPLES`(=5) 用行业 P25/P50/P75/P90，否则回退绝对阈值。`aggregate_patent_data` 按行业计算分位数并传入评分 |
+| 2 | §9.7 注 | 注意：现有 `StockIndustryPercentileHandler`（`/api/ai/report/industry_percentile`）计算的是 **PE/PB/ROE** 行业分位（报告 Tooltip 用），**与专利无关**，不要误当作 §9.7 | ℹ️ 说明 | 二者独立，互不影响 |
+| 3 | §2.4.6 | Google Patents **Playwright headless + 代理池** | ⚠️ **部分（本次未动）** | 实际仅用轻量 XHR JSON 接口 + 本地缓存，**未启用** Playwright / 代理池（失败直接降级返回 `[]`）|
+| 4 | §2.4.2 | `cn_stock_patents` 的部分字段（`core_patents`、`patent_maintenance_rate`、`new_patents_year`、`patent_yoy` 等）| ⚠️ **按需** | 取决于年报/Google 实际能解析到的字段，缺失时为 null，未做强保证 |
+| 5 | §9.4 | 行业对标 API `/patents/compare` 的"分位数"口径 | ✅ **已升级** | 在 TOP10 + 排名基础上新增 `percentiles`(P25/P50/P75/P90)、`self_total_patents`、`self_percentile`（当前股票所处分位）|
+| 6 | §2.4 / 架构 | `cn_stock_patent_info` / `cn_stock_patents` 登记进 `tablestructure.py` | ✅ **已登记** | 新增 `TABLE_CN_STOCK_PATENT_INFO` / `TABLE_CN_STOCK_PATENTS` 元数据（运行时仍由各 job 建表，元数据作单一事实源）|
+| 7 | §3.4 | `aggregate_patent_data.py` 定时调度 | ✅ **已接 cron** | `cron/cron.workdayly/run_workdayly` Phase 1.7 在专利采集后运行 `python -m quantia.job.aggregate_patent_data` |
+| 8 | （本次发现）| 专利↔行业 JOIN 的 **collation 冲突** 与 **行业数据源** 根因修复 | ✅ **已修复** | (a) `cn_stock_patents.code`(utf8mb4_0900_ai_ci) 与行业表 code(utf8mb4_general_ci) JOIN 报 1267，所有 JOIN 加 `COLLATE utf8mb4_general_ci` 并在建表 DDL 固定 code 列 collation；(b) `cn_stock_spot.industry` 最新快照常为空，改用 `cn_stock_selection.industry`（最新交易日覆盖率 100%）|
+
+### 10.4 与计划一致、可放心引用的部分
+
+- 多期限投资建议（短/中/长期）、护城河章节、免责声明 — prompt 已落地。
+- 报告结构化字段解析（rating / moat_score / 目标价 / 止损）— `report_parser` 已落地并有测试。
+- 双源合并优先级（年报权威、Google 补充）+ 冲突标记（差异 >50% 打 `_conflict_flag`）— 与 §9.3 一致。
+- 前端专利卡片 + 三个查询接口 + 路由注册 — 已落地（满足 AGENTS.md 规则 8 路由对齐）。
+
+### 10.5 后续待办（如需收口）
+
+1. **统一 `cn_stock_patents` 写入路径**：明确 `aggregate_patent_data`（从公告聚合）与 `fetch_patent_data`（年报/Google）二者主从关系，避免互相覆盖。（cron 已接入 `aggregate_patent_data`，但与 `fetch_patent_data` 的主从仍需明确）
+2. ~~实现 §9.7 行业分位数评分~~ ✅ 已完成（数据不足的行业自动回退绝对阈值；当前 prod 125 条专利中 6 个行业已满足 ≥5 样本）。
+3. ~~把 `cn_stock_patent_info` / `cn_stock_patents` 的列定义补进 `tablestructure.py`~~ ✅ 已完成。
+4. ~~校准 `/patents/compare` 是否需要从 TOP10 升级为真正分位数~~ ✅ 已升级（返回 P25/P50/P75/P90 + 当前股票分位）。
+5. **行业数据积累**：当前仅 125 条专利、6 个行业满足分位数样本量。待 `stock_patent_crawler` + `aggregate_patent_data` 工作日 cron 持续积累后，分位数覆盖面会扩大。
+6. **（可选）Google Patents Playwright + 代理池**：本轮未实现，仍走轻量 XHR 降级。
+7. **（可选）历史回补 `cn_stock_spot.industry`** 或统一行业字段：本轮已改用 `cn_stock_selection.industry` 规避，spot 最新快照 industry 为空的根因（采集未回填）仍可后续修复。

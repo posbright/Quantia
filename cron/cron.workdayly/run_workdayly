@@ -33,6 +33,10 @@ cd "$PROJECT_ROOT"
 log_info "开始采集专利数据"
 "$PYTHON_BIN" -m quantia.job.stock_patent_crawler --days 7 >> "$LOG_FILE" 2>&1 || log_warn "专利采集异常"
 
+# Phase 1.7: 专利数据聚合（cn_stock_patent_info → cn_stock_patents 含金量评分）
+log_info "开始聚合专利数据"
+"$PYTHON_BIN" -m quantia.job.aggregate_patent_data >> "$LOG_FILE" 2>&1 || log_warn "专利聚合异常"
+
 # ── OOM 防护：停止非关键服务，释放内存 ──
 SERVICES_STOPPED=0
 

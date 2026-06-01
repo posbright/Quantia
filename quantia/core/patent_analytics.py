@@ -18,7 +18,7 @@ PATENTS_TABLE = 'cn_stock_patents'
 
 _CREATE_SQL = f'''
 CREATE TABLE IF NOT EXISTS `{PATENTS_TABLE}` (
-    `code` VARCHAR(10) NOT NULL COMMENT '股票代码',
+    `code` VARCHAR(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '股票代码',
     `year` INT NOT NULL COMMENT '统计年度',
 
     `invention_patents` INT DEFAULT NULL COMMENT '发明专利数',
@@ -91,12 +91,124 @@ def calculate_invention_ratio(row: Dict[str, Any]) -> Optional[float]:
     return round(inv / total * 100, 2)
 
 
-def calculate_patent_quality_score(row: Dict[str, Any]) -> int:
+# ---------------------------------------------------------------------------
+# 行业分位数评分 (§9.7) — 含金量"数量规模"维度的行业校准
+# ---------------------------------------------------------------------------
+
+# 计算行业分位数所需的最小样本量；不足时回退到绝对阈值
+MIN_INDUSTRY_SAMPLES = 5
+
+
+def _percentile(sorted_vals: List[float], pct: float) -> float:
+    """对升序列表做线性插值求分位数 (pct ∈ [0,100])。"""
+    if not sorted_vals:
+        return 0.0
+    if len(sorted_vals) == 1:
+        return float(sorted_vals[0])
+    rank = (pct / 100.0) * (len(sorted_vals) - 1)
+    low = int(rank)
+    high = min(low + 1, len(sorted_vals) - 1)
+    frac = rank - low
+    return float(sorted_vals[low]) + (float(sorted_vals[high]) - float(sorted_vals[low])) * frac
+
+
+def percentiles_from_values(values: List[Any]) -> Optional[Dict[str, Any]]:
+    """从一组专利数量样本计算 P25/P50/P75/P90。
+
+    样本量不足 MIN_INDUSTRY_SAMPLES 时返回 None（调用方应回退到绝对阈值）。
+    """
+    nums = sorted(float(v) for v in values if v is not None)
+    if len(nums) < MIN_INDUSTRY_SAMPLES:
+        return None
+    return {
+        'p25': round(_percentile(nums, 25), 2),
+        'p50': round(_percentile(nums, 50), 2),
+        'p75': round(_percentile(nums, 75), 2),
+        'p90': round(_percentile(nums, 90), 2),
+        'count': len(nums),
+    }
+
+
+def score_by_industry_percentile(total: Any, percentiles: Dict[str, Any]) -> int:
+    """按行业内分位数给"数量规模"维度打分 (0-20)。"""
+    total = total or 0
+    if total >= percentiles['p90']:
+        return 20
+    if total >= percentiles['p75']:
+        return 16
+    if total >= percentiles['p50']:
+        return 12
+    if total >= percentiles['p25']:
+        return 8
+    return 3
+
+
+def _score_quantity_absolute(total: Any) -> int:
+    """数量规模维度的绝对阈值打分 (0-20)，行业分位数不可用时的回退。"""
+    total = total or 0
+    if total >= 500:
+        return 20
+    if total >= 200:
+        return 16
+    if total >= 100:
+        return 12
+    if total >= 30:
+        return 8
+    return 3
+
+
+def get_industry_patent_percentiles(
+    industry: Optional[str], year: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """查询某行业 total_patents 的 P25/P50/P75/P90 分位数。
+
+    数据来自 cn_stock_patents JOIN cn_stock_selection.industry（每只股票取最新年度）。
+    选用 cn_stock_selection 而非 cn_stock_spot 取行业：spot 最新快照 industry 常为空，
+    selection 最新交易日 industry 覆盖率 100%。样本不足或表缺失时返回 None。
+    属 Analysis 管道，只读 MySQL。
+    """
+    if not industry:
+        return None
+    import quantia.lib.database as mdb  # 延迟导入, 保持纯计算函数 DB 无关
+    try:
+        if year is not None:
+            rows = mdb.executeSqlFetch(
+                f"""
+                SELECT p.total_patents FROM `{PATENTS_TABLE}` p
+                JOIN cn_stock_selection sel ON p.code = sel.code COLLATE utf8mb4_general_ci
+                WHERE sel.industry = %s AND p.year = %s
+                  AND sel.date = (SELECT MAX(date) FROM cn_stock_selection)
+                """,
+                (industry, year),
+            )
+        else:
+            rows = mdb.executeSqlFetch(
+                f"""
+                SELECT p.total_patents FROM `{PATENTS_TABLE}` p
+                JOIN cn_stock_selection sel ON p.code = sel.code COLLATE utf8mb4_general_ci
+                WHERE sel.industry = %s
+                  AND sel.date = (SELECT MAX(date) FROM cn_stock_selection)
+                  AND p.year = (SELECT MAX(year) FROM `{PATENTS_TABLE}` p2 WHERE p2.code = p.code)
+                """,
+                (industry,),
+            )
+    except Exception:
+        return None
+    return percentiles_from_values([r[0] for r in (rows or [])])
+
+
+def calculate_patent_quality_score(
+    row: Dict[str, Any],
+    industry_percentiles: Optional[Dict[str, Any]] = None,
+) -> int:
     """综合评估专利含金量 (0-100 分)。
 
     维度权重: 发明占比(30) + 数量规模(20) + 5年CAGR(20)
               + 平均被引(15) + PCT国际(10) + 维持率(5)
     缺失字段按最低档计分（不抛错）。
+
+    数量规模维度: 若提供 industry_percentiles（§9.7 行业校准），按行业分位数打分；
+    否则回退到绝对阈值。
     """
     score = 0
 
@@ -115,16 +227,10 @@ def calculate_patent_quality_score(row: Dict[str, Any]) -> int:
         score += 5
 
     total = row.get('total_patents') or 0
-    if total >= 500:
-        score += 20
-    elif total >= 200:
-        score += 16
-    elif total >= 100:
-        score += 12
-    elif total >= 30:
-        score += 8
+    if industry_percentiles and industry_percentiles.get('count', 0) >= MIN_INDUSTRY_SAMPLES:
+        score += score_by_industry_percentile(total, industry_percentiles)
     else:
-        score += 3
+        score += _score_quantity_absolute(total)
 
     cagr = row.get('trend_5y_cagr')
     if cagr is None:
