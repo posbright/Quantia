@@ -323,5 +323,76 @@ class TestCompositeHandler(AsyncHTTPTestCase):
         assert resp.code == 400
 
 
+# ──────────────────────────────────────────────────────────
+# F7 job 装配编排（build_score_df，mock DB 读）
+# ──────────────────────────────────────────────────────────
+import quantia.job.analysis_fund_score_job as job
+
+
+class TestBuildScoreDf:
+
+    def _rank_df(self):
+        rows = []
+        for i in range(4):
+            rows.append({'code': f'00100{i}', 'fund_type': '股票型',
+                         'rate_3m': i, 'rate_6m': i * 2, 'rate_1y': i * 3,
+                         'rate_3y': i * 5, 'rate_ytd': i, 'fee': 0.5 - i * 0.05,
+                         'seven_day_annual': None, 'million_unit_income': None})
+        return pd.DataFrame(rows), '2026-05-29'
+
+    def test_assembles_and_aligns_columns(self):
+        rank_df, snap = self._rank_df()
+        risk_df = pd.DataFrame([
+            {'code': '001000', 'sharpe': 1.2, 'calmar': 0.8,
+             'max_drawdown': -0.15, 'rate_5y': 80.0},
+            {'code': '001001', 'sharpe': 0.9, 'calmar': 0.5,
+             'max_drawdown': -0.25, 'rate_5y': 60.0},
+        ])
+        with mock.patch.object(job, '_load_rank_latest', return_value=(rank_df, snap)), \
+             mock.patch.object(job, '_load_scale_map',
+                               return_value={'001000': 5.0, '001001': 50.0}), \
+             mock.patch.object(job, '_load_main_industry_map',
+                               return_value={'001000': '半导体'}), \
+             mock.patch.object(job, '_build_risk_metrics', return_value=risk_df):
+            scored, eff = job.build_score_df()
+        # 列序与表结构严格一致
+        assert list(scored.columns) == job._SCORE_COLS
+        assert eff == snap
+        assert len(scored.index) == 4
+        # 有夏普的基金 sharpe 落库
+        row = scored[scored['code'] == '001000'].iloc[0]
+        assert abs(float(row['sharpe']) - 1.2) < 1e-9
+        assert row['main_industry'] == '半导体'
+        # 无夏普的基金（002/003）sharpe 为空但 score 有效
+        miss = scored[scored['code'] == '001003'].iloc[0]
+        assert pd.isna(miss['sharpe'])
+        assert pd.notna(miss['score'])
+        # 无 inf
+        import numpy as _np
+        numeric = scored.select_dtypes(include=[_np.number])
+        assert not _np.isinf(numeric.to_numpy(dtype='float64', na_value=_np.nan)).any()
+
+    def test_empty_rank_returns_schema(self):
+        with mock.patch.object(job, '_load_rank_latest',
+                               return_value=(pd.DataFrame(), None)):
+            scored, eff = job.build_score_df()
+        assert list(scored.columns) == job._SCORE_COLS
+        assert scored.empty
+
+    def test_no_risk_metrics_falls_back_to_b1(self):
+        rank_df, snap = self._rank_df()
+        with mock.patch.object(job, '_load_rank_latest', return_value=(rank_df, snap)), \
+             mock.patch.object(job, '_load_scale_map', return_value={}), \
+             mock.patch.object(job, '_load_main_industry_map', return_value={}), \
+             mock.patch.object(job, '_build_risk_metrics',
+                               return_value=pd.DataFrame(
+                                   columns=['code', 'sharpe', 'calmar',
+                                            'max_drawdown', 'rate_5y'])):
+            scored, eff = job.build_score_df()
+        assert scored['sharpe'].isna().all()
+        assert scored['score'].notna().all()
+        assert list(scored.columns) == job._SCORE_COLS
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-q'])

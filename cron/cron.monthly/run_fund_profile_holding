@@ -1,0 +1,29 @@
+#!/bin/bash
+# 场外基金画像 + 重仓股月度采集（F10 / F12，慢 job，akshare 单源）
+# 触发：每月执行一次（规模/经理/评级季度级稳定，重仓股季频披露）
+#   - F10 cn_fund_profile：规模/公司/经理/评级/策略/基准
+#   - F12 cn_fund_holding：最新季度前十大重仓股 + 行业回填
+# 属 fetch 管道；逐基金抓取，失败不互相阻断。
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/fund_profile_holding.log
+
+FAILED=0
+
+run_job "基金画像采集 (fetch_fund_profile_job)" \
+    "quantia/job/fetch_fund_profile_job.py" \
+    "${QUANTIA_FUND_PROFILE_TIMEOUT:-3600}" || FAILED=$((FAILED + 1))
+
+run_job "基金重仓股采集 (fetch_fund_holding_job)" \
+    "quantia/job/fetch_fund_holding_job.py" \
+    "${QUANTIA_FUND_HOLDING_TIMEOUT:-3600}" || FAILED=$((FAILED + 1))
+
+if [ $FAILED -eq 0 ]; then
+    log_info "基金画像 + 重仓股月度采集完成 ✓"
+else
+    log_warn "基金画像 + 重仓股月度采集结束 ✗ ($FAILED/2 失败)"
+fi
+exit $FAILED

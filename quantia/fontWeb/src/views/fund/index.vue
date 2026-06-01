@@ -73,7 +73,7 @@
       </el-table-column>
       <el-table-column label="基金简称" min-width="180" prop="name" show-overflow-tooltip>
         <template #default="{ row }">
-          <span class="fund-name">{{ row.name }}</span>
+          <span class="fund-name fund-name--link" @click="openDetail(row)">{{ row.name }}</span>
           <span class="fund-code">{{ row.code }}</span>
         </template>
       </el-table-column>
@@ -135,6 +135,9 @@
     <div class="fund-footer" v-if="items.length">
       共 {{ count }} 条 · {{ fundType }} · 按{{ activePeriodLabel }}降序
     </div>
+
+    <!-- 基金详情抽屉：同类雷达 + 综合分析 + AI 解读 -->
+    <FundDetailDrawer v-model="detailVisible" :code="detailCode" :name="detailName" />
   </div>
 </template>
 
@@ -150,6 +153,7 @@ import {
   type FundPeriodOption,
   type FundRankItem,
 } from '@/api/fund'
+import FundDetailDrawer from './FundDetailDrawer.vue'
 
 const meta = ref<FundRankMeta | null>(null)
 const fundTypes = ref<string[]>([])
@@ -163,6 +167,17 @@ const items = ref<FundRankItem[]>([])
 const count = ref(0)
 const loading = ref(false)
 const metaLoaded = ref(false)
+
+// 详情抽屉
+const detailVisible = ref(false)
+const detailCode = ref('')
+const detailName = ref('')
+
+function openDetail(row: FundRankItem) {
+  detailCode.value = row.code
+  detailName.value = row.name
+  detailVisible.value = true
+}
 
 const isMoneyType = computed(() => fundType.value === '货币型')
 
@@ -361,6 +376,13 @@ onActivated(async () => {
 .fund-name {
   font-weight: 500;
   margin-right: 6px;
+}
+.fund-name--link {
+  color: #409eff;
+  cursor: pointer;
+}
+.fund-name--link:hover {
+  text-decoration: underline;
 }
 .fund-code {
   font-size: 11px;

@@ -59,6 +59,7 @@ import quantia.web.factorLabHandler as factorLabHandler
 import quantia.web.fundRankHandler as fundRankHandler
 import quantia.web.fundPeerCompareHandler as fundPeerCompareHandler
 import quantia.web.fundCompositeAnalysisHandler as fundCompositeAnalysisHandler
+import quantia.web.fundAiAnalysisHandler as fundAiAnalysisHandler
 import quantia.web.stockFinancialHandler as stockFinancialHandler
 import quantia.web.base as webBase
 
@@ -269,6 +270,7 @@ class Application(tornado.web.Application):
             (r"/quantia/api/fund/rank", fundRankHandler.FundRankHandler),
             (r"/quantia/api/fund/peer_compare", fundPeerCompareHandler.FundPeerCompareHandler),
             (r"/quantia/api/fund/composite_analysis", fundCompositeAnalysisHandler.FundCompositeAnalysisHandler),
+            (r"/quantia/api/fund/ai_analysis", fundAiAnalysisHandler.FundAiAnalysisHandler),
             # ── 性能监控（前端 web-vitals 上报，仅接收不处理）──
             (r"/quantia/api/metric/web_vitals", WebVitalsHandler),
             # ── Vue SPA 路由 ──

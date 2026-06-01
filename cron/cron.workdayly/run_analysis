@@ -11,3 +11,8 @@ LOG_FILE=$LOG_DIR/workdayly.log
 
 check_trade_day "数据分析"
 run_job "数据分析 (analysis_daily_job)" "quantia/job/analysis_daily_job.py"
+
+# ── F7 场外基金多因子综合评分（零 API，读 cn_fund_rank + cn_fund_nav_history）──
+# 依赖 run_fetch 已刷新基金排名与净值历史。失败不阻断其他分析。
+run_job "基金综合评分 (analysis_fund_score_job)" \
+    "quantia/job/analysis_fund_score_job.py" || true
