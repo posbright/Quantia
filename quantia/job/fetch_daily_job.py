@@ -77,6 +77,64 @@ _FRESHNESS_THRESHOLDS = {
 }
 
 
+def _enrich_stock_spot_from_selection():
+    """用 cn_stock_selection 交叉补全 cn_stock_spot 最新快照的 pe9/roe_weight/industry。
+
+    背景：行情源降级到腾讯/新浪时，cn_stock_spot 的 市盈率TTM(pe9)/加权ROE(roe_weight)
+    恒为 0、industry 常为空。东方财富选股器表 cn_stock_selection 同时落库且这三列可靠，
+    故在每日 selection 入库后，用其最新值补全 spot 最新交易日的降级缺失。
+
+    约束：
+    - 仅在 spot 值缺失(0/空) 且 selection 值有效时填充，幂等；不覆盖已有有效值。
+    - 不污染 pe9 的 TTM 语义：亏损股 selection.pe9=0 时保持 spot.pe9=0，由 dtsyl 兜底。
+    - 纯 DB→DB 操作，不调用外部 API（符合 fetch/analysis/web 管道分离）。
+    """
+    import quantia.lib.database as mdb
+
+    date_rows = mdb.executeSqlFetch('SELECT MAX(date) FROM cn_stock_spot')
+    if not date_rows or date_rows[0][0] is None:
+        logging.warning('[spot补全] cn_stock_spot 无数据，跳过')
+        return
+    spot_date = date_rows[0][0]
+
+    # 每只股票取 selection 最近30天内的最新一行（基本面季度级稳定，足够新鲜）
+    update_sql = """
+        UPDATE cn_stock_spot s
+        JOIN (
+            SELECT sel.code, sel.pe9, sel.roe_weight, sel.industry
+            FROM cn_stock_selection sel
+            JOIN (
+                SELECT code, MAX(date) md FROM cn_stock_selection
+                WHERE date >= DATE_SUB(%s, INTERVAL 30 DAY)
+                GROUP BY code
+            ) latest ON sel.code = latest.code AND sel.date = latest.md
+        ) sl ON s.code = sl.code
+        SET s.pe9 = CASE WHEN (s.pe9 IS NULL OR s.pe9 = 0) AND sl.pe9 > 0
+                         THEN sl.pe9 ELSE s.pe9 END,
+            s.roe_weight = CASE WHEN (s.roe_weight IS NULL OR s.roe_weight = 0) AND sl.roe_weight <> 0
+                                THEN sl.roe_weight ELSE s.roe_weight END,
+            s.industry = CASE WHEN (s.industry IS NULL OR s.industry = '')
+                                   AND sl.industry IS NOT NULL AND sl.industry <> ''
+                              THEN sl.industry ELSE s.industry END
+        WHERE s.date = %s
+          AND ((s.pe9 IS NULL OR s.pe9 = 0)
+               OR (s.roe_weight IS NULL OR s.roe_weight = 0)
+               OR (s.industry IS NULL OR s.industry = ''))
+    """
+    mdb.executeSql(update_sql, (spot_date, spot_date))
+
+    stat = mdb.executeSqlFetch(
+        """SELECT COUNT(*),
+                  SUM(CASE WHEN pe9 > 0 THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN roe_weight <> 0 THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN industry IS NOT NULL AND industry <> '' THEN 1 ELSE 0 END)
+           FROM cn_stock_spot WHERE date = %s""", (spot_date,))
+    if stat and stat[0]:
+        total, pe_ok, roe_ok, ind_ok = stat[0]
+        logging.info(f"[spot补全] {spot_date} 补全后：total={total} pe9>0={pe_ok} "
+                     f"roe!=0={roe_ok} industry非空={ind_ok}")
+
+
 def _run_job_subprocess(script_name, label, timeout=_JOB_TIMEOUT):
     """以独立子进程运行 job 脚本，防止 OOM 波及当前进程。
 
@@ -189,6 +247,16 @@ def main():
             logging.error(f"数据获取 selection_data 异常", exc_info=True)
             record_task_end(_JOB_NAME, 'selection_data', run_date_nph, t2, success=False, message=str(e))
             all_success = False
+
+    # Phase 2.5: 用 selection 交叉补全 spot 降级缺失的 pe9/roe_weight/industry
+    # （非关键增强：失败不影响整体作业完成判定，仅记录）
+    t2b = record_task_start(_JOB_NAME, 'enrich_spot', run_date_nph)
+    try:
+        _enrich_stock_spot_from_selection()
+        record_task_end(_JOB_NAME, 'enrich_spot', run_date_nph, t2b, success=True)
+    except Exception as e:
+        logging.error("数据获取 enrich_spot 异常", exc_info=True)
+        record_task_end(_JOB_NAME, 'enrich_spot', run_date_nph, t2b, success=False, message=str(e))
 
     # Phase 3: 扩展数据（资金流向、龙虎榜等）
     # 以独立子进程运行，防止 OOM 波及当前进程
