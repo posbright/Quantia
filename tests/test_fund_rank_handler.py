@@ -36,6 +36,7 @@ def _make_rank_df():
 def _make_app():
     return Application([
         (r'/api/fund/rank/meta', frh.FundRankMetaHandler),
+        (r'/api/fund/rank/industries', frh.FundIndustriesHandler),
         (r'/api/fund/rank', frh.FundRankHandler),
     ])
 
@@ -114,4 +115,61 @@ class TestFundRankHandler(AsyncHTTPTestCase):
         # 校验传入 read_sql 的 LIMIT 参数被钳制到 _MAX_LIMIT
         _, kwargs = mock_read.call_args
         params = kwargs.get('params')
-        self.assertEqual(params[1], frh._MAX_LIMIT)
+        self.assertEqual(params[-1], frh._MAX_LIMIT)
+
+    @mock.patch.object(frh.pd, 'read_sql')
+    @mock.patch.object(frh.mdb, 'executeSqlFetch', return_value=[('2026-05-29',)])
+    @mock.patch.object(frh.mdb, 'engine', return_value=object())
+    @mock.patch.object(frh.mdb, 'checkTableIsExist', return_value=True)
+    def test_rank_industry_filter_applied_for_equity(self, _exist, _eng, _fetch, mock_read):
+        mock_read.return_value = _make_rank_df()
+        resp = self.fetch('/api/fund/rank?fund_type=股票型&period=rate_1y&industry=半导体')
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        self.assertEqual(data['industry'], '半导体')
+        # 行业过滤参数应注入到 SQL params（fund_type, industry, limit）
+        sql, kwargs = mock_read.call_args
+        self.assertIn('main_industry', sql[0])
+        self.assertIn('半导体', kwargs.get('params'))
+
+    @mock.patch.object(frh.pd, 'read_sql')
+    @mock.patch.object(frh.mdb, 'executeSqlFetch', return_value=[('2026-05-29',)])
+    @mock.patch.object(frh.mdb, 'engine', return_value=object())
+    @mock.patch.object(frh.mdb, 'checkTableIsExist', return_value=True)
+    def test_rank_industry_ignored_for_non_equity(self, _exist, _eng, _fetch, mock_read):
+        mock_read.return_value = _make_rank_df()
+        resp = self.fetch('/api/fund/rank?fund_type=货币型&period=rate_1m&industry=半导体')
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        # 非权益类桶忽略行业过滤：params 不应包含行业值
+        _, kwargs = mock_read.call_args
+        self.assertNotIn('半导体', kwargs.get('params'))
+
+
+class TestFundIndustriesHandler(AsyncHTTPTestCase):
+    def get_app(self):
+        return _make_app()
+
+    @mock.patch.object(frh.mdb, 'executeSqlFetch',
+                       return_value=[('半导体',), ('电子',), ('医药',)])
+    @mock.patch.object(frh.mdb, 'checkTableIsExist', return_value=True)
+    def test_industries_for_equity(self, _exist, _fetch):
+        resp = self.fetch('/api/fund/rank/industries?fund_type=股票型')
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        self.assertTrue(data['supported'])
+        self.assertEqual(data['industries'], ['半导体', '电子', '医药'])
+
+    @mock.patch.object(frh.mdb, 'checkTableIsExist', return_value=True)
+    def test_industries_unsupported_for_money(self, _exist):
+        resp = self.fetch('/api/fund/rank/industries?fund_type=货币型')
+        self.assertEqual(resp.code, 200)
+        data = json.loads(resp.body)
+        self.assertFalse(data['supported'])
+        self.assertEqual(data['industries'], [])
+
+    @mock.patch.object(frh.mdb, 'checkTableIsExist', return_value=True)
+    def test_industries_rejects_bad_type(self, _exist):
+        resp = self.fetch('/api/fund/rank/industries?fund_type=非法')
+        self.assertEqual(resp.code, 400)
+

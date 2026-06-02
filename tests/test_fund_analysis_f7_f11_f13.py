@@ -301,9 +301,11 @@ class TestCompositeHandler(AsyncHTTPTestCase):
             if 'cn_fund_rank_score' in sql.lower() and 'select `score`' in sql.lower():
                 return [(92.0, 1.6, -0.18, 60.0, 110.0, 6.0, '半导体', 1)]
             if 'cn_fund_profile' in sql.lower():
-                return [('股票型-普通', 12.0, '2018-01-01', '某公司', '张三', '5星')]
+                return [('股票型-普通', 12.0, '2018-01-01', '某公司', '张三',
+                         '5星', '价值成长', '长期超额', '沪深300')]
             if 'cn_fund_holding' in sql.lower():
-                return [('半导体', 25.0), ('电子', 20.0)]
+                return [('中芯国际', '688981', '半导体', 25.0, '2026Q1'),
+                        ('立讯精密', '002475', '电子', 20.0, '2026Q1')]
             # rank meta
             return [('基金A', '股票型', '2026-05-29', 25.0, 60.0)]
 
@@ -317,6 +319,13 @@ class TestCompositeHandler(AsyncHTTPTestCase):
         assert data['code'] == '001'
         assert data['risk_level'] in ('低', '中', '中高', '高')
         assert 'performance' in data and 'concentration' in data
+        # F9 扩展：基金画像 + 前十大重仓股明细
+        assert data['profile']['company'] == '某公司'
+        assert data['profile']['benchmark'] == '沪深300'
+        assert data['holdings']['quarter'] == '2026Q1'
+        assert len(data['holdings']['top']) == 2
+        assert data['holdings']['top'][0]['name'] == '中芯国际'
+        assert data['holdings']['top'][0]['stock_code'] == '688981'
 
     def test_composite_missing_code(self):
         resp = self.fetch('/api/fund/composite_analysis')
