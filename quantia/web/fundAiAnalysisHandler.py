@@ -111,16 +111,16 @@ def gather_ctx(code):
     profile = cah._fetch_one(
         _PROFILE_TABLE,
         ['fund_type_detail', 'scale_yi', 'setup_date', 'company',
-         'manager', 'rating'],
+         'manager', 'rating', 'strategy', 'objective', 'benchmark'],
         'code', code)
 
     holdings = []
     if mdb.checkTableIsExist(_HOLDING_TABLE):
         hrows = mdb.executeSqlFetch(
-            f"SELECT `stock_name`, `industry`, `hold_ratio` FROM `{_HOLDING_TABLE}` "
-            f"WHERE `code` = %s", (str(code),))
-        holdings = [{'name': r[0], 'industry': r[1], 'hold_ratio': r[2]}
-                    for r in (hrows or [])]
+            f"SELECT `stock_name`, `stock_code`, `industry`, `hold_ratio`, `quarter` "
+            f"FROM `{_HOLDING_TABLE}` WHERE `code` = %s", (str(code),))
+        holdings = [{'name': r[0], 'stock_code': r[1], 'industry': r[2],
+                     'hold_ratio': r[3], 'quarter': r[4]} for r in (hrows or [])]
 
     peer_percentiles = {}
     if fund_type and mdb.checkTableIsExist(_SCORE_TABLE):

@@ -177,6 +177,24 @@ def build_composite_analysis(ctx):
         else:
             scale_texts.append(f'成立{years:.1f}年，历史区间较短')
 
+    # ── 持仓明细（前十大重仓股，按占比降序）──
+    top_holdings = []
+    quarter = None
+    if holdings:
+        for h in holdings:
+            r = _num(h.get('hold_ratio'))
+            if h.get('quarter') and not quarter:
+                quarter = h.get('quarter')
+            if h.get('name'):
+                top_holdings.append({
+                    'name': h.get('name'),
+                    'stock_code': h.get('stock_code'),
+                    'industry': h.get('industry') or '未分类',
+                    'hold_ratio': r,
+                })
+        top_holdings.sort(key=lambda x: (x['hold_ratio'] is None, -(x['hold_ratio'] or 0)))
+        top_holdings = top_holdings[:10]
+
     # ── 风险等级 ──
     level = labels.risk_level(max_drawdown=max_dd, concentration=conc_sum,
                               fund_type=fund_type, sharpe=sharpe)
@@ -210,6 +228,17 @@ def build_composite_analysis(ctx):
         'style': {'fund_type_detail': fund_type_detail, 'text': style_text},
         'scale': {'scale_yi': scale_yi, 'setup_date': setup_date, 'years': years,
                   'texts': scale_texts},
+        'profile': {
+            'company': profile.get('company'),
+            'manager': profile.get('manager'),
+            'rating': profile.get('rating'),
+            'fund_type_detail': fund_type_detail,
+            'strategy': profile.get('strategy'),
+            'objective': profile.get('objective'),
+            'benchmark': profile.get('benchmark'),
+            'setup_date': setup_date,
+        },
+        'holdings': {'quarter': quarter, 'top': top_holdings},
         'risk_level': level,
         'summary': summary,
         'disclaimer': labels.RISK_DISCLAIMER,
@@ -265,15 +294,16 @@ class FundCompositeAnalysisHandler(webBase.BaseHandler):
             profile = _fetch_one(
                 _PROFILE_TABLE,
                 ['fund_type_detail', 'scale_yi', 'setup_date', 'company',
-                 'manager', 'rating'],
+                 'manager', 'rating', 'strategy', 'objective', 'benchmark'],
                 'code', code)
 
             holdings = []
             if mdb.checkTableIsExist(_HOLDING_TABLE):
                 hrows = mdb.executeSqlFetch(
-                    f"SELECT `industry`, `hold_ratio` FROM `{_HOLDING_TABLE}` "
-                    f"WHERE `code` = %s", (str(code),))
-                holdings = [{'industry': r[0], 'hold_ratio': r[1]} for r in (hrows or [])]
+                    f"SELECT `stock_name`, `stock_code`, `industry`, `hold_ratio`, `quarter` "
+                    f"FROM `{_HOLDING_TABLE}` WHERE `code` = %s", (str(code),))
+                holdings = [{'name': r[0], 'stock_code': r[1], 'industry': r[2],
+                             'hold_ratio': r[3], 'quarter': r[4]} for r in (hrows or [])]
 
             # 同类桶分位（夏普/抗跌的「同类前 Z%」需桶内对标）
             peer_percentiles = {}

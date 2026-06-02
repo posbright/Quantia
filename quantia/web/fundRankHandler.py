@@ -26,9 +26,13 @@ __date__ = '2026/06/01'
 logger = logging.getLogger(__name__)
 
 _FUND_RANK_TABLE = tbs.TABLE_CN_FUND_RANK['name']
+_FUND_SCORE_TABLE = tbs.TABLE_CN_FUND_RANK_SCORE['name']
 
 # 基金类型桶（与 fund_em._NAV_TYPES + 货币型一致）。
 _FUND_TYPES = ['股票型', '混合型', '债券型', '指数型', 'QDII', 'FOF', '货币型']
+
+# 仅 A 股权益类桶支持「主行业」二级过滤（行业映射只覆盖 A 股，见 §3.5 F12）。
+_EQUITY_TYPES = {'股票型', '混合型', '指数型'}
 
 # 可排序周期列白名单（防 SQL 注入：仅允许 cn_fund_rank 真实数值列）。
 # label 供前端下拉展示；value 即列名。
@@ -133,6 +137,7 @@ class FundRankHandler(webBase.BaseHandler):
             fund_type = self.get_argument('fund_type', default=_FUND_TYPES[0])
             period = self.get_argument('period', default=_DEFAULT_PERIOD)
             limit_raw = self.get_argument('limit', default=str(_DEFAULT_LIMIT))
+            industry = (self.get_argument('industry', default='') or '').strip()
 
             if fund_type not in _FUND_TYPES:
                 _write_error(self, f'不支持的基金类型: {fund_type}')
@@ -146,22 +151,42 @@ class FundRankHandler(webBase.BaseHandler):
                 limit = _DEFAULT_LIMIT
             limit = max(1, min(limit, _MAX_LIMIT))
 
+            # 行业过滤仅对 A 股权益类桶生效；其它桶忽略该参数。
+            apply_industry = bool(industry) and fund_type in _EQUITY_TYPES
+
             if not mdb.checkTableIsExist(_FUND_RANK_TABLE):
                 _write_json(self, {'date': None, 'fund_type': fund_type,
-                                   'period': period, 'count': 0, 'items': []})
+                                   'period': period, 'industry': industry or None,
+                                   'count': 0, 'items': []})
                 return
 
-            cols_sql = ', '.join(f'`{c}`' for c in _DISPLAY_COLS)
-            # period 已过白名单校验，安全拼入 ORDER BY；其余参数化。
-            # NULL 收益率排末尾：`col IS NULL` 升序使非空在前。
-            sql = (
-                f"SELECT {cols_sql} FROM `{_FUND_RANK_TABLE}` "
-                f"WHERE `date` = (SELECT MAX(`date`) FROM `{_FUND_RANK_TABLE}`) "
-                f"AND `fund_type` = %s "
-                f"ORDER BY (`{period}` IS NULL), `{period}` DESC "
-                f"LIMIT %s"
-            )
-            df = pd.read_sql(sql, con=mdb.engine(), params=(fund_type, limit))
+            has_score = mdb.checkTableIsExist(_FUND_SCORE_TABLE)
+            cols_sql = ', '.join(f'r.`{c}`' for c in _DISPLAY_COLS)
+            params = [fund_type]
+            if has_score:
+                # LEFT JOIN 评分表带出主行业（供展示 + 过滤）。
+                sql = (
+                    f"SELECT {cols_sql}, s.`main_industry` AS main_industry "
+                    f"FROM `{_FUND_RANK_TABLE}` r "
+                    f"LEFT JOIN `{_FUND_SCORE_TABLE}` s "
+                    f"  ON s.`code` = r.`code` "
+                    f"  AND s.`date` = (SELECT MAX(`date`) FROM `{_FUND_SCORE_TABLE}`) "
+                    f"WHERE r.`date` = (SELECT MAX(`date`) FROM `{_FUND_RANK_TABLE}`) "
+                    f"  AND r.`fund_type` = %s "
+                )
+                if apply_industry:
+                    sql += "AND s.`main_industry` = %s "
+                    params.append(industry)
+                sql += f"ORDER BY (r.`{period}` IS NULL), r.`{period}` DESC LIMIT %s"
+            else:
+                sql = (
+                    f"SELECT {cols_sql} FROM `{_FUND_RANK_TABLE}` r "
+                    f"WHERE r.`date` = (SELECT MAX(`date`) FROM `{_FUND_RANK_TABLE}`) "
+                    f"  AND r.`fund_type` = %s "
+                    f"ORDER BY (r.`{period}` IS NULL), r.`{period}` DESC LIMIT %s"
+                )
+            params.append(limit)
+            df = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
 
             snapshot_date = None
             date_rows = mdb.executeSqlFetch(
@@ -175,9 +200,49 @@ class FundRankHandler(webBase.BaseHandler):
                 'date': snapshot_date,
                 'fund_type': fund_type,
                 'period': period,
+                'industry': industry or None,
                 'count': len(items),
                 'items': items,
             })
         except Exception:
             logger.error("基金排名查询异常", exc_info=True)
+            _write_error(self, '服务器内部错误', 500)
+
+
+class FundIndustriesHandler(webBase.BaseHandler):
+    """GET /quantia/api/fund/rank/industries?fund_type=股票型
+
+    返回该 A 股权益类桶内出现的主行业列表（供排行榜二级过滤下拉）。
+    非权益类桶（QDII/债券/货币/FOF）返回空列表 + supported=False。
+    """
+
+    def get(self):
+        try:
+            fund_type = self.get_argument('fund_type', default=_FUND_TYPES[0])
+            if fund_type not in _FUND_TYPES:
+                _write_error(self, f'不支持的基金类型: {fund_type}')
+                return
+            supported = fund_type in _EQUITY_TYPES
+            industries = []
+            if (supported and mdb.checkTableIsExist(_FUND_RANK_TABLE)
+                    and mdb.checkTableIsExist(_FUND_SCORE_TABLE)):
+                rows = mdb.executeSqlFetch(
+                    f"SELECT DISTINCT s.`main_industry` "
+                    f"FROM `{_FUND_RANK_TABLE}` r "
+                    f"JOIN `{_FUND_SCORE_TABLE}` s "
+                    f"  ON s.`code` = r.`code` "
+                    f"  AND s.`date` = (SELECT MAX(`date`) FROM `{_FUND_SCORE_TABLE}`) "
+                    f"WHERE r.`date` = (SELECT MAX(`date`) FROM `{_FUND_RANK_TABLE}`) "
+                    f"  AND r.`fund_type` = %s "
+                    f"  AND s.`main_industry` IS NOT NULL AND s.`main_industry` <> '' "
+                    f"ORDER BY s.`main_industry`",
+                    (fund_type,))
+                industries = [r[0] for r in (rows or []) if r and r[0]]
+            _write_json(self, {
+                'fund_type': fund_type,
+                'supported': supported,
+                'industries': industries,
+            })
+        except Exception:
+            logger.error("基金行业列表查询异常", exc_info=True)
             _write_error(self, '服务器内部错误', 500)
