@@ -125,7 +125,7 @@ def record_call(
                     (
                         scene, agent, provider, model, user_id,
                         _truncate_for_audit(prompt), _truncate_for_audit(response),
-                        json.dumps(tools_payload, ensure_ascii=False) if tools_payload is not None else None,
+                        json.dumps(tools_payload, ensure_ascii=False, default=str) if tools_payload is not None else None,
                         prompt_tokens, completion_tokens, total_tokens,
                         latency_ms, 1 if ok else 0,
                         (error or '')[:512] or None,

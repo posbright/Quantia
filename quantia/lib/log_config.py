@@ -31,9 +31,50 @@
 import logging
 import logging.handlers
 import os
+import threading
+import time
 
 __author__ = 'Quantia'
 __date__ = '2026/02/14'
+
+# ── 限频日志：抑制高频重复告警 ─────────────────────────────────────────
+# 同一 key 在 window_sec 窗口内只输出一次，期间被抑制的次数在下次输出时汇总，
+# 避免诸如"无法获取基准指数 399951"/"EastMoney 获取 xxx 失败"刷屏。
+_throttle_lock = threading.Lock()
+_throttle_state: dict = {}  # key -> {'last_emit': monotonic, 'suppressed': int}
+
+
+def warn_throttled(key, message, *, window_sec=3600, logger=None, level=logging.WARNING):
+    """限频告警：同一 ``key`` 在 ``window_sec`` 秒内最多输出一次。
+
+    窗口内被抑制的重复告警会累计计数，并在下一次实际输出时以
+    "（过去 Ns 内同类告警被抑制 N 次）"形式汇总，既保留可观测性又不刷屏。
+
+    Args:
+        key: 去重键（如 ``f'benchmark_fail:{code}'``）。相同 key 视为同类告警。
+        message: 实际输出的日志文本。
+        window_sec: 去重时间窗口（秒），默认 1 小时。
+        logger: 目标 logger，默认根 logger。
+        level: 日志级别，默认 WARNING。
+    """
+    log = logger or logging.getLogger()
+    now = time.monotonic()
+    with _throttle_lock:
+        state = _throttle_state.get(key)
+        if state is None:
+            _throttle_state[key] = {'last_emit': now, 'suppressed': 0}
+            log.log(level, message)
+            return
+        if now - state['last_emit'] >= window_sec:
+            suppressed = state['suppressed']
+            state['last_emit'] = now
+            state['suppressed'] = 0
+            if suppressed > 0:
+                log.log(level, f"{message}（过去 {int(window_sec)}s 内同类告警被抑制 {suppressed} 次）")
+            else:
+                log.log(level, message)
+        else:
+            state['suppressed'] += 1
 
 _LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 _LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'

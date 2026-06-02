@@ -18,6 +18,8 @@ import concurrent.futures
 import pandas as pd
 import numpy as np
 
+from quantia.lib.log_config import warn_throttled
+
 __author__ = 'Quantia'
 __date__ = '2026/03/16'
 
@@ -144,7 +146,12 @@ def _fetch_stock_from_eastmoney(code, start_date=None, end_date=None, adjust='qf
             'RemoteDisconnected', 'SSLError',
         ))
         if is_transient:
-            logging.warning(f"EastMoney 获取 {code} 失败({type(e).__name__})，尝试 akshare 备用: {err_str[:120]}")
+            # 整库回测时会出现成千上万条同类降级告警 → 限频聚合，每 10 分钟汇总一次
+            warn_throttled(
+                'em_stock_fallback',
+                f"EastMoney 获取个股失败({type(e).__name__})，降级 akshare（最近 {code}）: {err_str[:120]}",
+                window_sec=600,
+            )
             fallback = _fetch_stock_from_akshare(code, start_date, end_date, adjust)
             if fallback is not None:
                 return fallback
@@ -652,7 +659,11 @@ def load_benchmark_data(code='000300', start_date=None, end_date=None):
                 'RemoteDisconnected', 'SSLError',
             ))
             if is_transient:
-                logging.warning(f"EastMoney 指数API 获取 {code} 失败({type(e).__name__})，将尝试 AkShare 备用通道")
+                warn_throttled(
+                    f'em_index_fail:{code}',
+                    f"EastMoney 指数API 获取 {code} 失败({type(e).__name__})，将尝试 AkShare 备用通道",
+                    window_sec=3600,
+                )
             else:
                 logging.debug(f"EastMoney 指数API 获取 {code} 失败: {e}")
 
@@ -718,5 +729,6 @@ def load_benchmark_data(code='000300', start_date=None, end_date=None):
     except Exception as e:
         logging.debug(f"AkShare 获取指数数据失败: {e}")
 
-    logging.warning(f"无法获取基准指数 {code} 的数据")
+    # 同一基准指数若持续不可用，多个分析任务会每小时重复刷此告警 → 限频
+    warn_throttled(f'benchmark_fail:{code}', f"无法获取基准指数 {code} 的数据", window_sec=3600)
     return None
