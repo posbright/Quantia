@@ -425,7 +425,24 @@ async function renderNavCurve() {
   const peerPts = navPeer.value?.points || []
   const peerMap = new Map(peerPts.map((p) => [p.date, p.growth]))
   const hasPeer = peerPts.length > 0
-  const peerSeriesData = hasPeer ? dates.map((d) => peerMap.get(d) ?? null) : []
+  const peerAligned = hasPeer ? dates.map((d) => peerMap.get(d) ?? null) : []
+  // 把同类平均重定基到"本基金起点同一条 0% 基准线"，便于直观看超额：
+  // 找到本基金归一化起点(growth 首个非空=0%)的索引，取该处（或其后首个有效）
+  // 的同类平均值作为偏移量减去，使两条线在图左侧同点出发。
+  const baseIdx = growth.findIndex((v) => v != null)
+  let peerOffset: number | null = null
+  if (hasPeer && baseIdx >= 0) {
+    for (let i = baseIdx; i < peerAligned.length; i++) {
+      if (peerAligned[i] != null) {
+        peerOffset = peerAligned[i] as number
+        break
+      }
+    }
+  }
+  const peerSeriesData =
+    hasPeer && peerOffset != null
+      ? peerAligned.map((v) => (v == null ? null : Number((v - (peerOffset as number)).toFixed(4))))
+      : peerAligned
   const series: echarts.LineSeriesOption[] = [
     {
       name: '本基金',
