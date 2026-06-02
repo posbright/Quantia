@@ -1616,6 +1616,24 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertEqual(_parse_flag_list('{bad json}'), [])
         self.assertEqual(_parse_flag_list('{"a":1}'), [])
 
+    def test_normalize_score_row_parses_json_arrays(self):
+        from quantia.web.selectionScoreHandler import _normalize_score_row
+        row = {
+            'code': '000001',
+            'risk_flags': '["rank_change_not_comparable"]',
+            'tags': '["高成长"]',
+        }
+        out = _normalize_score_row(row)
+        self.assertEqual(out['risk_flags'], ['rank_change_not_comparable'])
+        self.assertEqual(out['tags'], ['高成长'])
+        self.assertFalse(out['rank_change_comparable'])
+
+    def test_parse_json_array_field_non_list_returns_empty(self):
+        from quantia.web.selectionScoreHandler import _parse_json_array_field
+        self.assertEqual(_parse_json_array_field('{"k":1}'), [])
+        self.assertEqual(_parse_json_array_field(''), [])
+        self.assertEqual(_parse_json_array_field(None), [])
+
 
 # ============================================================
 # Additional klineHandler edge-case tests

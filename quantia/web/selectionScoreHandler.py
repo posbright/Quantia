@@ -4,6 +4,7 @@
 
 端点：
 - GET /quantia/api/selection/score/list
+- GET /quantia/api/selection/score/detail
 
 本阶段目标：在列表结果中透出 rank_change 是否可比，
 当 risk_flags 包含 "rank_change_not_comparable" 时返回 rank_change_comparable=false。
@@ -62,6 +63,31 @@ def _parse_flag_list(risk_flags) -> list[str]:
 def _rank_change_comparable_from_flags(risk_flags) -> bool:
     flags = _parse_flag_list(risk_flags)
     return 'rank_change_not_comparable' not in flags
+
+
+def _parse_json_array_field(value):
+    """将 JSON 数组字段解析为 list；异常输入返回空列表。"""
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, str):
+        return []
+    text = value.strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _normalize_score_row(row: dict) -> dict:
+    """标准化单条评分记录，补充 rank_change_comparable 并解析 JSON 数组字段。"""
+    item = dict(row)
+    item['risk_flags'] = _parse_json_array_field(item.get('risk_flags'))
+    item['tags'] = _parse_json_array_field(item.get('tags'))
+    item['rank_change_comparable'] = _rank_change_comparable_from_flags(item.get('risk_flags'))
+    return item
 
 
 class SelectionScoreListHandler(webBase.BaseHandler):
@@ -146,8 +172,7 @@ class SelectionScoreListHandler(webBase.BaseHandler):
 
             items = []
             for row in df.to_dict(orient='records'):
-                row['rank_change_comparable'] = _rank_change_comparable_from_flags(row.get('risk_flags'))
-                items.append(row)
+                items.append(_normalize_score_row(row))
 
             date_rows = mdb.executeSqlFetch(
                 f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
@@ -166,5 +191,62 @@ class SelectionScoreListHandler(webBase.BaseHandler):
             })
         except Exception:
             logger.error('SelectionScoreListHandler 查询异常', exc_info=True)
+            self.set_status(500)
+            _write_json(self, {'error': '服务器内部错误'})
+
+
+class SelectionScoreDetailHandler(webBase.BaseHandler):
+    """GET /quantia/api/selection/score/detail
+
+    Query:
+    - code: 必填
+    - date: 可选，默认该 code 最新评分日期
+    """
+
+    def get(self):
+        try:
+            if not mdb.checkTableIsExist(scoring.SELECTION_SCORE_TABLE):
+                _write_json(self, {
+                    'item': None,
+                    'warning': 'cn_stock_selection_score 表尚未创建，请先执行 selection_score_job',
+                })
+                return
+
+            code = self.get_argument('code', default='').strip()
+            date_arg = self.get_argument('date', default='').strip()
+            if not code:
+                self.set_status(400)
+                _write_json(self, {'error': '缺少必填参数: code'})
+                return
+
+            if date_arg:
+                sql = (
+                    f"SELECT `date`,`code`,`name`,`industry`,`total_score`,`total_score_raw`,`quality_score`,`industry_score`,"
+                    f"`rating`,`industry_rank`,`industry_total`,`rank_change_1d`,`data_completeness`,"
+                    f"`score_valuation`,`score_profitability`,`score_growth`,`score_health`,`score_capital`,`score_technical`,`score_sentiment`,"
+                    f"`risk_penalty`,`risk_flags`,`tags`,`weight_template` "
+                    f"FROM `{scoring.SELECTION_SCORE_TABLE}` WHERE `code`=%s AND `date`=%s LIMIT 1"
+                )
+                params = (code, date_arg)
+            else:
+                sql = (
+                    f"SELECT `date`,`code`,`name`,`industry`,`total_score`,`total_score_raw`,`quality_score`,`industry_score`,"
+                    f"`rating`,`industry_rank`,`industry_total`,`rank_change_1d`,`data_completeness`,"
+                    f"`score_valuation`,`score_profitability`,`score_growth`,`score_health`,`score_capital`,`score_technical`,`score_sentiment`,"
+                    f"`risk_penalty`,`risk_flags`,`tags`,`weight_template` "
+                    f"FROM `{scoring.SELECTION_SCORE_TABLE}` WHERE `code`=%s "
+                    f"ORDER BY `date` DESC LIMIT 1"
+                )
+                params = (code,)
+
+            df = pd.read_sql(sql, con=mdb.engine(), params=params)
+            if df.empty:
+                _write_json(self, {'item': None})
+                return
+
+            item = _normalize_score_row(df.to_dict(orient='records')[0])
+            _write_json(self, {'item': item})
+        except Exception:
+            logger.error('SelectionScoreDetailHandler 查询异常', exc_info=True)
             self.set_status(500)
             _write_json(self, {'error': '服务器内部错误'})
