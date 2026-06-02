@@ -92,6 +92,51 @@ def _normalize_score_row(row: dict) -> dict:
     return item
 
 
+def _apply_template_total_score(df: pd.DataFrame, template: str | dict | None) -> pd.DataFrame:
+    """基于存储维度分实时重加权，产出 `total_score_view`（M3）。"""
+    out = df.copy()
+    out['total_score_view'] = pd.to_numeric(out.get('total_score'), errors='coerce')
+    if template is None:
+        return out
+    t = str(template).strip().lower()
+    if not t or t == 'balanced':
+        return out
+
+    try:
+        weights = scoring.resolve_weight_template(template)
+    except Exception:
+        return out
+
+    comp = pd.DataFrame(index=out.index)
+    w_used = []
+    dim_to_col = {
+        'valuation': 'score_valuation',
+        'profitability': 'score_profitability',
+        'growth': 'score_growth',
+        'health': 'score_health',
+        'capital': 'score_capital',
+        'technical': 'score_technical',
+        'sentiment': 'score_sentiment',
+    }
+    for dim, col in dim_to_col.items():
+        if col in out.columns and dim in weights and float(weights[dim]) > 0:
+            comp[col] = pd.to_numeric(out[col], errors='coerce')
+            w_used.append((col, float(weights[dim])))
+    if not w_used:
+        return out
+
+    weighted_sum = pd.Series(0.0, index=out.index)
+    valid_weight = pd.Series(0.0, index=out.index)
+    for col, w in w_used:
+        v = comp[col]
+        mask = v.notna()
+        weighted_sum.loc[mask] += v.loc[mask] * w
+        valid_weight.loc[mask] += w
+    view = weighted_sum / valid_weight.where(valid_weight > 0)
+    out['total_score_view'] = view.fillna(out['total_score_view']).clip(0, 100)
+    return out
+
+
 def _build_industry_summary_items(df: pd.DataFrame) -> list[dict]:
     """按 industry 聚合行业摘要（M2.5）。"""
     if df is None or df.empty:
@@ -101,12 +146,14 @@ def _build_industry_summary_items(df: pd.DataFrame) -> list[dict]:
     if 'industry' not in data.columns:
         return []
     data['industry'] = data['industry'].fillna('其他').replace('', '其他')
+    score_col = 'total_score_view' if 'total_score_view' in data.columns else 'total_score'
+    data[score_col] = pd.to_numeric(data.get(score_col), errors='coerce')
     if 'rank_change_comparable' not in data.columns:
         data['rank_change_comparable'] = data.get('risk_flags', '[]').apply(_rank_change_comparable_from_flags)
 
     items = []
     for industry, g in data.groupby('industry', sort=True):
-        g2 = g.sort_values(['total_score', 'quality_score'], ascending=[False, False], kind='mergesort')
+        g2 = g.sort_values([score_col, 'quality_score'], ascending=[False, False], kind='mergesort')
         leader = g2.iloc[0]
         total = int(len(g2))
         non_comparable = int((~g2['rank_change_comparable'].astype(bool)).sum())
@@ -115,11 +162,11 @@ def _build_industry_summary_items(df: pd.DataFrame) -> list[dict]:
         item = {
             'industry': str(industry),
             'stock_count': total,
-            'avg_total_score': float(pd.to_numeric(g2['total_score'], errors='coerce').mean()),
+            'avg_total_score': float(pd.to_numeric(g2[score_col], errors='coerce').mean()),
             'avg_quality_score': float(pd.to_numeric(g2['quality_score'], errors='coerce').mean()),
             'leader_code': str(leader.get('code', '')),
             'leader_name': leader.get('name', ''),
-            'leader_total_score': float(leader.get('total_score')) if pd.notna(leader.get('total_score')) else None,
+            'leader_total_score': float(leader.get(score_col)) if pd.notna(leader.get(score_col)) else None,
             'leader_quality_score': float(leader.get('quality_score')) if pd.notna(leader.get('quality_score')) else None,
             'comparable_ratio': comparable_ratio,
             'non_comparable_count': non_comparable,
@@ -153,6 +200,7 @@ class SelectionScoreListHandler(webBase.BaseHandler):
     - min_quality: 可选
     - page/page_size: 分页
     - sort: total_score|quality_score|industry_rank（默认 total_score）
+    - template: 可选，list/industries 支持实时重加权视图排序
     """
 
     _SORT_MAP = {
@@ -177,6 +225,7 @@ class SelectionScoreListHandler(webBase.BaseHandler):
             rating = self.get_argument('rating', default='').strip().upper()
             min_quality_raw = self.get_argument('min_quality', default='').strip()
             sort = self.get_argument('sort', default='total_score').strip()
+            template = self.get_argument('template', default='').strip() or 'balanced'
             page = max(1, int(self.get_argument('page', default='1')))
             page_size = min(200, max(1, int(self.get_argument('page_size', default='50'))))
             offset = (page - 1) * page_size
@@ -208,20 +257,35 @@ class SelectionScoreListHandler(webBase.BaseHandler):
 
             where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
             order_sql = self._SORT_MAP.get(sort, self._SORT_MAP['total_score'])
+            need_reweight_sort = (str(template).strip().lower() != 'balanced' and sort == 'total_score')
 
             count_sql = f"SELECT COUNT(*) AS cnt FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql}"
             data_sql = (
                 f"SELECT `date`,`code`,`name`,`industry`,`total_score`,`total_score_raw`,`quality_score`,`industry_score`,"
-                f"`rating`,`industry_rank`,`industry_total`,`rank_change_1d`,`data_completeness`,`risk_flags`,`tags` "
+                f"`rating`,`industry_rank`,`industry_total`,`rank_change_1d`,`data_completeness`,`risk_flags`,`tags`,"
+                f"`score_valuation`,`score_profitability`,`score_growth`,`score_health`,`score_capital`,`score_technical`,`score_sentiment` "
                 f"FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql} "
                 f"ORDER BY {order_sql} LIMIT %s OFFSET %s"
+            )
+            data_sql_all = (
+                f"SELECT `date`,`code`,`name`,`industry`,`total_score`,`total_score_raw`,`quality_score`,`industry_score`,"
+                f"`rating`,`industry_rank`,`industry_total`,`rank_change_1d`,`data_completeness`,`risk_flags`,`tags`,"
+                f"`score_valuation`,`score_profitability`,`score_growth`,`score_health`,`score_capital`,`score_technical`,`score_sentiment` "
+                f"FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql}"
             )
 
             total_df = pd.read_sql(count_sql, con=mdb.engine(), params=tuple(params))
             total = int(total_df.iloc[0]['cnt']) if not total_df.empty else 0
 
-            data_params = list(params) + [page_size, offset]
-            df = pd.read_sql(data_sql, con=mdb.engine(), params=tuple(data_params))
+            if need_reweight_sort:
+                df_all = pd.read_sql(data_sql_all, con=mdb.engine(), params=tuple(params))
+                df_all = _apply_template_total_score(df_all, template)
+                df_all = df_all.sort_values(['total_score_view', 'quality_score'], ascending=[False, False], kind='mergesort')
+                df = df_all.iloc[offset: offset + page_size].copy()
+            else:
+                data_params = list(params) + [page_size, offset]
+                df = pd.read_sql(data_sql, con=mdb.engine(), params=tuple(data_params))
+                df = _apply_template_total_score(df, template)
 
             items = []
             for row in df.to_dict(orient='records'):
@@ -240,6 +304,7 @@ class SelectionScoreListHandler(webBase.BaseHandler):
                 'page': page,
                 'page_size': page_size,
                 'total': total,
+                'template_used': template,
                 'items': items,
             })
         except Exception:
@@ -310,7 +375,7 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
 
     Query:
     - date: 可选，默认最新评分日期
-    - template: 预留参数（当前仅 balanced 口径）
+    - template: 可选，行业卡片按实时重加权总分排序与聚合
     - min_quality: 可选，按 quality_score 过滤
     """
 
@@ -326,7 +391,7 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
                 return
 
             date_arg = self.get_argument('date', default='').strip()
-            _ = self.get_argument('template', default='').strip()  # 预留参数，当前不参与计算
+            template = self.get_argument('template', default='').strip() or 'balanced'
             min_quality_raw = self.get_argument('min_quality', default='').strip()
 
             where = []
@@ -356,6 +421,7 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
                 return
 
             df['rank_change_comparable'] = df['risk_flags'].apply(_rank_change_comparable_from_flags)
+            df = _apply_template_total_score(df, template)
             items = _build_industry_summary_items(df)
 
             date_rows = mdb.executeSqlFetch(
@@ -369,6 +435,7 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
             _write_json(self, {
                 'date': latest_date,
                 'count': len(items),
+                'template_used': template,
                 'items': items,
             })
         except Exception:

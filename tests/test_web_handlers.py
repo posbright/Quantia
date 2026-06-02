@@ -1690,6 +1690,43 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertEqual(out[0]['tags'], ['高成长'])
         self.assertFalse(out[0]['rank_change_comparable'])
 
+    def test_apply_template_total_score_changes_view(self):
+        from quantia.web.selectionScoreHandler import _apply_template_total_score
+        df = pd.DataFrame([
+            {
+                'total_score': 50.0,
+                'score_valuation': 10.0,
+                'score_profitability': 90.0,
+                'score_growth': 90.0,
+                'score_health': 90.0,
+                'score_capital': 90.0,
+                'score_technical': 90.0,
+                'score_sentiment': 90.0,
+            }
+        ])
+        out = _apply_template_total_score(df, 'm1_selection_pool')
+        self.assertIn('total_score_view', out.columns)
+        # m1_selection_pool 会重加权，视图分应可计算且与原分可能不同
+        self.assertTrue(pd.notna(out.loc[0, 'total_score_view']))
+        self.assertNotEqual(float(out.loc[0, 'total_score_view']), 50.0)
+
+    def test_apply_template_total_score_unknown_template_fallback(self):
+        from quantia.web.selectionScoreHandler import _apply_template_total_score
+        df = pd.DataFrame([{'total_score': 66.0}])
+        out = _apply_template_total_score(df, 'not_exists_template')
+        self.assertAlmostEqual(float(out.loc[0, 'total_score_view']), 66.0, places=6)
+
+    def test_build_industry_summary_prefers_total_score_view(self):
+        from quantia.web.selectionScoreHandler import _build_industry_summary_items
+        df = pd.DataFrame([
+            {'industry': '电池', 'code': 'A', 'name': 'A', 'total_score': 99.0, 'total_score_view': 10.0,
+             'quality_score': 80.0, 'rank_change_comparable': True},
+            {'industry': '电池', 'code': 'B', 'name': 'B', 'total_score': 20.0, 'total_score_view': 90.0,
+             'quality_score': 70.0, 'rank_change_comparable': True},
+        ])
+        items = _build_industry_summary_items(df)
+        self.assertEqual(items[0]['leader_code'], 'B')
+
 
 # ============================================================
 # Additional klineHandler edge-case tests
