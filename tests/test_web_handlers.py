@@ -1598,6 +1598,25 @@ class TestSPAHandler(unittest.TestCase):
             os.rmdir(spa_path)
 
 
+class TestSelectionScoreHandlerHelpers(unittest.TestCase):
+    """Tests for selectionScoreHandler helper functions (M2.3)."""
+
+    def test_rank_change_comparable_true_with_empty_flags(self):
+        from quantia.web.selectionScoreHandler import _rank_change_comparable_from_flags
+        self.assertTrue(_rank_change_comparable_from_flags('[]'))
+        self.assertTrue(_rank_change_comparable_from_flags(''))
+        self.assertTrue(_rank_change_comparable_from_flags(None))
+
+    def test_rank_change_comparable_false_with_not_comparable_flag(self):
+        from quantia.web.selectionScoreHandler import _rank_change_comparable_from_flags
+        self.assertFalse(_rank_change_comparable_from_flags('["rank_change_not_comparable"]'))
+
+    def test_parse_flag_list_tolerates_bad_json(self):
+        from quantia.web.selectionScoreHandler import _parse_flag_list
+        self.assertEqual(_parse_flag_list('{bad json}'), [])
+        self.assertEqual(_parse_flag_list('{"a":1}'), [])
+
+
 # ============================================================
 # Additional klineHandler edge-case tests
 # ============================================================

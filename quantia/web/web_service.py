@@ -62,6 +62,7 @@ import quantia.web.fundCompositeAnalysisHandler as fundCompositeAnalysisHandler
 import quantia.web.fundAiAnalysisHandler as fundAiAnalysisHandler
 import quantia.web.fundNavHistoryHandler as fundNavHistoryHandler
 import quantia.web.stockFinancialHandler as stockFinancialHandler
+import quantia.web.selectionScoreHandler as selectionScoreHandler
 import quantia.web.base as webBase
 
 __author__ = 'Quantia'
@@ -257,6 +258,8 @@ class Application(tornado.web.Application):
             (r"/quantia/api/verify/fusion_scheme/list", verifyFusionHandler.FusionSchemeListHandler),
             (r"/quantia/api/verify/fusion_scheme/(\d+)", verifyFusionHandler.FusionSchemeDeleteHandler),
             (r"/quantia/api/verify/optimize_suggest", verifyFusionHandler.OptimizeSuggestHandler),
+            # M2.3: 综合选股评分列表（透出排名变化可比标记）
+            (r"/quantia/api/selection/score/list", selectionScoreHandler.SelectionScoreListHandler),
             # ── 因子实验室 ──
             (r"/quantia/api/factor_lab/factors", factorLabHandler.FactorCatalogHandler),
             (r"/quantia/api/factor_lab/run", factorLabHandler.FactorLabRunHandler),
