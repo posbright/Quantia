@@ -1690,6 +1690,15 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertEqual(out[0]['tags'], ['高成长'])
         self.assertFalse(out[0]['rank_change_comparable'])
 
+    def test_build_top_items_has_display_score_alias(self):
+        from quantia.web.selectionScoreHandler import _build_top_items
+        df = pd.DataFrame([
+            {'code': 'X', 'quality_score': 90.0, 'total_score': 77.5, 'risk_flags': '[]', 'tags': '[]'},
+        ])
+        out = _build_top_items(df, n=5)
+        self.assertAlmostEqual(out[0]['display_score'], 77.5, places=6)
+        self.assertEqual(out[0]['display_score_source'], 'total_score')
+
     def test_apply_template_total_score_changes_view(self):
         from quantia.web.selectionScoreHandler import _apply_template_total_score
         df = pd.DataFrame([

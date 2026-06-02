@@ -414,7 +414,11 @@ class SelectionScoreDetailHandler(webBase.BaseHandler):
                 return
 
             item = _normalize_score_row(df.to_dict(orient='records')[0])
-            _write_json(self, {'item': item})
+            _write_json(self, {
+                'item': item,
+                'display_score_field': 'total_score',
+                'view_score_active': False,
+            })
         except Exception:
             logger.error('SelectionScoreDetailHandler 查询异常', exc_info=True)
             self.set_status(500)
@@ -558,6 +562,9 @@ class SelectionScoreTopHandler(webBase.BaseHandler):
                 'count': len(items),
                 'items': items,
                 'sort_by': 'quality_score',
+                'display_score_field': 'total_score',
+                'view_score_active': False,
+                'template_ignored': True,
             })
         except Exception:
             logger.error('SelectionScoreTopHandler 查询异常', exc_info=True)
