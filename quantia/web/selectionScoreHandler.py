@@ -5,6 +5,7 @@
 端点：
 - GET /quantia/api/selection/score/list
 - GET /quantia/api/selection/score/detail
+- GET /quantia/api/selection/score/industries
 
 本阶段目标：在列表结果中透出 rank_change 是否可比，
 当 risk_flags 包含 "rank_change_not_comparable" 时返回 rank_change_comparable=false。
@@ -88,6 +89,46 @@ def _normalize_score_row(row: dict) -> dict:
     item['tags'] = _parse_json_array_field(item.get('tags'))
     item['rank_change_comparable'] = _rank_change_comparable_from_flags(item.get('risk_flags'))
     return item
+
+
+def _build_industry_summary_items(df: pd.DataFrame) -> list[dict]:
+    """按 industry 聚合行业摘要（M2.5）。"""
+    if df is None or df.empty:
+        return []
+
+    data = df.copy()
+    if 'industry' not in data.columns:
+        return []
+    data['industry'] = data['industry'].fillna('其他').replace('', '其他')
+    if 'rank_change_comparable' not in data.columns:
+        data['rank_change_comparable'] = data.get('risk_flags', '[]').apply(_rank_change_comparable_from_flags)
+
+    items = []
+    for industry, g in data.groupby('industry', sort=True):
+        g2 = g.sort_values(['total_score', 'quality_score'], ascending=[False, False], kind='mergesort')
+        leader = g2.iloc[0]
+        total = int(len(g2))
+        non_comparable = int((~g2['rank_change_comparable'].astype(bool)).sum())
+        comparable_ratio = float(g2['rank_change_comparable'].astype(bool).mean()) if total > 0 else 0.0
+
+        item = {
+            'industry': str(industry),
+            'stock_count': total,
+            'avg_total_score': float(pd.to_numeric(g2['total_score'], errors='coerce').mean()),
+            'avg_quality_score': float(pd.to_numeric(g2['quality_score'], errors='coerce').mean()),
+            'leader_code': str(leader.get('code', '')),
+            'leader_name': leader.get('name', ''),
+            'leader_total_score': float(leader.get('total_score')) if pd.notna(leader.get('total_score')) else None,
+            'leader_quality_score': float(leader.get('quality_score')) if pd.notna(leader.get('quality_score')) else None,
+            'comparable_ratio': comparable_ratio,
+            'non_comparable_count': non_comparable,
+        }
+        if 'score_growth' in g2.columns:
+            item['prosperity_score'] = float(pd.to_numeric(g2['score_growth'], errors='coerce').mean())
+        items.append(item)
+
+    items.sort(key=lambda x: (-(x.get('avg_total_score') or 0.0), x.get('industry', '')))
+    return items
 
 
 class SelectionScoreListHandler(webBase.BaseHandler):
@@ -248,5 +289,77 @@ class SelectionScoreDetailHandler(webBase.BaseHandler):
             _write_json(self, {'item': item})
         except Exception:
             logger.error('SelectionScoreDetailHandler 查询异常', exc_info=True)
+            self.set_status(500)
+            _write_json(self, {'error': '服务器内部错误'})
+
+
+class SelectionScoreIndustriesHandler(webBase.BaseHandler):
+    """GET /quantia/api/selection/score/industries
+
+    Query:
+    - date: 可选，默认最新评分日期
+    - template: 预留参数（当前仅 balanced 口径）
+    - min_quality: 可选，按 quality_score 过滤
+    """
+
+    def get(self):
+        try:
+            if not mdb.checkTableIsExist(scoring.SELECTION_SCORE_TABLE):
+                _write_json(self, {
+                    'date': None,
+                    'count': 0,
+                    'items': [],
+                    'warning': 'cn_stock_selection_score 表尚未创建，请先执行 selection_score_job',
+                })
+                return
+
+            date_arg = self.get_argument('date', default='').strip()
+            _ = self.get_argument('template', default='').strip()  # 预留参数，当前不参与计算
+            min_quality_raw = self.get_argument('min_quality', default='').strip()
+
+            where = []
+            params = []
+            if date_arg:
+                where.append('`date` = %s')
+                params.append(date_arg)
+            else:
+                where.append(f"`date` = (SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`)")
+
+            if min_quality_raw:
+                try:
+                    min_quality = float(min_quality_raw)
+                    where.append('`quality_score` >= %s')
+                    params.append(min_quality)
+                except ValueError:
+                    pass
+
+            where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
+            sql = (
+                f"SELECT `industry`,`code`,`name`,`total_score`,`quality_score`,`score_growth`,`risk_flags` "
+                f"FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql}"
+            )
+            df = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
+            if df.empty:
+                _write_json(self, {'date': None, 'count': 0, 'items': []})
+                return
+
+            df['rank_change_comparable'] = df['risk_flags'].apply(_rank_change_comparable_from_flags)
+            items = _build_industry_summary_items(df)
+
+            date_rows = mdb.executeSqlFetch(
+                f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
+            )
+            latest_date = None
+            if date_rows and date_rows[0] and date_rows[0][0] is not None:
+                d = date_rows[0][0]
+                latest_date = d.isoformat() if hasattr(d, 'isoformat') else str(d)
+
+            _write_json(self, {
+                'date': latest_date,
+                'count': len(items),
+                'items': items,
+            })
+        except Exception:
+            logger.error('SelectionScoreIndustriesHandler 查询异常', exc_info=True)
             self.set_status(500)
             _write_json(self, {'error': '服务器内部错误'})

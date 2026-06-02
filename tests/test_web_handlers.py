@@ -1634,6 +1634,39 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertEqual(_parse_json_array_field(''), [])
         self.assertEqual(_parse_json_array_field(None), [])
 
+    def test_build_industry_summary_items(self):
+        from quantia.web.selectionScoreHandler import _build_industry_summary_items
+        df = pd.DataFrame([
+            {
+                'industry': '银行', 'code': '000001', 'name': '平安银行',
+                'total_score': 80.0, 'quality_score': 82.0, 'score_growth': 45.0,
+                'rank_change_comparable': True,
+            },
+            {
+                'industry': '银行', 'code': '000002', 'name': '招商银行',
+                'total_score': 70.0, 'quality_score': 75.0, 'score_growth': 40.0,
+                'rank_change_comparable': False,
+            },
+            {
+                'industry': '电池', 'code': '300750', 'name': '宁德时代',
+                'total_score': 90.0, 'quality_score': 88.0, 'score_growth': 60.0,
+                'rank_change_comparable': True,
+            },
+        ])
+
+        items = _build_industry_summary_items(df)
+        self.assertEqual(len(items), 2)
+        # 按 avg_total_score 降序，电池在前
+        self.assertEqual(items[0]['industry'], '电池')
+        self.assertEqual(items[0]['leader_code'], '300750')
+        self.assertEqual(items[0]['stock_count'], 1)
+
+        bank = next(x for x in items if x['industry'] == '银行')
+        self.assertEqual(bank['leader_code'], '000001')
+        self.assertEqual(bank['stock_count'], 2)
+        self.assertEqual(bank['non_comparable_count'], 1)
+        self.assertAlmostEqual(bank['comparable_ratio'], 0.5, places=6)
+
 
 # ============================================================
 # Additional klineHandler edge-case tests

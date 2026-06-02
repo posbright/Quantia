@@ -262,6 +262,8 @@ class Application(tornado.web.Application):
             (r"/quantia/api/selection/score/list", selectionScoreHandler.SelectionScoreListHandler),
             # M2.4: 综合选股评分详情（单股维度分 + 排名可比标记）
             (r"/quantia/api/selection/score/detail", selectionScoreHandler.SelectionScoreDetailHandler),
+            # M2.5: 综合选股行业汇总（行业均分、龙头、可比性统计）
+            (r"/quantia/api/selection/score/industries", selectionScoreHandler.SelectionScoreIndustriesHandler),
             # ── 因子实验室 ──
             (r"/quantia/api/factor_lab/factors", factorLabHandler.FactorCatalogHandler),
             (r"/quantia/api/factor_lab/run", factorLabHandler.FactorLabRunHandler),
