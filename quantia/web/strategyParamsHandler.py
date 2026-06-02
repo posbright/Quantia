@@ -509,7 +509,21 @@ def _load_saved_params(strategy_key):
             (strategy_key,)
         )
         if result:
-            return {row[0]: json.loads(row[1]) for row in result}
+            parsed = {}
+            for row in result:
+                raw = row[1]
+                if raw is None:
+                    continue
+                # 已是 Python 标量/容器（驱动或历史写入未经 json.dumps）→ 直接保留
+                if isinstance(raw, (int, float, bool, dict, list)):
+                    parsed[row[0]] = raw
+                    continue
+                try:
+                    parsed[row[0]] = json.loads(raw)
+                except (TypeError, ValueError):
+                    logging.warning(
+                        "策略参数 %s.%s 反序列化失败，跳过该值", strategy_key, row[0])
+            return parsed
     except Exception as e:
         logging.error(f"加载策略参数异常", exc_info=True)
     return {}

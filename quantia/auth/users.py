@@ -86,17 +86,33 @@ def ensure_admin_user_table(force: bool = False) -> None:
     """.strip()
     try:
         executeSql(sql)
-        # 老库兼容性迁移：若列不存在则 ALTER 添加（容忍重复执行报错）
-        for ddl in (
-            f"ALTER TABLE `{TABLE_NAME}` ADD COLUMN `email` VARCHAR(120) NULL",
-            f"ALTER TABLE `{TABLE_NAME}` ADD COLUMN `nickname` VARCHAR(64) NULL",
-            f"ALTER TABLE `{TABLE_NAME}` ADD UNIQUE KEY `uk_email` (`email`)",
-            f"ALTER TABLE `{TABLE_NAME}` ADD UNIQUE KEY `uk_nickname` (`nickname`)",
-        ):
+        # 老库兼容性迁移：仅当列/索引缺失时才 ALTER。
+        # 不能依赖 try/except 吞异常——executeSql 在重抛前会以 ERROR 级别记录日志，
+        # 导致每次启动都向 stock_error.log 写入重复键(1061)/重复列(1060)噪声。
+        try:
+            existing_cols = {
+                str(r[0]) for r in (executeSqlFetch(f"SHOW COLUMNS FROM `{TABLE_NAME}`") or [])
+            }
+            # SHOW INDEX 第 3 列(index 2)为 Key_name
+            existing_idx = {
+                str(r[2]) for r in (executeSqlFetch(f"SHOW INDEX FROM `{TABLE_NAME}`") or [])
+            }
+        except Exception:  # noqa: BLE001
+            existing_cols, existing_idx = set(), set()
+        migrations = []
+        if 'email' not in existing_cols:
+            migrations.append(f"ALTER TABLE `{TABLE_NAME}` ADD COLUMN `email` VARCHAR(120) NULL")
+        if 'nickname' not in existing_cols:
+            migrations.append(f"ALTER TABLE `{TABLE_NAME}` ADD COLUMN `nickname` VARCHAR(64) NULL")
+        if 'uk_email' not in existing_idx:
+            migrations.append(f"ALTER TABLE `{TABLE_NAME}` ADD UNIQUE KEY `uk_email` (`email`)")
+        if 'uk_nickname' not in existing_idx:
+            migrations.append(f"ALTER TABLE `{TABLE_NAME}` ADD UNIQUE KEY `uk_nickname` (`nickname`)")
+        for ddl in migrations:
             try:
                 executeSql(ddl)
             except Exception:  # noqa: BLE001
-                # 列/索引已存在则忽略
+                # 并发/竞态下仍可能已存在，忽略
                 pass
         _TABLE_READY = True
     except Exception as exc:  # noqa: BLE001
