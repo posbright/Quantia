@@ -6,6 +6,7 @@
 以及有效性验证原语（IC / 分层 / 单调性）的正确性。
 """
 import unittest
+import json
 
 import numpy as np
 import pandas as pd
@@ -261,6 +262,29 @@ class TestM2DailyBuilder(unittest.TestCase):
         out = sc.apply_ema_and_rank_change(cur, prev_scores=pd.DataFrame(), ema_span=5)
         self.assertAlmostEqual(float(out['total_score'].iloc[0]), 66.0, places=6)
         self.assertEqual(int(out['rank_change_1d'].iloc[0]), 0)
+
+    def test_apply_ema_rank_change_industry_changed_marks_not_comparable(self):
+        cur = pd.DataFrame({
+            'date': [pd.to_datetime('2026-06-02').date()],
+            'code': ['000001'],
+            'industry': ['电池'],
+            'total_score_raw': [70.0],
+            'total_score': [70.0],
+            'industry_rank': [1],
+            'industry_total': [1],
+            'risk_flags': ['[]'],
+        })
+        prev = pd.DataFrame({
+            'code': ['000001'],
+            'industry': ['银行'],
+            'total_score': [68.0],
+            'industry_rank': [1],
+        })
+
+        out = sc.apply_ema_and_rank_change(cur, prev_scores=prev, ema_span=5)
+        self.assertEqual(int(out['rank_change_1d'].iloc[0]), 0)
+        flags = json.loads(out['risk_flags'].iloc[0])
+        self.assertIn('rank_change_not_comparable', flags)
 
 
 if __name__ == '__main__':

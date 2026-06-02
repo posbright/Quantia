@@ -15,6 +15,7 @@ DB 读取、结果落库由 `quantia/job/selection_score_job.py`、有效性验�
 """
 from __future__ import annotations
 
+import json
 import math
 from typing import Iterable, Optional
 
@@ -359,6 +360,25 @@ def _rating_from_quality(q: pd.Series) -> pd.Series:
     return out
 
 
+def _append_flag_json_array(value, flag: str) -> str:
+    """将 flag 追加到 JSON 数组字符串，异常输入兜底为空数组。"""
+    arr = []
+    if isinstance(value, list):
+        arr = [str(x) for x in value if x is not None]
+    elif isinstance(value, str):
+        text = value.strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    arr = [str(x) for x in parsed if x is not None]
+            except Exception:
+                arr = []
+    if flag not in arr:
+        arr.append(flag)
+    return json.dumps(arr, ensure_ascii=False)
+
+
 def build_daily_selection_scores(
     panel: pd.DataFrame,
     weight_template: str | dict[str, float] | None = 'balanced',
@@ -490,6 +510,14 @@ def apply_ema_and_rank_change(
         0.0,
     )
     out['rank_change_1d'] = _as_float(out['rank_change_1d']).fillna(0).round().astype(int)
+
+    # M2.2：行业变更时，rank_change_1d 不可比（置 0）并打标供前端展示。
+    not_comparable = out['prev_industry'].notna() & (~same_ind)
+    if 'risk_flags' not in out.columns:
+        out['risk_flags'] = '[]'
+    out.loc[not_comparable, 'risk_flags'] = out.loc[not_comparable, 'risk_flags'].apply(
+        lambda v: _append_flag_json_array(v, 'rank_change_not_comparable')
+    )
 
     return out.drop(columns=['prev_industry', 'prev_total_score', 'prev_industry_rank'])
 
