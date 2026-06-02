@@ -190,6 +190,28 @@ def _build_top_items(df: pd.DataFrame, n: int) -> list[dict]:
     return [_normalize_score_row(row) for row in d.to_dict(orient='records')]
 
 
+def _sort_list_dataframe(df: pd.DataFrame, sort: str, template: str) -> tuple[pd.DataFrame, str, bool]:
+    """对 list 查询结果应用排序，返回 (df, sort_by, view_score_active)。"""
+    s = (sort or 'total_score').strip().lower()
+    t = (template or 'balanced').strip().lower()
+    out = _apply_template_total_score(df, template)
+
+    # M3.2: 显式支持 sort=total_score_view；兼容旧行为：template!=balanced 且 sort=total_score 时按 view 排序。
+    use_view = (s == 'total_score_view') or (s == 'total_score' and t != 'balanced')
+    if use_view:
+        out = out.sort_values(['total_score_view', 'quality_score'], ascending=[False, False], kind='mergesort')
+        return out, 'total_score_view', True
+    if s == 'quality_score':
+        out = out.sort_values(['quality_score', 'total_score'], ascending=[False, False], kind='mergesort')
+        return out, 'quality_score', False
+    if s == 'industry_rank':
+        out = out.sort_values(['industry_rank', 'total_score'], ascending=[True, False], kind='mergesort')
+        return out, 'industry_rank', False
+
+    out = out.sort_values(['total_score', 'quality_score'], ascending=[False, False], kind='mergesort')
+    return out, 'total_score', False
+
+
 class SelectionScoreListHandler(webBase.BaseHandler):
     """GET /quantia/api/selection/score/list
 
@@ -199,7 +221,7 @@ class SelectionScoreListHandler(webBase.BaseHandler):
     - rating: 可选（S/A/B/C/D）
     - min_quality: 可选
     - page/page_size: 分页
-    - sort: total_score|quality_score|industry_rank（默认 total_score）
+    - sort: total_score|total_score_view|quality_score|industry_rank（默认 total_score）
     - template: 可选，list/industries 支持实时重加权视图排序
     """
 
@@ -257,7 +279,10 @@ class SelectionScoreListHandler(webBase.BaseHandler):
 
             where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
             order_sql = self._SORT_MAP.get(sort, self._SORT_MAP['total_score'])
-            need_reweight_sort = (str(template).strip().lower() != 'balanced' and sort == 'total_score')
+            sort_key = (sort or 'total_score').strip().lower()
+            need_python_sort = (sort_key == 'total_score_view') or (
+                str(template).strip().lower() != 'balanced' and sort_key == 'total_score'
+            )
 
             count_sql = f"SELECT COUNT(*) AS cnt FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql}"
             data_sql = (
@@ -277,15 +302,14 @@ class SelectionScoreListHandler(webBase.BaseHandler):
             total_df = pd.read_sql(count_sql, con=mdb.engine(), params=tuple(params))
             total = int(total_df.iloc[0]['cnt']) if not total_df.empty else 0
 
-            if need_reweight_sort:
+            if need_python_sort:
                 df_all = pd.read_sql(data_sql_all, con=mdb.engine(), params=tuple(params))
-                df_all = _apply_template_total_score(df_all, template)
-                df_all = df_all.sort_values(['total_score_view', 'quality_score'], ascending=[False, False], kind='mergesort')
+                df_all, sort_by, view_active = _sort_list_dataframe(df_all, sort, template)
                 df = df_all.iloc[offset: offset + page_size].copy()
             else:
                 data_params = list(params) + [page_size, offset]
                 df = pd.read_sql(data_sql, con=mdb.engine(), params=tuple(data_params))
-                df = _apply_template_total_score(df, template)
+                df, sort_by, view_active = _sort_list_dataframe(df, sort, template)
 
             items = []
             for row in df.to_dict(orient='records'):
@@ -305,6 +329,8 @@ class SelectionScoreListHandler(webBase.BaseHandler):
                 'page_size': page_size,
                 'total': total,
                 'template_used': template,
+                'sort_by': sort_by,
+                'view_score_active': view_active,
                 'items': items,
             })
         except Exception:

@@ -1727,6 +1727,32 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         items = _build_industry_summary_items(df)
         self.assertEqual(items[0]['leader_code'], 'B')
 
+    def test_sort_list_dataframe_total_score_view(self):
+        from quantia.web.selectionScoreHandler import _sort_list_dataframe
+        df = pd.DataFrame([
+            {'code': 'A', 'total_score': 90.0, 'quality_score': 70.0,
+             'score_valuation': 10.0, 'score_profitability': 90.0, 'score_growth': 90.0,
+             'score_health': 90.0, 'score_capital': 90.0, 'score_technical': 90.0, 'score_sentiment': 90.0},
+            {'code': 'B', 'total_score': 60.0, 'quality_score': 80.0,
+             'score_valuation': 90.0, 'score_profitability': 10.0, 'score_growth': 10.0,
+             'score_health': 10.0, 'score_capital': 10.0, 'score_technical': 10.0, 'score_sentiment': 10.0},
+        ])
+        out, sort_by, view_active = _sort_list_dataframe(df, 'total_score_view', 'm1_selection_pool')
+        self.assertEqual(sort_by, 'total_score_view')
+        self.assertTrue(view_active)
+        self.assertIn('total_score_view', out.columns)
+
+    def test_sort_list_dataframe_quality_score(self):
+        from quantia.web.selectionScoreHandler import _sort_list_dataframe
+        df = pd.DataFrame([
+            {'code': 'A', 'total_score': 60.0, 'quality_score': 70.0},
+            {'code': 'B', 'total_score': 90.0, 'quality_score': 80.0},
+        ])
+        out, sort_by, view_active = _sort_list_dataframe(df, 'quality_score', 'balanced')
+        self.assertEqual(sort_by, 'quality_score')
+        self.assertFalse(view_active)
+        self.assertEqual(out.iloc[0]['code'], 'B')
+
 
 # ============================================================
 # Additional klineHandler edge-case tests
