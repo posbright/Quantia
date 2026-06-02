@@ -36,7 +36,7 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'all',
         name: 'StockSelection',
-        component: () => import('@/views/stock/StockData.vue'),
+        component: () => import('@/views/selection/all.vue'),
         meta: { title: '综合选股', tableName: 'cn_stock_selection', isRealtime: false }
       },
       {
