@@ -147,6 +147,23 @@ def _resolve_template_context(template: str | dict | None) -> dict:
     }
 
 
+def _resolve_sort_context(sort: str | None) -> dict:
+    """解析列表排序请求，统一返回请求/生效/回退状态。"""
+    requested = (str(sort).strip().lower() if sort is not None else '') or 'total_score'
+    supported = {'total_score', 'total_score_view', 'quality_score', 'industry_rank'}
+    if requested in supported:
+        return {
+            'sort_requested': requested,
+            'sort_effective': requested,
+            'sort_fallback': False,
+        }
+    return {
+        'sort_requested': requested,
+        'sort_effective': 'total_score',
+        'sort_fallback': True,
+    }
+
+
 def _apply_template_total_score(df: pd.DataFrame, template: str | dict | None) -> pd.DataFrame:
     """基于存储维度分实时重加权，产出 `total_score_view`（M3）。"""
     out = df.copy()
@@ -299,7 +316,11 @@ class SelectionScoreListHandler(webBase.BaseHandler):
             industry = self.get_argument('industry', default='').strip()
             rating = self.get_argument('rating', default='').strip().upper()
             min_quality_raw = self.get_argument('min_quality', default='').strip()
-            sort = self.get_argument('sort', default='total_score').strip()
+            sort_raw = self.get_argument('sort', default='total_score').strip()
+            sort_ctx = _resolve_sort_context(sort_raw)
+            sort_requested = sort_ctx['sort_requested']
+            sort_effective = sort_ctx['sort_effective']
+            sort_fallback = bool(sort_ctx['sort_fallback'])
             template_raw = self.get_argument('template', default='').strip()
             template_ctx = _resolve_template_context(template_raw)
             template_requested = template_ctx['template_requested']
@@ -336,8 +357,8 @@ class SelectionScoreListHandler(webBase.BaseHandler):
                     pass
 
             where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
-            order_sql = self._SORT_MAP.get(sort, self._SORT_MAP['total_score'])
-            sort_key = (sort or 'total_score').strip().lower()
+            order_sql = self._SORT_MAP.get(sort_effective, self._SORT_MAP['total_score'])
+            sort_key = sort_effective
             need_python_sort = (sort_key == 'total_score_view') or (template_active and sort_key == 'total_score')
 
             count_sql = f"SELECT COUNT(*) AS cnt FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql}"
@@ -360,12 +381,12 @@ class SelectionScoreListHandler(webBase.BaseHandler):
 
             if need_python_sort:
                 df_all = pd.read_sql(data_sql_all, con=mdb.engine(), params=tuple(params))
-                df_all, sort_by, view_active = _sort_list_dataframe(df_all, sort, template_effective)
+                df_all, sort_by, view_active = _sort_list_dataframe(df_all, sort_effective, template_effective)
                 df = df_all.iloc[offset: offset + page_size].copy()
             else:
                 data_params = list(params) + [page_size, offset]
                 df = pd.read_sql(data_sql, con=mdb.engine(), params=tuple(data_params))
-                df, sort_by, view_active = _sort_list_dataframe(df, sort, template_effective)
+                df, sort_by, view_active = _sort_list_dataframe(df, sort_effective, template_effective)
 
             items = []
             for row in df.to_dict(orient='records'):
@@ -388,6 +409,9 @@ class SelectionScoreListHandler(webBase.BaseHandler):
                 'template_used': template_effective,
                 'template_effective': template_effective,
                 'template_fallback': template_fallback,
+                'sort_requested': sort_requested,
+                'sort_effective': sort_by,
+                'sort_fallback': sort_fallback,
                 'sort_by': sort_by,
                 'view_score_active': view_active,
                 'display_score_field': 'total_score_view' if view_active else 'total_score',

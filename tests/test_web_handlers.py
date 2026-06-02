@@ -1800,6 +1800,20 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertTrue(ctx['template_fallback'])
         self.assertFalse(ctx['view_template_active'])
 
+    def test_resolve_sort_context_supported(self):
+        from quantia.web.selectionScoreHandler import _resolve_sort_context
+        ctx = _resolve_sort_context('quality_score')
+        self.assertEqual(ctx['sort_requested'], 'quality_score')
+        self.assertEqual(ctx['sort_effective'], 'quality_score')
+        self.assertFalse(ctx['sort_fallback'])
+
+    def test_resolve_sort_context_unknown_fallback(self):
+        from quantia.web.selectionScoreHandler import _resolve_sort_context
+        ctx = _resolve_sort_context('unknown_sort_key')
+        self.assertEqual(ctx['sort_requested'], 'unknown_sort_key')
+        self.assertEqual(ctx['sort_effective'], 'total_score')
+        self.assertTrue(ctx['sort_fallback'])
+
     def test_normalize_score_row_display_score_prefers_view(self):
         from quantia.web.selectionScoreHandler import _normalize_score_row
         row = {
