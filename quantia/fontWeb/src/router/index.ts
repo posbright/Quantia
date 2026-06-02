@@ -40,6 +40,18 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '综合选股', tableName: 'cn_stock_selection', isRealtime: false }
       },
       {
+        path: 'industry/:name',
+        name: 'SelectionIndustryDetail',
+        component: () => import('@/views/selection/industry.vue'),
+        meta: { title: '行业详情榜', hidden: true }
+      },
+      {
+        path: 'detail/:code',
+        name: 'SelectionStockDetail',
+        component: () => import('@/views/selection/detail.vue'),
+        meta: { title: '个股评分详情', hidden: true }
+      },
+      {
         path: 'gpt-value',
         name: 'GptValue',
         component: () => import('@/views/stock/StockData.vue'),

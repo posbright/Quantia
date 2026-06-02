@@ -22,6 +22,11 @@ export interface SelectionScoreTopParams {
   n?: number
 }
 
+export interface SelectionScoreDetailParams {
+  code: string
+  date?: string
+}
+
 export function getSelectionScoreList(params: SelectionScoreListParams) {
   return request({
     url: '/api/selection/score/list',
@@ -41,6 +46,14 @@ export function getSelectionScoreIndustries(params: SelectionScoreIndustriesPara
 export function getSelectionScoreTop(params: SelectionScoreTopParams) {
   return request({
     url: '/api/selection/score/top',
+    method: 'get',
+    params,
+  })
+}
+
+export function getSelectionScoreDetail(params: SelectionScoreDetailParams) {
+  return request({
+    url: '/api/selection/score/detail',
     method: 'get',
     params,
   })

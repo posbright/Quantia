@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { createRouter, createWebHistory } from 'vue-router'
 import SelectionScoreHome from '@/views/selection/all.vue'
 
 vi.mock('@/api/selectionScore', () => ({
@@ -26,12 +27,23 @@ vi.mock('@/api/selectionScore', () => ({
 }))
 
 describe('SelectionScoreHome M4 页面', () => {
+  const router = createRouter({
+    history: createWebHistory(),
+    routes: [
+      { path: '/selection/all', component: SelectionScoreHome },
+      { path: '/selection/industry/:name', component: { template: '<div>industry</div>' } },
+      { path: '/selection/detail/:code', component: { template: '<div>detail</div>' } },
+    ],
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
   it('渲染标题与核心区块', async () => {
-    const wrapper = mount(SelectionScoreHome)
+    await router.push('/selection/all')
+    await router.isReady()
+    const wrapper = mount(SelectionScoreHome, { global: { plugins: [router] } })
     await flushPromises()
 
     expect(wrapper.text()).toContain('综合选股评分榜')
@@ -41,7 +53,9 @@ describe('SelectionScoreHome M4 页面', () => {
   })
 
   it('渲染列表与行业数据', async () => {
-    const wrapper = mount(SelectionScoreHome)
+    await router.push('/selection/all')
+    await router.isReady()
+    const wrapper = mount(SelectionScoreHome, { global: { plugins: [router] } })
     await flushPromises()
 
     expect(wrapper.text()).toContain('平安银行')

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   getSelectionScoreIndustries,
@@ -8,6 +9,7 @@ import {
 } from '@/api/selectionScore'
 
 type AnyObj = Record<string, any>
+const router = useRouter()
 
 const loading = ref(false)
 const loadingTop = ref(false)
@@ -165,10 +167,24 @@ function onPageChange(page: number) {
   loadList()
 }
 
-function pickIndustry(industry: string) {
-  filters.value.industry = industry
-  pagination.value.page = 1
-  loadList()
+function goIndustry(industry: string) {
+  router.push({
+    path: `/selection/industry/${encodeURIComponent(industry)}`,
+    query: {
+      date: listMeta.value.date_effective || filters.value.date || undefined,
+      template: filters.value.template || undefined,
+      sort: filters.value.sort || undefined,
+      rating: filters.value.rating || undefined,
+      min_quality: filters.value.min_quality,
+    },
+  })
+}
+
+function goDetail(code: string) {
+  router.push({
+    path: `/selection/detail/${encodeURIComponent(code)}`,
+    query: { date: listMeta.value.date_effective || filters.value.date || undefined },
+  })
 }
 
 onMounted(loadAll)
@@ -219,7 +235,7 @@ onMounted(loadAll)
         <ul v-else class="top-list">
           <li v-for="(item, idx) in topData" :key="item.code || idx" class="top-item">
             <span class="rank">{{ idx + 1 }}</span>
-            <span class="name">{{ item.name || item.code }}</span>
+            <el-button class="name-btn" link type="primary" @click="goDetail(String(item.code || ''))">{{ item.name || item.code }}</el-button>
             <span class="meta">Q {{ toNum(item.quality_score) }} · 展示 {{ toNum(item.display_score) }}</span>
           </li>
         </ul>
@@ -236,7 +252,7 @@ onMounted(loadAll)
             :key="item.industry"
             class="industry-card"
             type="button"
-            @click="pickIndustry(item.industry)"
+            @click="goIndustry(item.industry)"
           >
             <div class="industry-title">{{ item.industry }}</div>
             <div class="industry-meta">均分 {{ toNum(item.avg_display_score) }} · {{ item.stock_count }}只</div>
@@ -256,7 +272,11 @@ onMounted(loadAll)
       <el-table :data="listData" stripe border v-loading="loading" height="560">
         <el-table-column type="index" width="64" label="#" />
         <el-table-column prop="code" label="代码" width="92" />
-        <el-table-column prop="name" label="名称" min-width="120" />
+        <el-table-column prop="name" label="名称" min-width="120">
+          <template #default="scope">
+            <el-button link type="primary" @click="goDetail(String(scope.row.code || ''))">{{ scope.row.name || scope.row.code }}</el-button>
+          </template>
+        </el-table-column>
         <el-table-column prop="industry" label="行业" min-width="120" />
         <el-table-column label="展示分" width="110">
           <template #default="scope">{{ toNum(scope.row.display_score) }}</template>
@@ -403,6 +423,11 @@ onMounted(loadAll)
 .name {
   font-weight: 600;
   color: #1a2a4a;
+}
+
+.name-btn {
+  justify-self: start;
+  font-weight: 600;
 }
 
 .meta {
