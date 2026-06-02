@@ -1667,6 +1667,29 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertEqual(bank['non_comparable_count'], 1)
         self.assertAlmostEqual(bank['comparable_ratio'], 0.5, places=6)
 
+    def test_build_top_items_orders_by_quality_score(self):
+        from quantia.web.selectionScoreHandler import _build_top_items
+        df = pd.DataFrame([
+            {'code': 'A', 'name': 'A', 'quality_score': 70.0, 'total_score': 90.0, 'risk_flags': '[]', 'tags': '[]'},
+            {'code': 'B', 'name': 'B', 'quality_score': 85.0, 'total_score': 60.0, 'risk_flags': '[]', 'tags': '[]'},
+            {'code': 'C', 'name': 'C', 'quality_score': 80.0, 'total_score': 95.0, 'risk_flags': '[]', 'tags': '[]'},
+        ])
+        out = _build_top_items(df, n=2)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0]['code'], 'B')
+        self.assertEqual(out[1]['code'], 'C')
+
+    def test_build_top_items_parses_flags_and_tags(self):
+        from quantia.web.selectionScoreHandler import _build_top_items
+        df = pd.DataFrame([
+            {'code': 'X', 'quality_score': 90.0, 'total_score': 50.0,
+             'risk_flags': '["rank_change_not_comparable"]', 'tags': '["高成长"]'},
+        ])
+        out = _build_top_items(df, n=5)
+        self.assertEqual(out[0]['risk_flags'], ['rank_change_not_comparable'])
+        self.assertEqual(out[0]['tags'], ['高成长'])
+        self.assertFalse(out[0]['rank_change_comparable'])
+
 
 # ============================================================
 # Additional klineHandler edge-case tests

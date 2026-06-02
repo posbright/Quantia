@@ -6,6 +6,7 @@
 - GET /quantia/api/selection/score/list
 - GET /quantia/api/selection/score/detail
 - GET /quantia/api/selection/score/industries
+- GET /quantia/api/selection/score/top
 
 本阶段目标：在列表结果中透出 rank_change 是否可比，
 当 risk_flags 包含 "rank_change_not_comparable" 时返回 rank_change_comparable=false。
@@ -129,6 +130,17 @@ def _build_industry_summary_items(df: pd.DataFrame) -> list[dict]:
 
     items.sort(key=lambda x: (-(x.get('avg_total_score') or 0.0), x.get('industry', '')))
     return items
+
+
+def _build_top_items(df: pd.DataFrame, n: int) -> list[dict]:
+    """按 quality_score 固定降序生成 TopN（M2.6）。"""
+    if df is None or df.empty:
+        return []
+    limit = max(1, int(n))
+    d = df.copy()
+    d['quality_score'] = pd.to_numeric(d.get('quality_score'), errors='coerce')
+    d = d.sort_values(['quality_score', 'total_score'], ascending=[False, False], kind='mergesort').head(limit)
+    return [_normalize_score_row(row) for row in d.to_dict(orient='records')]
 
 
 class SelectionScoreListHandler(webBase.BaseHandler):
@@ -361,5 +373,72 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
             })
         except Exception:
             logger.error('SelectionScoreIndustriesHandler 查询异常', exc_info=True)
+            self.set_status(500)
+            _write_json(self, {'error': '服务器内部错误'})
+
+
+class SelectionScoreTopHandler(webBase.BaseHandler):
+    """GET /quantia/api/selection/score/top
+
+    Query:
+    - n: 可选，默认 20，最大 200
+    - date: 可选，默认最新评分日期
+    - template: 忽略（该接口固定按 quality_score 排序，保证全市场可比）
+    """
+
+    def get(self):
+        try:
+            if not mdb.checkTableIsExist(scoring.SELECTION_SCORE_TABLE):
+                _write_json(self, {
+                    'date': None,
+                    'count': 0,
+                    'items': [],
+                    'warning': 'cn_stock_selection_score 表尚未创建，请先执行 selection_score_job',
+                })
+                return
+
+            n_raw = self.get_argument('n', default='20').strip()
+            date_arg = self.get_argument('date', default='').strip()
+            _ = self.get_argument('template', default='').strip()  # 明确忽略
+            try:
+                n = int(n_raw)
+            except (TypeError, ValueError):
+                n = 20
+            n = min(200, max(1, n))
+
+            where = []
+            params = []
+            if date_arg:
+                where.append('`date` = %s')
+                params.append(date_arg)
+            else:
+                where.append(f"`date` = (SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`)")
+            where_sql = ' WHERE ' + ' AND '.join(where)
+
+            sql = (
+                f"SELECT `date`,`code`,`name`,`industry`,`total_score`,`quality_score`,`industry_score`,`rating`,"
+                f"`industry_rank`,`industry_total`,`rank_change_1d`,`risk_flags`,`tags` "
+                f"FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql} "
+                f"ORDER BY `quality_score` DESC, `total_score` DESC LIMIT %s"
+            )
+            df = pd.read_sql(sql, con=mdb.engine(), params=tuple(list(params) + [n]))
+            items = _build_top_items(df, n)
+
+            date_rows = mdb.executeSqlFetch(
+                f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
+            )
+            latest_date = None
+            if date_rows and date_rows[0] and date_rows[0][0] is not None:
+                d = date_rows[0][0]
+                latest_date = d.isoformat() if hasattr(d, 'isoformat') else str(d)
+
+            _write_json(self, {
+                'date': latest_date,
+                'count': len(items),
+                'items': items,
+                'sort_by': 'quality_score',
+            })
+        except Exception:
+            logger.error('SelectionScoreTopHandler 查询异常', exc_info=True)
             self.set_status(500)
             _write_json(self, {'error': '服务器内部错误'})
