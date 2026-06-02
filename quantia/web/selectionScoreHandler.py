@@ -105,19 +105,25 @@ def _normalize_score_row(row: dict, use_view_score: bool = False) -> dict:
     return item
 
 
+def _resolve_template_weights(template: str | dict | None) -> dict | None:
+    """解析权重模板；balanced/无效模板返回 None。"""
+    if template is None:
+        return None
+    t = str(template).strip().lower()
+    if not t or t == 'balanced':
+        return None
+    try:
+        return scoring.resolve_weight_template(template)
+    except Exception:
+        return None
+
+
 def _apply_template_total_score(df: pd.DataFrame, template: str | dict | None) -> pd.DataFrame:
     """基于存储维度分实时重加权，产出 `total_score_view`（M3）。"""
     out = df.copy()
     out['total_score_view'] = pd.to_numeric(out.get('total_score'), errors='coerce')
-    if template is None:
-        return out
-    t = str(template).strip().lower()
-    if not t or t == 'balanced':
-        return out
-
-    try:
-        weights = scoring.resolve_weight_template(template)
-    except Exception:
+    weights = _resolve_template_weights(template)
+    if not weights:
         return out
 
     comp = pd.DataFrame(index=out.index)
@@ -150,8 +156,8 @@ def _apply_template_total_score(df: pd.DataFrame, template: str | dict | None) -
     return out
 
 
-def _build_industry_summary_items(df: pd.DataFrame) -> list[dict]:
-    """按 industry 聚合行业摘要（M2.5）。"""
+def _build_industry_summary_items(df: pd.DataFrame, use_view_score: bool = False) -> list[dict]:
+    """按 industry 聚合行业摘要（M2.5/M3.4）。"""
     if df is None or df.empty:
         return []
 
@@ -159,7 +165,8 @@ def _build_industry_summary_items(df: pd.DataFrame) -> list[dict]:
     if 'industry' not in data.columns:
         return []
     data['industry'] = data['industry'].fillna('其他').replace('', '其他')
-    score_col = 'total_score_view' if 'total_score_view' in data.columns else 'total_score'
+    score_col = 'total_score_view' if use_view_score and 'total_score_view' in data.columns else 'total_score'
+    score_source = 'total_score_view' if score_col == 'total_score_view' else 'total_score'
     data[score_col] = pd.to_numeric(data.get(score_col), errors='coerce')
     if 'rank_change_comparable' not in data.columns:
         data['rank_change_comparable'] = data.get('risk_flags', '[]').apply(_rank_change_comparable_from_flags)
@@ -181,6 +188,10 @@ def _build_industry_summary_items(df: pd.DataFrame) -> list[dict]:
             'leader_name': leader.get('name', ''),
             'leader_total_score': float(leader.get(score_col)) if pd.notna(leader.get(score_col)) else None,
             'leader_quality_score': float(leader.get('quality_score')) if pd.notna(leader.get('quality_score')) else None,
+            'avg_display_score': float(pd.to_numeric(g2[score_col], errors='coerce').mean()),
+            'avg_display_score_source': score_source,
+            'leader_display_score': float(leader.get(score_col)) if pd.notna(leader.get(score_col)) else None,
+            'leader_display_score_source': score_source,
             'comparable_ratio': comparable_ratio,
             'non_comparable_count': non_comparable,
         }
@@ -206,11 +217,11 @@ def _build_top_items(df: pd.DataFrame, n: int) -> list[dict]:
 def _sort_list_dataframe(df: pd.DataFrame, sort: str, template: str) -> tuple[pd.DataFrame, str, bool]:
     """对 list 查询结果应用排序，返回 (df, sort_by, view_score_active)。"""
     s = (sort or 'total_score').strip().lower()
-    t = (template or 'balanced').strip().lower()
+    template_active = _resolve_template_weights(template) is not None
     out = _apply_template_total_score(df, template)
 
     # M3.2: 显式支持 sort=total_score_view；兼容旧行为：template!=balanced 且 sort=total_score 时按 view 排序。
-    use_view = (s == 'total_score_view') or (s == 'total_score' and t != 'balanced')
+    use_view = (s == 'total_score_view') or (s == 'total_score' and template_active)
     if use_view:
         out = out.sort_values(['total_score_view', 'quality_score'], ascending=[False, False], kind='mergesort')
         return out, 'total_score_view', True
@@ -462,7 +473,8 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
 
             df['rank_change_comparable'] = df['risk_flags'].apply(_rank_change_comparable_from_flags)
             df = _apply_template_total_score(df, template)
-            items = _build_industry_summary_items(df)
+            view_active = _resolve_template_weights(template) is not None
+            items = _build_industry_summary_items(df, use_view_score=view_active)
 
             date_rows = mdb.executeSqlFetch(
                 f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
@@ -476,6 +488,8 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
                 'date': latest_date,
                 'count': len(items),
                 'template_used': template,
+                'view_score_active': view_active,
+                'display_score_field': 'total_score_view' if view_active else 'total_score',
                 'items': items,
             })
         except Exception:

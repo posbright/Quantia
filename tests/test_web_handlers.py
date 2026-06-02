@@ -1724,8 +1724,19 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
             {'industry': '电池', 'code': 'B', 'name': 'B', 'total_score': 20.0, 'total_score_view': 90.0,
              'quality_score': 70.0, 'rank_change_comparable': True},
         ])
-        items = _build_industry_summary_items(df)
+        items = _build_industry_summary_items(df, use_view_score=True)
         self.assertEqual(items[0]['leader_code'], 'B')
+        self.assertEqual(items[0]['leader_display_score_source'], 'total_score_view')
+
+    def test_build_industry_summary_display_alias_default_storage(self):
+        from quantia.web.selectionScoreHandler import _build_industry_summary_items
+        df = pd.DataFrame([
+            {'industry': '电池', 'code': 'A', 'name': 'A', 'total_score': 90.0,
+             'quality_score': 80.0, 'rank_change_comparable': True},
+        ])
+        items = _build_industry_summary_items(df, use_view_score=False)
+        self.assertEqual(items[0]['avg_display_score_source'], 'total_score')
+        self.assertAlmostEqual(items[0]['avg_display_score'], 90.0, places=6)
 
     def test_sort_list_dataframe_total_score_view(self):
         from quantia.web.selectionScoreHandler import _sort_list_dataframe
@@ -1750,6 +1761,17 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         ])
         out, sort_by, view_active = _sort_list_dataframe(df, 'quality_score', 'balanced')
         self.assertEqual(sort_by, 'quality_score')
+        self.assertFalse(view_active)
+        self.assertEqual(out.iloc[0]['code'], 'B')
+
+    def test_sort_list_dataframe_unknown_template_fallback_balanced(self):
+        from quantia.web.selectionScoreHandler import _sort_list_dataframe
+        df = pd.DataFrame([
+            {'code': 'A', 'total_score': 60.0, 'quality_score': 70.0},
+            {'code': 'B', 'total_score': 90.0, 'quality_score': 80.0},
+        ])
+        out, sort_by, view_active = _sort_list_dataframe(df, 'total_score', 'unknown_template')
+        self.assertEqual(sort_by, 'total_score')
         self.assertFalse(view_active)
         self.assertEqual(out.iloc[0]['code'], 'B')
 
