@@ -5,6 +5,7 @@
 ```
 cron/
 ├── _common.sh                      ← 公共库（环境初始化、日志、运行器）
+├── backfill_fund_all.sh            ← 基金中心一键全量铺底（首次初始化，手动跑，非定时）
 ├── cron.hourly/
 │   └── run_hourly                  ← 盘中/收盘行情快照
 ├── cron.workdayly/
@@ -44,6 +45,40 @@ cron/
 | `run_patents_annual` | 每年5月 | `fetch_patent_data.py` | 全市场近5年年报专利全量采集（主源） |
 | `run_patents_quarterly` | 季度首月 | `fetch_patent_data.py --source google_patents` | Google Patents 增量补充 IPC/引用/趋势/PCT（备份源，脚本自判 1/4/7/10 月） |
 | `run_fund_profile_holding` | 每月 | `fetch_fund_profile_job.py` + `fetch_fund_holding_job.py` | F10 基金画像（规模/经理/评级）+ F12 季度前十大重仓股采集 |
+| `backfill_fund_all.sh` | 手动（首次） | `fetch_fund_nav_history_job.py` + `fetch_fund_profile_job.py` + `fetch_fund_holding_job.py` + `analysis_fund_score_job.py` | 基金中心一键全量铺底：按依赖顺序 F8 净值→F10 画像→F12 重仓→F7 评分；失败不阻断；TopN 可经环境覆盖（默认 200）。仅服务器本地跑，日常增量仍由上述定时任务维护 |
+
+---
+
+## 基金中心数据全量铺底
+
+首次启用基金中心（排行榜评分条、夏普/最大回撤/规模/评级、详情抽屉图表）需先铺底 4 张表：
+`cn_fund_nav_history` / `cn_fund_profile` / `cn_fund_holding` / `cn_fund_rank_score`。
+
+**务必在服务器 `/root/Quantia` 本地执行**（job 写 localhost MySQL，零公网压力；从本地经公网批量写远程小内存库会 OOM）：
+
+```bash
+cd /root/Quantia
+chmod +x cron/backfill_fund_all.sh
+nohup bash cron/backfill_fund_all.sh &        # 后台跑，避免 SSH 断开中断
+tail -f quantia/log/backfill_fund_all.log     # 实时进度
+
+# 可选：覆盖 TopN（每个净值型桶按近1年收益取前 N 只）
+QUANTIA_FUND_NAV_TOPN=300 bash cron/backfill_fund_all.sh
+```
+
+依赖顺序（脚本已内置）：F8 净值历史 + `cn_fund_rank` → F7 综合评分（夏普/最大回撤/近5年依赖净值历史）；F10 画像、F12 重仓股相互独立。
+
+铺底后日常增量自动维护：F8/F7 随工作日 `run_fetch` / `run_analysis`，F10/F12 随每月 `run_fund_profile_holding`，无需重复手动跑。
+
+验证：
+
+```bash
+python -c "import quantia.lib.database as mdb; \
+print('nav', mdb.executeSqlFetch('SELECT COUNT(DISTINCT code) FROM cn_fund_nav_history')); \
+print('profile', mdb.executeSqlFetch('SELECT COUNT(*) FROM cn_fund_profile')); \
+print('holding', mdb.executeSqlFetch('SELECT COUNT(DISTINCT code) FROM cn_fund_holding')); \
+print('score', mdb.executeSqlFetch('SELECT COUNT(*) FROM cn_fund_rank_score'))"
+```
 
 ---
 

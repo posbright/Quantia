@@ -277,6 +277,8 @@ def fetch_funds(date):
 
 > **交付状态（PR-3，已实现）**：`quantia/job/fetch_fund_nav_history_job.py`（F8）、`fetch_fund_profile_job.py`（F10）、`fetch_fund_holding_job.py`（F12）三个独立慢 job 已落地，均**不进每日 `fetch_daily_job` 主链**，通过 `cron.workdayly`（F8 续抓）/ `cron.monthly`（F10/F12 季频）或 `python -m`/直接脚本手动触发。抓取范围按本节口径取每桶 Top-N（默认 200，`QUANTIA_FUND_NAV_TOPN` / `QUANTIA_FUND_PROFILE_TOPN` / `QUANTIA_FUND_HOLDING_TOPN` 可调），支持显式传 code 列表懒抓。纯函数 + 编排单测见 `tests/test_fund_data_pr3.py`（20 用例，mock akshare + DB，禁真实网络/DB）。
 
+> **🚀 首次全量铺底（一键脚本）**：新建基金中心时四张表（`cn_fund_nav_history` / `cn_fund_profile` / `cn_fund_holding` / `cn_fund_rank_score`）需先铺底，否则排行榜评分/夏普/回撤/规模/评级列与详情抽屉图表全空（代码已做缺表降级，非 bug）。一键脚本 [`cron/backfill_fund_all.sh`](../../cron/backfill_fund_all.sh) 按依赖顺序串行跑 **F8 净值→F10 画像→F12 重仓→F7 评分**（F7 须在 F8 后，否则夏普/回撤/近5年算不出），失败不阻断，复用 `_common.sh` 的 `run_job`（超时 + 耗时 + 日志 `quantia/log/backfill_fund_all.log`），TopN 经环境覆盖（默认 200）。**⚠️ 必须在服务器 `/root/Quantia` 本地执行**（job 写 localhost MySQL）；**严禁从本地经公网批量写 1.6GB 远程生产库**——实测每基金 ~900 行 bulk-insert 几只就把 MySQL 压进 swap、握手超时崩库。铺底后日常增量由上述 cron 自动维护。用法：`nohup bash cron/backfill_fund_all.sh &` + `tail -f quantia/log/backfill_fund_all.log`。
+
 这两类是**逐基金分页**抓取，量大耗时，**不放进每日 `fetch_daily_job` 主链**，单列脚本 + 低频 cron：
 
 **F8 `fetch_fund_nav_history_job.py`（净值历史）**
