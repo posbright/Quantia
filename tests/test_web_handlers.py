@@ -1814,6 +1814,22 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertEqual(ctx['sort_effective'], 'total_score')
         self.assertTrue(ctx['sort_fallback'])
 
+    def test_with_contract_injects_version_and_endpoint(self):
+        from quantia.web.selectionScoreHandler import _with_contract
+        out = _with_contract({'count': 1}, 'top')
+        self.assertEqual(out['count'], 1)
+        self.assertEqual(out['api_contract_version'], 'm3.8')
+        self.assertEqual(out['api_contract_endpoint'], 'top')
+
+    def test_with_contract_keeps_existing_metadata(self):
+        from quantia.web.selectionScoreHandler import _with_contract
+        out = _with_contract({
+            'api_contract_version': 'custom',
+            'api_contract_endpoint': 'custom_endpoint',
+        }, 'list')
+        self.assertEqual(out['api_contract_version'], 'custom')
+        self.assertEqual(out['api_contract_endpoint'], 'custom_endpoint')
+
     def test_normalize_score_row_display_score_prefers_view(self):
         from quantia.web.selectionScoreHandler import _normalize_score_row
         row = {

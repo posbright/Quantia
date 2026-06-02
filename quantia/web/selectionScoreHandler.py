@@ -28,6 +28,7 @@ __author__ = 'Quantia'
 __date__ = '2026/06/02'
 
 logger = logging.getLogger(__name__)
+SELECTION_SCORE_API_CONTRACT_VERSION = 'm3.8'
 
 
 def _json_default(o):
@@ -43,6 +44,14 @@ def _json_default(o):
 def _write_json(handler, data):
     handler.set_header('Content-Type', 'application/json;charset=UTF-8')
     handler.write(json.dumps(data, ensure_ascii=False, default=_json_default))
+
+
+def _with_contract(data: dict, endpoint: str) -> dict:
+    """为评分接口响应补充契约版本标识（M3.8）。"""
+    out = dict(data)
+    out.setdefault('api_contract_version', SELECTION_SCORE_API_CONTRACT_VERSION)
+    out.setdefault('api_contract_endpoint', endpoint)
+    return out
 
 
 def _parse_flag_list(risk_flags) -> list[str]:
@@ -304,12 +313,12 @@ class SelectionScoreListHandler(webBase.BaseHandler):
     def get(self):
         try:
             if not mdb.checkTableIsExist(scoring.SELECTION_SCORE_TABLE):
-                _write_json(self, {
+                _write_json(self, _with_contract({
                     'date': None,
                     'total': 0,
                     'items': [],
                     'warning': 'cn_stock_selection_score 表尚未创建，请先执行 selection_score_job',
-                })
+                }, 'list'))
                 return
 
             date_arg = self.get_argument('date', default='').strip()
@@ -400,7 +409,7 @@ class SelectionScoreListHandler(webBase.BaseHandler):
                 d = date_rows[0][0]
                 latest_date = d.isoformat() if hasattr(d, 'isoformat') else str(d)
 
-            _write_json(self, {
+            _write_json(self, _with_contract({
                 'date': latest_date,
                 'page': page,
                 'page_size': page_size,
@@ -416,11 +425,11 @@ class SelectionScoreListHandler(webBase.BaseHandler):
                 'view_score_active': view_active,
                 'display_score_field': 'total_score_view' if view_active else 'total_score',
                 'items': items,
-            })
+            }, 'list'))
         except Exception:
             logger.error('SelectionScoreListHandler 查询异常', exc_info=True)
             self.set_status(500)
-            _write_json(self, {'error': '服务器内部错误'})
+            _write_json(self, _with_contract({'error': '服务器内部错误'}, 'list'))
 
 
 class SelectionScoreDetailHandler(webBase.BaseHandler):
@@ -434,17 +443,17 @@ class SelectionScoreDetailHandler(webBase.BaseHandler):
     def get(self):
         try:
             if not mdb.checkTableIsExist(scoring.SELECTION_SCORE_TABLE):
-                _write_json(self, {
+                _write_json(self, _with_contract({
                     'item': None,
                     'warning': 'cn_stock_selection_score 表尚未创建，请先执行 selection_score_job',
-                })
+                }, 'detail'))
                 return
 
             code = self.get_argument('code', default='').strip()
             date_arg = self.get_argument('date', default='').strip()
             if not code:
                 self.set_status(400)
-                _write_json(self, {'error': '缺少必填参数: code'})
+                _write_json(self, _with_contract({'error': '缺少必填参数: code'}, 'detail'))
                 return
 
             if date_arg:
@@ -469,22 +478,22 @@ class SelectionScoreDetailHandler(webBase.BaseHandler):
 
             df = pd.read_sql(sql, con=mdb.engine(), params=params)
             if df.empty:
-                _write_json(self, {'item': None})
+                _write_json(self, _with_contract({'item': None}, 'detail'))
                 return
 
             item = _normalize_score_row(df.to_dict(orient='records')[0])
-            _write_json(self, {
+            _write_json(self, _with_contract({
                 'item': item,
                 'template_requested': 'balanced',
                 'template_effective': 'balanced',
                 'template_fallback': False,
                 'display_score_field': 'total_score',
                 'view_score_active': False,
-            })
+            }, 'detail'))
         except Exception:
             logger.error('SelectionScoreDetailHandler 查询异常', exc_info=True)
             self.set_status(500)
-            _write_json(self, {'error': '服务器内部错误'})
+            _write_json(self, _with_contract({'error': '服务器内部错误'}, 'detail'))
 
 
 class SelectionScoreIndustriesHandler(webBase.BaseHandler):
@@ -499,12 +508,12 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
     def get(self):
         try:
             if not mdb.checkTableIsExist(scoring.SELECTION_SCORE_TABLE):
-                _write_json(self, {
+                _write_json(self, _with_contract({
                     'date': None,
                     'count': 0,
                     'items': [],
                     'warning': 'cn_stock_selection_score 表尚未创建，请先执行 selection_score_job',
-                })
+                }, 'industries'))
                 return
 
             date_arg = self.get_argument('date', default='').strip()
@@ -539,7 +548,7 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
             )
             df = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
             if df.empty:
-                _write_json(self, {'date': None, 'count': 0, 'items': []})
+                _write_json(self, _with_contract({'date': None, 'count': 0, 'items': []}, 'industries'))
                 return
 
             df['rank_change_comparable'] = df['risk_flags'].apply(_rank_change_comparable_from_flags)
@@ -554,7 +563,7 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
                 d = date_rows[0][0]
                 latest_date = d.isoformat() if hasattr(d, 'isoformat') else str(d)
 
-            _write_json(self, {
+            _write_json(self, _with_contract({
                 'date': latest_date,
                 'count': len(items),
                 'template_requested': template_requested,
@@ -564,11 +573,11 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
                 'view_score_active': template_active,
                 'display_score_field': 'total_score_view' if template_active else 'total_score',
                 'items': items,
-            })
+            }, 'industries'))
         except Exception:
             logger.error('SelectionScoreIndustriesHandler 查询异常', exc_info=True)
             self.set_status(500)
-            _write_json(self, {'error': '服务器内部错误'})
+            _write_json(self, _with_contract({'error': '服务器内部错误'}, 'industries'))
 
 
 class SelectionScoreTopHandler(webBase.BaseHandler):
@@ -583,12 +592,12 @@ class SelectionScoreTopHandler(webBase.BaseHandler):
     def get(self):
         try:
             if not mdb.checkTableIsExist(scoring.SELECTION_SCORE_TABLE):
-                _write_json(self, {
+                _write_json(self, _with_contract({
                     'date': None,
                     'count': 0,
                     'items': [],
                     'warning': 'cn_stock_selection_score 表尚未创建，请先执行 selection_score_job',
-                })
+                }, 'top'))
                 return
 
             n_raw = self.get_argument('n', default='20').strip()
@@ -626,7 +635,7 @@ class SelectionScoreTopHandler(webBase.BaseHandler):
                 d = date_rows[0][0]
                 latest_date = d.isoformat() if hasattr(d, 'isoformat') else str(d)
 
-            _write_json(self, {
+            _write_json(self, _with_contract({
                 'date': latest_date,
                 'count': len(items),
                 'items': items,
@@ -637,8 +646,8 @@ class SelectionScoreTopHandler(webBase.BaseHandler):
                 'display_score_field': 'total_score',
                 'view_score_active': False,
                 'template_ignored': True,
-            })
+            }, 'top'))
         except Exception:
             logger.error('SelectionScoreTopHandler 查询异常', exc_info=True)
             self.set_status(500)
-            _write_json(self, {'error': '服务器内部错误'})
+            _write_json(self, _with_contract({'error': '服务器内部错误'}, 'top'))
