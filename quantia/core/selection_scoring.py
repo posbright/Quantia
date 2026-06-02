@@ -302,7 +302,137 @@ def compute_quality_score(
 
 
 # ---------------------------------------------------------------------------
-# 四、有效性验证原语（M0：IC / 分层 / 单调性）
+# 四、M2 结果表与日度结果生成（供 selection_score_job 编排）
+# ---------------------------------------------------------------------------
+
+SELECTION_SCORE_TABLE = 'cn_stock_selection_score'
+
+
+def ensure_selection_score_table(mdb_module=None) -> None:
+    """幂等创建 M2 结果表。"""
+    mdb = mdb_module
+    if mdb is None:
+        import quantia.lib.database as mdb  # 延迟导入，避免纯计算单测连库
+
+    ddl = f"""
+    CREATE TABLE IF NOT EXISTS `{SELECTION_SCORE_TABLE}` (
+      `date` DATE NOT NULL,
+      `code` VARCHAR(10) NOT NULL,
+      `name` VARCHAR(20) DEFAULT NULL,
+      `industry` VARCHAR(50) DEFAULT NULL,
+      `total_score` FLOAT DEFAULT NULL,
+      `total_score_raw` FLOAT DEFAULT NULL,
+      `quality_score` FLOAT DEFAULT NULL,
+      `industry_score` FLOAT DEFAULT NULL,
+      `rating` VARCHAR(2) DEFAULT NULL,
+      `industry_rank` INT DEFAULT NULL,
+      `industry_total` INT DEFAULT NULL,
+      `rank_change_1d` INT DEFAULT NULL,
+      `data_completeness` FLOAT DEFAULT NULL,
+      `score_valuation` FLOAT DEFAULT NULL,
+      `score_profitability` FLOAT DEFAULT NULL,
+      `score_growth` FLOAT DEFAULT NULL,
+      `score_health` FLOAT DEFAULT NULL,
+      `score_capital` FLOAT DEFAULT NULL,
+      `score_technical` FLOAT DEFAULT NULL,
+      `score_sentiment` FLOAT DEFAULT NULL,
+      `risk_penalty` FLOAT DEFAULT 0,
+      `tags` JSON DEFAULT NULL,
+      `risk_flags` JSON DEFAULT NULL,
+      `weight_template` VARCHAR(20) DEFAULT 'balanced',
+      `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (`date`, `code`),
+      KEY `idx_industry_score` (`industry`, `total_score`),
+      KEY `idx_score` (`total_score`),
+      KEY `idx_rating` (`rating`, `date`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='综合选股多因子评分结果'
+    """
+    mdb.executeSql(ddl)
+
+
+def _rating_from_quality(q: pd.Series) -> pd.Series:
+    out = pd.Series('D', index=q.index)
+    out = out.mask(q >= 45, 'C')
+    out = out.mask(q >= 60, 'B')
+    out = out.mask(q >= 75, 'A')
+    out = out.mask(q >= 85, 'S')
+    return out
+
+
+def build_daily_selection_scores(
+    panel: pd.DataFrame,
+    weight_template: str | dict[str, float] | None = 'balanced',
+    alpha: float = 0.6,
+) -> pd.DataFrame:
+    """
+    从单日 `cn_stock_selection` 快照生成 M2 结果表 DataFrame。
+
+    说明：
+    - 当前实现为 M2 最小可运行版：按单日快照产出 total/quality/industry/rank。
+    - `total_score` 先等于 `total_score_raw`（EMA 平滑在后续增量阶段接入）。
+    """
+    if panel is None or panel.empty:
+        return pd.DataFrame()
+
+    df = panel.copy()
+    if 'date' not in df.columns:
+        raise ValueError('panel must include date column')
+    if 'code' not in df.columns:
+        raise ValueError('panel must include code column')
+
+    as_of = pd.to_datetime(df['date']).max()
+    df = df[pd.to_datetime(df['date']) == as_of].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    df['code'] = df['code'].astype(str)
+    df['industry'] = df.get('industry', pd.Series(index=df.index, dtype=object)).fillna('其他').replace('', '其他')
+
+    weights = resolve_weight_template(weight_template)
+    q_score, dim_scores = compute_quality_score(df, weights=weights)
+
+    # 行业内百分位（1~100），用于行业内相对分与排名。
+    industry_score = q_score.groupby(df['industry']).rank(method='average', pct=True) * 100.0
+    total_raw = (float(alpha) * q_score + (1.0 - float(alpha)) * industry_score).clip(0, 100)
+
+    out = pd.DataFrame({
+        'date': pd.to_datetime(as_of).date(),
+        'code': df['code'],
+        'name': df['name'] if 'name' in df.columns else None,
+        'industry': df['industry'],
+        'total_score': total_raw,
+        'total_score_raw': total_raw,
+        'quality_score': q_score,
+        'industry_score': industry_score,
+        'rating': _rating_from_quality(q_score),
+        'industry_rank': total_raw.groupby(df['industry']).rank(method='min', ascending=False).astype('Int64'),
+        'industry_total': df.groupby('industry')['code'].transform('count').astype('Int64'),
+        'rank_change_1d': 0,
+        'risk_penalty': 0.0,
+        'tags': '[]',
+        'risk_flags': '[]',
+        'weight_template': 'balanced' if weight_template is None else str(weight_template),
+    })
+
+    # 数据完整度：核心连续因子非空占比。
+    fac_cols = [c for c in FACTOR_DIRECTIONS if c in df.columns]
+    if fac_cols:
+        out['data_completeness'] = df[fac_cols].notna().mean(axis=1).astype(float)
+    else:
+        out['data_completeness'] = 0.0
+
+    for dim in ('valuation', 'profitability', 'growth', 'health', 'capital', 'technical', 'sentiment'):
+        key = f'score_{dim}'
+        if dim in dim_scores:
+            out[key] = dim_scores[dim]
+        else:
+            out[key] = np.nan
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 五、有效性验证原语（M0：IC / 分层 / 单调性）
 # ---------------------------------------------------------------------------
 
 def _spearman(a: pd.Series, b: pd.Series) -> float:

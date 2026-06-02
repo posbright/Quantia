@@ -48,6 +48,7 @@ import init_job as bj
 import subprocess
 import basic_data_daily_job as hdj
 import selection_data_daily_job as sddj
+import selection_score_job as ssj
 import quantia.lib.trade_time as trd
 from quantia.lib.job_tracker import (
     record_task_start, record_task_end, record_task_skipped,
@@ -277,6 +278,16 @@ def main():
         except Exception as e:
             logging.error("数据获取 fund_rank 异常", exc_info=True)
             record_task_end(_JOB_NAME, 'fund_rank', run_date_nph, t2c, success=False, message=str(e))
+
+    # Phase 2.7: 综合选股评分结果入库（M2）
+    t2d = record_task_start(_JOB_NAME, 'selection_score', run_date_nph)
+    try:
+        ssj.main()
+        record_task_end(_JOB_NAME, 'selection_score', run_date_nph, t2d, success=True)
+    except Exception as e:
+        logging.error("数据获取 selection_score 异常", exc_info=True)
+        record_task_end(_JOB_NAME, 'selection_score', run_date_nph, t2d, success=False, message=str(e))
+        all_success = False
 
     # Phase 3: 扩展数据（资金流向、龙虎榜等）
     # 以独立子进程运行，防止 OOM 波及当前进程

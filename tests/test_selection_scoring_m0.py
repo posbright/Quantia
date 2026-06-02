@@ -173,5 +173,51 @@ class TestValidationPrimitives(unittest.TestCase):
         self.assertTrue(np.isnan(sc.monotonicity({0: 0.1, 1: 0.1})))
 
 
+class TestM2DailyBuilder(unittest.TestCase):
+
+    def test_build_daily_selection_scores_basic(self):
+        df = pd.DataFrame({
+            'date': pd.to_datetime(['2026-06-01', '2026-06-01', '2026-06-01']),
+            'code': ['000001', '000002', '000003'],
+            'name': ['A', 'B', 'C'],
+            'industry': ['银行', '银行', '电池'],
+            'roe_weight': [10.0, 5.0, 15.0],
+            'jroa': [2.0, 1.0, 3.0],
+            'netprofit_yoy_ratio': [8.0, 1.0, 12.0],
+            'toi_yoy_ratio': [6.0, 2.0, 10.0],
+            'pe9': [8.0, 20.0, 25.0],
+            'pbnewmrq': [1.2, 2.0, 3.0],
+            'debt_asset_ratio': [70.0, 85.0, 45.0],
+            'current_ratio': [1.2, 0.8, 2.1],
+            'allcorp_ratio': [20.0, 8.0, 30.0],
+            'volume_ratio': [1.1, 0.9, 1.5],
+        })
+
+        out = sc.build_daily_selection_scores(df)
+        self.assertEqual(len(out), 3)
+        self.assertTrue({'total_score', 'quality_score', 'industry_score', 'rating'}.issubset(out.columns))
+        self.assertTrue(((out['total_score'] >= 0) & (out['total_score'] <= 100)).all())
+        self.assertTrue(((out['quality_score'] >= 0) & (out['quality_score'] <= 100)).all())
+        self.assertTrue(((out['industry_rank'] >= 1) & (out['industry_rank'] <= out['industry_total'])).all())
+
+    def test_build_daily_selection_scores_uses_latest_date(self):
+        df = pd.DataFrame({
+            'date': pd.to_datetime(['2026-05-31', '2026-06-01']),
+            'code': ['000001', '000001'],
+            'industry': ['银行', '银行'],
+            'roe_weight': [1.0, 2.0],
+            'jroa': [1.0, 2.0],
+        })
+        out = sc.build_daily_selection_scores(df)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(str(out.iloc[0]['date']), '2026-06-01')
+
+    def test_build_daily_selection_scores_requires_columns(self):
+        with self.assertRaises(ValueError):
+            sc.build_daily_selection_scores(pd.DataFrame({'code': ['000001']}))
+        with self.assertRaises(ValueError):
+            sc.build_daily_selection_scores(pd.DataFrame({'date': ['2026-06-01']}))
+
+
 if __name__ == '__main__':
     unittest.main()
