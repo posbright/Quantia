@@ -83,12 +83,25 @@ def _parse_json_array_field(value):
     return parsed if isinstance(parsed, list) else []
 
 
-def _normalize_score_row(row: dict) -> dict:
-    """标准化单条评分记录，补充 rank_change_comparable 并解析 JSON 数组字段。"""
+def _normalize_score_row(row: dict, use_view_score: bool = False) -> dict:
+    """标准化单条评分记录，补充可比标记与显示分字段。"""
     item = dict(row)
     item['risk_flags'] = _parse_json_array_field(item.get('risk_flags'))
     item['tags'] = _parse_json_array_field(item.get('tags'))
     item['rank_change_comparable'] = _rank_change_comparable_from_flags(item.get('risk_flags'))
+
+    total_score = pd.to_numeric(pd.Series([item.get('total_score')]), errors='coerce').iloc[0]
+    total_score_view = pd.to_numeric(pd.Series([item.get('total_score_view')]), errors='coerce').iloc[0]
+    if use_view_score and pd.notna(total_score_view):
+        item['display_score'] = float(total_score_view)
+        item['display_score_source'] = 'total_score_view'
+    elif pd.notna(total_score):
+        item['display_score'] = float(total_score)
+        item['display_score_source'] = 'total_score'
+    else:
+        item['display_score'] = None
+        item['display_score_source'] = 'total_score_view' if use_view_score else 'total_score'
+
     return item
 
 
@@ -187,7 +200,7 @@ def _build_top_items(df: pd.DataFrame, n: int) -> list[dict]:
     d = df.copy()
     d['quality_score'] = pd.to_numeric(d.get('quality_score'), errors='coerce')
     d = d.sort_values(['quality_score', 'total_score'], ascending=[False, False], kind='mergesort').head(limit)
-    return [_normalize_score_row(row) for row in d.to_dict(orient='records')]
+    return [_normalize_score_row(row, use_view_score=False) for row in d.to_dict(orient='records')]
 
 
 def _sort_list_dataframe(df: pd.DataFrame, sort: str, template: str) -> tuple[pd.DataFrame, str, bool]:
@@ -313,7 +326,7 @@ class SelectionScoreListHandler(webBase.BaseHandler):
 
             items = []
             for row in df.to_dict(orient='records'):
-                items.append(_normalize_score_row(row))
+                items.append(_normalize_score_row(row, use_view_score=view_active))
 
             date_rows = mdb.executeSqlFetch(
                 f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
@@ -331,6 +344,7 @@ class SelectionScoreListHandler(webBase.BaseHandler):
                 'template_used': template,
                 'sort_by': sort_by,
                 'view_score_active': view_active,
+                'display_score_field': 'total_score_view' if view_active else 'total_score',
                 'items': items,
             })
         except Exception:

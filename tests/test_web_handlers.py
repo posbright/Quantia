@@ -1753,6 +1753,29 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertFalse(view_active)
         self.assertEqual(out.iloc[0]['code'], 'B')
 
+    def test_normalize_score_row_display_score_prefers_view(self):
+        from quantia.web.selectionScoreHandler import _normalize_score_row
+        row = {
+            'total_score': 60.0,
+            'total_score_view': 80.0,
+            'risk_flags': '[]',
+            'tags': '[]',
+        }
+        out = _normalize_score_row(row, use_view_score=True)
+        self.assertAlmostEqual(out['display_score'], 80.0, places=6)
+        self.assertEqual(out['display_score_source'], 'total_score_view')
+
+    def test_normalize_score_row_display_score_fallback_storage(self):
+        from quantia.web.selectionScoreHandler import _normalize_score_row
+        row = {
+            'total_score': 66.0,
+            'risk_flags': '[]',
+            'tags': '[]',
+        }
+        out = _normalize_score_row(row, use_view_score=True)
+        self.assertAlmostEqual(out['display_score'], 66.0, places=6)
+        self.assertEqual(out['display_score_source'], 'total_score')
+
 
 # ============================================================
 # Additional klineHandler edge-case tests
