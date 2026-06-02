@@ -117,7 +117,15 @@ class TestMilestoneTiersConfig(unittest.TestCase):
         self.assertIsNone(prereq)
         self.assertIsNone(min_age)
         self.assertIsNone(max_age)
-        self.assertIsNone(limit)
+        # 所有 tier 现在都限批（LIMIT + date ASC）防子进程超时，tier 1 也不例外。
+        self.assertIsNotNone(limit)
+        self.assertGreater(limit, 0)
+
+    def test_all_tiers_have_batch_limit(self):
+        """每个 tier 都必须有批量上限，防止大积压导致子进程超时。"""
+        for i, (target, _, _, _, limit) in enumerate(_MILESTONE_TIERS):
+            self.assertIsNotNone(limit, f"tier {i+1} ({target}) 缺少 LIMIT")
+            self.assertGreater(limit, 0, f"tier {i+1} ({target}) LIMIT 必须 > 0")
 
     def test_last_tier_has_limit(self):
         """Last tier (final completion) should have a batch limit."""

@@ -682,7 +682,7 @@ _trend_pullback_columns.update({
     'ma20_dev': {'type': FLOAT, 'cn': 'MA20偏离(%)', 'size': 90},
     'rsi14': {'type': FLOAT, 'cn': 'RSI(14)', 'size': 80},
     'volume': {'type': BIGINT, 'cn': '成交量', 'size': 100},
-    'vol_ma20': {'type': BIGINT, 'cn': '20日均量', 'size': 100},
+    'vol_ma5': {'type': BIGINT, 'cn': '5日均量', 'size': 100},
 })
 _trend_pullback_columns.update(TABLE_CN_STOCK_BACKTEST_DATA['columns'])
 

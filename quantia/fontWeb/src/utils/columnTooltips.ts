@@ -279,7 +279,7 @@ export const strategyColumnDescriptions: Record<string, Record<string, string>> 
     ma20_dev: 'MA20偏离(%)：筛选阈值 ≤ 3%。|收盘价-MA20|/MA20×100',
     rsi14: 'RSI(14)：筛选阈值 35~55。相对强弱指标',
     volume: '当日成交量(股)',
-    vol_ma20: '20日均量(股)：筛选条件 成交量 < 均量×80%（缩量）',
+    vol_ma5: '5日均量(股)：筛选条件 成交量 < 均量×80%（缩量）',
   },
   cn_stock_strategy_oversold_rebound: {
     p_change: '涨跌幅(%)',
