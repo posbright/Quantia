@@ -196,6 +196,29 @@ export function getFundNavHistory(code: string, range = '1y') {
   })
 }
 
+// 同类平均净值增长基线（§9.3 叠加对比看超额）
+export interface FundNavPeerPoint {
+  date: string
+  growth: number
+}
+
+export interface FundNavPeer {
+  code: string
+  fund_type: string | null
+  range: string
+  peer_count: number
+  count: number
+  points: FundNavPeerPoint[]
+}
+
+export function getFundNavPeer(code: string, range = '1y') {
+  return request<FundNavPeer>({
+    url: '/api/fund/nav_peer',
+    method: 'get',
+    params: { code, range },
+  })
+}
+
 // ── AI 按需分析（F14，懒加载 LLM）──────────────────────────────────
 
 export interface FundAiSource {

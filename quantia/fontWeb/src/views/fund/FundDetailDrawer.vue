@@ -191,11 +191,13 @@ import {
   getFundAiAnalysis,
   runFundAiAnalysis,
   getFundNavHistory,
+  getFundNavPeer,
   type FundPeerCompare,
   type FundComposite,
   type FundAiSource,
   type FundAiAnalysis,
   type FundNavHistory,
+  type FundNavPeer,
 } from '@/api/fund'
 
 const props = defineProps<{
@@ -230,6 +232,7 @@ let loadedCode = ''
 const navRef = ref<HTMLElement | null>(null)
 let navChart: echarts.ECharts | null = null
 const navHistory = ref<FundNavHistory | null>(null)
+const navPeer = ref<FundNavPeer | null>(null)
 const navLoading = ref(false)
 const navRange = ref('1y')
 const navRanges = [
@@ -418,42 +421,66 @@ async function renderNavCurve() {
   const last = growth[growth.length - 1]
   const up = (last ?? 0) >= 0
   const color = up ? '#d23b3b' : '#16a34a'
-  navChart.setOption({
-    grid: { left: 48, right: 16, top: 16, bottom: 28 },
-    tooltip: {
-      trigger: 'axis',
-      valueFormatter: (v: number) => (v == null ? '—' : `${v.toFixed(2)}%`),
-    },
-    xAxis: {
-      type: 'category',
-      data: dates,
-      boundaryGap: false,
-      axisLabel: { fontSize: 10, color: '#909399' },
-    },
-    yAxis: {
-      type: 'value',
-      axisLabel: { fontSize: 10, color: '#909399', formatter: '{value}%' },
-      splitLine: { lineStyle: { color: '#f0f2f5' } },
-    },
-    series: [
-      {
-        type: 'line',
-        data: growth,
-        smooth: true,
-        showSymbol: false,
-        lineStyle: { color, width: 1.6 },
-        areaStyle: {
-          color: {
-            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [
-              { offset: 0, color: up ? 'rgba(210,59,59,0.18)' : 'rgba(22,163,74,0.18)' },
-              { offset: 1, color: 'rgba(255,255,255,0)' },
-            ],
-          },
+  // 同类平均基线：按日期对齐到本基金 x 轴（缺测日 null，connectNulls 桥接）。
+  const peerPts = navPeer.value?.points || []
+  const peerMap = new Map(peerPts.map((p) => [p.date, p.growth]))
+  const hasPeer = peerPts.length > 0
+  const peerSeriesData = hasPeer ? dates.map((d) => peerMap.get(d) ?? null) : []
+  const series: echarts.LineSeriesOption[] = [
+    {
+      name: '本基金',
+      type: 'line',
+      data: growth,
+      smooth: true,
+      showSymbol: false,
+      lineStyle: { color, width: 1.6 },
+      areaStyle: {
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: up ? 'rgba(210,59,59,0.18)' : 'rgba(22,163,74,0.18)' },
+            { offset: 1, color: 'rgba(255,255,255,0)' },
+          ],
         },
       },
-    ],
-  })
+    },
+  ]
+  if (hasPeer) {
+    series.push({
+      name: '同类平均',
+      type: 'line',
+      data: peerSeriesData,
+      smooth: true,
+      showSymbol: false,
+      connectNulls: true,
+      lineStyle: { color: '#909399', width: 1.2, type: 'dashed' },
+    })
+  }
+  navChart.setOption(
+    {
+      grid: { left: 48, right: 16, top: hasPeer ? 28 : 16, bottom: 28 },
+      legend: hasPeer
+        ? { data: ['本基金', '同类平均'], top: 0, right: 8, itemWidth: 14, textStyle: { fontSize: 10, color: '#606266' } }
+        : undefined,
+      tooltip: {
+        trigger: 'axis',
+        valueFormatter: (v: number) => (v == null ? '—' : `${v.toFixed(2)}%`),
+      },
+      xAxis: {
+        type: 'category',
+        data: dates,
+        boundaryGap: false,
+        axisLabel: { fontSize: 10, color: '#909399' },
+      },
+      yAxis: {
+        type: 'value',
+        axisLabel: { fontSize: 10, color: '#909399', formatter: '{value}%' },
+        splitLine: { lineStyle: { color: '#f0f2f5' } },
+      },
+      series,
+    },
+    true,
+  )
   navChart.resize()
 }
 
@@ -483,10 +510,18 @@ async function loadNav() {
   if (!props.code) return
   navLoading.value = true
   try {
-    navHistory.value = (await getFundNavHistory(props.code, navRange.value)) as unknown as FundNavHistory
+    const [navRes, peerRes] = await Promise.allSettled([
+      getFundNavHistory(props.code, navRange.value),
+      getFundNavPeer(props.code, navRange.value),
+    ])
+    navHistory.value =
+      navRes.status === 'fulfilled' ? (navRes.value as unknown as FundNavHistory) : null
+    navPeer.value =
+      peerRes.status === 'fulfilled' ? (peerRes.value as unknown as FundNavPeer) : null
     await renderNavCurve()
   } catch {
     navHistory.value = null
+    navPeer.value = null
   } finally {
     navLoading.value = false
   }
