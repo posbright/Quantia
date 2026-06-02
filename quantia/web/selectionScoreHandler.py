@@ -54,6 +54,38 @@ def _with_contract(data: dict, endpoint: str) -> dict:
     return out
 
 
+def _normalize_date_text(value) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()
+    text = str(value).strip()
+    return text or None
+
+
+def _resolve_date_context(date_requested: str | None, df: pd.DataFrame | None) -> dict:
+    """解析日期请求语义，返回 date_requested/date_effective。"""
+    requested = (str(date_requested).strip() if date_requested is not None else '')
+    if requested:
+        return {
+            'date_requested': requested,
+            'date_effective': requested,
+        }
+
+    if df is not None and not df.empty and 'date' in df.columns:
+        value = _normalize_date_text(df.iloc[0].get('date'))
+        if value is not None:
+            return {
+                'date_requested': None,
+                'date_effective': value,
+            }
+
+    return {
+        'date_requested': None,
+        'date_effective': None,
+    }
+
+
 def _parse_flag_list(risk_flags) -> list[str]:
     if isinstance(risk_flags, list):
         return [str(x) for x in risk_flags if x is not None]
@@ -401,16 +433,18 @@ class SelectionScoreListHandler(webBase.BaseHandler):
             for row in df.to_dict(orient='records'):
                 items.append(_normalize_score_row(row, use_view_score=view_active))
 
-            date_rows = mdb.executeSqlFetch(
-                f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
-            )
-            latest_date = None
-            if date_rows and date_rows[0] and date_rows[0][0] is not None:
-                d = date_rows[0][0]
-                latest_date = d.isoformat() if hasattr(d, 'isoformat') else str(d)
+            date_ctx = _resolve_date_context(date_arg, df)
+            if date_ctx['date_effective'] is None:
+                date_rows = mdb.executeSqlFetch(
+                    f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
+                )
+                if date_rows and date_rows[0] and date_rows[0][0] is not None:
+                    date_ctx['date_effective'] = _normalize_date_text(date_rows[0][0])
 
             _write_json(self, _with_contract({
-                'date': latest_date,
+                'date': date_ctx['date_effective'],
+                'date_requested': date_ctx['date_requested'],
+                'date_effective': date_ctx['date_effective'],
                 'page': page,
                 'page_size': page_size,
                 'total': total,
@@ -478,12 +512,19 @@ class SelectionScoreDetailHandler(webBase.BaseHandler):
 
             df = pd.read_sql(sql, con=mdb.engine(), params=params)
             if df.empty:
-                _write_json(self, _with_contract({'item': None}, 'detail'))
+                _write_json(self, _with_contract({
+                    'item': None,
+                    'date_requested': date_arg or None,
+                    'date_effective': date_arg or None,
+                }, 'detail'))
                 return
 
             item = _normalize_score_row(df.to_dict(orient='records')[0])
+            item_date = _normalize_date_text(item.get('date'))
             _write_json(self, _with_contract({
                 'item': item,
+                'date_requested': date_arg or None,
+                'date_effective': item_date,
                 'template_requested': 'balanced',
                 'template_effective': 'balanced',
                 'template_fallback': False,
@@ -543,7 +584,7 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
 
             where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
             sql = (
-                f"SELECT `industry`,`code`,`name`,`total_score`,`quality_score`,`score_growth`,`risk_flags` "
+                f"SELECT `date`,`industry`,`code`,`name`,`total_score`,`quality_score`,`score_growth`,`risk_flags` "
                 f"FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql}"
             )
             df = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
@@ -555,16 +596,18 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
             df = _apply_template_total_score(df, template_effective)
             items = _build_industry_summary_items(df, use_view_score=template_active)
 
-            date_rows = mdb.executeSqlFetch(
-                f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
-            )
-            latest_date = None
-            if date_rows and date_rows[0] and date_rows[0][0] is not None:
-                d = date_rows[0][0]
-                latest_date = d.isoformat() if hasattr(d, 'isoformat') else str(d)
+            date_ctx = _resolve_date_context(date_arg, df)
+            if date_ctx['date_effective'] is None:
+                date_rows = mdb.executeSqlFetch(
+                    f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
+                )
+                if date_rows and date_rows[0] and date_rows[0][0] is not None:
+                    date_ctx['date_effective'] = _normalize_date_text(date_rows[0][0])
 
             _write_json(self, _with_contract({
-                'date': latest_date,
+                'date': date_ctx['date_effective'],
+                'date_requested': date_ctx['date_requested'],
+                'date_effective': date_ctx['date_effective'],
                 'count': len(items),
                 'template_requested': template_requested,
                 'template_used': template_effective,
@@ -627,16 +670,18 @@ class SelectionScoreTopHandler(webBase.BaseHandler):
             df = pd.read_sql(sql, con=mdb.engine(), params=tuple(list(params) + [n]))
             items = _build_top_items(df, n)
 
-            date_rows = mdb.executeSqlFetch(
-                f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
-            )
-            latest_date = None
-            if date_rows and date_rows[0] and date_rows[0][0] is not None:
-                d = date_rows[0][0]
-                latest_date = d.isoformat() if hasattr(d, 'isoformat') else str(d)
+            date_ctx = _resolve_date_context(date_arg, df)
+            if date_ctx['date_effective'] is None:
+                date_rows = mdb.executeSqlFetch(
+                    f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
+                )
+                if date_rows and date_rows[0] and date_rows[0][0] is not None:
+                    date_ctx['date_effective'] = _normalize_date_text(date_rows[0][0])
 
             _write_json(self, _with_contract({
-                'date': latest_date,
+                'date': date_ctx['date_effective'],
+                'date_requested': date_ctx['date_requested'],
+                'date_effective': date_ctx['date_effective'],
                 'count': len(items),
                 'items': items,
                 'sort_by': 'quality_score',

@@ -1830,6 +1830,19 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertEqual(out['api_contract_version'], 'custom')
         self.assertEqual(out['api_contract_endpoint'], 'custom_endpoint')
 
+    def test_resolve_date_context_with_requested_date(self):
+        from quantia.web.selectionScoreHandler import _resolve_date_context
+        ctx = _resolve_date_context('2026-06-01', pd.DataFrame())
+        self.assertEqual(ctx['date_requested'], '2026-06-01')
+        self.assertEqual(ctx['date_effective'], '2026-06-01')
+
+    def test_resolve_date_context_from_dataframe(self):
+        from quantia.web.selectionScoreHandler import _resolve_date_context
+        df = pd.DataFrame([{'date': '2026-05-30'}])
+        ctx = _resolve_date_context('', df)
+        self.assertIsNone(ctx['date_requested'])
+        self.assertEqual(ctx['date_effective'], '2026-05-30')
+
     def test_normalize_score_row_display_score_prefers_view(self):
         from quantia.web.selectionScoreHandler import _normalize_score_row
         row = {
