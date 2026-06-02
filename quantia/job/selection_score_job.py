@@ -43,6 +43,23 @@ def _load_latest_selection_panel() -> pd.DataFrame:
     return df
 
 
+def _load_prev_scores(score_date: pd.Timestamp) -> pd.DataFrame:
+    if not mdb.checkTableIsExist(scoring.SELECTION_SCORE_TABLE):
+        return pd.DataFrame()
+    sql = f"""
+        SELECT `code`, `industry`, `total_score`, `industry_rank`
+        FROM `{scoring.SELECTION_SCORE_TABLE}`
+        WHERE `date` = (
+            SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`
+            WHERE `date` < %s
+        )
+    """
+    df = pd.read_sql(sql=sql, con=mdb.engine(), params=(pd.to_datetime(score_date).date(),))
+    if not df.empty:
+        df['code'] = df['code'].astype(str)
+    return df
+
+
 def run_selection_score_job(date, before=True):
     """run_template 入口。before 阶段不执行，after 阶段落库评分。"""
     if before:
@@ -54,12 +71,16 @@ def run_selection_score_job(date, before=True):
             logging.warning('selection_score_job: cn_stock_selection 最新快照为空，跳过')
             return
 
+        scoring.ensure_selection_score_table(mdb)
+
         result = scoring.build_daily_selection_scores(panel, weight_template='balanced', alpha=0.6)
         if result.empty:
             logging.warning('selection_score_job: 评分结果为空，跳过')
             return
 
-        scoring.ensure_selection_score_table(mdb)
+        score_date = pd.to_datetime(result['date']).max()
+        prev_scores = _load_prev_scores(score_date)
+        result = scoring.apply_ema_and_rank_change(result, prev_scores=prev_scores, ema_span=5)
 
         score_date = pd.to_datetime(result['date']).max().date()
         del_sql = f"DELETE FROM `{scoring.SELECTION_SCORE_TABLE}` WHERE `date` = %s"

@@ -218,6 +218,50 @@ class TestM2DailyBuilder(unittest.TestCase):
         with self.assertRaises(ValueError):
             sc.build_daily_selection_scores(pd.DataFrame({'date': ['2026-06-01']}))
 
+    def test_apply_ema_and_rank_change(self):
+        cur = pd.DataFrame({
+            'date': [pd.to_datetime('2026-06-02').date(), pd.to_datetime('2026-06-02').date()],
+            'code': ['000001', '000002'],
+            'industry': ['银行', '银行'],
+            'total_score_raw': [0.0, 100.0],
+            'total_score': [0.0, 100.0],
+            'industry_rank': [2, 1],
+            'industry_total': [2, 2],
+        })
+        prev = pd.DataFrame({
+            'code': ['000001', '000002'],
+            'industry': ['银行', '银行'],
+            'total_score': [90.0, 50.0],
+            'industry_rank': [1, 2],
+        })
+
+        out = sc.apply_ema_and_rank_change(cur, prev_scores=prev, ema_span=5)
+        # alpha=2/(5+1)=1/3, code1: 1/3*0+2/3*90=60
+        self.assertAlmostEqual(float(out.loc[out['code'] == '000001', 'total_score'].iloc[0]), 60.0, places=6)
+        # code2: 1/3*100+2/3*50=66.6667
+        self.assertAlmostEqual(float(out.loc[out['code'] == '000002', 'total_score'].iloc[0]), 66.6666667, places=5)
+
+        # 平滑后 code2 反超：code1 排名 2，code2 排名 1。
+        # rank_change=prev-current: code1=1-2=-1, code2=2-1=+1
+        r1 = int(out.loc[out['code'] == '000001', 'rank_change_1d'].iloc[0])
+        r2 = int(out.loc[out['code'] == '000002', 'rank_change_1d'].iloc[0])
+        self.assertEqual(r1, -1)
+        self.assertEqual(r2, 1)
+
+    def test_apply_ema_rank_change_no_prev_defaults_zero(self):
+        cur = pd.DataFrame({
+            'date': [pd.to_datetime('2026-06-02').date()],
+            'code': ['000001'],
+            'industry': ['银行'],
+            'total_score_raw': [66.0],
+            'total_score': [66.0],
+            'industry_rank': [1],
+            'industry_total': [1],
+        })
+        out = sc.apply_ema_and_rank_change(cur, prev_scores=pd.DataFrame(), ema_span=5)
+        self.assertAlmostEqual(float(out['total_score'].iloc[0]), 66.0, places=6)
+        self.assertEqual(int(out['rank_change_1d'].iloc[0]), 0)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -431,6 +431,69 @@ def build_daily_selection_scores(
     return out
 
 
+def apply_ema_and_rank_change(
+    current_scores: pd.DataFrame,
+    prev_scores: pd.DataFrame | None = None,
+    ema_span: int = 5,
+) -> pd.DataFrame:
+    """
+    对当日评分结果应用 EMA 平滑，并回填相对上一交易日的行业排名变化。
+
+    约定：
+    - EMA 使用 `total_score_raw` 作为当日输入、`prev.total_score` 作为上一日状态。
+    - `rank_change_1d = prev_industry_rank - industry_rank`，正值表示名次上升。
+    """
+    if current_scores is None or current_scores.empty:
+        return pd.DataFrame()
+
+    out = current_scores.copy()
+    if 'total_score_raw' not in out.columns:
+        out['total_score_raw'] = out.get('total_score', np.nan)
+
+    prev = prev_scores.copy() if prev_scores is not None else pd.DataFrame()
+    has_prev = not prev.empty and {'code', 'total_score', 'industry_rank'}.issubset(prev.columns)
+    if has_prev:
+        prev['code'] = prev['code'].astype(str)
+        keep_cols = ['code', 'industry', 'total_score', 'industry_rank']
+        for col in keep_cols:
+            if col not in prev.columns:
+                prev[col] = np.nan
+        prev = prev[keep_cols].rename(columns={
+            'industry': 'prev_industry',
+            'total_score': 'prev_total_score',
+            'industry_rank': 'prev_industry_rank',
+        })
+        out['code'] = out['code'].astype(str)
+        out = out.merge(prev, on='code', how='left')
+    else:
+        out['prev_industry'] = np.nan
+        out['prev_total_score'] = np.nan
+        out['prev_industry_rank'] = np.nan
+
+    span = max(1, int(ema_span))
+    alpha = 2.0 / (span + 1.0)
+    out['total_score'] = np.where(
+        out['prev_total_score'].notna(),
+        alpha * _as_float(out['total_score_raw']) + (1.0 - alpha) * _as_float(out['prev_total_score']),
+        _as_float(out['total_score_raw']),
+    )
+    out['total_score'] = _as_float(out['total_score']).clip(0, 100)
+
+    out['industry_rank'] = out['total_score'].groupby(out['industry']).rank(method='min', ascending=False).astype('Int64')
+    out['industry_total'] = out.groupby('industry')['code'].transform('count').astype('Int64')
+
+    prev_rank = _as_float(out['prev_industry_rank'])
+    same_ind = out['prev_industry'].fillna('') == out['industry'].fillna('')
+    out['rank_change_1d'] = np.where(
+        same_ind & prev_rank.notna(),
+        prev_rank - _as_float(out['industry_rank']),
+        0.0,
+    )
+    out['rank_change_1d'] = _as_float(out['rank_change_1d']).fillna(0).round().astype(int)
+
+    return out.drop(columns=['prev_industry', 'prev_total_score', 'prev_industry_rank'])
+
+
 # ---------------------------------------------------------------------------
 # 五、有效性验证原语（M0：IC / 分层 / 单调性）
 # ---------------------------------------------------------------------------
