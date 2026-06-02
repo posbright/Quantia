@@ -273,6 +273,7 @@ class Application(tornado.web.Application):
             (r"/quantia/api/fund/peer_compare", fundPeerCompareHandler.FundPeerCompareHandler),
             (r"/quantia/api/fund/composite_analysis", fundCompositeAnalysisHandler.FundCompositeAnalysisHandler),
             (r"/quantia/api/fund/nav_history", fundNavHistoryHandler.FundNavHistoryHandler),
+            (r"/quantia/api/fund/nav_peer", fundNavHistoryHandler.FundNavPeerHandler),
             (r"/quantia/api/fund/ai_analysis", fundAiAnalysisHandler.FundAiAnalysisHandler),
             # ── 性能监控（前端 web-vitals 上报，仅接收不处理）──
             (r"/quantia/api/metric/web_vitals", WebVitalsHandler),
