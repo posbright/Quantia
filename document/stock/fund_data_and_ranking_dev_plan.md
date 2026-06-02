@@ -566,7 +566,7 @@ flowchart LR
    - ⏸ **后续期**（依赖 F7 评分 / F8 净值历史 / F10 画像 / F11 同类评比 / F12 持仓后端）：行业过滤、详情抽屉、雷达评比、净值曲线、持仓饼图、价值卡片、综合分析。
    - ✅ **已交付（详情抽屉 + 同类对比）**：`FundDetailDrawer.vue`（净值走势曲线/同类雷达/持仓表+行业饼图/基金画像/价值标签 chips/综合分析卡片）、`FundCompareTab.vue`（2~3 只同类雷达叠加 + KPI 对比表）、`fundNavHistoryHandler`（`/api/fund/nav_history`）、`FundIndustriesHandler`（`/api/fund/rank/industries`）、排行榜行业二级过滤。
    - ✅ **已交付（§9.2 评分列/多维排序 + §9.3 KPI 指标条）**：排行榜净值型桶新增 综合分(0-100 进度条色阶)/夏普/最大回撤/基准超额/近5年/规模/评级/主行业 列（JOIN `cn_fund_rank_score` + `cn_fund_profile`）；排序下拉新增 综合评分/夏普/最大回撤/基准超额/近5年，默认综合评分降序；评分表缺失时 score 类排序回退 `rate_1y`；货币型桶禁用评分派生排序。详情抽屉新增关键指标条（近1/3/5年/夏普/最大回撤/基准超额，正负着色，仅读 composite 预算指标防幻觉）。单测 `tests/test_fund_rank_handler.py`（含 score 排序 + 无评分表回退）全绿；本地无基金数据，JOIN 数据路径由 mock 单测覆盖。
-   - ⏸ **仍待**：§9.3 净值曲线叠加同类平均/基准基线、§9.4 同类对比 Tab 净值曲线同图对比（需新增"同类平均净值序列"聚合后端）。
+   - ✅ **已交付（§9.3 净值叠加同类平均 + §9.4 同图对比）**：新增聚合后端 `FundNavPeerHandler`（`/api/fund/nav_peer?code=&range=`，读 `cn_fund_rank` 定位同类桶 → 取 ≤40 只有净值历史的同类基金 → 各自归一化为"较窗口首点增长%"、前向填充后跨基金求均值，排除目标自身）；详情抽屉净值曲线叠加灰色虚线"同类平均"基线（按日期对齐 + connectNulls 桥接）；`FundCompareTab` 新增"净值增长对比"图（time 轴，2~3 只所选基金归一化增长%同图对比 + 区间切换）。单测 `tests/test_fund_nav_peer_handler.py`（compute_peer_baseline 排除自身/归一化/acc 优先 + Handler 缺码/无表/未知类型）全绿；黑盒 `/api/fund/nav_peer` 200 + 缺码 400 验证 OK（远程库无基金数据，优雅空集）。
 6. PR-6：F14 AI 按需分析（异步 Handler + LLM/web_search 装配 + 缓存 + 前端按钮懒加载 + 降级）。
 
 > 前端页面细节见 §9。
