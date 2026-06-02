@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>综合选股重构 v2 — 多因子评分榜 设计原型</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+:root {
+  --bg:#f5f7fa; --card:#fff; --border:#e4e7ed; --text:#303133; --text2:#606266; --text3:#909399;
+  --brand:#409eff; --brand-light:#ecf5ff; --radius:10px;
+  /* 涨跌色：仅用于行情数字 */
+  --up:#f56c6c; --down:#67c23a;
+  /* 评级色：与涨跌解耦、色盲安全 */
+  --s:#e6a23c; --a:#8b5cf6; --b:#409eff; --c:#5c8a9e; --d:#909399;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;}
+.container{max-width:1320px;margin:0 auto;padding:24px;}
+h1{font-size:24px;margin-bottom:6px;}
+h2{font-size:18px;margin:0 0 16px;padding-bottom:8px;border-bottom:2px solid var(--brand);display:inline-block;}
+.subtitle{color:var(--text3);font-size:14px;margin-bottom:28px;}
+.section{margin-bottom:44px;}
+.label{display:inline-block;font-size:12px;color:var(--text3);background:#f0f2f5;border-radius:4px;padding:2px 8px;margin-bottom:10px;}
+.card{background:var(--card);border-radius:var(--radius);border:1px solid var(--border);padding:20px;margin-bottom:16px;}
+
+/* 顶部工具条 */
+.toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;}
+.toolbar .left{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+.toolbar .date{color:var(--text3);font-size:13px;}
+.templates{display:flex;gap:6px;flex-wrap:wrap;}
+.tpl{font-size:13px;padding:6px 14px;border-radius:20px;border:1px solid var(--border);cursor:pointer;color:var(--text2);background:#fff;}
+.tpl.active{background:var(--brand);color:#fff;border-color:var(--brand);}
+.search{border:1px solid var(--border);border-radius:20px;padding:6px 14px;font-size:13px;width:200px;}
+.link{color:var(--brand);font-size:13px;cursor:pointer;text-decoration:none;}
+
+/* 筛选栏 */
+.filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 18px;margin-bottom:16px;font-size:13px;}
+.filters .fg{display:flex;align-items:center;gap:6px;}
+.chip{font-size:12px;padding:4px 11px;border-radius:14px;border:1px solid var(--border);cursor:pointer;background:#fff;color:var(--text2);}
+.chip.on{background:var(--brand-light);border-color:var(--brand);color:var(--brand);}
+select,.fakeselect{border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:13px;background:#fff;color:var(--text2);}
+.fg .switch{display:inline-flex;align-items:center;gap:6px;cursor:pointer;}
+
+/* 概览统计 */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px;}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;}
+.stat .num{font-size:26px;font-weight:700;}
+.stat .cap{font-size:13px;color:var(--text3);}
+.stat.s .num{color:var(--s);}
+.stat.brand .num{color:var(--brand);}
+
+/* 评级徽章：字母 + 图标双编码 */
+.rating{display:inline-flex;align-items:center;justify-content:center;gap:2px;min-width:26px;height:24px;padding:0 5px;border-radius:6px;color:#fff;font-weight:700;font-size:13px;}
+.r-S{background:var(--s);} .r-A{background:var(--a);} .r-B{background:var(--b);} .r-C{background:var(--c);} .r-D{background:var(--d);}
+.rating::before{font-size:10px;}
+.r-S::before{content:"\2605";} /* 星 */
+.r-A::before{content:"\25C6";} /* 菱 */
+.r-B::before{content:"\25B2";} /* 三角 */
+.r-C::before{content:"\25CF";} /* 圆 */
+.r-D::before{content:"\25AC";} /* 横条 */
+
+/* Top 横向卡片 */
+.top-scroll{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;}
+.top-card{border:1px solid var(--border);border-radius:var(--radius);padding:14px;position:relative;overflow:hidden;cursor:pointer;transition:box-shadow .2s;}
+.top-card:hover{box-shadow:0 4px 16px rgba(0,0,0,.08);}
+.top-card .rank{position:absolute;top:8px;right:10px;font-size:22px;font-weight:800;color:#eef1f5;}
+.top-card .nm{font-weight:600;font-size:15px;}
+.top-card .cd{color:var(--text3);font-size:12px;margin-bottom:8px;}
+.top-card .score{font-size:30px;font-weight:800;line-height:1;}
+.top-card .qlabel{font-size:11px;color:var(--text3);}
+.top-card .ind{font-size:12px;color:var(--text3);margin-top:6px;}
+.top-card .tags{margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;}
+
+/* 标签 */
+.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:4px;}
+.tag-b{background:#ecf5ff;color:#409eff;} .tag-g{background:#f0f9eb;color:#67c23a;}
+.tag-y{background:#fdf6ec;color:#e6a23c;} .tag-r{background:#fef0f0;color:#f56c6c;}
+
+/* 行业宫格 */
+.ind-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+.ind-card{border:1px solid var(--border);border-radius:var(--radius);padding:16px;cursor:pointer;transition:box-shadow .2s,transform .2s;background:var(--card);}
+.ind-card:hover{box-shadow:0 4px 18px rgba(64,158,255,.18);transform:translateY(-2px);}
+.ind-card .ihead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.ind-card .iname{font-size:16px;font-weight:600;}
+.ind-card .icount{font-size:12px;color:var(--text3);}
+.ind-card .iavg{font-size:13px;color:var(--text2);}
+.ind-card .leader{font-size:13px;margin:6px 0;}
+.ind-card .leader b{color:var(--brand);}
+.boom{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text3);margin-top:6px;}
+.bar{flex:1;height:6px;background:#eef1f5;border-radius:3px;overflow:hidden;}
+.bar > i{display:block;height:100%;border-radius:3px;background:linear-gradient(90deg,#67c23a,#e6a23c);}
+
+/* 表格 */
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th{background:#fafafa;font-weight:600;text-align:left;padding:10px 10px;border-bottom:2px solid var(--border);white-space:nowrap;cursor:pointer;}
+th .sort{color:var(--text3);font-size:10px;}
+td{padding:9px 10px;border-bottom:1px solid var(--border);white-space:nowrap;}
+tr:hover td{background:var(--brand-light);}
+.scorebar{display:flex;align-items:center;gap:8px;min-width:120px;}
+.scorebar .track{flex:1;height:8px;background:#eef1f5;border-radius:4px;overflow:hidden;}
+.scorebar .track > i{display:block;height:100%;border-radius:4px;background:var(--brand);}
+.scorebar b{width:34px;text-align:right;}
+.mini{display:inline-block;width:30px;text-align:center;border-radius:4px;font-size:12px;padding:1px 0;color:#fff;}
+.rankcol{display:flex;align-items:center;gap:4px;}
+.rankcol .ch{font-size:11px;}
+.up{color:var(--up);} .down{color:var(--down);}
+.muted{color:var(--text3);}
+
+/* 个股详情 */
+.detail{display:grid;grid-template-columns:340px 1fr;gap:20px;}
+.radar-wrap{display:flex;flex-direction:column;align-items:center;}
+#radar{width:300px;height:260px;}
+.scoreline{display:flex;gap:18px;align-items:flex-end;margin-bottom:4px;}
+.big-score{font-size:52px;font-weight:800;line-height:1;}
+.subscore{font-size:13px;color:var(--text3);}
+.subscore b{font-size:18px;color:var(--text);display:block;}
+.dim-list{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;}
+.dim{border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
+.dim .dn{font-size:12px;color:var(--text3);}
+.dim .dv{font-size:20px;font-weight:700;}
+.why{background:var(--brand-light);border-left:4px solid var(--brand);padding:12px 16px;border-radius:0 8px 8px 0;font-size:13px;margin:14px 0;}
+.why b{color:var(--brand);}
+
+/* 数据流 */
+.flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.node{background:var(--brand);color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;text-align:center;}
+.node.g{background:#67c23a;} .node.y{background:var(--s);} .node.p{background:var(--a);}
+.arrow{color:var(--text3);font-size:18px;}
+
+/* 状态态 */
+.states{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+.state-box{border:1px dashed var(--border);border-radius:var(--radius);padding:24px;text-align:center;background:var(--card);}
+.state-box .emoji{font-size:32px;}
+.state-box .st-t{font-weight:600;margin:8px 0 4px;}
+.state-box .st-d{font-size:12px;color:var(--text3);}
+.skeleton{height:14px;border-radius:6px;background:linear-gradient(90deg,#eef1f5 25%,#f7f9fc 50%,#eef1f5 75%);background-size:200% 100%;animation:sk 1.3s infinite;margin:8px 0;}
+@keyframes sk{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
+.btn{display:inline-block;margin-top:10px;font-size:13px;padding:6px 16px;border-radius:6px;border:1px solid var(--brand);color:var(--brand);background:#fff;cursor:pointer;}
+
+.legend{font-size:12px;color:var(--text3);margin-top:8px;}
+.legend span{margin-right:14px;display:inline-flex;align-items:center;gap:4px;}
+.dot{display:inline-block;width:10px;height:10px;border-radius:3px;}
+.disc{font-size:12px;color:var(--text3);text-align:center;margin-top:30px;padding-top:16px;border-top:1px dashed var(--border);}
+
+@media (max-width:900px){
+  .stats{grid-template-columns:repeat(2,1fr);}
+  .top-scroll{grid-template-columns:1fr 1fr;}
+  .ind-grid{grid-template-columns:1fr;}
+  .detail{grid-template-columns:1fr;}
+  .dim-list{grid-template-columns:1fr;}
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>玄枢 Quantia · 综合选股（重构 v2）</h1>
+  <p class="subtitle">从「全市场数据平铺」重构为「行业分类 + 多因子<b>双分制</b>综合评分榜」。本页为静态设计原型，数据为示例。</p>
+
+  <!-- 0. 数据流 -->
+  <div class="section">
+    <span class="label">评分体系（v2 双分制）</span>
+    <div class="card">
+      <div class="flow">
+        <div class="node">cn_stock_selection<br><small>全市场 150 字段</small></div>
+        <span class="arrow">→</span>
+        <div class="node">指标族聚合<br><small>消除共线性</small></div>
+        <span class="arrow">→</span>
+        <div class="node y">绝对质量分 Q<br><small>稳健Z·全市场可比</small></div>
+        <div class="node p">行业相对分 R<br><small>行业内百分位</small></div>
+        <span class="arrow">→</span>
+        <div class="node g">综合分 = 0.6Q+0.4R<br><small>EMA 平滑</small></div>
+      </div>
+      <p class="legend" style="margin-top:12px">评级由 <b>Q</b> 决定（保证 S=全市场顶尖）；行业内排名由 <b>R</b> 决定。</p>
+    </div>
+  </div>
+
+  <!-- 1. 主页 -->
+  <div class="section">
+    <span class="label">页面 1 · 评分榜主页 /selection/all</span>
+
+    <div class="toolbar">
+      <div class="left">
+        <strong style="font-size:16px">综合选股评分榜</strong>
+        <span class="date">数据日期 2026-02-13（收盘后）</span>
+      </div>
+      <div class="left">
+        <div class="templates">
+          <span class="tpl active">均衡</span>
+          <span class="tpl">价值</span>
+          <span class="tpl">成长</span>
+          <span class="tpl">技术</span>
+          <span class="tpl">金融业</span>
+        </div>
+        <input class="search" placeholder="搜索代码 / 名称">
+        <a class="link">📖 评分方法论</a>
+      </div>
+    </div>
+
+    <!-- 筛选栏 -->
+    <div class="filters">
+      <div class="fg">评级
+        <span class="chip on">全部</span><span class="chip">S</span><span class="chip">A</span><span class="chip">B</span>
+      </div>
+      <div class="fg">质量分
+        <span class="fakeselect">≥ 60</span>
+      </div>
+      <div class="fg">行业
+        <span class="fakeselect">全部行业 ▾</span>
+      </div>
+      <div class="fg">概念
+        <span class="fakeselect">全部概念 ▾</span>
+      </div>
+      <div class="fg"><label class="switch"><input type="checkbox" checked> 排除 ST/次新</label></div>
+      <div class="fg"><label class="switch"><input type="checkbox"> 仅看自选 ★</label></div>
+    </div>
+
+    <div class="stats">
+      <div class="stat brand"><div class="num">4982</div><div class="cap">覆盖股票</div></div>
+      <div class="stat s"><div class="num">38</div><div class="cap">S 级（全市场前 1%）</div></div>
+      <div class="stat"><div class="num">86</div><div class="cap">行业数</div></div>
+      <div class="stat"><div class="num">51.4</div><div class="cap">全市场平均质量分</div></div>
+    </div>
+
+    <h2 style="font-size:15px">全市场 Top 榜（按绝对质量分 Q）</h2>
+    <div class="top-scroll" style="margin-bottom:24px">
+      <div class="top-card"><div class="rank">1</div><div class="nm">宁德时代</div><div class="cd">300750 · 电池</div><div class="score" style="color:var(--s)">88.6</div><div class="qlabel">Q 质量分</div><div class="ind">综合 86.4 · <span class="rating r-S">S</span></div><div class="tags"><span class="tag tag-b">机构重仓</span><span class="tag tag-g">高成长</span></div></div>
+      <div class="top-card"><div class="rank">2</div><div class="nm">贵州茅台</div><div class="cd">600519 · 白酒</div><div class="score" style="color:var(--s)">87.2</div><div class="qlabel">Q 质量分</div><div class="ind">综合 85.1 · <span class="rating r-S">S</span></div><div class="tags"><span class="tag tag-b">高ROE</span><span class="tag tag-y">低负债</span></div></div>
+      <div class="top-card"><div class="rank">3</div><div class="nm">迈瑞医疗</div><div class="cd">300760 · 医疗器械</div><div class="score" style="color:var(--s)">84.9</div><div class="qlabel">Q 质量分</div><div class="ind">综合 83.0 · <span class="rating r-A">A</span></div><div class="tags"><span class="tag tag-g">稳增长</span></div></div>
+      <div class="top-card"><div class="rank">4</div><div class="nm">比亚迪</div><div class="cd">002594 · 汽车</div><div class="score" style="color:var(--a)">82.3</div><div class="qlabel">Q 质量分</div><div class="ind">综合 81.5 · <span class="rating r-A">A</span></div><div class="tags"><span class="tag tag-b">均线多头</span></div></div>
+      <div class="top-card"><div class="rank">5</div><div class="nm">招商银行</div><div class="cd">600036 · 银行</div><div class="score" style="color:var(--a)">81.0</div><div class="qlabel">Q 质量分</div><div class="ind">综合 80.2 · <span class="rating r-A">A</span></div><div class="tags"><span class="tag tag-y">金融业模板</span></div></div>
+    </div>
+
+    <h2 style="font-size:15px">行业宫格（点击进入行业详情榜）</h2>
+    <div class="ind-grid">
+      <div class="ind-card">
+        <div class="ihead"><span class="iname">电池</span><span class="icount">42 只</span></div>
+        <div class="iavg">行业平均质量分 <b>71</b></div>
+        <div class="leader">龙头 <b>宁德时代</b> 88.6 <span class="rating r-S">S</span></div>
+        <div class="boom">景气度<div class="bar"><i style="width:82%"></i></div>82</div>
+      </div>
+      <div class="ind-card">
+        <div class="ihead"><span class="iname">半导体</span><span class="icount">88 只</span></div>
+        <div class="iavg">行业平均质量分 <b>63</b></div>
+        <div class="leader">龙头 <b>北方华创</b> 79.4 <span class="rating r-A">A</span></div>
+        <div class="boom">景气度<div class="bar"><i style="width:74%"></i></div>74</div>
+      </div>
+      <div class="ind-card">
+        <div class="ihead"><span class="iname">白酒</span><span class="icount">20 只</span></div>
+        <div class="iavg">行业平均质量分 <b>68</b></div>
+        <div class="leader">龙头 <b>贵州茅台</b> 87.2 <span class="rating r-S">S</span></div>
+        <div class="boom">景气度<div class="bar"><i style="width:55%"></i></div>55</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. 行业详情榜 -->
+  <div class="section">
+    <span class="label">页面 2 · 行业详情榜 /selection/all/industry/电池</span>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div><strong style="font-size:17px">电池</strong> <span class="muted">42 只 · 行业平均质量分 71 · 景气度 82</span></div>
+        <div class="templates"><span class="chip on">综合分</span><span class="chip">默认折叠 7 维</span></div>
+      </div>
+      <table>
+        <thead><tr>
+          <th>排名 <span class="sort">▾</span></th><th>代码</th><th>名称</th>
+          <th>综合分 <span class="sort">▾</span></th><th>质量分 Q</th><th>评级</th>
+          <th>估</th><th>盈</th><th>成</th><th>财</th><th>技</th><th>资</th><th>情</th>
+          <th>标签</th><th>风险</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td><span class="rankcol">1 <span class="ch up">▲2</span></span></td><td>300750</td><td>宁德时代</td>
+            <td><div class="scorebar"><div class="track"><i style="width:86%"></i></div><b>86.4</b></div></td>
+            <td>88.6</td><td><span class="rating r-S">S</span></td>
+            <td><span class="mini" style="background:#7eb8e6">72</span></td><td><span class="mini" style="background:#e6a23c">95</span></td>
+            <td><span class="mini" style="background:#e6a23c">90</span></td><td><span class="mini" style="background:#8bb88b">84</span></td>
+            <td><span class="mini" style="background:#aab">65</span></td><td><span class="mini" style="background:#e6a23c">91</span></td>
+            <td><span class="mini" style="background:#8bb88b">80</span></td>
+            <td><span class="tag tag-b">机构重仓</span></td><td><span class="muted">—</span></td>
+          </tr>
+          <tr>
+            <td><span class="rankcol">2 <span class="ch muted">—</span></span></td><td>300014</td><td>亿纬锂能</td>
+            <td><div class="scorebar"><div class="track"><i style="width:80%"></i></div><b>80.1</b></div></td>
+            <td>81.2</td><td><span class="rating r-A">A</span></td>
+            <td><span class="mini" style="background:#8bb88b">81</span></td><td><span class="mini" style="background:#8bb88b">78</span></td>
+            <td><span class="mini" style="background:#e6a23c">88</span></td><td><span class="mini" style="background:#aab">66</span></td>
+            <td><span class="mini" style="background:#8bb88b">79</span></td><td><span class="mini" style="background:#8bb88b">75</span></td>
+            <td><span class="mini" style="background:#aab">62</span></td>
+            <td><span class="tag tag-g">高成长</span></td><td><span class="muted">—</span></td>
+          </tr>
+          <tr>
+            <td><span class="rankcol">3 <span class="ch down">▼1</span></span></td><td>002074</td><td>国轩高科</td>
+            <td><div class="scorebar"><div class="track"><i style="width:64%"></i></div><b>64.3</b></div></td>
+            <td>62.0</td><td><span class="rating r-B">B</span></td>
+            <td><span class="mini" style="background:#aab">58</span></td><td><span class="mini" style="background:#aab">55</span></td>
+            <td><span class="mini" style="background:#8bb88b">76</span></td><td><span class="mini" style="background:#cd8b8b">42</span></td>
+            <td><span class="mini" style="background:#8bb88b">71</span></td><td><span class="mini" style="background:#aab">60</span></td>
+            <td><span class="mini" style="background:#aab">57</span></td>
+            <td><span class="tag tag-b">放量突破</span></td><td><span class="tag tag-r">高负债</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="legend" style="margin-top:12px">迷你格＝该维度行业内分位（0–100）。色深仅辅助，鼠标悬浮显示具体字段与原始值。</p>
+    </div>
+  </div>
+
+  <!-- 3. 个股详情 -->
+  <div class="section">
+    <span class="label">页面 3 · 个股评分详情 /selection/detail/300750</span>
+    <div class="card">
+      <div class="detail">
+        <div class="radar-wrap">
+          <div class="scoreline">
+            <div><div class="big-score" style="color:var(--s)">86.4</div><div class="subscore">综合分（5日平滑）</div></div>
+            <div class="subscore">Q 质量分<b>88.6</b></div>
+            <div class="subscore">R 行业分<b>95.2</b></div>
+          </div>
+          <div style="margin:6px 0 10px"><span class="rating r-S">S</span> <span class="muted">电池 第 1 / 42 · 数据完整度 97%</span></div>
+          <div id="radar"></div>
+        </div>
+        <div>
+          <div class="why">
+            <b>为什么是这个分？</b><br>
+            🟢 亮点：<b>盈利</b>（行业前 5%，ROE 22.3%）、<b>资金</b>（机构持股 31%）、<b>成长</b>（净利同比 +43%）。<br>
+            🟡 短板：<b>技术</b>（行业分位 65，短期均线走平）、<b>估值</b>（PE 略高于行业中位）。
+          </div>
+          <div class="dim-list">
+            <div class="dim"><div class="dn">估值 valuation</div><div class="dv">72</div></div>
+            <div class="dim"><div class="dn">盈利 profitability</div><div class="dv">95</div></div>
+            <div class="dim"><div class="dn">成长 growth</div><div class="dv">90</div></div>
+            <div class="dim"><div class="dn">财务 health</div><div class="dv">84</div></div>
+            <div class="dim"><div class="dn">资金 capital</div><div class="dv">91</div></div>
+            <div class="dim"><div class="dn">技术 technical</div><div class="dv">65</div></div>
+          </div>
+          <div style="margin-top:12px">
+            <span class="tag tag-b">机构重仓</span> <span class="tag tag-g">高成长</span> <span class="tag tag-y">均线多头</span>
+            <span class="btn">★ 加自选</span> <span class="btn">⇄ 加对比</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. UI 状态态 -->
+  <div class="section">
+    <span class="label">UI 状态态（人性化）</span>
+    <div class="states">
+      <div class="state-box">
+        <div class="skeleton" style="width:60%;margin:0 auto"></div>
+        <div class="skeleton" style="width:90%"></div>
+        <div class="skeleton" style="width:80%"></div>
+        <div class="st-d" style="margin-top:10px">加载中 · 骨架屏</div>
+      </div>
+      <div class="state-box">
+        <div class="emoji">🗂️</div>
+        <div class="st-t">暂无符合条件的股票</div>
+        <div class="st-d">试着放宽评级或质量分筛选</div>
+        <span class="btn">重置筛选</span>
+      </div>
+      <div class="state-box">
+        <div class="emoji">⏳</div>
+        <div class="st-t">今日评分尚未生成</div>
+        <div class="st-d">收盘后约 18:00 更新，可查看昨日榜单</div>
+        <span class="btn">查看 2026-02-12</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 图例 -->
+  <div class="card">
+    <strong style="font-size:14px">评级色卡（与涨跌色解耦 · 色盲安全 · 字母+图标双编码）</strong>
+    <div class="legend" style="margin-top:10px">
+      <span><span class="rating r-S">S</span> 全市场顶尖</span>
+      <span><span class="rating r-A">A</span> 优质</span>
+      <span><span class="rating r-B">B</span> 良好</span>
+      <span><span class="rating r-C">C</span> 一般</span>
+      <span><span class="rating r-D">D</span> 偏弱</span>
+    </div>
+    <div class="legend" style="margin-top:8px">
+      <span><span class="dot" style="background:var(--up)"></span> 红＝涨（仅行情数字）</span>
+      <span><span class="dot" style="background:var(--down)"></span> 绿＝跌（仅行情数字）</span>
+    </div>
+  </div>
+
+  <p class="disc">
+    ⚠️ 评分基于公开数据的量化排序，<b>不构成投资建议</b>，不保证未来收益。请结合自身判断与风险承受能力独立决策。<br>
+    数据来源：cn_stock_selection（每日收盘后更新）· 评分方法详见「评分方法论」页。
+  </p>
+
+</div>
+
+<script>
+const radar = echarts.init(document.getElementById('radar'));
+radar.setOption({
+  tooltip:{},
+  radar:{
+    indicator:[
+      {name:'估值',max:100},{name:'盈利',max:100},{name:'成长',max:100},
+      {name:'财务',max:100},{name:'资金',max:100},{name:'技术',max:100},{name:'情绪',max:100}
+    ],
+    radius:'66%',
+    splitArea:{areaStyle:{color:['#fafbfc','#f2f5f8']}},
+    axisName:{color:'#606266',fontSize:12}
+  },
+  series:[{
+    type:'radar',
+    data:[{
+      value:[72,95,90,84,91,65,80],
+      name:'宁德时代',
+      areaStyle:{color:'rgba(64,158,255,.25)'},
+      lineStyle:{color:'#409eff'},
+      itemStyle:{color:'#409eff'}
+    }]
+  }]
+});
+window.addEventListener('resize',()=>radar.resize());
+</script>
+</body>
+</html>
