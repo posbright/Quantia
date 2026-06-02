@@ -117,9 +117,54 @@ CALIBRATED_WEIGHTS_M1: dict[str, float] = _normalize_weights({
     'sentiment': 0.06,
 })
 
+# M6 模板：面向前端个性化视图重加权（仅影响 view score，不改写存储 Q/评级）。
+VALUE_WEIGHTS: dict[str, float] = _normalize_weights({
+    'valuation': 0.26,
+    'profitability': 0.22,
+    'health': 0.20,
+    'capital': 0.12,
+    'growth': 0.10,
+    'technical': 0.05,
+    'sentiment': 0.05,
+})
+
+GROWTH_WEIGHTS: dict[str, float] = _normalize_weights({
+    'growth': 0.30,
+    'profitability': 0.20,
+    'technical': 0.15,
+    'capital': 0.12,
+    'health': 0.10,
+    'valuation': 0.08,
+    'sentiment': 0.05,
+})
+
+TECHNICAL_WEIGHTS: dict[str, float] = _normalize_weights({
+    'technical': 0.35,
+    'sentiment': 0.15,
+    'capital': 0.15,
+    'growth': 0.12,
+    'profitability': 0.10,
+    'valuation': 0.08,
+    'health': 0.05,
+})
+
+FINANCIAL_WEIGHTS: dict[str, float] = _normalize_weights({
+    'profitability': 0.30,
+    'health': 0.25,
+    'valuation': 0.15,
+    'capital': 0.15,
+    'growth': 0.08,
+    'technical': 0.04,
+    'sentiment': 0.03,
+})
+
 WEIGHT_TEMPLATES: dict[str, dict[str, float]] = {
     'balanced': DEFAULT_WEIGHTS,
     'm1_selection_pool': CALIBRATED_WEIGHTS_M1,
+    'value': VALUE_WEIGHTS,
+    'growth': GROWTH_WEIGHTS,
+    'technical': TECHNICAL_WEIGHTS,
+    'financial': FINANCIAL_WEIGHTS,
 }
 
 

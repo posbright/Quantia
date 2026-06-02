@@ -1792,6 +1792,14 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertFalse(ctx['template_fallback'])
         self.assertFalse(ctx['view_template_active'])
 
+    def test_resolve_template_context_value_supported(self):
+        from quantia.web.selectionScoreHandler import _resolve_template_context
+        ctx = _resolve_template_context('value')
+        self.assertEqual(ctx['template_requested'], 'value')
+        self.assertEqual(ctx['template_effective'], 'value')
+        self.assertFalse(ctx['template_fallback'])
+        self.assertTrue(ctx['view_template_active'])
+
     def test_resolve_template_context_unknown_fallback(self):
         from quantia.web.selectionScoreHandler import _resolve_template_context
         ctx = _resolve_template_context('not_exists_template')
@@ -1799,6 +1807,14 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertEqual(ctx['template_effective'], 'balanced')
         self.assertTrue(ctx['template_fallback'])
         self.assertFalse(ctx['view_template_active'])
+
+    def test_template_weights_payload_balanced_and_supported(self):
+        from quantia.web.selectionScoreHandler import _template_weights_payload
+        balanced = _template_weights_payload('balanced')
+        value = _template_weights_payload('value')
+        self.assertAlmostEqual(sum(balanced.values()), 1.0, places=3)
+        self.assertAlmostEqual(sum(value.values()), 1.0, places=3)
+        self.assertGreater(value['valuation'], balanced['valuation'])
 
     def test_resolve_sort_context_supported(self):
         from quantia.web.selectionScoreHandler import _resolve_sort_context

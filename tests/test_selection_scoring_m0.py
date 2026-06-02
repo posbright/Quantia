@@ -110,6 +110,23 @@ class TestQualityScore(unittest.TestCase):
         self.assertGreater(weights['profitability'], sc.DEFAULT_WEIGHTS['profitability'])
         self.assertLess(weights['technical'], sc.DEFAULT_WEIGHTS['technical'])
 
+    def test_resolve_weight_template_m6_presets(self):
+        for template in ('value', 'growth', 'technical', 'financial'):
+            weights = sc.resolve_weight_template(template)
+            self.assertAlmostEqual(sum(weights.values()), 1.0, places=6)
+            self.assertEqual(set(weights.keys()), set(sc.DEFAULT_WEIGHTS.keys()))
+
+    def test_resolve_weight_template_m6_focus_dimensions(self):
+        value_weights = sc.resolve_weight_template('value')
+        growth_weights = sc.resolve_weight_template('growth')
+        technical_weights = sc.resolve_weight_template('technical')
+        financial_weights = sc.resolve_weight_template('financial')
+
+        self.assertGreater(value_weights['valuation'], sc.DEFAULT_WEIGHTS['valuation'])
+        self.assertGreater(growth_weights['growth'], sc.DEFAULT_WEIGHTS['growth'])
+        self.assertGreater(technical_weights['technical'], sc.DEFAULT_WEIGHTS['technical'])
+        self.assertGreater(financial_weights['health'], sc.DEFAULT_WEIGHTS['health'])
+
 
 class TestValidationPrimitives(unittest.TestCase):
 

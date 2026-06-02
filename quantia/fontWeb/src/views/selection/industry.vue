@@ -68,6 +68,26 @@ const scoreDimensions = computed(() => {
   ]
 })
 
+const dimLabelMap: Record<string, string> = {
+  valuation: '估值',
+  profitability: '盈利',
+  growth: '成长',
+  health: '健康',
+  capital: '资金',
+  technical: '技术',
+  sentiment: '情绪',
+}
+
+const templateWeights = computed(() => {
+  const src = meta.value.template_weights || {}
+  return Object.entries(src as Record<string, number>)
+    .map(([key, val]) => ({ key, label: dimLabelMap[key] || key, value: Number(val || 0) }))
+    .filter((x) => Number.isFinite(x.value) && x.value > 0)
+    .sort((a, b) => b.value - a.value)
+})
+
+const templateFocus = computed(() => templateWeights.value.slice(0, 3))
+
 function toNum(v: any, digits = 2): string {
   const n = Number(v)
   if (!Number.isFinite(n)) return '--'
@@ -209,10 +229,24 @@ onBeforeUnmount(() => {
 
     <section class="summary-grid">
       <el-card shadow="never" class="summary-card" v-loading="loadingSummary">
+        <el-alert
+          v-if="meta.template_fallback"
+          title="模板已回退到均衡（请求模板未识别）"
+          type="warning"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 10px"
+        />
         <div class="summary-title">行业概览</div>
         <div class="summary-item">行业均分：{{ toNum(summary?.avg_display_score ?? summary?.avg_total_score) }}</div>
         <div class="summary-item">龙头：{{ summary?.leader_name || summary?.leader_code || '--' }}</div>
         <div class="summary-item">可比占比：{{ toNum((Number(summary?.comparable_ratio || 0) * 100), 1) }}%</div>
+        <div class="summary-item" v-if="templateFocus.length">
+          模板重点：
+          <el-tag v-for="item in templateFocus" :key="item.key" size="small" style="margin-left: 6px">
+            {{ item.label }} {{ (item.value * 100).toFixed(1) }}%
+          </el-tag>
+        </div>
       </el-card>
 
       <el-card shadow="never" class="radar-card">

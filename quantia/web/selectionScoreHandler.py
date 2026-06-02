@@ -188,6 +188,16 @@ def _resolve_template_context(template: str | dict | None) -> dict:
     }
 
 
+def _template_weights_payload(template_effective: str | None) -> dict:
+    """返回可序列化模板权重（四舍五入），用于前端展示。"""
+    key = (str(template_effective).strip().lower() if template_effective is not None else '') or 'balanced'
+    try:
+        weights = scoring.resolve_weight_template(key)
+    except Exception:
+        weights = scoring.resolve_weight_template('balanced')
+    return {k: round(float(v), 4) for k, v in weights.items()}
+
+
 def _resolve_sort_context(sort: str | None) -> dict:
     """解析列表排序请求，统一返回请求/生效/回退状态。"""
     requested = (str(sort).strip().lower() if sort is not None else '') or 'total_score'
@@ -452,6 +462,7 @@ class SelectionScoreListHandler(webBase.BaseHandler):
                 'template_used': template_effective,
                 'template_effective': template_effective,
                 'template_fallback': template_fallback,
+                'template_weights': _template_weights_payload(template_effective),
                 'sort_requested': sort_requested,
                 'sort_effective': sort_by,
                 'sort_fallback': sort_fallback,
@@ -528,6 +539,7 @@ class SelectionScoreDetailHandler(webBase.BaseHandler):
                 'template_requested': 'balanced',
                 'template_effective': 'balanced',
                 'template_fallback': False,
+                'template_weights': _template_weights_payload('balanced'),
                 'display_score_field': 'total_score',
                 'view_score_active': False,
             }, 'detail'))
@@ -613,6 +625,7 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
                 'template_used': template_effective,
                 'template_effective': template_effective,
                 'template_fallback': template_fallback,
+                'template_weights': _template_weights_payload(template_effective),
                 'view_score_active': template_active,
                 'display_score_field': 'total_score_view' if template_active else 'total_score',
                 'items': items,
@@ -688,6 +701,7 @@ class SelectionScoreTopHandler(webBase.BaseHandler):
                 'template_requested': str(template_raw).strip().lower() or 'balanced',
                 'template_effective': 'balanced',
                 'template_fallback': False,
+                'template_weights': _template_weights_payload('balanced'),
                 'display_score_field': 'total_score',
                 'view_score_active': False,
                 'template_ignored': True,

@@ -46,7 +46,8 @@ const templateOptions = [
   { label: '价值', value: 'value' },
   { label: '成长', value: 'growth' },
   { label: '技术', value: 'technical' },
-  { label: 'M1选股池', value: 'm1_selection_pool' },
+  { label: '金融', value: 'financial' },
+  { label: 'M1选股池(实验)', value: 'm1_selection_pool' },
 ]
 const sortOptions = [
   { label: '展示分', value: 'total_score' },
@@ -59,6 +60,50 @@ const industryOptions = computed(() => industryData.value.map((x) => String(x.in
 
 const pageDate = computed(() => listMeta.value.date_effective || industriesMeta.value.date_effective || topMeta.value.date_effective || '--')
 const contractVersion = computed(() => listMeta.value.api_contract_version || industriesMeta.value.api_contract_version || topMeta.value.api_contract_version || '--')
+
+const dimLabelMap: Record<string, string> = {
+  valuation: '估值',
+  profitability: '盈利',
+  growth: '成长',
+  health: '健康',
+  capital: '资金',
+  technical: '技术',
+  sentiment: '情绪',
+}
+
+const templateDescriptionMap: Record<string, string> = {
+  balanced: '全维度均衡，适合作为通用对照。',
+  value: '强化估值与盈利，偏向低估与稳健现金流。',
+  growth: '强化成长与盈利，偏向高景气和业绩加速。',
+  technical: '强化技术与情绪，偏向趋势与交易热度。',
+  financial: '强化盈利、健康与估值，偏向金融行业画像。',
+  m1_selection_pool: '历史校准模板，偏向选股池回测口径。',
+}
+
+const templateDisplayName = computed(() => {
+  const effective = String(listMeta.value.template_effective || filters.value.template || 'balanced')
+  return templateOptions.find((x) => x.value === effective)?.label || effective
+})
+
+const templateDescription = computed(() => {
+  const effective = String(listMeta.value.template_effective || filters.value.template || 'balanced')
+  return templateDescriptionMap[effective] || '当前模板已应用到展示分。'
+})
+
+const templateWeights = computed(() => {
+  const src = listMeta.value.template_weights || industriesMeta.value.template_weights || {}
+  const entries = Object.entries(src as Record<string, number>)
+    .map(([key, val]) => ({
+      key,
+      label: dimLabelMap[key] || key,
+      value: Number(val || 0),
+    }))
+    .filter((x) => Number.isFinite(x.value) && x.value > 0)
+    .sort((a, b) => b.value - a.value)
+  return entries
+})
+
+const templateFocus = computed(() => templateWeights.value.slice(0, 3))
 
 const kpis = computed(() => {
   const totalStocks = Number(pagination.value.total || 0)
@@ -226,6 +271,38 @@ onMounted(loadAll)
       </article>
     </section>
 
+    <el-card shadow="never" class="template-card">
+      <template #header>
+        <div class="panel-header">模板画像（M6 个性化）</div>
+      </template>
+      <el-alert
+        v-if="listMeta.template_fallback"
+        title="请求模板未被识别，已自动回退到均衡模板。"
+        type="warning"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 10px"
+      />
+      <div class="template-head">
+        <div class="template-title">当前模板：{{ templateDisplayName }}</div>
+        <div class="template-desc">{{ templateDescription }}</div>
+      </div>
+      <div class="template-focus" v-if="templateFocus.length">
+        <el-tag v-for="item in templateFocus" :key="item.key" type="success" effect="light">
+          {{ item.label }} {{ (item.value * 100).toFixed(1) }}%
+        </el-tag>
+      </div>
+      <div v-if="templateWeights.length" class="weight-grid">
+        <div v-for="item in templateWeights" :key="item.key" class="weight-row">
+          <span class="weight-name">{{ item.label }}</span>
+          <div class="weight-track">
+            <div class="weight-fill" :style="{ width: `${Math.min(100, Math.max(0, item.value * 100))}%` }"></div>
+          </div>
+          <span class="weight-val">{{ (item.value * 100).toFixed(1) }}%</span>
+        </div>
+      </div>
+    </el-card>
+
     <section class="dual-grid">
       <el-card class="panel" shadow="never" v-loading="loadingTop">
         <template #header>
@@ -359,6 +436,71 @@ onMounted(loadAll)
   padding: 12px;
   background: #fff;
   border: 1px solid #e3ecff;
+}
+
+.template-card {
+  border-color: #dce8ff;
+  border-radius: 12px;
+}
+
+.template-head {
+  display: grid;
+  gap: 6px;
+}
+
+.template-title {
+  font-weight: 700;
+  color: #1f2f4d;
+}
+
+.template-desc {
+  color: #536582;
+  font-size: 13px;
+}
+
+.template-focus {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.weight-grid {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.weight-row {
+  display: grid;
+  grid-template-columns: 50px 1fr 58px;
+  gap: 10px;
+  align-items: center;
+}
+
+.weight-name {
+  font-size: 12px;
+  color: #3d4f6a;
+}
+
+.weight-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #edf3ff;
+  overflow: hidden;
+}
+
+.weight-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #3b82f6, #0ea5a4);
+}
+
+.weight-val {
+  text-align: right;
+  font-size: 12px;
+  color: #1d4ed8;
+  font-weight: 600;
 }
 
 .kpi-label {
