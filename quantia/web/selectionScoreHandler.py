@@ -118,6 +118,35 @@ def _resolve_template_weights(template: str | dict | None) -> dict | None:
         return None
 
 
+def _resolve_template_context(template: str | dict | None) -> dict:
+    """解析模板请求语义，统一返回请求/生效/回退状态。"""
+    requested = str(template).strip().lower() if template is not None else ''
+    requested = requested or 'balanced'
+    if requested == 'balanced':
+        return {
+            'template_requested': 'balanced',
+            'template_effective': 'balanced',
+            'template_fallback': False,
+            'view_template_active': False,
+        }
+
+    weights = _resolve_template_weights(requested)
+    if weights is None:
+        return {
+            'template_requested': requested,
+            'template_effective': 'balanced',
+            'template_fallback': True,
+            'view_template_active': False,
+        }
+
+    return {
+        'template_requested': requested,
+        'template_effective': requested,
+        'template_fallback': False,
+        'view_template_active': True,
+    }
+
+
 def _apply_template_total_score(df: pd.DataFrame, template: str | dict | None) -> pd.DataFrame:
     """基于存储维度分实时重加权，产出 `total_score_view`（M3）。"""
     out = df.copy()
@@ -271,7 +300,12 @@ class SelectionScoreListHandler(webBase.BaseHandler):
             rating = self.get_argument('rating', default='').strip().upper()
             min_quality_raw = self.get_argument('min_quality', default='').strip()
             sort = self.get_argument('sort', default='total_score').strip()
-            template = self.get_argument('template', default='').strip() or 'balanced'
+            template_raw = self.get_argument('template', default='').strip()
+            template_ctx = _resolve_template_context(template_raw)
+            template_requested = template_ctx['template_requested']
+            template_effective = template_ctx['template_effective']
+            template_fallback = bool(template_ctx['template_fallback'])
+            template_active = bool(template_ctx['view_template_active'])
             page = max(1, int(self.get_argument('page', default='1')))
             page_size = min(200, max(1, int(self.get_argument('page_size', default='50'))))
             offset = (page - 1) * page_size
@@ -304,9 +338,7 @@ class SelectionScoreListHandler(webBase.BaseHandler):
             where_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
             order_sql = self._SORT_MAP.get(sort, self._SORT_MAP['total_score'])
             sort_key = (sort or 'total_score').strip().lower()
-            need_python_sort = (sort_key == 'total_score_view') or (
-                str(template).strip().lower() != 'balanced' and sort_key == 'total_score'
-            )
+            need_python_sort = (sort_key == 'total_score_view') or (template_active and sort_key == 'total_score')
 
             count_sql = f"SELECT COUNT(*) AS cnt FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql}"
             data_sql = (
@@ -328,12 +360,12 @@ class SelectionScoreListHandler(webBase.BaseHandler):
 
             if need_python_sort:
                 df_all = pd.read_sql(data_sql_all, con=mdb.engine(), params=tuple(params))
-                df_all, sort_by, view_active = _sort_list_dataframe(df_all, sort, template)
+                df_all, sort_by, view_active = _sort_list_dataframe(df_all, sort, template_effective)
                 df = df_all.iloc[offset: offset + page_size].copy()
             else:
                 data_params = list(params) + [page_size, offset]
                 df = pd.read_sql(data_sql, con=mdb.engine(), params=tuple(data_params))
-                df, sort_by, view_active = _sort_list_dataframe(df, sort, template)
+                df, sort_by, view_active = _sort_list_dataframe(df, sort, template_effective)
 
             items = []
             for row in df.to_dict(orient='records'):
@@ -352,7 +384,10 @@ class SelectionScoreListHandler(webBase.BaseHandler):
                 'page': page,
                 'page_size': page_size,
                 'total': total,
-                'template_used': template,
+                'template_requested': template_requested,
+                'template_used': template_effective,
+                'template_effective': template_effective,
+                'template_fallback': template_fallback,
                 'sort_by': sort_by,
                 'view_score_active': view_active,
                 'display_score_field': 'total_score_view' if view_active else 'total_score',
@@ -416,6 +451,9 @@ class SelectionScoreDetailHandler(webBase.BaseHandler):
             item = _normalize_score_row(df.to_dict(orient='records')[0])
             _write_json(self, {
                 'item': item,
+                'template_requested': 'balanced',
+                'template_effective': 'balanced',
+                'template_fallback': False,
                 'display_score_field': 'total_score',
                 'view_score_active': False,
             })
@@ -446,7 +484,12 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
                 return
 
             date_arg = self.get_argument('date', default='').strip()
-            template = self.get_argument('template', default='').strip() or 'balanced'
+            template_raw = self.get_argument('template', default='').strip()
+            template_ctx = _resolve_template_context(template_raw)
+            template_requested = template_ctx['template_requested']
+            template_effective = template_ctx['template_effective']
+            template_fallback = bool(template_ctx['template_fallback'])
+            template_active = bool(template_ctx['view_template_active'])
             min_quality_raw = self.get_argument('min_quality', default='').strip()
 
             where = []
@@ -476,9 +519,8 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
                 return
 
             df['rank_change_comparable'] = df['risk_flags'].apply(_rank_change_comparable_from_flags)
-            df = _apply_template_total_score(df, template)
-            view_active = _resolve_template_weights(template) is not None
-            items = _build_industry_summary_items(df, use_view_score=view_active)
+            df = _apply_template_total_score(df, template_effective)
+            items = _build_industry_summary_items(df, use_view_score=template_active)
 
             date_rows = mdb.executeSqlFetch(
                 f"SELECT MAX(`date`) FROM `{scoring.SELECTION_SCORE_TABLE}`"
@@ -491,9 +533,12 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
             _write_json(self, {
                 'date': latest_date,
                 'count': len(items),
-                'template_used': template,
-                'view_score_active': view_active,
-                'display_score_field': 'total_score_view' if view_active else 'total_score',
+                'template_requested': template_requested,
+                'template_used': template_effective,
+                'template_effective': template_effective,
+                'template_fallback': template_fallback,
+                'view_score_active': template_active,
+                'display_score_field': 'total_score_view' if template_active else 'total_score',
                 'items': items,
             })
         except Exception:
@@ -524,7 +569,7 @@ class SelectionScoreTopHandler(webBase.BaseHandler):
 
             n_raw = self.get_argument('n', default='20').strip()
             date_arg = self.get_argument('date', default='').strip()
-            _ = self.get_argument('template', default='').strip()  # 明确忽略
+            template_raw = self.get_argument('template', default='').strip()
             try:
                 n = int(n_raw)
             except (TypeError, ValueError):
@@ -562,6 +607,9 @@ class SelectionScoreTopHandler(webBase.BaseHandler):
                 'count': len(items),
                 'items': items,
                 'sort_by': 'quality_score',
+                'template_requested': str(template_raw).strip().lower() or 'balanced',
+                'template_effective': 'balanced',
+                'template_fallback': False,
                 'display_score_field': 'total_score',
                 'view_score_active': False,
                 'template_ignored': True,

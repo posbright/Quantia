@@ -1784,6 +1784,22 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
         self.assertFalse(view_active)
         self.assertEqual(out.iloc[0]['code'], 'B')
 
+    def test_resolve_template_context_balanced(self):
+        from quantia.web.selectionScoreHandler import _resolve_template_context
+        ctx = _resolve_template_context('balanced')
+        self.assertEqual(ctx['template_requested'], 'balanced')
+        self.assertEqual(ctx['template_effective'], 'balanced')
+        self.assertFalse(ctx['template_fallback'])
+        self.assertFalse(ctx['view_template_active'])
+
+    def test_resolve_template_context_unknown_fallback(self):
+        from quantia.web.selectionScoreHandler import _resolve_template_context
+        ctx = _resolve_template_context('not_exists_template')
+        self.assertEqual(ctx['template_requested'], 'not_exists_template')
+        self.assertEqual(ctx['template_effective'], 'balanced')
+        self.assertTrue(ctx['template_fallback'])
+        self.assertFalse(ctx['view_template_active'])
+
     def test_normalize_score_row_display_score_prefers_view(self):
         from quantia.web.selectionScoreHandler import _normalize_score_row
         row = {
