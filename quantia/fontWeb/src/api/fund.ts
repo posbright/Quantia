@@ -35,14 +35,22 @@ export interface FundRankItem {
   rate_ytd: number | null
   rate_since: number | null
   fee: number | null
+  main_industry?: string | null
 }
 
 export interface FundRankResult {
   date: string | null
   fund_type: string
   period: string
+  industry?: string | null
   count: number
   items: FundRankItem[]
+}
+
+export interface FundIndustriesResult {
+  fund_type: string
+  supported: boolean
+  industries: string[]
 }
 
 export function getFundRankMeta() {
@@ -52,11 +60,24 @@ export function getFundRankMeta() {
   })
 }
 
-export function getFundRank(params: { fund_type: string; period: string; limit?: number }) {
+export function getFundRank(params: {
+  fund_type: string
+  period: string
+  limit?: number
+  industry?: string
+}) {
   return request<FundRankResult>({
     url: '/api/fund/rank',
     method: 'get',
     params,
+  })
+}
+
+export function getFundRankIndustries(fund_type: string) {
+  return request<FundIndustriesResult>({
+    url: '/api/fund/rank/industries',
+    method: 'get',
+    params: { fund_type },
   })
 }
 
@@ -114,6 +135,20 @@ export interface FundComposite {
   }
   style: { fund_type_detail: string | null; text: string }
   scale: { scale_yi: number | null; setup_date: string | null; years: number | null; texts: string[] }
+  profile?: {
+    company: string | null
+    manager: string | null
+    rating: string | null
+    fund_type_detail: string | null
+    strategy: string | null
+    objective: string | null
+    benchmark: string | null
+    setup_date: string | null
+  }
+  holdings?: {
+    quarter: string | null
+    top: { name: string; stock_code: string | null; industry: string; hold_ratio: number | null }[]
+  }
   risk_level: string
   summary: string
   disclaimer: string
@@ -124,6 +159,30 @@ export function getFundCompositeAnalysis(code: string) {
     url: '/api/fund/composite_analysis',
     method: 'get',
     params: { code },
+  })
+}
+
+// ── 净值曲线（F9 §9.3，读 cn_fund_nav_history）────────────────
+
+export interface FundNavPoint {
+  date: string
+  unit_nav: number | null
+  acc_nav: number | null
+}
+
+export interface FundNavHistory {
+  code: string
+  name: string | null
+  range: string
+  count: number
+  points: FundNavPoint[]
+}
+
+export function getFundNavHistory(code: string, range = '1y') {
+  return request<FundNavHistory>({
+    url: '/api/fund/nav_history',
+    method: 'get',
+    params: { code, range },
   })
 }
 

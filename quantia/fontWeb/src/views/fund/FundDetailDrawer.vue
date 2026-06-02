@@ -23,6 +23,29 @@
           <div class="fdd-summary-text">{{ composite.summary }}</div>
         </div>
 
+        <!-- 投资价值标签 chips（F11 value_labels）-->
+        <div v-if="valueTags.length" class="fdd-value-chips">
+          <span v-for="(t, i) in valueTags" :key="i" class="fdd-value-chip">{{ t }}</span>
+        </div>
+
+        <!-- 净值走势曲线 -->
+        <div class="fdd-section">
+          <div class="fdd-section-title fdd-nav-title">
+            <span>净值走势</span>
+            <div class="fdd-nav-ranges">
+              <span
+                v-for="r in navRanges"
+                :key="r.value"
+                class="fdd-nav-range"
+                :class="{ active: r.value === navRange }"
+                @click="switchNavRange(r.value)"
+              >{{ r.label }}</span>
+            </div>
+          </div>
+          <div v-show="hasNav" ref="navRef" v-loading="navLoading" class="fdd-navchart"></div>
+          <div v-if="!hasNav && !navLoading" class="fdd-empty">暂无净值历史数据</div>
+        </div>
+
         <!-- 五维同类雷达 -->
         <div class="fdd-section">
           <div class="fdd-section-title">
@@ -68,6 +91,26 @@
                 <span class="fdd-ind-val">{{ ind.ratio.toFixed(1) }}%</span>
               </div>
             </div>
+            <div v-show="hasIndustryPie" ref="pieRef" class="fdd-piechart"></div>
+            <!-- 前十大重仓股明细 -->
+            <template v-if="topHoldings.length">
+              <div class="fdd-holdings-h">
+                前十大重仓股<span v-if="holdingsQuarter" class="fdd-muted">（{{ holdingsQuarter }}）</span>
+              </div>
+              <table class="fdd-holdings">
+                <thead>
+                  <tr><th>股票</th><th>代码</th><th>行业</th><th class="r">占净值</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="h in topHoldings" :key="h.name + (h.stock_code || '')">
+                    <td>{{ h.name }}</td>
+                    <td class="fdd-muted">{{ h.stock_code || '—' }}</td>
+                    <td>{{ h.industry || '—' }}</td>
+                    <td class="r">{{ h.hold_ratio != null ? h.hold_ratio.toFixed(2) + '%' : '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </template>
           </div>
 
           <div class="fdd-card">
@@ -76,6 +119,18 @@
               <li v-for="(t, i) in composite.scale.texts" :key="i">{{ t }}</li>
               <li v-if="!composite.scale.texts.length" class="fdd-muted">暂无规模信息</li>
             </ul>
+          </div>
+
+          <div v-if="profileRows.length" class="fdd-card">
+            <div class="fdd-card-h">🪪 基金画像</div>
+            <table class="fdd-profile">
+              <tbody>
+                <tr v-for="row in profileRows" :key="row.label">
+                  <th>{{ row.label }}</th>
+                  <td>{{ row.value }}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
 
@@ -127,10 +182,12 @@ import {
   getFundCompositeAnalysis,
   getFundAiAnalysis,
   runFundAiAnalysis,
+  getFundNavHistory,
   type FundPeerCompare,
   type FundComposite,
   type FundAiSource,
   type FundAiAnalysis,
+  type FundNavHistory,
 } from '@/api/fund'
 
 const props = defineProps<{
@@ -161,6 +218,25 @@ let radarChart: echarts.ECharts | null = null
 let mdInstance: { render: (src: string) => string } | null = null
 let loadedCode = ''
 
+// 净值曲线
+const navRef = ref<HTMLElement | null>(null)
+let navChart: echarts.ECharts | null = null
+const navHistory = ref<FundNavHistory | null>(null)
+const navLoading = ref(false)
+const navRange = ref('1y')
+const navRanges = [
+  { value: '3m', label: '近3月' },
+  { value: '6m', label: '近6月' },
+  { value: '1y', label: '近1年' },
+  { value: '3y', label: '近3年' },
+  { value: 'all', label: '成立以来' },
+]
+const hasNav = computed(() => !!(navHistory.value && navHistory.value.points.length))
+
+// 行业饼图
+const pieRef = ref<HTMLElement | null>(null)
+let pieChart: echarts.ECharts | null = null
+
 const drawerTitle = computed(() => {
   const n = props.name || peer.value?.name || composite.value?.name || ''
   return n ? `${n}（${props.code}）` : props.code
@@ -171,6 +247,35 @@ const hasRadar = computed(() => !!(peer.value && peer.value.dims && peer.value.d
 const topIndustries = computed(() => {
   const dist = composite.value?.industry?.distribution || []
   return dist.slice(0, 5)
+})
+
+const hasIndustryPie = computed(() => (composite.value?.industry?.distribution?.length || 0) >= 2)
+
+const valueTags = computed(() => {
+  const v = peer.value?.value_labels
+  if (!v) return [] as string[]
+  return Object.values(v).filter((s): s is string => !!s)
+})
+
+const topHoldings = computed(() => composite.value?.holdings?.top || [])
+const holdingsQuarter = computed(() => composite.value?.holdings?.quarter || '')
+
+const profileRows = computed(() => {
+  const p = composite.value?.profile
+  if (!p) return [] as { label: string; value: string }[]
+  const rows: { label: string; value: string }[] = []
+  const push = (label: string, value: string | null | undefined) => {
+    if (value) rows.push({ label, value })
+  }
+  push('基金公司', p.company)
+  push('基金经理', p.manager)
+  push('评级', p.rating)
+  push('类型', p.fund_type_detail)
+  push('成立日', p.setup_date)
+  push('投资策略', p.strategy)
+  push('投资目标', p.objective)
+  push('业绩基准', p.benchmark)
+  return rows
 })
 
 const aiBtnText = computed(() => (aiLoaded.value ? '重新生成' : '生成 AI 解读'))
@@ -246,6 +351,101 @@ async function renderRadar() {
   radarChart.resize()
 }
 
+async function renderNavCurve() {
+  if (!hasNav.value || !navRef.value) return
+  await nextTick()
+  if (!navChart) navChart = echarts.init(navRef.value)
+  const pts = navHistory.value!.points
+  // 优先画累计净值（反映分红后真实增长），缺失时回退单位净值。
+  const useAcc = pts.some((p) => p.acc_nav != null)
+  const dates = pts.map((p) => p.date)
+  const values = pts.map((p) => (useAcc ? p.acc_nav : p.unit_nav))
+  const base = values.find((v) => v != null) ?? null
+  // 归一化为增长百分比（起点=0%）。
+  const growth = values.map((v) => (v != null && base ? ((v / base) - 1) * 100 : null))
+  const last = growth[growth.length - 1]
+  const up = (last ?? 0) >= 0
+  const color = up ? '#d23b3b' : '#16a34a'
+  navChart.setOption({
+    grid: { left: 48, right: 16, top: 16, bottom: 28 },
+    tooltip: {
+      trigger: 'axis',
+      valueFormatter: (v: number) => (v == null ? '—' : `${v.toFixed(2)}%`),
+    },
+    xAxis: {
+      type: 'category',
+      data: dates,
+      boundaryGap: false,
+      axisLabel: { fontSize: 10, color: '#909399' },
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: { fontSize: 10, color: '#909399', formatter: '{value}%' },
+      splitLine: { lineStyle: { color: '#f0f2f5' } },
+    },
+    series: [
+      {
+        type: 'line',
+        data: growth,
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { color, width: 1.6 },
+        areaStyle: {
+          color: {
+            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: up ? 'rgba(210,59,59,0.18)' : 'rgba(22,163,74,0.18)' },
+              { offset: 1, color: 'rgba(255,255,255,0)' },
+            ],
+          },
+        },
+      },
+    ],
+  })
+  navChart.resize()
+}
+
+async function renderPie() {
+  if (!hasIndustryPie.value || !pieRef.value) return
+  await nextTick()
+  if (!pieChart) pieChart = echarts.init(pieRef.value)
+  const dist = (composite.value?.industry?.distribution || []).slice(0, 8)
+  pieChart.setOption({
+    tooltip: { trigger: 'item', formatter: '{b}: {c}% ({d}%)' },
+    legend: { type: 'scroll', orient: 'horizontal', bottom: 0, textStyle: { fontSize: 10 } },
+    series: [
+      {
+        type: 'pie',
+        radius: ['38%', '62%'],
+        center: ['50%', '44%'],
+        avoidLabelOverlap: true,
+        label: { show: false },
+        data: dist.map((d) => ({ name: d.industry, value: Number(d.ratio.toFixed(2)) })),
+      },
+    ],
+  })
+  pieChart.resize()
+}
+
+async function loadNav() {
+  if (!props.code) return
+  navLoading.value = true
+  try {
+    navHistory.value = (await getFundNavHistory(props.code, navRange.value)) as unknown as FundNavHistory
+    await renderNavCurve()
+  } catch {
+    navHistory.value = null
+  } finally {
+    navLoading.value = false
+  }
+}
+
+function switchNavRange(r: string) {
+  if (r === navRange.value) return
+  navRange.value = r
+  void loadNav()
+}
+
 async function loadData() {
   if (!props.code) return
   loading.value = true
@@ -268,6 +468,8 @@ async function loadData() {
     }
     loadedCode = props.code
     await renderRadar()
+    await renderPie()
+    void loadNav()
     // 静默查缓存：若已有 AI 结果则直接展示
     void prefetchAi()
   } catch (e) {
@@ -317,7 +519,11 @@ async function runAi(refresh: boolean) {
 
 function onOpened() {
   // 抽屉动画结束后再 resize，避免容器尺寸为 0
-  nextTick(() => radarChart?.resize())
+  nextTick(() => {
+    radarChart?.resize()
+    navChart?.resize()
+    pieChart?.resize()
+  })
 }
 
 watch(
@@ -381,6 +587,88 @@ watch(
 .fdd-radar {
   width: 100%;
   height: 280px;
+}
+.fdd-value-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.fdd-value-chip {
+  font-size: 12px;
+  color: #d23b3b;
+  background: #fef0f0;
+  border: 1px solid #fbc4c4;
+  border-radius: 12px;
+  padding: 2px 10px;
+}
+.fdd-nav-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.fdd-nav-ranges {
+  display: flex;
+  gap: 2px;
+}
+.fdd-nav-range {
+  font-size: 11px;
+  font-weight: 400;
+  color: #909399;
+  padding: 2px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.fdd-nav-range.active {
+  color: #fff;
+  background: #d23b3b;
+}
+.fdd-navchart {
+  width: 100%;
+  height: 220px;
+}
+.fdd-piechart {
+  width: 100%;
+  height: 220px;
+  margin-top: 10px;
+}
+.fdd-holdings-h {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+  margin: 12px 0 6px;
+}
+.fdd-holdings,
+.fdd-profile {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.fdd-holdings th,
+.fdd-holdings td {
+  padding: 5px 6px;
+  border-bottom: 1px solid #f0f2f5;
+  text-align: left;
+}
+.fdd-holdings th {
+  color: #909399;
+  font-weight: 500;
+}
+.fdd-holdings .r {
+  text-align: right;
+}
+.fdd-profile th {
+  width: 84px;
+  color: #909399;
+  font-weight: 500;
+  text-align: left;
+  vertical-align: top;
+  padding: 5px 8px 5px 0;
+}
+.fdd-profile td {
+  color: #303133;
+  padding: 5px 0;
+  line-height: 1.5;
 }
 .fdd-dim-legend {
   display: flex;

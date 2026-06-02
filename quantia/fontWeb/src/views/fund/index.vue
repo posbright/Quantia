@@ -30,6 +30,8 @@
       >{{ t }}</span>
     </div>
 
+    <el-tabs v-model="activeTab" class="fund-tabs">
+      <el-tab-pane label="排行榜" name="rank">
     <!-- 工具栏：排序周期 + 数量 -->
     <div class="fund-toolbar">
       <div class="toolbar-left">
@@ -47,6 +49,20 @@
         <el-select v-model="limit" size="small" style="width: 110px" @change="loadRank">
           <el-option v-for="n in [20, 50, 100, 200]" :key="n" :label="`Top ${n}`" :value="n" />
         </el-select>
+        <template v-if="industrySupported">
+          <span class="toolbar-label">主行业</span>
+          <el-select
+            v-model="industry"
+            size="small"
+            clearable
+            filterable
+            placeholder="全部行业"
+            style="width: 150px"
+            @change="loadRank"
+          >
+            <el-option v-for="ind in industries" :key="ind" :label="ind" :value="ind" />
+          </el-select>
+        </template>
       </div>
       <div class="toolbar-right">
         <el-button size="small" :loading="loading" @click="loadRank">
@@ -135,6 +151,12 @@
     <div class="fund-footer" v-if="items.length">
       共 {{ count }} 条 · {{ fundType }} · 按{{ activePeriodLabel }}降序
     </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="同类对比" name="compare">
+        <FundCompareTab :fund-type="fundType" :period="period" />
+      </el-tab-pane>
+    </el-tabs>
 
     <!-- 基金详情抽屉：同类雷达 + 综合分析 + AI 解读 -->
     <FundDetailDrawer v-model="detailVisible" :code="detailCode" :name="detailName" />
@@ -148,20 +170,27 @@ import { ElMessage } from 'element-plus'
 import {
   getFundRankMeta,
   getFundRank,
+  getFundRankIndustries,
   type FundRankMeta,
   type FundRankResult,
   type FundPeriodOption,
   type FundRankItem,
+  type FundIndustriesResult,
 } from '@/api/fund'
 import FundDetailDrawer from './FundDetailDrawer.vue'
+import FundCompareTab from './FundCompareTab.vue'
 
 const meta = ref<FundRankMeta | null>(null)
 const fundTypes = ref<string[]>([])
 const periodOptions = ref<FundPeriodOption[]>([])
 
+const activeTab = ref('rank')
 const fundType = ref('混合型')
 const period = ref('rate_1y')
 const limit = ref(50)
+const industry = ref('')
+const industries = ref<string[]>([])
+const industrySupported = ref(false)
 
 const items = ref<FundRankItem[]>([])
 const count = ref(0)
@@ -243,7 +272,21 @@ function selectType(t: string) {
   if (periodDisabled(period.value)) {
     period.value = meta.value?.default_period || 'rate_1y'
   }
+  // 主行业过滤仅对 A 股权益类生效；切类型重置并重拉行业列表。
+  industry.value = ''
+  void loadIndustries()
   loadRank()
+}
+
+async function loadIndustries() {
+  try {
+    const res = (await getFundRankIndustries(fundType.value)) as unknown as FundIndustriesResult
+    industrySupported.value = !!res.supported
+    industries.value = res.industries || []
+  } catch {
+    industrySupported.value = false
+    industries.value = []
+  }
 }
 
 async function loadMeta() {
@@ -267,6 +310,7 @@ async function loadRank() {
       fund_type: fundType.value,
       period: period.value,
       limit: limit.value,
+      industry: industry.value || undefined,
     })) as unknown as FundRankResult
     items.value = res.items || []
     count.value = res.count || 0
@@ -282,7 +326,7 @@ async function loadRank() {
 // 布局使用 keep-alive，用 onActivated 而非 onMounted 保证回到页面时刷新
 onActivated(async () => {
   if (!metaLoaded.value) await loadMeta()
-  await loadRank()
+  await Promise.all([loadRank(), loadIndustries()])
 })
 </script>
 
