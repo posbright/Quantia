@@ -36,6 +36,16 @@ export interface FundRankItem {
   rate_since: number | null
   fee: number | null
   main_industry?: string | null
+  // 评分表派生（净值型桶，JOIN cn_fund_rank_score）
+  score?: number | null
+  sharpe?: number | null
+  max_drawdown?: number | null
+  rate_5y?: number | null
+  excess_1y?: number | null
+  rank_in_type?: number | null
+  // 画像表派生（JOIN cn_fund_profile）
+  scale_yi?: number | null
+  rating?: string | null
 }
 
 export interface FundRankResult {
@@ -97,7 +107,7 @@ export interface FundPeerCompare {
   peer_count: number
   dims: FundPeerDim[]
   percentiles: Record<string, number | null>
-  value_labels: Record<string, string>
+  value_labels: string[]
   disclaimer: string
 }
 

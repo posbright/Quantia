@@ -55,7 +55,10 @@ class TestFundRankMetaHandler(AsyncHTTPTestCase):
         self.assertIn('货币型', data['fund_types'])
         period_vals = [p['value'] for p in data['periods']]
         self.assertIn('rate_1y', period_vals)
-        self.assertEqual(data['default_period'], 'rate_1y')
+        self.assertIn('score', period_vals)
+        self.assertIn('sharpe', period_vals)
+        self.assertIn('max_drawdown', period_vals)
+        self.assertEqual(data['default_period'], 'score')
         self.assertEqual(data['latest_date'], '2026-05-29')
 
     @mock.patch.object(frh.mdb, 'checkTableIsExist', return_value=False)
@@ -144,6 +147,38 @@ class TestFundRankHandler(AsyncHTTPTestCase):
         # 非权益类桶忽略行业过滤：params 不应包含行业值
         _, kwargs = mock_read.call_args
         self.assertNotIn('半导体', kwargs.get('params'))
+
+    @mock.patch.object(frh.pd, 'read_sql')
+    @mock.patch.object(frh.mdb, 'executeSqlFetch', return_value=[('2026-05-29',)])
+    @mock.patch.object(frh.mdb, 'engine', return_value=object())
+    @mock.patch.object(frh.mdb, 'checkTableIsExist', return_value=True)
+    def test_rank_score_sort_uses_score_table_column(self, _exist, _eng, _fetch, mock_read):
+        mock_read.return_value = _make_rank_df()
+        resp = self.fetch('/api/fund/rank?fund_type=股票型&period=score&limit=10')
+        self.assertEqual(resp.code, 200)
+        sql, _ = mock_read.call_args
+        # 综合评分排序应走评分表 s. 列，并 JOIN 评分表 + 画像表
+        self.assertIn('ORDER BY (s.`score` IS NULL), s.`score` DESC', sql[0])
+        self.assertIn(frh._FUND_SCORE_TABLE, sql[0])
+        self.assertIn(frh._FUND_PROFILE_TABLE, sql[0])
+
+    @mock.patch.object(frh.pd, 'read_sql')
+    @mock.patch.object(frh.mdb, 'executeSqlFetch', return_value=[('2026-05-29',)])
+    @mock.patch.object(frh.mdb, 'engine', return_value=object())
+    def test_rank_score_sort_falls_back_without_score_table(self, _eng, _fetch, mock_read):
+        mock_read.return_value = _make_rank_df()
+
+        # rank 表存在，但评分表/画像表不存在 → score 排序回退到 r.rate_1y
+        def _exist(table):
+            return table == frh._FUND_RANK_TABLE
+
+        with mock.patch.object(frh.mdb, 'checkTableIsExist', side_effect=_exist):
+            resp = self.fetch('/api/fund/rank?fund_type=股票型&period=score&limit=10')
+        self.assertEqual(resp.code, 200)
+        sql, _ = mock_read.call_args
+        self.assertIn('ORDER BY (r.`rate_1y` IS NULL), r.`rate_1y` DESC', sql[0])
+        # 无评分表 → 不应 JOIN 评分表
+        self.assertNotIn(frh._FUND_SCORE_TABLE, sql[0])
 
 
 class TestFundIndustriesHandler(AsyncHTTPTestCase):

@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 _FUND_RANK_TABLE = tbs.TABLE_CN_FUND_RANK['name']
 _FUND_SCORE_TABLE = tbs.TABLE_CN_FUND_RANK_SCORE['name']
+_FUND_PROFILE_TABLE = tbs.TABLE_CN_FUND_PROFILE['name']
 
 # 基金类型桶（与 fund_em._NAV_TYPES + 货币型一致）。
 _FUND_TYPES = ['股票型', '混合型', '债券型', '指数型', 'QDII', 'FOF', '货币型']
@@ -34,9 +35,10 @@ _FUND_TYPES = ['股票型', '混合型', '债券型', '指数型', 'QDII', 'FOF'
 # 仅 A 股权益类桶支持「主行业」二级过滤（行业映射只覆盖 A 股，见 §3.5 F12）。
 _EQUITY_TYPES = {'股票型', '混合型', '指数型'}
 
-# 可排序周期列白名单（防 SQL 注入：仅允许 cn_fund_rank 真实数值列）。
-# label 供前端下拉展示；value 即列名。
+# 可排序周期列白名单（防 SQL 注入：仅允许真实数值列）。label 供前端下拉展示。
+# 前缀 r. 列来自 cn_fund_rank；score 派生列（_SCORE_PERIOD_COLS）来自 cn_fund_rank_score。
 _PERIOD_OPTIONS = [
+    {'value': 'score', 'label': '综合评分'},
     {'value': 'rate_1w', 'label': '近1周'},
     {'value': 'rate_1m', 'label': '近1月'},
     {'value': 'rate_3m', 'label': '近3月'},
@@ -44,14 +46,24 @@ _PERIOD_OPTIONS = [
     {'value': 'rate_1y', 'label': '近1年'},
     {'value': 'rate_2y', 'label': '近2年'},
     {'value': 'rate_3y', 'label': '近3年'},
+    {'value': 'rate_5y', 'label': '近5年'},
     {'value': 'rate_ytd', 'label': '今年来'},
     {'value': 'rate_since', 'label': '成立来'},
+    {'value': 'sharpe', 'label': '夏普比率'},
+    {'value': 'max_drawdown', 'label': '最大回撤'},
+    {'value': 'excess_1y', 'label': '基准超额'},
     {'value': 'day_growth', 'label': '日增长率'},
     {'value': 'seven_day_annual', 'label': '7日年化(货币型)'},
 ]
 _PERIOD_COLS = {o['value'] for o in _PERIOD_OPTIONS}
 
-_DEFAULT_PERIOD = 'rate_1y'
+# 这些排序列存于 cn_fund_rank_score（s.），其余存于 cn_fund_rank（r.）。
+# 全部 DESC 即"越好越靠前"：max_drawdown 为负数，DESC 把回撤小（接近 0）的排前。
+_SCORE_PERIOD_COLS = {'score', 'sharpe', 'max_drawdown', 'excess_1y', 'rate_5y'}
+
+_DEFAULT_PERIOD = 'score'
+# 评分表缺失时，score 类排序回退到该 cn_fund_rank 列。
+_DEFAULT_RATE_PERIOD = 'rate_1y'
 _DEFAULT_LIMIT = 50
 _MAX_LIMIT = 200
 
@@ -62,6 +74,15 @@ _DISPLAY_COLS = [
     'rate_1w', 'rate_1m', 'rate_3m', 'rate_6m', 'rate_1y', 'rate_2y', 'rate_3y',
     'rate_ytd', 'rate_since', 'fee',
 ]
+
+# 评分表派生列（JOIN cn_fund_rank_score 带出，供净值型桶展示评分/夏普/回撤/超额/主行业）。
+_SCORE_EXTRA_COLS = [
+    'score', 'sharpe', 'max_drawdown', 'rate_5y', 'excess_1y', 'rank_in_type',
+    'main_industry',
+]
+
+# 画像表派生列（JOIN cn_fund_profile 带出规模与评级）。
+_PROFILE_EXTRA_COLS = ['scale_yi', 'rating']
 
 
 def _json_default(o):
@@ -151,8 +172,11 @@ class FundRankHandler(webBase.BaseHandler):
                 limit = _DEFAULT_LIMIT
             limit = max(1, min(limit, _MAX_LIMIT))
 
-            # 行业过滤仅对 A 股权益类桶生效；其它桶忽略该参数。
-            apply_industry = bool(industry) and fund_type in _EQUITY_TYPES
+            # 行业过滤仅对 A 股权益类桶 + 评分表存在时生效；其它情况忽略该参数。
+            has_score = mdb.checkTableIsExist(_FUND_SCORE_TABLE)
+            has_profile = mdb.checkTableIsExist(_FUND_PROFILE_TABLE)
+            apply_industry = (bool(industry) and fund_type in _EQUITY_TYPES
+                              and has_score)
 
             if not mdb.checkTableIsExist(_FUND_RANK_TABLE):
                 _write_json(self, {'date': None, 'fund_type': fund_type,
@@ -160,31 +184,40 @@ class FundRankHandler(webBase.BaseHandler):
                                    'count': 0, 'items': []})
                 return
 
-            has_score = mdb.checkTableIsExist(_FUND_SCORE_TABLE)
-            cols_sql = ', '.join(f'r.`{c}`' for c in _DISPLAY_COLS)
-            params = [fund_type]
-            if has_score:
-                # LEFT JOIN 评分表带出主行业（供展示 + 过滤）。
-                sql = (
-                    f"SELECT {cols_sql}, s.`main_industry` AS main_industry "
-                    f"FROM `{_FUND_RANK_TABLE}` r "
-                    f"LEFT JOIN `{_FUND_SCORE_TABLE}` s "
-                    f"  ON s.`code` = r.`code` "
-                    f"  AND s.`date` = (SELECT MAX(`date`) FROM `{_FUND_SCORE_TABLE}`) "
-                    f"WHERE r.`date` = (SELECT MAX(`date`) FROM `{_FUND_RANK_TABLE}`) "
-                    f"  AND r.`fund_type` = %s "
-                )
-                if apply_industry:
-                    sql += "AND s.`main_industry` = %s "
-                    params.append(industry)
-                sql += f"ORDER BY (r.`{period}` IS NULL), r.`{period}` DESC LIMIT %s"
+            # 排序目标：score 派生列走 s.（需评分表），否则走 r.。
+            # 评分表缺失时 score 类排序回退到 cn_fund_rank 列，避免空排序。
+            score_sort = period in _SCORE_PERIOD_COLS
+            if score_sort and not has_score:
+                effective_period = _DEFAULT_RATE_PERIOD
+                score_sort = False
             else:
-                sql = (
-                    f"SELECT {cols_sql} FROM `{_FUND_RANK_TABLE}` r "
-                    f"WHERE r.`date` = (SELECT MAX(`date`) FROM `{_FUND_RANK_TABLE}`) "
-                    f"  AND r.`fund_type` = %s "
-                    f"ORDER BY (r.`{period}` IS NULL), r.`{period}` DESC LIMIT %s"
-                )
+                effective_period = period
+            sort_alias = 's' if score_sort else 'r'
+
+            select_parts = [f'r.`{c}`' for c in _DISPLAY_COLS]
+            joins = ''
+            if has_score:
+                select_parts += [f's.`{c}` AS `{c}`' for c in _SCORE_EXTRA_COLS]
+                joins += (
+                    f" LEFT JOIN `{_FUND_SCORE_TABLE}` s "
+                    f"  ON s.`code` = r.`code` "
+                    f"  AND s.`date` = (SELECT MAX(`date`) FROM `{_FUND_SCORE_TABLE}`)")
+            if has_profile:
+                select_parts += [f'p.`{c}` AS `{c}`' for c in _PROFILE_EXTRA_COLS]
+                joins += (
+                    f" LEFT JOIN `{_FUND_PROFILE_TABLE}` p ON p.`code` = r.`code`")
+
+            params = [fund_type]
+            where = (
+                f"WHERE r.`date` = (SELECT MAX(`date`) FROM `{_FUND_RANK_TABLE}`) "
+                f"  AND r.`fund_type` = %s ")
+            if apply_industry:
+                where += "AND s.`main_industry` = %s "
+                params.append(industry)
+            order = (f"ORDER BY ({sort_alias}.`{effective_period}` IS NULL), "
+                     f"{sort_alias}.`{effective_period}` DESC")
+            sql = (f"SELECT {', '.join(select_parts)} "
+                   f"FROM `{_FUND_RANK_TABLE}` r{joins} {where}{order} LIMIT %s")
             params.append(limit)
             df = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
 

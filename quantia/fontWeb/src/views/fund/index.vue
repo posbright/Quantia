@@ -93,6 +93,18 @@
           <span class="fund-code">{{ row.code }}</span>
         </template>
       </el-table-column>
+      <!-- 综合分（净值型，0~100 进度条色阶）-->
+      <el-table-column v-if="!isMoneyType" label="综合分" width="120" align="center" prop="score">
+        <template #default="{ row }">
+          <div v-if="row.score != null" class="score-cell">
+            <div class="score-bar">
+              <div class="score-bar-fill" :style="scoreBarStyle(row.score)"></div>
+            </div>
+            <span class="score-val" :style="{ color: scoreColor(row.score) }">{{ Math.round(row.score) }}</span>
+          </div>
+          <span v-else class="muted">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="净值日" width="100" align="center" prop="nav_date">
         <template #default="{ row }">{{ row.nav_date || '—' }}</template>
       </el-table-column>
@@ -146,6 +158,50 @@
       <el-table-column label="手续费" width="84" align="right" prop="fee">
         <template #default="{ row }">{{ fmtFee(row.fee) }}</template>
       </el-table-column>
+
+      <!-- 净值型风险/评分/规模列（来自评分表 + 画像表）-->
+      <template v-if="!isMoneyType">
+        <el-table-column label="近5年" width="84" align="right" prop="rate_5y">
+          <template #default="{ row }">
+            <span :style="returnStyle(row.rate_5y)" :class="{ 'sort-active': period === 'rate_5y' }">
+              {{ fmtPct(row.rate_5y) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="夏普" width="80" align="right" prop="sharpe">
+          <template #default="{ row }">
+            <span :style="sharpeStyle(row.sharpe)" :class="{ 'sort-active': period === 'sharpe' }">
+              {{ fmtNum(row.sharpe, 2) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="最大回撤" width="92" align="right" prop="max_drawdown">
+          <template #default="{ row }">
+            <span :style="drawdownStyle(row.max_drawdown)" :class="{ 'sort-active': period === 'max_drawdown' }">
+              {{ fmtDrawdown(row.max_drawdown) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="基准超额" width="92" align="right" prop="excess_1y">
+          <template #default="{ row }">
+            <span :style="returnStyle(row.excess_1y)" :class="{ 'sort-active': period === 'excess_1y' }">
+              {{ fmtPct(row.excess_1y) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="规模(亿)" width="92" align="right" prop="scale_yi">
+          <template #default="{ row }">{{ fmtNum(row.scale_yi, 2) }}</template>
+        </el-table-column>
+        <el-table-column label="评级" width="80" align="center" prop="rating">
+          <template #default="{ row }">
+            <span v-if="row.rating" class="rating-tag">{{ row.rating }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="主行业" width="100" align="center" prop="main_industry" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.main_industry || '—' }}</template>
+        </el-table-column>
+      </template>
     </el-table>
 
     <div class="fund-footer" v-if="items.length">
@@ -186,7 +242,7 @@ const periodOptions = ref<FundPeriodOption[]>([])
 
 const activeTab = ref('rank')
 const fundType = ref('混合型')
-const period = ref('rate_1y')
+const period = ref('score')
 const limit = ref(50)
 const industry = ref('')
 const industries = ref<string[]>([])
@@ -253,9 +309,47 @@ function fmtFee(v: number | null | undefined): string {
   return `${v.toFixed(2)}%`
 }
 
-// 货币型仅有 seven_day_annual，净值型仅有 rate_1w：按类型禁用不适用周期
+// 最大回撤为负数小数（如 -0.35）→ 百分比展示
+function fmtDrawdown(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  return `${(v * 100).toFixed(2)}%`
+}
+
+// 综合分 0~100 → 进度条宽度 + 色阶（高分绿、中性橙、低分红）
+function scoreColor(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '#909399'
+  if (v >= 75) return '#16a34a'
+  if (v >= 50) return '#e6a23c'
+  return '#d23b3b'
+}
+
+function scoreBarStyle(v: number | null | undefined): Record<string, string> {
+  const n = v === null || v === undefined || Number.isNaN(v) ? 0 : Math.max(0, Math.min(100, v))
+  return { width: `${n}%`, background: scoreColor(v) }
+}
+
+// 夏普高（>1）绿色高亮，<0 红色警示
+function sharpeStyle(v: number | null | undefined): Record<string, string> {
+  if (v === null || v === undefined || Number.isNaN(v)) return {}
+  if (v >= 1) return { color: '#16a34a', fontWeight: '600' }
+  if (v < 0) return { color: '#d23b3b', fontWeight: '600' }
+  return {}
+}
+
+// 回撤为负：越接近 0 越好（绿），深回撤红色警示
+function drawdownStyle(v: number | null | undefined): Record<string, string> {
+  if (v === null || v === undefined || Number.isNaN(v)) return {}
+  if (v <= -0.3) return { color: '#d23b3b', fontWeight: '600' }
+  if (v >= -0.1) return { color: '#16a34a', fontWeight: '600' }
+  return {}
+}
+
+// 货币型仅有 seven_day_annual，净值型仅有 rate_1w + 评分派生列：按类型禁用不适用周期
 function periodDisabled(value: string): boolean {
-  if (isMoneyType.value) return value === 'rate_1w'
+  if (isMoneyType.value) {
+    // 货币型无单位净值波动 → 评分/夏普/回撤/超额/近5年/近1周不适用
+    return ['rate_1w', 'rate_5y', 'score', 'sharpe', 'max_drawdown', 'excess_1y'].includes(value)
+  }
   return value === 'seven_day_annual'
 }
 
@@ -268,9 +362,11 @@ function returnStyle(v: number | null | undefined): Record<string, string> {
 function selectType(t: string) {
   if (t === fundType.value) return
   fundType.value = t
-  // 切换类型后，若当前排序周期不适用于新类型（货币无 rate_1w / 净值无 7日年化）则回退默认
+  // 切换类型后，若当前排序周期不适用于新类型则回退到该类型的默认排序
   if (periodDisabled(period.value)) {
-    period.value = meta.value?.default_period || 'rate_1y'
+    period.value = isMoneyType.value
+      ? 'seven_day_annual'
+      : meta.value?.default_period || 'score'
   }
   // 主行业过滤仅对 A 股权益类生效；切类型重置并重拉行业列表。
   industry.value = ''
@@ -435,6 +531,40 @@ onActivated(async () => {
 .sort-active {
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+.score-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.score-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: #f0f2f5;
+  overflow: hidden;
+}
+.score-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.score-val {
+  min-width: 22px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+}
+.rating-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: #b88230;
+  background: #fdf6ec;
+  border-radius: 4px;
+}
+.muted {
+  color: #c0c4cc;
 }
 .fund-footer {
   margin-top: 10px;

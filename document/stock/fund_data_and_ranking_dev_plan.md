@@ -564,6 +564,9 @@ flowchart LR
 5. PR-5：F9 前端基金中心页（排行榜+行业过滤 + 雷达评比 + 净值曲线 + 持仓 + 价值卡片 + 综合分析）+ 构建同步 dist。
    - ✅ **MVP 已交付（排行榜列表）**：`src/views/fund/index.vue` + 路由 `/fund/rank` + 侧边栏「基金排行榜」，消费 F6 `/api/fund/rank/meta` 与 `/api/fund/rank`；7 类型胶囊切换、周期/数量排序、货币型/净值型动态列、A股红涨绿跌着色、Top3 奖牌、空态友好提示；`npm run build`(vue-tsc) 通过、dist 已同步、浏览器渲染验证 OK。
    - ⏸ **后续期**（依赖 F7 评分 / F8 净值历史 / F10 画像 / F11 同类评比 / F12 持仓后端）：行业过滤、详情抽屉、雷达评比、净值曲线、持仓饼图、价值卡片、综合分析。
+   - ✅ **已交付（详情抽屉 + 同类对比）**：`FundDetailDrawer.vue`（净值走势曲线/同类雷达/持仓表+行业饼图/基金画像/价值标签 chips/综合分析卡片）、`FundCompareTab.vue`（2~3 只同类雷达叠加 + KPI 对比表）、`fundNavHistoryHandler`（`/api/fund/nav_history`）、`FundIndustriesHandler`（`/api/fund/rank/industries`）、排行榜行业二级过滤。
+   - ✅ **已交付（§9.2 评分列/多维排序 + §9.3 KPI 指标条）**：排行榜净值型桶新增 综合分(0-100 进度条色阶)/夏普/最大回撤/基准超额/近5年/规模/评级/主行业 列（JOIN `cn_fund_rank_score` + `cn_fund_profile`）；排序下拉新增 综合评分/夏普/最大回撤/基准超额/近5年，默认综合评分降序；评分表缺失时 score 类排序回退 `rate_1y`；货币型桶禁用评分派生排序。详情抽屉新增关键指标条（近1/3/5年/夏普/最大回撤/基准超额，正负着色，仅读 composite 预算指标防幻觉）。单测 `tests/test_fund_rank_handler.py`（含 score 排序 + 无评分表回退）全绿；本地无基金数据，JOIN 数据路径由 mock 单测覆盖。
+   - ⏸ **仍待**：§9.3 净值曲线叠加同类平均/基准基线、§9.4 同类对比 Tab 净值曲线同图对比（需新增"同类平均净值序列"聚合后端）。
 6. PR-6：F14 AI 按需分析（异步 Handler + LLM/web_search 装配 + 缓存 + 前端按钮懒加载 + 降级）。
 
 > 前端页面细节见 §9。

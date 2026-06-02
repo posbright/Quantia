@@ -28,6 +28,14 @@
           <span v-for="(t, i) in valueTags" :key="i" class="fdd-value-chip">{{ t }}</span>
         </div>
 
+        <!-- 关键指标条（§9.3 KPI：近1/3/5年/夏普/回撤/基准超额，正负着色）-->
+        <div v-if="kpiItems.length" class="fdd-kpi-bar">
+          <div v-for="k in kpiItems" :key="k.label" class="fdd-kpi">
+            <div class="fdd-kpi-label">{{ k.label }}</div>
+            <div class="fdd-kpi-value" :style="{ color: k.color }">{{ k.text }}</div>
+          </div>
+        </div>
+
         <!-- 净值走势曲线 -->
         <div class="fdd-section">
           <div class="fdd-section-title fdd-nav-title">
@@ -253,8 +261,52 @@ const hasIndustryPie = computed(() => (composite.value?.industry?.distribution?.
 
 const valueTags = computed(() => {
   const v = peer.value?.value_labels
-  if (!v) return [] as string[]
-  return Object.values(v).filter((s): s is string => !!s)
+  if (!Array.isArray(v)) return [] as string[]
+  return v.filter((s): s is string => !!s)
+})
+
+// 关键指标条（§9.3）：仅读 composite 已算好的派生指标，不臆造数字（防幻觉）。
+const kpiItems = computed(() => {
+  const p = composite.value?.performance
+  if (!p) return [] as { label: string; text: string; color: string }[]
+  const up = '#d23b3b'
+  const down = '#16a34a'
+  const neutral = '#303133'
+  const pct = (v: number | null | undefined, signed = true) => {
+    if (v === null || v === undefined || Number.isNaN(v)) return { text: '—', color: '#909399' }
+    return {
+      text: `${signed && v > 0 ? '+' : ''}${v.toFixed(2)}%`,
+      color: v > 0 ? up : v < 0 ? down : neutral,
+    }
+  }
+  const num = (v: number | null | undefined, good: 'high' | 'low') => {
+    if (v === null || v === undefined || Number.isNaN(v)) return { text: '—', color: '#909399' }
+    let color = neutral
+    if (good === 'high') color = v >= 1 ? down : v < 0 ? up : neutral
+    else color = v <= -0.3 ? up : v >= -0.1 ? down : neutral
+    return { text: v.toFixed(2), color }
+  }
+  const ddPct = (v: number | null | undefined) => {
+    if (v === null || v === undefined || Number.isNaN(v)) return { text: '—', color: '#909399' }
+    return {
+      text: `${(v * 100).toFixed(2)}%`,
+      color: v <= -0.3 ? up : v >= -0.1 ? down : neutral,
+    }
+  }
+  const r1 = pct(p.rate_1y)
+  const r3 = pct(p.rate_3y)
+  const r5 = pct(p.rate_5y)
+  const sh = num(p.sharpe, 'high')
+  const dd = ddPct(p.max_drawdown)
+  const ex = pct(p.excess_1y)
+  return [
+    { label: '近1年', ...r1 },
+    { label: '近3年', ...r3 },
+    { label: '近5年', ...r5 },
+    { label: '夏普', ...sh },
+    { label: '最大回撤', ...dd },
+    { label: '基准超额', ...ex },
+  ]
 })
 
 const topHoldings = computed(() => composite.value?.holdings?.top || [])
@@ -601,6 +653,28 @@ watch(
   border: 1px solid #fbc4c4;
   border-radius: 12px;
   padding: 2px 10px;
+}
+.fdd-kpi-bar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.fdd-kpi {
+  background: #f7f8fa;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 8px 6px;
+  text-align: center;
+}
+.fdd-kpi-label {
+  font-size: 11px;
+  color: #909399;
+  margin-bottom: 3px;
+}
+.fdd-kpi-value {
+  font-size: 15px;
+  font-weight: 700;
 }
 .fdd-nav-title {
   display: flex;
