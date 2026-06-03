@@ -124,7 +124,7 @@ TABLE_CN_FUND_PROFILE = {'name': 'cn_fund_profile', 'cn': '基金规模与画像
                                      'rating': {'type': VARCHAR(20, _COLLATE), 'cn': '基金评级', 'size': 90},
                                      'strategy': {'type': TEXT, 'cn': '投资策略', 'size': 0},
                                      'objective': {'type': TEXT, 'cn': '投资目标', 'size': 0},
-                                     'benchmark': {'type': VARCHAR(200, _COLLATE), 'cn': '业绩比较基准', 'size': 0},
+                                     'benchmark': {'type': TEXT, 'cn': '业绩比较基准', 'size': 0},
                                      'update_date': {'type': DATE, 'cn': '更新日', 'size': 100}}}
 
 # 季度前十大重仓股（F12，持仓展示 + 行业筛选/对比）。主键 (code, quarter, stock_code)。

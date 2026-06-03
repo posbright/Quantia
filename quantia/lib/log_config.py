@@ -144,7 +144,14 @@ def setup_logging(name='execute', level=logging.INFO):
     ))
     root_logger.addHandler(console_handler)
 
-    # 4. 安装未捕获异常钩子 — 确保 main() 抛出的任何异常都会写入
+    # 4.5 定向降噪：第三方库的良性告警不应污染业务日志
+    #     - urllib3.connectionpool: 部分上游服务器（如同花顺 zx.10jqka.com.cn）返回不符合
+    #       RFC 的响应头（缺少头/正文分隔符，MissingHeaderBodySeparatorDefect）。urllib3
+    #       会捕获该缺陷并仅记 WARNING，请求本身成功、正文可正常解析，故抬到 ERROR 抑制刷屏。
+    for noisy_logger in ('urllib3.connectionpool',):
+        logging.getLogger(noisy_logger).setLevel(logging.ERROR)
+
+    # 5. 安装未捕获异常钩子 — 确保 main() 抛出的任何异常都会写入
     #    stock_{name}.log 和 stock_error.log（而非仅到 stderr）
     #    这是防止"进程执行失败但日志无任何错误信息"的关键保障。
     _install_excepthook()

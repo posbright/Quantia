@@ -20,6 +20,43 @@ import pandas as pd
 __author__ = 'Quantia'
 __date__ = '2026/06/01'
 
+# akshare 外部抓取重试配置（东财/雪球偶发瞬时断连：RemoteDisconnected / 连接重置）
+_FETCH_MAX_RETRIES = 3
+_FETCH_BACKOFF_BASE = 1.5  # 秒，指数退避基数
+
+
+def _is_transient_fetch_error(e) -> bool:
+    """仅网络/连接类瞬态异常才值得重试；数据缺失类（KeyError 等）立即放弃。"""
+    if isinstance(e, (KeyError, ValueError, TypeError, IndexError)):
+        return False
+    msg = str(e).lower()
+    transient_markers = ('remotedisconnected', 'connection aborted', 'connection reset',
+                         'connection refused', 'timed out', 'timeout', 'temporarily',
+                         'max retries', 'proxyerror', 'protocolerror', 'broken pipe')
+    return any(m in msg for m in transient_markers) or \
+        e.__class__.__name__ in ('ConnectionError', 'ProtocolError', 'Timeout',
+                                 'ReadTimeout', 'ConnectTimeout', 'ChunkedEncodingError')
+
+
+def _fetch_with_retry(fn, *args, _desc='', **kwargs):
+    """对 akshare 调用做有限次重试 + 指数退避（含轻微抖动）。
+
+    仅吞掉瞬态网络异常并重试，非瞬态异常或末次失败将异常抛回调用方按原逻辑处理。
+    """
+    last_exc = None
+    for attempt in range(1, _FETCH_MAX_RETRIES + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001 —— akshare 抛出的异常类型繁杂，统一研判后决定是否重试
+            last_exc = e
+            if attempt < _FETCH_MAX_RETRIES and _is_transient_fetch_error(e):
+                sleep_s = _FETCH_BACKOFF_BASE * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
+                logging.debug(f"fund_em 抓取瞬态失败（第{attempt}/{_FETCH_MAX_RETRIES}次重试）{_desc}：{type(e).__name__}")
+                time.sleep(sleep_s)
+            else:
+                raise
+    raise last_exc
+
 # fund_open_fund_rank_em 支持的净值型 symbol（货币型单独走 fund_money_rank_em）
 _NAV_TYPES = ['股票型', '混合型', '债券型', '指数型', 'QDII', 'FOF']
 
@@ -199,14 +236,18 @@ def fund_nav_history(code) -> pd.DataFrame:
     import akshare as ak
 
     try:
-        unit = ak.fund_open_fund_info_em(symbol=str(code), indicator='单位净值走势')
+        unit = _fetch_with_retry(ak.fund_open_fund_info_em, symbol=str(code),
+                                 indicator='单位净值走势', _desc=f'{code} 单位净值')
     except Exception:
         logging.warning(f"fund_em.fund_nav_history: {code} 单位净值走势抓取失败", exc_info=True)
         return None
     try:
-        acc = ak.fund_open_fund_info_em(symbol=str(code), indicator='累计净值走势')
-    except Exception:
-        logging.warning(f"fund_em.fund_nav_history: {code} 累计净值走势抓取失败（仅用单位净值）", exc_info=True)
+        acc = _fetch_with_retry(ak.fund_open_fund_info_em, symbol=str(code),
+                                indicator='累计净值走势', _desc=f'{code} 累计净值')
+    except Exception as e:
+        # 东财累计净值接口偶发瞬时断连（RemoteDisconnected），重试耗尽后单位净值已足够入库，
+        # 简洁告警避免整栈回溯刷屏。
+        logging.warning(f"fund_em.fund_nav_history: {code} 累计净值走势抓取失败（仅用单位净值）：{type(e).__name__}")
         acc = None
     return _map_nav_history(unit, acc, code)
 
@@ -275,7 +316,13 @@ def fund_profile(code) -> dict:
     import akshare as ak
 
     try:
-        info = ak.fund_individual_basic_info_xq(symbol=str(code))
+        info = _fetch_with_retry(ak.fund_individual_basic_info_xq, symbol=str(code),
+                                 _desc=f'{code} 画像')
+    except KeyError:
+        # 雪球对部分基金（新发/QDII/未收录）返回的 JSON 不含 'data' 键 —— 预期内的外部缺失，
+        # 简洁告警避免整栈回溯刷屏。
+        logging.warning(f"fund_em.fund_profile: {code} 雪球无画像数据（跳过）")
+        return None
     except Exception:
         logging.warning(f"fund_em.fund_profile: {code} 画像抓取失败", exc_info=True)
         return None

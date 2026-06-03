@@ -85,6 +85,28 @@ def save_fund_profile(code, update_date):
     return 1
 
 
+def _ensure_benchmark_text_column():
+    """一次性迁移：将既有 cn_fund_profile.benchmark 由 VARCHAR 扩为 TEXT。
+
+    QDII 等基金的业绩比较基准为多指数加权长串（>200 字符），原 VARCHAR(200)
+    会触发 (1406, "Data too long for column 'benchmark'") 导致该基金画像写入失败。
+    幂等：仅当现存列类型不是 text 时才 ALTER；表不存在则跳过（建表已用 TEXT）。
+    """
+    if not mdb.checkTableIsExist(_PROFILE_TABLE):
+        return
+    try:
+        rows = mdb.executeSqlFetch(
+            "SELECT DATA_TYPE FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = %s AND column_name = 'benchmark'",
+            (_PROFILE_TABLE,))
+        data_type = (rows[0][0] or '').lower() if rows else ''
+        if data_type and data_type != 'text':
+            mdb.executeSql(f"ALTER TABLE `{_PROFILE_TABLE}` MODIFY COLUMN `benchmark` TEXT")
+            logging.info(f"fetch_fund_profile_job: 已将 {_PROFILE_TABLE}.benchmark 迁移为 TEXT")
+    except Exception:
+        logging.warning("fetch_fund_profile_job: benchmark 列迁移失败（不影响主流程）", exc_info=True)
+
+
 def run(codes=None, limit_per_type=None, job_date=None):
     job_date = job_date or datetime.date.today()
     update_date = job_date
@@ -95,6 +117,8 @@ def run(codes=None, limit_per_type=None, job_date=None):
     if not codes:
         logging.warning("fetch_fund_profile_job: 无目标基金（cn_fund_rank 为空？）")
         return 0
+
+    _ensure_benchmark_text_column()
 
     start = record_task_start(_JOB_NAME, 'profile', job_date)
     ok = 0
