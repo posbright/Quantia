@@ -2,9 +2,27 @@
   <div class="fct">
     <div class="fct-tip">
       在「{{ fundType }}」类型内选择 2–3 只基金，叠加同类五维雷达并对比关键指标。维度分越高代表在同类中越优。
+      <template v-if="industrySupported">选择「行业」后，可在同类型 + 同主行业范围内做更精准的对标（夏普/最大回撤等更可比）。</template>
     </div>
 
     <div class="fct-picker">
+      <el-select
+        v-if="industrySupported"
+        v-model="industry"
+        clearable
+        filterable
+        placeholder="行业（可选，同类型内细分）"
+        style="width: 220px"
+        :loading="industriesLoading"
+        @change="onIndustryChange"
+      >
+        <el-option
+          v-for="ind in industries"
+          :key="ind"
+          :label="ind"
+          :value="ind"
+        />
+      </el-select>
       <el-select
         v-model="selected"
         multiple
@@ -84,6 +102,7 @@ import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 import {
   getFundRank,
+  getFundRankIndustries,
   getFundPeerCompare,
   getFundNavHistory,
   type FundRankResult,
@@ -98,6 +117,12 @@ const optionsLoading = ref(false)
 const selected = ref<string[]>([])
 const compares = ref<FundPeerCompare[]>([])
 const loading = ref(false)
+
+// 行业细分（同类型内，权益类桶才支持）
+const industry = ref('')
+const industries = ref<string[]>([])
+const industrySupported = ref(false)
+const industriesLoading = ref(false)
 
 const radarRef = ref<HTMLElement | null>(null)
 let radarChart: echarts.ECharts | null = null
@@ -143,6 +168,23 @@ function isBest(label: string, code: string): boolean {
   return bestCode === code && compares.value.length > 1
 }
 
+async function loadIndustries() {
+  industriesLoading.value = true
+  try {
+    const res = (await getFundRankIndustries(props.fundType)) as unknown as {
+      supported: boolean
+      industries: string[]
+    }
+    industrySupported.value = !!res.supported
+    industries.value = res.industries || []
+  } catch {
+    industrySupported.value = false
+    industries.value = []
+  } finally {
+    industriesLoading.value = false
+  }
+}
+
 async function loadOptions() {
   optionsLoading.value = true
   try {
@@ -150,6 +192,7 @@ async function loadOptions() {
       fund_type: props.fundType,
       period: props.period,
       limit: 200,
+      ...(industry.value ? { industry: industry.value } : {}),
     })) as unknown as FundRankResult
     options.value = (res.items || []).map((i) => ({ code: i.code, name: i.name }))
   } catch {
@@ -157,6 +200,14 @@ async function loadOptions() {
   } finally {
     optionsLoading.value = false
   }
+}
+
+function onIndustryChange() {
+  // 行业变化：已选基金可能不在新行业内，清空重新选取候选池
+  selected.value = []
+  compares.value = []
+  navHasData.value = false
+  void loadOptions()
 }
 
 async function renderRadar() {
@@ -194,7 +245,10 @@ async function loadCompares() {
   loading.value = true
   try {
     const results = await Promise.allSettled(
-      selected.value.map((code) => getFundPeerCompare(code) as unknown as Promise<FundPeerCompare>),
+      selected.value.map(
+        (code) =>
+          getFundPeerCompare(code, industry.value || undefined) as unknown as Promise<FundPeerCompare>,
+      ),
     )
     compares.value = results
       .filter((r): r is PromiseFulfilledResult<FundPeerCompare> => r.status === 'fulfilled')
@@ -310,6 +364,8 @@ watch(
     selected.value = []
     compares.value = []
     navHasData.value = false
+    industry.value = ''
+    void loadIndustries()
     void loadOptions()
   },
   { immediate: true },

@@ -45,7 +45,7 @@ cron/
 | `run_patents_annual` | 每年5月 | `fetch_patent_data.py` | 全市场近5年年报专利全量采集（主源） |
 | `run_patents_quarterly` | 季度首月 | `fetch_patent_data.py --source google_patents` | Google Patents 增量补充 IPC/引用/趋势/PCT（备份源，脚本自判 1/4/7/10 月） |
 | `run_fund_profile_holding` | 每月 | `fetch_fund_profile_job.py` + `fetch_fund_holding_job.py` | F10 基金画像（规模/经理/评级）+ F12 季度前十大重仓股采集 |
-| `backfill_fund_all.sh` | 手动（首次） | `fetch_fund_nav_history_job.py` + `fetch_fund_profile_job.py` + `fetch_fund_holding_job.py` + `analysis_fund_score_job.py` | 基金中心一键全量铺底：按依赖顺序 F8 净值→F10 画像→F12 重仓→F7 评分；失败不阻断；TopN 可经环境覆盖（默认 200）。仅服务器本地跑，日常增量仍由上述定时任务维护 |
+| `backfill_fund_all.sh` | 手动（首次） | `fetch_fund_nav_history_job.py` + `fetch_fund_profile_job.py` + `fetch_fund_holding_job.py` + `analysis_fund_score_job.py` | 基金中心一键全量铺底：按依赖顺序 F8 净值→F10 画像→F12 重仓→F7 评分；失败不阻断；TopN 可经环境覆盖（默认 200，`QUANTIA_FUND_NAV_TOPN=0` 为全量回填）。仅服务器本地跑，日常增量仍由上述定时任务维护 |
 
 ---
 
@@ -64,6 +64,10 @@ tail -f quantia/log/backfill_fund_all.log     # 实时进度
 
 # 可选：覆盖 TopN（每个净值型桶按近1年收益取前 N 只）
 QUANTIA_FUND_NAV_TOPN=300 bash cron/backfill_fund_all.sh
+
+# 全量回填：TopN=0 表示不限桶内数量，回填所有非货币型基金净值历史
+# （让全部基金都能算出夏普/最大回撤/同行业对标，耗时与 API 配额较大，仅首次或扩容时跑）
+QUANTIA_FUND_NAV_TOPN=0 bash cron/backfill_fund_all.sh
 ```
 
 依赖顺序（脚本已内置）：F8 净值历史 + `cn_fund_rank` → F7 综合评分（夏普/最大回撤/近5年依赖净值历史）；F10 画像、F12 重仓股相互独立。

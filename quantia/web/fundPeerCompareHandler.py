@@ -8,6 +8,9 @@
 
 端点：
 - GET /quantia/api/fund/peer_compare?code=000001
+- GET /quantia/api/fund/peer_compare?code=000001&industry=医药生物
+  传 industry 时，桶收窄为同 fund_type + 同主行业（main_industry），
+  百分位改为行业内相对（需评分表就绪，main_industry 存于评分表）。
 """
 
 import json
@@ -120,6 +123,7 @@ class FundPeerCompareHandler(webBase.BaseHandler):
     def get(self):
         try:
             code = (self.get_argument('code', default='') or '').strip()
+            industry = (self.get_argument('industry', default='') or '').strip()
             if not code:
                 _write_error(self, '缺少 code 参数')
                 return
@@ -152,13 +156,24 @@ class FundPeerCompareHandler(webBase.BaseHandler):
             if has_profile:
                 select_parts += ['p.`scale_yi` AS scale_yi']
                 joins += f" LEFT JOIN `{_PROFILE_TABLE}` p ON p.`code` = r.`code`"
-            sql = (
-                f"SELECT {', '.join(select_parts)} "
-                f"FROM `{_RANK_TABLE}` r{joins} "
+            where = (
                 f"WHERE r.`date` = (SELECT MAX(`date`) FROM `{_RANK_TABLE}`) "
                 f"  AND r.`fund_type` = %s"
             )
-            bucket = pd.read_sql(sql, con=mdb.engine(), params=(fund_type,))
+            params = [fund_type]
+            # 同行业对标：仅在评分表就绪时生效（main_industry 存于评分表）。
+            # 加 s.main_industry 过滤后，桶 = 同 fund_type + 同行业，百分位变为行业内相对。
+            applied_industry = None
+            if industry and has_score:
+                where += " AND s.`main_industry` = %s"
+                params.append(industry)
+                applied_industry = industry
+            sql = (
+                f"SELECT {', '.join(select_parts)} "
+                f"FROM `{_RANK_TABLE}` r{joins} "
+                f"{where}"
+            )
+            bucket = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
             if bucket.empty:
                 _write_error(self, f'同类桶 {fund_type} 无数据', 404)
                 return
@@ -170,6 +185,7 @@ class FundPeerCompareHandler(webBase.BaseHandler):
                 'code': code,
                 'name': name,
                 'fund_type': fund_type,
+                'industry': applied_industry,
                 'peer_count': result['peer_count'],
                 'dims': result['dims'],
                 'percentiles': result['percentiles'],

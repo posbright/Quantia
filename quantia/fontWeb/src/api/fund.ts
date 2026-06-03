@@ -104,6 +104,7 @@ export interface FundPeerCompare {
   code: string
   name: string | null
   fund_type: string | null
+  industry?: string | null
   peer_count: number
   dims: FundPeerDim[]
   percentiles: Record<string, number | null>
@@ -111,11 +112,11 @@ export interface FundPeerCompare {
   disclaimer: string
 }
 
-export function getFundPeerCompare(code: string) {
+export function getFundPeerCompare(code: string, industry?: string) {
   return request<FundPeerCompare>({
     url: '/api/fund/peer_compare',
     method: 'get',
-    params: { code },
+    params: industry ? { code, industry } : { code },
   })
 }
 

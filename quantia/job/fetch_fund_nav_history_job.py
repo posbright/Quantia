@@ -51,9 +51,23 @@ _MONEY_TYPE = '货币型'
 
 
 def _select_target_codes(limit_per_type):
-    """各净值型桶按近1年收益取 Top-N 的 code（排除货币型）。"""
+    """各净值型桶的目标 code（排除货币型）。
+
+    - limit_per_type > 0：各桶按近1年收益取 Top-N。
+    - limit_per_type <= 0：全量回填（不限桶内数量），用于一次性铺底
+      （配 QUANTIA_FUND_NAV_TOPN=0）。
+    """
     if not mdb.checkTableIsExist(_RANK_TABLE):
         return []
+    limit_per_type = int(limit_per_type)
+    if limit_per_type <= 0:
+        sql = (
+            f"SELECT code FROM `{_RANK_TABLE}` "
+            f"WHERE `date` = (SELECT MAX(`date`) FROM `{_RANK_TABLE}`) "
+            f"  AND fund_type <> %s"
+        )
+        rows = mdb.executeSqlFetch(sql, (_MONEY_TYPE,))
+        return [str(r[0]) for r in rows if r and r[0] is not None]
     sql = (
         f"SELECT code FROM ("
         f"  SELECT code, fund_type,"
@@ -63,7 +77,7 @@ def _select_target_codes(limit_per_type):
         f"    AND fund_type <> %s"
         f") t WHERE t.rn <= %s"
     )
-    rows = mdb.executeSqlFetch(sql, (_MONEY_TYPE, int(limit_per_type)))
+    rows = mdb.executeSqlFetch(sql, (_MONEY_TYPE, limit_per_type))
     return [str(r[0]) for r in rows if r and r[0] is not None]
 
 
