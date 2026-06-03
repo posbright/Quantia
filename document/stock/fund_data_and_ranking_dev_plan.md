@@ -70,7 +70,7 @@
 | # | 功能 | 优先级 |
 |---|------|--------|
 | F7 | ✅ **已交付（PR-4）** **排名方案 B**：`analysis_fund_score_job.py` 多因子截面打分（B1 动量+费率+规模；B2 叠加夏普/Calmar 依赖 F8），按 `fund_type` 分桶截面 `rank(pct)`，逐基金算夏普/回撤/5y（货币型免风险项），写 `cn_fund_rank_score`；纯函数在 `quantia/core/fund/scoring.py` | P2 |
-| F8 | ✅ **已交付（PR-3）** 净值历史回填 + 增量缓存：`fetch_fund_nav_history_job.py`，逐基金拓史（**仅 Top-N ∪ 按需点开，非全市场；跳过货币型**），写 `cn_fund_nav_history`（供回撤/夏普/净值曲线） | P1 |
+| F8 | ✅ **已交付（PR-3）** 净值历史回填 + 增量缓存：`fetch_fund_nav_history_job.py`，逐基金拓史（**仅 Top-N ∪ 按需点开，非全市场；跳过货币型/债券型**），写 `cn_fund_nav_history`（供回撤/夏普/净值曲线） | P1 |
 | F10 | ✅ **已交付（PR-3）** 规模+画像缓存：`fetch_fund_profile_job.py`，`fund_individual_basic_info_xq` 拓最新规模/公司/经理/评级/策略，周/月频写 `cn_fund_profile`（规模因子 + 投资价值分析数据源） | P1 |
 | F11 | ✅ **已交付（PR-4）** **同类基金评比 + 投资价值分析**：`fundPeerCompareHandler.py`（`GET /quantia/api/fund/peer_compare?code=`）同 `fund_type` 桶内 5 维（收益/抗跌/稳定/成本/规模）截面百分位雷达 + `labels.value_labels` 价值标签 | P1 |
 | F9 | **前端基金中心页**（直观、人性化）：排行榜 + 同类评比雷达 + 净值曲线 + 价值分析卡片 + AI 工具 | P1 |
