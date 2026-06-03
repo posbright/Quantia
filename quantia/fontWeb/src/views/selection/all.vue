@@ -157,7 +157,7 @@ async function loadTop() {
   try {
     const res: AnyObj = await getSelectionScoreTop({
       date: filters.value.date || undefined,
-      n: 10,
+      n: 20,
     })
     topMeta.value = res || {}
     topData.value = Array.isArray(res?.items) ? res.items : []
@@ -306,7 +306,7 @@ onMounted(loadAll)
     <section class="dual-grid">
       <el-card class="panel" shadow="never" v-loading="loadingTop">
         <template #header>
-          <div class="panel-header">全市场 Top10（固定按质量分Q）</div>
+          <div class="panel-header">全市场 Top20（固定按质量分Q）</div>
         </template>
         <div v-if="!topData.length" class="empty-tip">暂无数据</div>
         <ul v-else class="top-list">

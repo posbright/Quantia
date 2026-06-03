@@ -47,7 +47,7 @@ describe('SelectionScoreHome M4 页面', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('综合选股评分榜')
-    expect(wrapper.text()).toContain('全市场 Top10')
+    expect(wrapper.text()).toContain('全市场 Top20')
     expect(wrapper.text()).toContain('行业宫格')
     expect(wrapper.text()).toContain('评分列表')
   })
