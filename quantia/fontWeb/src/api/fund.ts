@@ -96,7 +96,7 @@ export function getFundRankIndustries(fund_type: string) {
 export interface FundPeerDim {
   key: string
   label: string
-  value: number
+  value: number | null
   peer: number
 }
 

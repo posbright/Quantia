@@ -127,7 +127,7 @@ const dimLabels = computed(() => {
 
 function dimValue(f: FundPeerCompare, label: string): string {
   const d = f.dims?.find((x) => x.label === label)
-  return d ? d.value.toFixed(0) : '—'
+  return d && d.value != null ? d.value.toFixed(0) : '—'
 }
 
 function isBest(label: string, code: string): boolean {
@@ -135,7 +135,7 @@ function isBest(label: string, code: string): boolean {
   let bestVal = -Infinity
   for (const f of compares.value) {
     const d = f.dims?.find((x) => x.label === label)
-    if (d && d.value > bestVal) {
+    if (d && d.value != null && d.value > bestVal) {
       bestVal = d.value
       bestCode = f.code
     }

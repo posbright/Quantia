@@ -72,10 +72,18 @@ def _write_error(handler, msg, code=400):
     _write_json(handler, {'error': msg})
 
 
+def _col(df, name):
+    """取列；列缺失（评分/画像表未就绪时被省略）→ 全 NaN 序列，避免崩溃。"""
+    if name in df.columns:
+        return df[name]
+    return pd.Series([float('nan')] * len(df.index), index=df.index)
+
+
 def compute_peer_dims(bucket_df, code):
     """桶内 5 维截面百分位 + 目标基金分位（纯函数，便于单测）。
 
     bucket_df 列：code, rate_1y, fee, sharpe, max_drawdown, scale_yi。
+    缺失列（评分/画像表未就绪）按全 NaN 处理，对应维度取中性基线。
     返回 {dims: [{key,label,value,peer}], percentiles: {...}, peer_count}。
     """
     df = bucket_df.copy()
@@ -84,12 +92,12 @@ def compute_peer_dims(bucket_df, code):
 
     # 各维桶内百分位（越大越好）
     pct = pd.DataFrame({'code': df['code']})
-    pct['return'] = scoring.cross_sectional_pct_rank(df.get('rate_1y'))
+    pct['return'] = scoring.cross_sectional_pct_rank(_col(df, 'rate_1y'))
     # 抗跌：max_drawdown 为负，越接近 0 越好 → 直接排序（升序分位）即可
-    pct['drawdown'] = scoring.cross_sectional_pct_rank(df.get('max_drawdown'))
-    pct['sharpe'] = scoring.cross_sectional_pct_rank(df.get('sharpe'))
-    pct['fee'] = 100.0 - scoring.cross_sectional_pct_rank(df.get('fee'))
-    pct['scale'] = scoring.scale_inverted_u(df.get('scale_yi'))
+    pct['drawdown'] = scoring.cross_sectional_pct_rank(_col(df, 'max_drawdown'))
+    pct['sharpe'] = scoring.cross_sectional_pct_rank(_col(df, 'sharpe'))
+    pct['fee'] = 100.0 - scoring.cross_sectional_pct_rank(_col(df, 'fee'))
+    pct['scale'] = scoring.scale_inverted_u(_col(df, 'scale_yi'))
 
     row = pct[pct['code'] == code]
     percentiles = {}
@@ -129,15 +137,24 @@ class FundPeerCompareHandler(webBase.BaseHandler):
                 return
             name, fund_type = meta[0][0], meta[0][1]
 
-            # 同类桶：rank(rate_1y,fee) LEFT JOIN score(sharpe,max_drawdown) + profile(scale_yi)
+            # 同类桶：rank(rate_1y,fee) 必有；score(sharpe,max_drawdown) / profile(scale_yi)
+            # 为可选表，缺失（如评分/画像 job 未就绪）时跳过对应 JOIN，避免整条查询失败。
+            has_score = mdb.checkTableIsExist(_SCORE_TABLE)
+            has_profile = mdb.checkTableIsExist(_PROFILE_TABLE)
+            select_parts = ['r.`code` AS code', 'r.`rate_1y` AS rate_1y', 'r.`fee` AS fee']
+            joins = ''
+            if has_score:
+                select_parts += ['s.`sharpe` AS sharpe', 's.`max_drawdown` AS max_drawdown']
+                joins += (
+                    f" LEFT JOIN `{_SCORE_TABLE}` s "
+                    f"  ON s.`code` = r.`code` "
+                    f"  AND s.`date` = (SELECT MAX(`date`) FROM `{_SCORE_TABLE}`)")
+            if has_profile:
+                select_parts += ['p.`scale_yi` AS scale_yi']
+                joins += f" LEFT JOIN `{_PROFILE_TABLE}` p ON p.`code` = r.`code`"
             sql = (
-                f"SELECT r.`code` AS code, r.`rate_1y` AS rate_1y, r.`fee` AS fee, "
-                f"       s.`sharpe` AS sharpe, s.`max_drawdown` AS max_drawdown, "
-                f"       p.`scale_yi` AS scale_yi "
-                f"FROM `{_RANK_TABLE}` r "
-                f"LEFT JOIN `{_SCORE_TABLE}` s "
-                f"  ON s.`code` = r.`code` AND s.`date` = (SELECT MAX(`date`) FROM `{_SCORE_TABLE}`) "
-                f"LEFT JOIN `{_PROFILE_TABLE}` p ON p.`code` = r.`code` "
+                f"SELECT {', '.join(select_parts)} "
+                f"FROM `{_RANK_TABLE}` r{joins} "
                 f"WHERE r.`date` = (SELECT MAX(`date`) FROM `{_RANK_TABLE}`) "
                 f"  AND r.`fund_type` = %s"
             )

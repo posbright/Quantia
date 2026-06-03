@@ -60,8 +60,13 @@ def _load_prev_scores(score_date: pd.Timestamp) -> pd.DataFrame:
     return df
 
 
-def run_selection_score_job(date, before=True):
-    """run_template 入口。before 阶段不执行，after 阶段落库评分。"""
+def save_nph_selection_score(date, before=True):
+    """run_template 入口。before 阶段不执行，after 阶段落库评分。
+
+    命名以 ``save_nph_`` 开头是刚需：run_template.run_with_args 仅对该前缀的
+    入口函数在"当前/批量"模式下显式传入 before=False；否则 before 取默认 True
+    → 直接 return，导致评分表永不创建。
+    """
     if before:
         return
 
@@ -94,7 +99,7 @@ def run_selection_score_job(date, before=True):
 
 
 def main():
-    runt.run_with_args(run_selection_score_job)
+    runt.run_with_args(save_nph_selection_score)
 
 
 if __name__ == '__main__':

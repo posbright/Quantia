@@ -10,9 +10,31 @@ init_env
 LOG_FILE=$LOG_DIR/workdayly.log
 
 check_trade_day "数据分析"
+
+# ── OOM 防护：停止非关键服务，释放内存 ──
+# 拆分模式下本脚本独立调度（次日 04:30），需自行停服；run_workdayly 编排
+# 模式已统一管理服务生命周期，会设 QUANTIA_NO_SERVICE_STOP=1 抑制此处重复停服。
+SERVICES_STOPPED=0
+
+# 信号安全：确保异常退出（SIGTERM/SIGINT/OOM kill）时也恢复服务
+_cleanup_services() {
+    if [ $SERVICES_STOPPED -eq 1 ]; then
+        SERVICES_STOPPED=0
+        start_services_after_memory
+    fi
+}
+trap _cleanup_services EXIT
+
+if [ "${QUANTIA_NO_SERVICE_STOP:-0}" != "1" ]; then
+    stop_services_for_memory "数据分析（内存密集型）"
+    SERVICES_STOPPED=1
+fi
+
 run_job "数据分析 (analysis_daily_job)" "quantia/job/analysis_daily_job.py"
 
 # ── F7 场外基金多因子综合评分（零 API，读 cn_fund_rank + cn_fund_nav_history）──
 # 依赖 run_fetch 已刷新基金排名与净值历史。失败不阻断其他分析。
 run_job "基金综合评分 (analysis_fund_score_job)" \
     "quantia/job/analysis_fund_score_job.py" || true
+
+# EXIT trap 会自动恢复服务

@@ -55,10 +55,11 @@ if [ "${QUANTIA_NO_SERVICE_STOP:-0}" != "1" ]; then
 fi
 
 # Phase 2: K线缓存增量更新（内存密集型）
-run_sub "Phase 2: K线缓存更新" "$SCRIPT_DIR/run_kline_cache" || FAILED=$((FAILED + 1))
+# 抑制子脚本自带的服务停止/恢复（由本编排器统一管理，跨 Phase 2/3 持续停服）
+QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 2: K线缓存更新" "$SCRIPT_DIR/run_kline_cache" || FAILED=$((FAILED + 1))
 
 # Phase 3: 数据分析（零 API，纯本地计算）
-run_sub "Phase 3: 数据分析" "$SCRIPT_DIR/run_analysis" || FAILED=$((FAILED + 1))
+QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 3: 数据分析" "$SCRIPT_DIR/run_analysis" || FAILED=$((FAILED + 1))
 
 # 主动恢复服务（trap 也会兜底）
 if [ $SERVICES_STOPPED -eq 1 ]; then

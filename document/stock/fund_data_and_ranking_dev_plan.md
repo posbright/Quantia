@@ -426,6 +426,10 @@ $$\text{score} = \sum_i w_i \cdot r_i,\quad \sum_i w_i = 1$$
 
 前端用雷达图直观呈现「目标基金 vs 同类平均」两条轮廓。
 
+> **缺表降级**：`cn_fund_rank_score`（F7）/`cn_fund_profile`（F10）未铺底时，Handler 通过
+> `checkTableIsExist` 仅 JOIN 已存在的表，缺失维度返回 `value=null`（前端显示「—」），
+> 不再因 JOIN 不存在的表抛错导致 500。收益/成本维度仅依赖 `cn_fund_rank`，始终可算。
+
 ### 4.5.2 投资价值分析（规则标签，非投资建议）
 
 基于上述分位 + `cn_fund_profile` 生成**可解释标签**，禁止"买/卖"措辞：

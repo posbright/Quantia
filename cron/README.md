@@ -126,7 +126,7 @@ source /etc/cron/_common.sh
 各阶段独立运行，互不阻塞：
 
 ```
-  09:30~14:55       17:55(+23:55重试)      23:00           04:30        05:00   05:30
+  09:30~14:55       18:10(+22:00重试)      23:00           04:00        05:30   06:15
     │                    │                   │               │            │       │
     ▼                    ▼                   ▼               ▼            ▼       ▼
 ┌──────────┐      ┌─────────┐      ┌──────────────┐  ┌──────────┐  ┌────────────┐ ┌────────────┐
@@ -138,7 +138,7 @@ source /etc/cron/_common.sh
                   cn_job_status
                    (完成标记)─────→ kline_cache 前置检查
 
-  06:00          08:30                              04:00(月初)   5月底/季度首月
+  07:00          08:30                              01:30(月初)   5月底/季度首月
     │              │                                   │              │
     ▼              ▼                                   ▼              ▼
 ┌───────────┐  ┌───────────────────────┐         ┌──────────┐  ┌──────────────┐
@@ -187,43 +187,64 @@ crontab -e
 30 14 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
 55 14 * * 1-5  flock -xn /tmp/quantia_hourly.lock   /root/Quantia/cron/cron.hourly/run_hourly
 
-# 数据获取 + 夜间重试
-55 17 * * 1-5  flock -xn /tmp/quantia_fetch.lock    /root/Quantia/cron/cron.workdayly/run_fetch
-55 23 * * 1-5  flock -xn /tmp/quantia_fetch.lock    /root/Quantia/cron/cron.workdayly/run_fetch
+# 数据获取（主跑：清算时点 18:00 之后才拉，避免抢到未结算的龙虎榜/资金流向）
+# 夜间重试安排在 K线缓存之前，确保重试补回的数据当晚就能被缓存消费
+10 18 * * 1-5  flock -xn /tmp/quantia_fetch.lock    /root/Quantia/cron/cron.workdayly/run_fetch
+0  22 * * 1-5  flock -xn /tmp/quantia_fetch.lock    /root/Quantia/cron/cron.workdayly/run_fetch
 
-# K线缓存更新（当日夜间）
-0  23 * * 2-6  flock -xn /tmp/quantia_kline.lock    /root/Quantia/cron/cron.workdayly/run_kline_cache
+# K线缓存更新（当日夜间；DOW 与 fetch 对齐为 1-5，修复周一夜间被漏更新的缺陷）
+0  23 * * 1-5  flock -xn /tmp/quantia_kline.lock    /root/Quantia/cron/cron.workdayly/run_kline_cache
 
-# 数据分析（次日凌晨）
-30  4 * * 2-6  flock -xn /tmp/quantia_analysis.lock /root/Quantia/cron/cron.workdayly/run_analysis
+# 数据分析（次日凌晨；DOW 2-6 对应 T+1 早晨）
+0   4 * * 2-6  flock -xn /tmp/quantia_analysis.lock /root/Quantia/cron/cron.workdayly/run_analysis
 
-# 模拟交易（分析完成后执行）
-0   5 * * 2-6  flock -xn /tmp/quantia_paper.lock   /root/Quantia/cron/cron.workdayly/run_paper_trading
+# 模拟交易（分析完成后；留 1.5h 间隔，降低与分析重叠概率）
+30  5 * * 2-6  flock -xn /tmp/quantia_paper.lock   /root/Quantia/cron/cron.workdayly/run_paper_trading
 
 # AI 定时报告 + 评分预警（模拟交易完成后执行）
-30  5 * * 2-6  flock -xn /tmp/quantia_report.lock  /root/Quantia/cron/cron.workdayly/run_report_alert
+15  6 * * 2-6  flock -xn /tmp/quantia_report.lock  /root/Quantia/cron/cron.workdayly/run_report_alert
+
+# AI 知识库索引刷新（错峰至 07:00，避开 06:15 报告预警）
+0   7 * * 1-5  /root/Quantia/cron/cron.workdayly/refresh_ai_kb
 
 # 综合指标股票池刷新（开盘前）
 30  8 * * 1-5  flock -xn /tmp/quantia_composite.lock /root/Quantia/cron/cron.workdayly/refresh_composite_universe
 
-# AI 知识库索引刷新
-0   6 * * 1-5  /root/Quantia/cron/cron.workdayly/refresh_ai_kb
+# === 月度任务：全部排在 00:00~02:30，安全早于 04:00 数据分析；彼此错峰 ===
+# 季度专利增量（每月 1 日触发，脚本自判仅 1/4/7/10 月实际执行）
+0   0 1 * *    flock -xn /tmp/quantia_patents.lock /root/Quantia/cron/cron.monthly/run_patents_quarterly
 
-# 月度缓存清理
-0   4 1 * *    /root/Quantia/cron/cron.monthly/run_monthly
+# 月度缓存清理 + 财务数据更新（慢 job，给足到 04:00 的缓冲）
+30  1 1 * *    flock -xn /tmp/quantia_monthly.lock /root/Quantia/cron/cron.monthly/run_monthly
 
 # 年度专利采集（5 月底，年报披露窗口结束后；全市场最近 5 年年报）
-0   3 25 5 *   flock -xn /tmp/quantia_patents.lock /root/Quantia/cron/cron.monthly/run_patents_annual
-
-# 季度专利增量（每月 1 日触发，脚本自判仅 1/4/7/10 月实际执行）
-0   2 1 * *    flock -xn /tmp/quantia_patents.lock /root/Quantia/cron/cron.monthly/run_patents_quarterly
+30  2 25 5 *   flock -xn /tmp/quantia_patents.lock /root/Quantia/cron/cron.monthly/run_patents_annual
 
 # 场外基金画像 + 重仓股月度采集（F10/F12，慢 job）
-0   5 2 * *    flock -xn /tmp/quantia_fund.lock /root/Quantia/cron/cron.monthly/run_fund_profile_holding
+# 放在 day2 盘后空档 15:30，彻底避开夜间重任务窗口（kline 23:00 / analysis 04:00 / paper 05:30）
+30  15 2 * *   flock -xn /tmp/quantia_fund.lock /root/Quantia/cron/cron.monthly/run_fund_profile_holding
 ```
 
 > **flock 说明**：`-x` 排他锁 + `-n` 非阻塞，同类任务只能有一个在运行，后来者立即退出。
 > 获取/K线/分析使用**不同锁文件**，三者互不阻塞。
+>
+> **编排时间设计要点**：
+> - **fetch 主跑 18:10**：晚于清算时点 18:00（`QUANTIA_SETTLEMENT_HOUR`），确保拿到当日完整结算数据；
+>   原 17:55 早于结算，可能抓到未就绪的龙虎榜/资金流向。
+> - **fetch 重试 22:00 → kline 23:00**：重试在缓存之前，重试补回的数据当晚即可被 K线缓存消费；
+>   原重试 23:55 在 kline 23:00 之后，对当晚缓存毫无帮助。
+> - **kline DOW 1-5**（原 2-6）：与 fetch 对齐。原 2-6 会漏掉周一夜间缓存（周一 1∉2-6，周六 6 又被非交易日跳过）。
+> - **morning 链路拉开间隔**：analysis 04:00 → paper 05:30 → report 06:15 → ai_kb 07:00 → composite 08:30，
+>   逐级留 45min~1.5h，降低慢任务（回测最长 2h）尾延导致的重叠。
+>
+> **OOM 防护（1.6G 小内存服务器）**：
+> - `run_fetch` / `run_kline_cache` / `run_analysis` 在拆分模式下各自会停止 nginx + Quantia Web
+>   释放内存（`stop_services_for_memory`），任务结束（含异常/OOM kill）由 `trap` 兜底恢复。
+>   `run_workdayly` 编排模式通过 `QUANTIA_NO_SERVICE_STOP=1` 统一接管，子脚本不重复停服。
+> - 夜间重任务（kline/analysis）已在时间上完全错开（23:00 vs 04:00），任意时刻只有一个内存高峰。
+> - 月度慢 job 全部前移到 00:00~02:30 或盘后 15:30，避免与每日重任务及本地 MySQL 同时争抢内存。
+> - **残留风险**：若某次 analysis 触发满 2h 回测，尾部可能与 05:30 paper 轻微重叠；
+>   1.6G 下因服务已停、analysis 峰值 <50MB 仍安全，但若要严格串行请改用 `run_workdayly` 编排模式。
 
 ### Docker 容器
 
@@ -292,24 +313,24 @@ chmod +x cron/_common.sh cron/cron.hourly/* cron/cron.workdayly/* cron/cron.mont
 日志格式示例：
 
 ```
-[2026-01-15 17:55:02] [INFO]  ────── 数据获取 (fetch_daily_job) 开始 ──────
-[2026-01-15 18:07:35] [INFO]  ────── 数据获取 (fetch_daily_job) 完成 ✓ (12m33s) ──────
+[2026-01-15 18:10:02] [INFO]  ────── 数据获取 (fetch_daily_job) 开始 ──────
+[2026-01-15 18:22:35] [INFO]  ────── 数据获取 (fetch_daily_job) 完成 ✓ (12m33s) ──────
 [2026-01-15 23:00:01] [INFO]  ────── K线缓存增量更新 (kline_cache_daily_job) 开始 ──────
 [2026-01-15 23:45:18] [INFO]  ────── K线缓存增量更新 (kline_cache_daily_job) 完成 ✓ (45m17s) ──────
-[2026-01-16 04:30:01] [INFO]  ────── 数据分析 (analysis_daily_job) 开始 ──────
+[2026-01-16 04:00:01] [INFO]  ────── 数据分析 (analysis_daily_job) 开始 ──────
 [2026-01-16 04:38:44] [INFO]  ────── 数据分析 (analysis_daily_job) 完成 ✓ (8m43s) ──────
 ```
 
 `run_workdayly` 编排模式下，额外输出阶段分隔符：
 
 ```
-[2026-01-15 17:55:01] [INFO]  ============ 每日完整任务开始 ============
-[2026-01-15 17:55:01] [INFO]  ══════ Phase 1: 数据获取 开始 ══════
-[2026-01-15 17:55:02] [INFO]  ────── 数据获取 (fetch_daily_job) 开始 ──────
+[2026-01-15 18:10:01] [INFO]  ============ 每日完整任务开始 ============
+[2026-01-15 18:10:01] [INFO]  ══════ Phase 1: 数据获取 开始 ══════
+[2026-01-15 18:10:02] [INFO]  ────── 数据获取 (fetch_daily_job) 开始 ──────
 ...
-[2026-01-15 18:07:35] [INFO]  ────── 数据获取 (fetch_daily_job) 完成 ✓ (12m33s) ──────
-[2026-01-15 18:07:35] [INFO]  ══════ Phase 1: 数据获取 完成 ✓ (12m34s) ══════
-[2026-01-15 18:07:35] [INFO]  ══════ Phase 2: K线缓存更新 开始 ══════
+[2026-01-15 18:22:35] [INFO]  ────── 数据获取 (fetch_daily_job) 完成 ✓ (12m33s) ──────
+[2026-01-15 18:22:35] [INFO]  ══════ Phase 1: 数据获取 完成 ✓ (12m34s) ══════
+[2026-01-15 18:22:35] [INFO]  ══════ Phase 2: K线缓存更新 开始 ══════
 ...
 [2026-01-15 19:58:10] [INFO]  ============ 每日完整任务结束 ✓ (全部成功, 1h58m09s) ============
 ```
@@ -428,8 +449,9 @@ Phase 4: 模拟交易（低内存）
 ```
 
 **独立调度模式**（crontab 拆分）：
-`run_fetch` 独立运行时自行停止/恢复服务；`run_kline_cache` 和 `run_analysis` 不含 OOM 逻辑，
-需手动管理或通过 `run_workdayly` 包裹。
+`run_fetch` / `run_kline_cache` / `run_analysis` 独立运行时均会自行停止/恢复服务
+（`stop_services_for_memory` + `trap` 兑底），无需手动包裹。三者在时间上完全错峰
+（fetch 18:10 / kline 23:00 / analysis 04:00），任意时刻只有一个内存高峰。
 
 ### 配置
 
@@ -443,13 +465,11 @@ QUANTIA_NO_SERVICE_STOP=1
 
 ### 手动运行内存密集任务时
 
-如果单独运行 `run_kline_cache` 或 `run_analysis`（不通过 `run_workdayly`），
-需要手动停止/恢复服务，或在脚本中调用：
+`run_kline_cache` 和 `run_analysis` 已内置服务停止/恢复逻辑，独立手动运行即可：
 
 ```bash
-source cron/_common.sh && init_env
-stop_services_for_memory "手动K线缓存更新"
-bash cron/cron.workdayly/run_kline_cache
-start_services_after_memory
+bash cron/cron.workdayly/run_kline_cache    # 自动停服 → 跑 → 恢复
 ```
+
+若在内存充足的机器上不需要停服，设 `QUANTIA_NO_SERVICE_STOP=1` 跳过。
 Python 端由 `quantia/lib/envconfig.py` 统一加载 `.env`。完整变量列表见项目根目录 `.env.example`。
