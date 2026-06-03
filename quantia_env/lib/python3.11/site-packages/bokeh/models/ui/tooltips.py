@@ -1,0 +1,114 @@
+#-----------------------------------------------------------------------------
+# Copyright (c) Anaconda, Inc., and Bokeh Contributors.
+# All rights reserved.
+#
+# The full license is in the file LICENSE.txt, distributed with this software.
+#-----------------------------------------------------------------------------
+"""
+
+"""
+
+#-----------------------------------------------------------------------------
+# Boilerplate
+#-----------------------------------------------------------------------------
+from __future__ import annotations
+
+import logging # isort:skip
+log = logging.getLogger(__name__)
+
+#-----------------------------------------------------------------------------
+# Imports
+#-----------------------------------------------------------------------------
+
+# Standard library imports
+from typing import Any
+
+# Bokeh imports
+from ...core.enums import Anchor, TooltipAttachment
+from ...core.property.auto import Auto
+from ...core.property.container import Tuple
+from ...core.property.either import Either
+from ...core.property.enum import Enum
+from ...core.property.instance import Instance
+from ...core.property.nullable import Nullable
+from ...core.property.override import Override
+from ...core.property.primitive import Bool, Float, String
+from ...core.property.required import Required
+from ..dom import DOMNode
+from ..nodes import Coordinate
+from ..selectors import Selector
+from .ui_element import UIElement
+
+#-----------------------------------------------------------------------------
+# Globals and constants
+#-----------------------------------------------------------------------------
+
+__all__ = (
+    "Tooltip",
+)
+
+#-----------------------------------------------------------------------------
+# General API
+#-----------------------------------------------------------------------------
+
+class Tooltip(UIElement):
+    """ Render a tooltip.
+
+    """
+
+    # explicit __init__ to support Init signatures
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+
+    visible = Override(default=False)
+
+    position = Nullable(Either(Enum(Anchor), Tuple(Float, Float), Instance(Coordinate)), default=None, help="""
+    The position of the tooltip with respect to its parent. It can be either
+    an absolute position within the parent or an anchor point for symbolic
+    positioning.
+    """)
+
+    target = Either(Instance(UIElement), Instance(Selector), Auto, default="auto", help="""
+    Tooltip can be manually attached to a target UI element or a DOM node
+    (referred to by a selector, e.g. CSS selector or XPath), or its
+    attachment can be inferred from its parent in ``"auto"`` mode.
+    """)
+
+    content = Required(Either(String, Instance(DOMNode), Instance(UIElement)), help="""
+    The tooltip's content. Can be a plaintext string or a :class:`~bokeh.models.HTML`
+    object.
+    """)
+
+    attachment = Either(Enum(TooltipAttachment), Auto, default="auto", help="""
+    Whether the tooltip should be displayed to the left or right of the cursor
+    position or above or below it, or if it should be automatically placed
+    in the horizontal or vertical dimension.
+    """)
+
+    show_arrow = Bool(default=True, help="""
+    Whether tooltip's arrow should be shown.
+    """)
+
+    closable = Bool(default=False, help="""
+    Whether to allow dismissing a tooltip by clicking close (x) button. Useful when
+    using this model for persistent tooltips.
+    """)
+
+    interactive = Bool(default=True, help="""
+    Whether to allow pointer events on the contents of this tooltip. Depending
+    on the use case, it may be necessary to disable interactions for better
+    user experience. This however will prevent the user from interacting with
+    the contents of this tooltip, e.g. clicking links.
+    """)
+
+#-----------------------------------------------------------------------------
+# Dev API
+#-----------------------------------------------------------------------------
+
+#-----------------------------------------------------------------------------
+# Private API
+#-----------------------------------------------------------------------------
+
+#-----------------------------------------------------------------------------
+# Code
+#-----------------------------------------------------------------------------
