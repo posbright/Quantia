@@ -58,12 +58,17 @@ const getVisibleChildren = (item: RouteRecordRaw) => {
   return item.children?.filter(child => !child.meta?.hidden && roleAllowed(child.meta)) || []
 }
 
+// 计算子菜单完整路径：子路由 path 以 / 开头视为绝对路径，直接使用
+const childFullPath = (item: RouteRecordRaw, child: RouteRecordRaw) => {
+  if (child.path.startsWith('/')) return child.path
+  return item.path === '/' ? `/${child.path}` : `${item.path}/${child.path}`
+}
+
 // 获取单个子菜单的路径和标题（用于只有一个子菜单的情况）
 const getSingleChildPath = (item: RouteRecordRaw) => {
   const visibleChildren = getVisibleChildren(item)
   if (visibleChildren.length === 1) {
-    const child = visibleChildren[0]
-    return item.path === '/' ? `/${child.path}` : `${item.path}/${child.path}`
+    return childFullPath(item, visibleChildren[0])
   }
   return item.redirect as string || item.path
 }
@@ -119,7 +124,7 @@ const handleParentClick = (item: RouteRecordRaw) => {
             <el-menu-item
               v-for="child in getVisibleChildren(item)"
               :key="child.path"
-              :index="`${item.path}/${child.path}`"
+              :index="childFullPath(item, child)"
             >
               <el-icon v-if="child.meta?.icon">
                 <component :is="child.meta.icon" />

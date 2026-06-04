@@ -3,7 +3,7 @@ import { ref, shallowRef, onMounted, onUnmounted, onActivated, onDeactivated, co
 import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
-import { getKlineData, getFinancialSummary, type KlineParams, type FinancialSummaryResult } from '@/api/stock'
+import { getKlineData, getFinancialSummary, getBacktestHistory, type KlineParams, type FinancialSummaryResult } from '@/api/stock'
 import { getReportHistory, type ReportHistoryItem } from '@/api/report'
 import { ElMessage } from 'element-plus'
 import { ChatDotRound } from '@element-plus/icons-vue'
@@ -544,11 +544,27 @@ watch([currentSubIndicator, mainOverlays], () => { renderChart() }, { deep: true
 watch(() => ciOverlay.extension.value, async () => { await nextTick(); renderChart() }, { deep: true })
 
 // Navigate to backtest
-const goBacktest = () => {
-  router.push({
-    path: '/backtest/custom',
-    query: { code: code.value, name: stockName.value, strategy: strategy.value || undefined }
-  })
+// 优先跳转「回测历史」并按本股票过滤；若无历史则跳转「单股回测」携带代码回填
+const goBacktest = async () => {
+  if (!code.value) return
+  let hasHistory = false
+  try {
+    const res: any = await getBacktestHistory({ code: code.value, page: 1, page_size: 1 })
+    hasHistory = (res?.total || 0) > 0
+  } catch {
+    hasHistory = false
+  }
+  if (hasHistory) {
+    router.push({
+      path: '/backtest/history',
+      query: { code: code.value, name: stockName.value }
+    })
+  } else {
+    router.push({
+      path: '/backtest/single',
+      query: { code: code.value, name: stockName.value }
+    })
+  }
 }
 
 // Navigate to AI analysis

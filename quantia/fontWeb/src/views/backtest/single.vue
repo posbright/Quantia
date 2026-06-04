@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onActivated, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
@@ -8,6 +8,7 @@ import { getBacktestConfig, runSingleBacktest } from '@/api/stock'
 import KlineBacktestChart from '@/components/KlineBacktestChart.vue'
 
 const route = useRoute()
+const router = useRouter()
 
 const strategies = ref<any[]>([])
 const loading = ref(false)
@@ -17,10 +18,8 @@ const chartRef = ref<InstanceType<typeof KlineBacktestChart> | null>(null)
 const form = ref({
   code: '',
   strategy: '',
-  dateRange: [
-    dayjs().subtract(1, 'year').format('YYYY-MM-DD'),
-    dayjs().format('YYYY-MM-DD'),
-  ] as [string, string],
+  start_date: dayjs().subtract(1, 'year').format('YYYY-MM-DD'),
+  end_date: dayjs().format('YYYY-MM-DD'),
   hold_days: undefined as number | undefined,
   allow_overlap: false,
   save: true,
@@ -53,7 +52,8 @@ const _applyQuery = () => {
     }
   }
   if (q.start_date && q.end_date) {
-    form.value.dateRange = [q.start_date as string, q.end_date as string]
+    form.value.start_date = q.start_date as string
+    form.value.end_date = q.end_date as string
   }
   if (q.hold_days !== undefined && q.hold_days !== '') {
     const hd = Number(q.hold_days)
@@ -73,8 +73,12 @@ const handleRun = async (save = true) => {
     ElMessage.warning('请选择回测策略')
     return
   }
-  if (!form.value.dateRange || form.value.dateRange.length !== 2) {
+  if (!form.value.start_date || !form.value.end_date) {
     ElMessage.warning('请选择回测区间')
+    return
+  }
+  if (dayjs(form.value.start_date).isAfter(dayjs(form.value.end_date))) {
+    ElMessage.warning('开始日期不能晚于结束日期')
     return
   }
   loading.value = true
@@ -83,8 +87,8 @@ const handleRun = async (save = true) => {
     const params: any = {
       code: form.value.code.trim(),
       strategy: form.value.strategy,
-      start_date: form.value.dateRange[0],
-      end_date: form.value.dateRange[1],
+      start_date: form.value.start_date,
+      end_date: form.value.end_date,
       allow_overlap: form.value.allow_overlap ? 1 : 0,
     }
     if (form.value.hold_days != null && form.value.hold_days > 0) {
@@ -147,6 +151,18 @@ const locateTrade = (row: any) => {
   if (row?.buy_date) chartRef.value?.locate(row.buy_date)
 }
 
+// 携带当前股票代码跳转到回测历史页
+const goHistory = () => {
+  if (!form.value.code) {
+    ElMessage.warning('请输入股票代码')
+    return
+  }
+  const query: Record<string, string> = { code: form.value.code.trim() }
+  const name = route.query.name as string
+  if (name) query.name = name
+  router.push({ path: '/backtest/history', query })
+}
+
 </script>
 
 <template>
@@ -165,9 +181,11 @@ const locateTrade = (row: any) => {
           </el-select>
         </el-form-item>
         <el-form-item label="回测区间">
-          <el-date-picker v-model="form.dateRange" type="daterange" unlink-panels range-separator="至"
-            start-placeholder="开始日期" end-placeholder="结束日期"
-            format="YYYY-MM-DD" value-format="YYYY-MM-DD" style="width: 300px" />
+          <el-date-picker v-model="form.start_date" type="date" placeholder="开始日期"
+            format="YYYY-MM-DD" value-format="YYYY-MM-DD" style="width: 150px" :clearable="false" />
+          <span class="range-sep">至</span>
+          <el-date-picker v-model="form.end_date" type="date" placeholder="结束日期"
+            format="YYYY-MM-DD" value-format="YYYY-MM-DD" style="width: 150px" :clearable="false" />
         </el-form-item>
         <el-form-item label="持仓周期">
           <el-input-number v-model="form.hold_days" :min="1" :max="250" placeholder="留空=策略卖点"
@@ -188,6 +206,7 @@ const locateTrade = (row: any) => {
           <el-button type="primary" :loading="loading" @click="handleRun(true)">
             {{ loading ? '回测中...' : '执行回测' }}
           </el-button>
+          <el-button type="success" plain @click="goHistory">查看回测历史</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -299,6 +318,7 @@ const locateTrade = (row: any) => {
 .sub-info { font-size: 13px; color: #909399; }
 .header-row { display: flex; align-items: center; justify-content: space-between; }
 .hint { margin-left: 8px; font-size: 12px; color: #c0c4cc; }
+.range-sep { margin: 0 8px; color: #909399; }
 .tip-icon { margin-left: 6px; font-size: 15px; color: #909399; cursor: help; vertical-align: middle; }
 .metric-row { margin-bottom: 16px; }
 .metric-grid {

@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { ref, onMounted, onActivated } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getBacktestConfig, getBacktestHistory, deleteBacktestHistory } from '@/api/stock'
 
+const route = useRoute()
 const router = useRouter()
 
 const strategies = ref<any[]>([])
 const loading = ref(false)
 const items = ref<any[]>([])
 const total = ref(0)
+// 来自详情页跳转时携带的股票名（用于空态提示与单股回测回填）
+const queryName = ref('')
 
 const filter = ref({
   code: '',
@@ -19,15 +22,28 @@ const filter = ref({
   page_size: 20,
 })
 
+// 从路由 query 回填股票代码（详情页「查看回测」跳转时携带）
+const _applyQuery = () => {
+  const q = route.query
+  if (typeof q.code === 'string' && q.code.trim()) {
+    filter.value.code = q.code.trim()
+  }
+  queryName.value = typeof q.name === 'string' ? q.name : ''
+}
+
 onMounted(async () => {
   try {
     const config: any = await getBacktestConfig()
     strategies.value = config?.strategies || []
   } catch { /* ignore */ }
+  _applyQuery()
   loadList()
 })
 
-onActivated(() => loadList())
+onActivated(() => {
+  _applyQuery()
+  loadList()
+})
 
 const loadList = async () => {
   loading.value = true
@@ -103,6 +119,14 @@ const getRateClass = (val: any) => {
   if (val === null || val === undefined) return ''
   return Number(val) >= 0 ? 'text-up' : 'text-down'
 }
+
+// 跳转单股回测，携带当前筛选的股票代码进行回填
+const goSingleBacktest = () => {
+  const q: any = {}
+  if (filter.value.code) q.code = filter.value.code.trim()
+  if (queryName.value) q.name = queryName.value
+  router.push({ path: '/backtest/single', query: q })
+}
 </script>
 
 <template>
@@ -126,12 +150,19 @@ const getRateClass = (val: any) => {
         <el-form-item>
           <el-button type="primary" @click="handleSearch">查询</el-button>
           <el-button @click="handleReset">重置</el-button>
+          <el-button type="success" plain @click="goSingleBacktest">去单股回测</el-button>
         </el-form-item>
       </el-form>
     </el-card>
 
     <el-card shadow="never" class="table-card">
       <el-table v-loading="loading" :data="items" border size="small" stripe>
+        <template #empty>
+          <div class="empty-state">
+            <p>{{ filter.code ? `股票 ${filter.code}${queryName ? '（' + queryName + '）' : ''} 暂无回测历史` : '暂无回测历史' }}</p>
+            <el-button type="primary" @click="goSingleBacktest">前往单股回测</el-button>
+          </div>
+        </template>
         <el-table-column prop="created_at" label="创建时间" width="160" align="center" />
         <el-table-column prop="code" label="代码" width="80" align="center" />
         <el-table-column prop="name" label="名称" width="100" align="center" />
@@ -177,6 +208,8 @@ const getRateClass = (val: any) => {
 .filter-card, .table-card { margin-bottom: 16px; }
 .card-title { font-size: 16px; font-weight: 600; }
 .pagination-row { display: flex; justify-content: flex-end; margin-top: 16px; }
+.empty-state { padding: 24px 0; text-align: center; color: #909399; }
+.empty-state p { margin: 0 0 12px; }
 .text-up { color: #f56c6c; }
 .text-down { color: #67c23a; }
 </style>

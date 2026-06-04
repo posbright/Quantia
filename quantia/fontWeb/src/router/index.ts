@@ -362,6 +362,20 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '回测列表' }
       },
       {
+        // 绝对路径子菜单：归并到「策略回测」下，URL 仍为 /backtest/single
+        path: '/backtest/single',
+        name: 'SingleStockBacktest',
+        component: () => import('@/views/backtest/single.vue'),
+        meta: { title: '单股回测' }
+      },
+      {
+        // 绝对路径子菜单：归并到「策略回测」下，URL 仍为 /backtest/history
+        path: '/backtest/history',
+        name: 'BacktestHistoryView',
+        component: () => import('@/views/backtest/history.vue'),
+        meta: { title: '回测历史' }
+      },
+      {
         path: 'backtest-detail/:id',
         name: 'BacktestDetail',
         component: () => import('@/views/algo/backtest-detail.vue'),
@@ -388,23 +402,12 @@ const routes: RouteRecordRaw[] = [
     ]
   },
   {
+    // 「单股回测/回测历史」已归并到 /algo（策略回测）菜单下，此处仅保留兼容跳转
     path: '/backtest',
     component: Layout,
     redirect: '/backtest/single',
-    meta: { title: '策略回测', icon: 'DataLine' },
+    meta: { hidden: true },
     children: [
-      {
-        path: 'single',
-        name: 'SingleStockBacktest',
-        component: () => import('@/views/backtest/single.vue'),
-        meta: { title: '单股回测' }
-      },
-      {
-        path: 'history',
-        name: 'BacktestHistoryView',
-        component: () => import('@/views/backtest/history.vue'),
-        meta: { title: '回测历史' }
-      },
       {
         path: 'custom',
         redirect: '/backtest/single',
