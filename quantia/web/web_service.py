@@ -104,6 +104,11 @@ class Application(tornado.web.Application):
             (r"/quantia/api/backtest/config", backtestHandler.GetBacktestConfigHandler),
             (r"/quantia/api/backtest/run", backtestHandler.RunBacktestHandler),
             (r"/quantia/api/backtest/batch", backtestHandler.RunBatchBacktestHandler),
+            # 单股回测 & 回测历史
+            (r"/quantia/api/backtest/single", backtestHandler.SingleStockBacktestHandler),
+            (r"/quantia/api/backtest/history", backtestHandler.BacktestHistoryListHandler),
+            (r"/quantia/api/backtest/history/detail", backtestHandler.BacktestHistoryDetailHandler),
+            (r"/quantia/api/backtest/history/delete", backtestHandler.BacktestHistoryDeleteHandler),
             # 回测看板
             (r"/quantia/api/backtest/dashboard/overview", backtestDashboardHandler.DashboardOverviewHandler),
             (r"/quantia/api/backtest/dashboard/strategy_detail", backtestDashboardHandler.StrategyDetailHandler),

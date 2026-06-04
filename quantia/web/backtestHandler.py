@@ -658,3 +658,595 @@ def _get_stock_name(code):
     except Exception:
         logging.debug(f"查询股票名称异常：{code}", exc_info=True)
     return code
+
+
+# ============================================================================
+# 单股区间买卖点回测（见 document/backtest/single_stock_backtest_dev_plan.md）
+# ============================================================================
+
+# 历史表名（避免依赖 tablestructure 中可能未部署的列定义）
+SINGLE_BACKTEST_HISTORY_TABLE = 'cn_stock_single_backtest_history'
+
+# 策略 → 推荐叠加指标映射（键为完整表名 cn_stock_strategy_*）
+_ALL_OVERLAYS = ['ma5', 'ma10', 'ma20', 'ma30', 'ma60', 'ma250', 'boll', 'vol', 'macd', 'kdj', 'rsi']
+STRATEGY_OVERLAY_MAP = {
+    'cn_stock_strategy_keep_increasing': ['ma5', 'ma10', 'ma20', 'ma30', 'ma60'],
+    'cn_stock_strategy_backtrace_ma250': ['ma250', 'ma20'],
+    'cn_stock_strategy_enter': ['vol', 'ma20', 'macd'],
+    'cn_stock_strategy_low_backtrace_increase': ['vol', 'ma20', 'macd'],
+    'cn_stock_strategy_parking_apron': ['ma20', 'vol'],
+    'cn_stock_strategy_breakthrough_platform': ['ma20', 'vol'],
+    'cn_stock_strategy_high_tight_flag': ['ma20', 'vol'],
+    'cn_stock_strategy_turtle_trade': ['ma20', 'ma60', 'vol'],
+    'cn_stock_strategy_low_atr': ['ma20', 'macd'],
+    'cn_stock_strategy_climax_limitdown': ['vol', 'macd'],
+    'cn_stock_strategy_trend_pullback': ['ma20', 'ma60', 'macd'],
+    'cn_stock_strategy_oversold_rebound': ['kdj', 'rsi', 'macd'],
+    'cn_stock_strategy_breakout_confirm': ['ma20', 'vol', 'macd'],
+}
+_DEFAULT_OVERLAY = ['ma20']
+
+_RISK_FREE_RATE = 0.03  # 年化无风险利率
+
+
+def _is_index_code(code):
+    """指数代码识别：6 位指数（000300/399xxx 等）须走 load_benchmark_data，本功能仅支持个股。"""
+    if not code:
+        return False
+    c = str(code).strip()
+    # 上证指数 000001 与平安银行 000001 同号，靠前缀难以区分；这里仅拦截常见指数段
+    if c.startswith('399') or c.startswith('880'):
+        return True
+    if c in ('000300', '000016', '000905', '000852', '000688', '000010', '000009'):
+        return True
+    return False
+
+
+def _price_limit_ratio(code, name):
+    """按板块 / ST 返回单日涨跌停比例（小数）。主板 10%、创业板/科创板 20%、ST 5%、北交所 30%。"""
+    code = str(code or '').strip()
+    name = str(name or '')
+    if 'ST' in name.upper() or '退' in name:
+        return 0.05
+    # 北交所
+    if code.startswith('8') or code.startswith('4') or code.startswith('92'):
+        return 0.30
+    # 创业板 300/301、科创板 688/689
+    if code.startswith('300') or code.startswith('301') or code.startswith('688') or code.startswith('689'):
+        return 0.20
+    return 0.10
+
+
+def _resolve_single_strategy(strategy_name):
+    """解析策略：返回 (func, cn) 或 (None, None)。仅支持 TABLE_CN_STOCK_STRATEGIES 的 check() 策略。"""
+    for s in tbs.TABLE_CN_STOCK_STRATEGIES:
+        if s.get('name') == strategy_name:
+            return s.get('func'), s.get('cn', strategy_name)
+    return None, None
+
+
+def _strategy_hit(strategy_func, stock, hist, d):
+    """在日期 d 调用策略函数，命中返回 True。兼容需要 istop 的策略。"""
+    try:
+        matched = strategy_func(stock, hist, date=d)
+    except TypeError:
+        try:
+            matched = strategy_func(stock, hist, date=d, istop=False)
+        except Exception:
+            return False
+    except Exception:
+        return False
+    return bool(matched)
+
+
+def _series_or_none(values):
+    """numpy/Series → 含 None 的纯 Python list（NaN/inf → None），满足 JSON + DB 有限值要求。"""
+    out = []
+    for v in values:
+        if v is None:
+            out.append(None)
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            out.append(None)
+            continue
+        if np.isnan(fv) or np.isinf(fv):
+            out.append(None)
+        else:
+            out.append(round(fv, 3))
+    return out
+
+
+def _build_kline_and_indicators(hist, recommended, available):
+    """基于完整历史构建 K 线数组 + 指标序列（从历史起点对齐，前期不足周期补 None）。"""
+    h = hist.copy()
+    if not pd.api.types.is_datetime64_any_dtype(h['date']):
+        h['date'] = pd.to_datetime(h['date'])
+    h = h.sort_values('date').reset_index(drop=True)
+
+    dates = h['date'].dt.strftime('%Y-%m-%d').tolist()
+    kline = []
+    for _, r in h.iterrows():
+        kline.append({
+            'date': r['date'].strftime('%Y-%m-%d'),
+            'open': _safe_round(r.get('open')),
+            'close': _safe_round(r.get('close')),
+            'low': _safe_round(r.get('low')),
+            'high': _safe_round(r.get('high')),
+            'volume': _safe_round(r.get('volume'), 0),
+        })
+
+    close = h['close'].astype('float64')
+    ma = {}
+    for p in (5, 10, 20, 30, 60, 250):
+        ma[str(p)] = _series_or_none(close.rolling(window=p, min_periods=p).mean().values)
+
+    boll = {'up': [None] * len(h), 'mid': [None] * len(h), 'dn': [None] * len(h)}
+    macd = {'dif': [None] * len(h), 'dea': [None] * len(h), 'hist': [None] * len(h)}
+    kdj = {'k': [None] * len(h), 'd': [None] * len(h), 'j': [None] * len(h)}
+    rsi = {'6': [None] * len(h), '12': [None] * len(h), '24': [None] * len(h)}
+    try:
+        ind = idr.get_indicators(h, end_date=None, threshold=1, calc_threshold=None)
+        if ind is not None and len(ind) > 0:
+            ind = ind.copy()
+            if not pd.api.types.is_datetime64_any_dtype(ind['date']):
+                ind['date'] = pd.to_datetime(ind['date'])
+            ind_map = {d.strftime('%Y-%m-%d'): row for d, row in zip(ind['date'], ind.to_dict('records'))}
+            for i, ds in enumerate(dates):
+                row = ind_map.get(ds)
+                if not row:
+                    continue
+                boll['up'][i] = _safe_round(row.get('boll_ub'), 3)
+                boll['mid'][i] = _safe_round(row.get('boll'), 3)
+                boll['dn'][i] = _safe_round(row.get('boll_lb'), 3)
+                macd['dif'][i] = _safe_round(row.get('macd'), 3)
+                macd['dea'][i] = _safe_round(row.get('macds'), 3)
+                macd['hist'][i] = _safe_round(row.get('macdh'), 3)
+                kdj['k'][i] = _safe_round(row.get('kdjk'), 3)
+                kdj['d'][i] = _safe_round(row.get('kdjd'), 3)
+                kdj['j'][i] = _safe_round(row.get('kdjj'), 3)
+                rsi['6'][i] = _safe_round(row.get('rsi_6'), 3)
+                rsi['12'][i] = _safe_round(row.get('rsi_12'), 3)
+                rsi['24'][i] = _safe_round(row.get('rsi_24'), 3)
+    except Exception:
+        logging.debug('单股回测指标计算异常', exc_info=True)
+
+    indicators = {
+        'recommended': recommended,
+        'available': available,
+        'ma': ma,
+        'boll': boll,
+        'macd': macd,
+        'kdj': kdj,
+        'rsi': rsi,
+    }
+    return kline, indicators
+
+
+def _compute_single_sharpe(closed_trades):
+    """已平仓交易的交易级夏普（非重叠样本）。样本不足/std为0 → None。"""
+    if not closed_trades or len(closed_trades) < 2:
+        return None
+    rates = np.array([t['rate'] / 100.0 for t in closed_trades], dtype='float64')
+    holds = np.array([max(1, int(t.get('hold_days') or 1)) for t in closed_trades], dtype='float64')
+    excess = rates - _RISK_FREE_RATE * holds / 252.0
+    std = float(np.std(excess, ddof=1))
+    if std == 0 or not np.isfinite(std):
+        return None
+    avg_hold = float(np.mean(holds))
+    if avg_hold <= 0:
+        return None
+    sharpe = float(np.mean(excess)) / std * np.sqrt(252.0 / avg_hold)
+    if not np.isfinite(sharpe):
+        return None
+    return round(sharpe, 2)
+
+
+def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days=None, allow_overlap=False):
+    """单股区间买卖点回测。返回含 kline / indicators / trades / summary 的 dict。"""
+    if not code:
+        return {"error": "缺少股票代码参数"}
+    if not strategy:
+        return {"error": "缺少策略参数"}
+    if _is_index_code(code):
+        return {"error": "暂不支持指数回测，请输入个股代码"}
+    if not start_date_str or not end_date_str:
+        return {"error": "缺少回测区间参数"}
+
+    strategy_func, strategy_cn = _resolve_single_strategy(strategy)
+    if strategy_func is None:
+        return {"error": f"策略 {strategy} 暂不支持单股区间回测（仅支持内置选股策略）"}
+
+    # 解析持仓周期
+    exit_mode = 'strategy_signal'
+    if hold_days is not None and str(hold_days).strip() != '':
+        try:
+            hold_days = int(hold_days)
+        except (TypeError, ValueError):
+            return {"error": f"持仓周期参数非法：{hold_days}"}
+        if hold_days < 1:
+            return {"error": "持仓周期须为正整数"}
+        exit_mode = 'fixed'
+    else:
+        hold_days = None
+
+    # 读取完整历史缓存（含区间前预热，供 MA250/长周期指标）
+    hist = stf.read_stock_hist_from_cache(code, '19900101', '20991231')
+    if hist is None or len(hist) == 0:
+        return {"error": f"股票 {code} 无缓存数据，请先执行数据获取"}
+    hist = hist.copy()
+    if not pd.api.types.is_datetime64_any_dtype(hist['date']):
+        hist['date'] = pd.to_datetime(hist['date'])
+    hist = hist.sort_values('date').reset_index(drop=True)
+
+    stock_name = _get_stock_name(code)
+    limit_ratio = _price_limit_ratio(code, stock_name)
+    # 涨停跳过阈值：贴近涨停（留 5% 余量）即视为无法买入
+    limit_skip = limit_ratio * 0.95
+
+    start_ts = pd.Timestamp(start_date_str.replace('-', '')) if '-' not in str(start_date_str) else pd.Timestamp(start_date_str)
+    end_ts = pd.Timestamp(end_date_str.replace('-', '')) if '-' not in str(end_date_str) else pd.Timestamp(end_date_str)
+
+    in_range = hist[(hist['date'] >= start_ts) & (hist['date'] <= end_ts)]
+    if in_range.empty:
+        return {"error": "回测区间内无交易数据"}
+
+    stock = (code, code, stock_name)
+    dates_all = hist['date'].tolist()
+    n = len(hist)
+
+    # 逐日扫描买入信号
+    signal_idx = []
+    for idx in range(n):
+        d = dates_all[idx]
+        if d < start_ts or d > end_ts:
+            continue
+        if _strategy_hit(strategy_func, stock, hist, d.to_pydatetime()):
+            signal_idx.append(idx)
+
+    trades = []
+    no = 0
+    held_until = -1  # 去重：持仓期内重复信号合并
+    for sig in signal_idx:
+        if not allow_overlap and sig <= held_until:
+            continue
+        # T+1 开盘买入
+        buy_i = sig + 1
+        if buy_i >= n:
+            continue  # 信号日为最后一根，无法 T+1 买入
+        t_close = float(hist.iloc[sig]['close'])
+        buy_price = float(hist.iloc[buy_i]['open'])
+        if buy_price <= 0 or t_close <= 0:
+            continue
+        if (buy_price - t_close) / t_close >= limit_skip:
+            continue  # T+1 开盘涨停，无法买入
+
+        # 确定卖出
+        sell_i = None
+        exit_reason = None
+        if exit_mode == 'fixed':
+            target = buy_i + hold_days
+            if target < n:
+                sell_i = target
+                exit_reason = 'hold_expired'
+        else:  # strategy_signal：买入后首个策略条件不再成立日离场
+            for j in range(buy_i + 1, n):
+                if not _strategy_hit(strategy_func, stock, hist, dates_all[j].to_pydatetime()):
+                    sell_i = j
+                    exit_reason = 'sell_signal'
+                    break
+
+        no += 1
+        if sell_i is not None and sell_i < n:
+            sell_price = float(hist.iloc[sell_i]['close'])
+            raw_rate = round(100.0 * (sell_price - buy_price) / buy_price, 2)
+            rate = round(raw_rate - ROUND_TRIP_COST_PCT, 2)
+            hd = sell_i - buy_i
+            trades.append({
+                'no': no,
+                'buy_date': hist.iloc[buy_i]['date'].strftime('%Y-%m-%d'),
+                'buy_price': round(buy_price, 2),
+                'sell_date': hist.iloc[sell_i]['date'].strftime('%Y-%m-%d'),
+                'sell_price': round(sell_price, 2),
+                'hold_days': hd,
+                'exit_reason': exit_reason,
+                'rate': rate,
+                'raw_rate': raw_rate,
+                'status': 'closed',
+                'win': rate > 0,
+            })
+            held_until = sell_i
+        else:
+            # 区间末仍持仓
+            last_close = float(hist.iloc[-1]['close'])
+            raw_rate = round(100.0 * (last_close - buy_price) / buy_price, 2)
+            rate = round(raw_rate - ROUND_TRIP_COST_PCT, 2)
+            trades.append({
+                'no': no,
+                'buy_date': hist.iloc[buy_i]['date'].strftime('%Y-%m-%d'),
+                'buy_price': round(buy_price, 2),
+                'sell_date': None,
+                'sell_price': None,
+                'hold_days': n - 1 - buy_i,
+                'exit_reason': 'interval_end',
+                'rate': rate,
+                'raw_rate': raw_rate,
+                'status': 'open',
+                'win': None,
+            })
+            held_until = n - 1
+
+    # 汇总统计
+    closed = [t for t in trades if t['status'] == 'closed']
+    open_trades = [t for t in trades if t['status'] == 'open']
+    win = [t for t in closed if t['rate'] > 0]
+    lose = [t for t in closed if t['rate'] <= 0]
+    closed_count = len(closed)
+    win_rate = round(100.0 * len(win) / closed_count, 2) if closed_count > 0 else None
+    # 复利累计收益
+    if closed:
+        comp = 1.0
+        for t in closed:
+            comp *= (1.0 + t['rate'] / 100.0)
+        cum_return = round((comp - 1.0) * 100.0, 2)
+        avg_return = round(sum(t['rate'] for t in closed) / closed_count, 2)
+        max_trade_return = round(max(t['rate'] for t in closed), 2)
+        max_trade_drawdown = round(min(t['rate'] for t in closed), 2)
+    else:
+        cum_return = None
+        avg_return = None
+        max_trade_return = None
+        max_trade_drawdown = None
+    sharpe = _compute_single_sharpe(closed)
+
+    summary = {
+        'trade_count': len(trades),
+        'closed_count': closed_count,
+        'open_count': len(open_trades),
+        'win_count': len(win),
+        'lose_count': len(lose),
+        'win_rate': win_rate,
+        'cum_return': cum_return,
+        'avg_return': avg_return,
+        'sharpe': sharpe,
+        'max_trade_return': max_trade_return,
+        'max_trade_drawdown': max_trade_drawdown,
+    }
+
+    recommended = STRATEGY_OVERLAY_MAP.get(strategy, list(_DEFAULT_OVERLAY))
+    kline, indicators = _build_kline_and_indicators(hist, recommended, list(_ALL_OVERLAYS))
+
+    return {
+        'code': code,
+        'name': stock_name,
+        'strategy': strategy,
+        'strategy_cn': strategy_cn,
+        'start_date': start_ts.strftime('%Y-%m-%d'),
+        'end_date': end_ts.strftime('%Y-%m-%d'),
+        'hold_days': hold_days,
+        'exit_mode': exit_mode,
+        'kline': kline,
+        'indicators': indicators,
+        'trades': trades,
+        'summary': summary,
+    }
+
+
+def _ensure_single_history_table():
+    """惰性建表：单股回测历史。"""
+    sql = f"""CREATE TABLE IF NOT EXISTS `{SINGLE_BACKTEST_HISTORY_TABLE}` (
+        `id` BIGINT NOT NULL AUTO_INCREMENT,
+        `created_at` DATETIME NOT NULL,
+        `code` VARCHAR(8) NOT NULL,
+        `name` VARCHAR(32) DEFAULT NULL,
+        `strategy` VARCHAR(64) NOT NULL,
+        `strategy_cn` VARCHAR(64) DEFAULT NULL,
+        `start_date` DATE DEFAULT NULL,
+        `end_date` DATE DEFAULT NULL,
+        `hold_days` INT DEFAULT NULL,
+        `exit_mode` VARCHAR(16) DEFAULT NULL,
+        `trade_count` INT DEFAULT 0,
+        `win_rate` FLOAT DEFAULT NULL,
+        `cum_return` FLOAT DEFAULT NULL,
+        `avg_return` FLOAT DEFAULT NULL,
+        `detail_json` MEDIUMTEXT,
+        PRIMARY KEY (`id`),
+        KEY `idx_code` (`code`),
+        KEY `idx_strategy` (`strategy`),
+        KEY `idx_created` (`created_at`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
+    mdb.executeSql(sql)
+    # 刷新表存在性缓存，避免刚建表后历史列表因 TTL 内的 False 缓存返回空
+    try:
+        mdb._cache_table_exists(SINGLE_BACKTEST_HISTORY_TABLE, True)
+    except Exception:
+        pass
+
+
+def _finite_or_none(v):
+    if v is None:
+        return None
+    try:
+        fv = float(v)
+    except (TypeError, ValueError):
+        return None
+    if np.isnan(fv) or np.isinf(fv):
+        return None
+    return fv
+
+
+def _save_single_history(result):
+    """写入单股回测历史；detail_json 仅存 入参+trades+summary（不含 kline/indicators）。返回插入 id 或 None。"""
+    try:
+        _ensure_single_history_table()
+        detail = {
+            'code': result.get('code'),
+            'name': result.get('name'),
+            'strategy': result.get('strategy'),
+            'strategy_cn': result.get('strategy_cn'),
+            'start_date': result.get('start_date'),
+            'end_date': result.get('end_date'),
+            'hold_days': result.get('hold_days'),
+            'exit_mode': result.get('exit_mode'),
+            'trades': result.get('trades'),
+            'summary': result.get('summary'),
+        }
+        summary = result.get('summary', {})
+        sql = f"""INSERT INTO `{SINGLE_BACKTEST_HISTORY_TABLE}`
+            (`created_at`, `code`, `name`, `strategy`, `strategy_cn`, `start_date`, `end_date`,
+             `hold_days`, `exit_mode`, `trade_count`, `win_rate`, `cum_return`, `avg_return`, `detail_json`)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+        params = (
+            datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            result.get('code'),
+            result.get('name'),
+            result.get('strategy'),
+            result.get('strategy_cn'),
+            result.get('start_date'),
+            result.get('end_date'),
+            result.get('hold_days'),
+            result.get('exit_mode'),
+            summary.get('trade_count', 0),
+            _finite_or_none(summary.get('win_rate')),
+            _finite_or_none(summary.get('cum_return')),
+            _finite_or_none(summary.get('avg_return')),
+            json.dumps(detail, ensure_ascii=False, default=_json_default),
+        )
+        mdb.executeSql(sql, params)
+        row = mdb.executeSqlFetch("SELECT LAST_INSERT_ID()")
+        if row and len(row) > 0:
+            return int(row[0][0])
+    except Exception:
+        logging.error("保存单股回测历史失败", exc_info=True)
+    return None
+
+
+class SingleStockBacktestHandler(webBase.BaseHandler, ABC):
+    """单股区间买卖点回测"""
+    @gen.coroutine
+    def get(self):
+        self.set_header('Content-Type', 'application/json;charset=UTF-8')
+        code = self.get_argument("code", default=None, strip=True)
+        strategy = self.get_argument("strategy", default=None, strip=True)
+        start_date = self.get_argument("start_date", default=None, strip=True)
+        end_date = self.get_argument("end_date", default=None, strip=True)
+        hold_days = self.get_argument("hold_days", default=None, strip=True)
+        save = self.get_argument("save", default="0", strip=True)
+        allow_overlap = self.get_argument("allow_overlap", default="0", strip=True) == "1"
+
+        try:
+            result = yield IOLoop.current().run_in_executor(
+                None, lambda: _run_single_backtest(code, strategy, start_date, end_date,
+                                                   hold_days=hold_days, allow_overlap=allow_overlap))
+            if save == "1" and 'error' not in result:
+                new_id = yield IOLoop.current().run_in_executor(None, lambda: _save_single_history(result))
+                result['history_id'] = new_id
+            self.write(json.dumps(result, ensure_ascii=False, default=_json_default))
+        except Exception as e:
+            logging.error("SingleStockBacktestHandler处理异常", exc_info=True)
+            self.set_status(500)
+            self.write(json.dumps({"error": str(e)}, ensure_ascii=False))
+
+
+class BacktestHistoryListHandler(webBase.BaseHandler, ABC):
+    """回测历史列表（分页，不含 detail_json）"""
+    def get(self):
+        self.set_header('Content-Type', 'application/json;charset=UTF-8')
+        code = self.get_argument("code", default=None, strip=True)
+        strategy = self.get_argument("strategy", default=None, strip=True)
+        start = self.get_argument("start", default=None, strip=True)
+        end = self.get_argument("end", default=None, strip=True)
+        try:
+            page = max(1, int(self.get_argument("page", default="1", strip=True)))
+            page_size = min(100, max(1, int(self.get_argument("page_size", default="20", strip=True))))
+        except ValueError:
+            page, page_size = 1, 20
+
+        try:
+            if not mdb.checkTableIsExist(SINGLE_BACKTEST_HISTORY_TABLE):
+                self.write(json.dumps({'total': 0, 'page': page, 'page_size': page_size, 'items': []},
+                                      ensure_ascii=False))
+                return
+            where = []
+            params = []
+            if code:
+                where.append("`code` = %s")
+                params.append(code)
+            if strategy:
+                where.append("`strategy` = %s")
+                params.append(strategy)
+            if start:
+                where.append("`created_at` >= %s")
+                params.append(start + " 00:00:00")
+            if end:
+                where.append("`created_at` <= %s")
+                params.append(end + " 23:59:59")
+            where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+            total = mdb.executeSqlCount(
+                f"SELECT COUNT(*) FROM `{SINGLE_BACKTEST_HISTORY_TABLE}`{where_sql}", tuple(params))
+            offset = (page - 1) * page_size
+            rows = mdb.executeSqlFetch(
+                f"""SELECT `id`,`created_at`,`code`,`name`,`strategy`,`strategy_cn`,`start_date`,`end_date`,
+                    `hold_days`,`exit_mode`,`trade_count`,`win_rate`,`cum_return`,`avg_return`
+                    FROM `{SINGLE_BACKTEST_HISTORY_TABLE}`{where_sql}
+                    ORDER BY `id` DESC LIMIT %s OFFSET %s""",
+                tuple(params) + (page_size, offset))
+            cols = ['id', 'created_at', 'code', 'name', 'strategy', 'strategy_cn', 'start_date', 'end_date',
+                    'hold_days', 'exit_mode', 'trade_count', 'win_rate', 'cum_return', 'avg_return']
+            items = [dict(zip(cols, r)) for r in (rows or [])]
+            self.write(json.dumps({'total': total, 'page': page, 'page_size': page_size, 'items': items},
+                                  ensure_ascii=False, default=_json_default))
+        except Exception as e:
+            logging.error("BacktestHistoryListHandler处理异常", exc_info=True)
+            self.set_status(500)
+            self.write(json.dumps({"error": str(e)}, ensure_ascii=False))
+
+
+class BacktestHistoryDetailHandler(webBase.BaseHandler, ABC):
+    """回测历史详情（解析 detail_json）"""
+    def get(self):
+        self.set_header('Content-Type', 'application/json;charset=UTF-8')
+        hid = self.get_argument("id", default=None, strip=True)
+        if not hid:
+            self.set_status(400)
+            self.write(json.dumps({"error": "缺少 id 参数"}, ensure_ascii=False))
+            return
+        try:
+            if not mdb.checkTableIsExist(SINGLE_BACKTEST_HISTORY_TABLE):
+                self.set_status(404)
+                self.write(json.dumps({"error": "记录不存在"}, ensure_ascii=False))
+                return
+            rows = mdb.executeSqlFetch(
+                f"SELECT `detail_json` FROM `{SINGLE_BACKTEST_HISTORY_TABLE}` WHERE `id` = %s LIMIT 1",
+                (hid,))
+            if not rows or len(rows) == 0:
+                self.set_status(404)
+                self.write(json.dumps({"error": "记录不存在"}, ensure_ascii=False))
+                return
+            detail = json.loads(rows[0][0]) if rows[0][0] else {}
+            self.write(json.dumps(detail, ensure_ascii=False, default=_json_default))
+        except Exception as e:
+            logging.error("BacktestHistoryDetailHandler处理异常", exc_info=True)
+            self.set_status(500)
+            self.write(json.dumps({"error": str(e)}, ensure_ascii=False))
+
+
+class BacktestHistoryDeleteHandler(webBase.BaseHandler, ABC):
+    """删除回测历史记录"""
+    def delete(self):
+        self.set_header('Content-Type', 'application/json;charset=UTF-8')
+        hid = self.get_argument("id", default=None, strip=True)
+        if not hid:
+            self.set_status(400)
+            self.write(json.dumps({"error": "缺少 id 参数"}, ensure_ascii=False))
+            return
+        try:
+            if mdb.checkTableIsExist(SINGLE_BACKTEST_HISTORY_TABLE):
+                mdb.executeSql(
+                    f"DELETE FROM `{SINGLE_BACKTEST_HISTORY_TABLE}` WHERE `id` = %s", (hid,))
+            self.write(json.dumps({"success": True, "id": hid}, ensure_ascii=False))
+        except Exception as e:
+            logging.error("BacktestHistoryDeleteHandler处理异常", exc_info=True)
+            self.set_status(500)
+            self.write(json.dumps({"error": str(e)}, ensure_ascii=False))

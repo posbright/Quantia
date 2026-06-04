@@ -87,6 +87,50 @@ export function runBatchBacktest(params: BatchBacktestParams) {
   return request({ url: '/api/backtest/batch', method: 'get', params })
 }
 
+// ============= 单股区间买卖点回测 API =============
+
+export interface SingleBacktestParams {
+  code: string
+  strategy: string
+  start_date: string
+  end_date: string
+  /** 持仓周期（正整数）；留空=按策略卖点出场 */
+  hold_days?: number
+  /** 是否允许同一持仓期内重复买入信号 */
+  allow_overlap?: number
+  /** 是否保存到回测历史 */
+  save?: number
+}
+
+/** 执行单股区间买卖点回测 */
+export function runSingleBacktest(params: SingleBacktestParams) {
+  return request({ url: '/api/backtest/single', method: 'get', params })
+}
+
+export interface BacktestHistoryParams {
+  page?: number
+  page_size?: number
+  code?: string
+  strategy?: string
+  start_date?: string
+  end_date?: string
+}
+
+/** 回测历史列表 */
+export function getBacktestHistory(params: BacktestHistoryParams) {
+  return request({ url: '/api/backtest/history', method: 'get', params })
+}
+
+/** 回测历史详情 */
+export function getBacktestHistoryDetail(id: number) {
+  return request({ url: '/api/backtest/history/detail', method: 'get', params: { id } })
+}
+
+/** 删除回测历史 */
+export function deleteBacktestHistory(id: number) {
+  return request({ url: '/api/backtest/history/delete', method: 'delete', params: { id } })
+}
+
 // ============= 回测看板 API =============
 
 export interface DashboardOverviewParams {

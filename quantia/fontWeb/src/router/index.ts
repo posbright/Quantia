@@ -390,20 +390,25 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/backtest',
     component: Layout,
-    redirect: '/backtest/custom',
-    meta: { title: '选股验证', icon: 'DataAnalysis', hidden: true },
+    redirect: '/backtest/single',
+    meta: { title: '策略回测', icon: 'DataLine' },
     children: [
       {
-        path: 'dashboard',
-        name: 'BacktestDashboard',
-        component: () => import('@/views/backtest/dashboard.vue'),
-        meta: { title: '回测看板' }
+        path: 'single',
+        name: 'SingleStockBacktest',
+        component: () => import('@/views/backtest/single.vue'),
+        meta: { title: '单股回测' }
+      },
+      {
+        path: 'history',
+        name: 'BacktestHistoryView',
+        component: () => import('@/views/backtest/history.vue'),
+        meta: { title: '回测历史' }
       },
       {
         path: 'custom',
-        name: 'BacktestCustom',
-        component: () => import('@/views/backtest/index.vue'),
-        meta: { title: '自定义回测' }
+        redirect: '/backtest/single',
+        meta: { hidden: true }
       }
     ]
   },
