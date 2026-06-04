@@ -892,6 +892,10 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
     if in_range.empty:
         return {"error": "回测区间内无交易数据"}
 
+    # 裁剪到区间末：保留区间前完整历史供指标预热（plan §3.4 line 143），
+    # 但移除 end_ts 之后的"未来"K线，避免买卖点/持仓中定价越过区间末（lookahead）。
+    hist = hist[hist['date'] <= end_ts].reset_index(drop=True)
+
     stock = (code, code, stock_name)
     dates_all = hist['date'].tolist()
     n = len(hist)

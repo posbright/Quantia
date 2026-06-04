@@ -106,6 +106,44 @@ class RunSingleBacktestTests(unittest.TestCase):
             # 胜率分母为已平仓
             self.assertEqual(s['win_rate'], round(100.0 * s['win_count'] / s['closed_count'], 2))
 
+    def test_no_lookahead_past_end_date_fixed(self):
+        # 区间末 = 第 40 根；信号在第 38 根，hold_days=10 → 到期日(idx 49)越过区间末。
+        # 缓存数据延伸到第 80 根，但不得据此在区间外平仓，应标记持仓中并按区间末收盘定价。
+        end_ts = self.hist['date'].iloc[40]
+        end_str = end_ts.strftime('%Y-%m-%d')
+        with self._patch({38}):
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_keep_increasing',
+                                          '2026-01-01', end_str, hold_days=10)
+        self.assertNotIn('error', res)
+        self.assertEqual(len(res['trades']), 1)
+        t = res['trades'][0]
+        self.assertEqual(t['status'], 'open')
+        self.assertEqual(t['exit_reason'], 'interval_end')
+        self.assertIsNone(t['sell_date'])
+        # 持仓中收益须按区间末(idx 40)收盘价，而非未来(idx 49/80)价格
+        buy_price = float(self.hist['open'].iloc[39])
+        end_close = float(self.hist['close'].iloc[40])
+        expected = round(round(100.0 * (end_close - buy_price) / buy_price, 2) - bh.ROUND_TRIP_COST_PCT, 2)
+        self.assertEqual(t['rate'], expected)
+        # K线不得包含区间末之后的未来蜡烛
+        last_k = res['kline'][-1]
+        last_k_date = last_k[0] if isinstance(last_k, (list, tuple)) else (last_k.get('date') or last_k.get('time'))
+        self.assertEqual(str(last_k_date), end_str)
+
+    def test_no_lookahead_past_end_date_signal(self):
+        # 策略信号出场模式：买入后策略持续命中至缓存末，但区间末前未触发卖点 → 持仓中，不得越界平仓。
+        end_ts = self.hist['date'].iloc[40]
+        end_str = end_ts.strftime('%Y-%m-%d')
+        hits = set(range(38, 80))  # 38 起一直命中，含区间末之后
+        with self._patch(hits):
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_keep_increasing',
+                                          '2026-01-01', end_str, hold_days=None)
+        self.assertNotIn('error', res)
+        self.assertEqual(len(res['trades']), 1)
+        t = res['trades'][0]
+        self.assertEqual(t['status'], 'open')
+        self.assertIsNone(t['sell_date'])
+
     def test_limit_up_skip(self):
         # 构造 T+1 开盘涨停（相对 T 收盘 +10%）
         prices = [10.0] * 10
