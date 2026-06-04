@@ -2,6 +2,7 @@
 import { ref, onMounted, onActivated, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { QuestionFilled } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 import { getBacktestConfig, runSingleBacktest } from '@/api/stock'
 import KlineBacktestChart from '@/components/KlineBacktestChart.vue'
@@ -44,7 +45,13 @@ const _applyQuery = () => {
   const q = route.query
   let needRun = false
   if (q.code) { form.value.code = q.code as string; needRun = true }
-  if (q.strategy) form.value.strategy = q.strategy as string
+  // 仅接受合法的回测策略名（来源页面可能转发数据表名如 cn_stock_indicators，需校验后再回填）
+  if (q.strategy) {
+    const sName = q.strategy as string
+    if (strategies.value.some((s: any) => s.name === sName)) {
+      form.value.strategy = sName
+    }
+  }
   if (q.start_date && q.end_date) {
     form.value.dateRange = [q.start_date as string, q.end_date as string]
   }
@@ -158,9 +165,9 @@ const locateTrade = (row: any) => {
           </el-select>
         </el-form-item>
         <el-form-item label="回测区间">
-          <el-date-picker v-model="form.dateRange" type="daterange" range-separator="至"
-            start-placeholder="开始" end-placeholder="结束"
-            format="YYYY-MM-DD" value-format="YYYY-MM-DD" style="width: 260px" />
+          <el-date-picker v-model="form.dateRange" type="daterange" unlink-panels range-separator="至"
+            start-placeholder="开始日期" end-placeholder="结束日期"
+            format="YYYY-MM-DD" value-format="YYYY-MM-DD" style="width: 300px" />
         </el-form-item>
         <el-form-item label="持仓周期">
           <el-input-number v-model="form.hold_days" :min="1" :max="250" placeholder="留空=策略卖点"
@@ -169,6 +176,10 @@ const locateTrade = (row: any) => {
         </el-form-item>
         <el-form-item label="允许重叠">
           <el-switch v-model="form.allow_overlap" />
+          <el-tooltip placement="top"
+            content="开启后：持仓尚未了结时若再次出现买入信号，会另开一笔新仓位（可同时持有多笔重叠仓位）。关闭（默认）：持仓期内的买入信号将被忽略，避免在同一波行情里重复开仓。">
+            <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+          </el-tooltip>
         </el-form-item>
         <el-form-item label="保存历史">
           <el-switch v-model="form.save" />
@@ -288,6 +299,7 @@ const locateTrade = (row: any) => {
 .sub-info { font-size: 13px; color: #909399; }
 .header-row { display: flex; align-items: center; justify-content: space-between; }
 .hint { margin-left: 8px; font-size: 12px; color: #c0c4cc; }
+.tip-icon { margin-left: 6px; font-size: 15px; color: #909399; cursor: help; vertical-align: middle; }
 .metric-row { margin-bottom: 16px; }
 .metric-grid {
   display: grid;
