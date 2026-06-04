@@ -204,6 +204,13 @@ class FundamentalDataProvider:
     CANDIDATE_MCAP_LOW = 1
     CANDIDATE_MCAP_HIGH = 5000
 
+    # _daily_mcap_cache 最多保留的条目数。该缓存以 "日期|代码集" 为 key，
+    # 每条持有一个全市场规模的 DataFrame。长区间回测每日调用 get_fundamentals
+    # 会不断新增 key（日期各不相同），若不设上限将累积上千个 DataFrame 常驻
+    # 内存，造成无界增长 / OOM。跨日缓存几乎无复用价值（同一天极少重复查询），
+    # 因此仅保留最近若干条即可。
+    _MCAP_CACHE_MAX = 8
+
     def __init__(self, engine):
         self._engine = engine
         self._stock_info = None         # DataFrame: code, name, total_shares, current_mcap
@@ -211,16 +218,29 @@ class FundamentalDataProvider:
         self._volume_lookup = {}        # {code: {date_str: volume}}
         self._daily_mcap_cache = {}     # {date_str: DataFrame}
         self._initialized = False
+        self._klines_loaded = False     # 是否已批量加载候选股票K线（与 _initialized 解耦）
         self._candidate_codes = []
 
-    def _init_data(self):
-        """初始化：获取全市场数据并预加载候选股票K线"""
+    def _init_data(self, load_klines=True):
+        """初始化基本面数据。
+
+        Args:
+            load_klines: 是否批量加载候选股票K线。仅在真正需要基本面行情
+                （get_fundamentals 等）时才置 True。像 get_all_securities
+                只需股票代码列表时应传 False，避免全市场K线批量加载导致 OOM。
+        """
+        # 已初始化：仅在首次真正需要K线时补加载，避免重复全量加载。
         if self._initialized:
+            if load_klines and not self._klines_loaded and self._candidate_codes:
+                self._batch_load_klines()
+                self._klines_loaded = True
+                self._save_fundamental_cache()
             return
         self._initialized = True
 
         # 尝试加载缓存
         if self._load_fundamental_cache():
+            self._klines_loaded = True
             return
 
         # 1. 获取全市场股票信息
@@ -238,11 +258,12 @@ class FundamentalDataProvider:
         logging.info(f"[基本面] 候选股票: {len(self._candidate_codes)} 只 "
                      f"(当前市值 {self.CANDIDATE_MCAP_LOW}-{self.CANDIDATE_MCAP_HIGH}亿)")
 
-        # 3. 批量加载候选股票K线数据
-        self._batch_load_klines()
-
-        # 4. 保存缓存
-        self._save_fundamental_cache()
+        # 3. 批量加载候选股票K线数据（仅在需要时；否则推迟，避免 OOM）
+        if load_klines:
+            self._batch_load_klines()
+            self._klines_loaded = True
+            # 4. 保存缓存
+            self._save_fundamental_cache()
 
     def _fetch_stock_info(self):
         """获取全市场股票信息（优先DB，失败则在线API，最后从缓存推断）"""
@@ -625,6 +646,10 @@ class FundamentalDataProvider:
 
             df = pd.DataFrame(records) if records else pd.DataFrame(
                 columns=['code', 'market_cap', 'pb_ratio'])
+            # 有界缓存：超出上限时淘汰最早写入的条目，避免长区间回测内存无界增长
+            if len(self._daily_mcap_cache) >= self._MCAP_CACHE_MAX:
+                oldest_key = next(iter(self._daily_mcap_cache))
+                del self._daily_mcap_cache[oldest_key]
             self._daily_mcap_cache[cache_key] = df
 
         if len(df) == 0:
@@ -922,11 +947,38 @@ class FundamentalDataProvider:
             self._save_fundamental_cache()
 
     def is_paused(self, code, date=None):
-        """检查股票是否停牌（当日无成交量或无数据视为停牌）"""
-        if date is None:
-            date = self._engine.context.current_dt
-        date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)[:10]
+        """检查股票是否停牌（当日无成交量或无数据视为停牌）。
 
+        优先使用回测引擎已加载（且按策略实际股票池有界）的 K 线判断停牌，
+        仅在必要时按需加载单只股票，**绝不触发全市场基本面批量加载**，
+        从根本上避免 get_current_data()[code].paused 导致的内存暴涨/OOM。
+        """
+        if date is None and self._engine is not None:
+            date = self._engine.context.current_dt
+
+        # 路径一：引擎已加载的 K 线（有界，按策略股票池）
+        if self._engine is not None:
+            df = self._engine._stock_data.get(code)
+            if df is None:
+                try:
+                    # 仅加载单只股票，不会触发全市场批量加载
+                    self._engine._ensure_stock_loaded(code)
+                    df = self._engine._stock_data.get(code)
+                except Exception:
+                    df = None
+            if df is not None and len(df) > 0 and 'volume' in df.columns:
+                subset = df.loc[:pd.Timestamp(date)]
+                if len(subset) == 0:
+                    return True  # 当日及之前均无 bar = 未上市/停牌
+                last_d = pd.Timestamp(subset.index[-1]).date()
+                cur_d = pd.Timestamp(date).date()
+                if last_d != cur_d:
+                    return True  # 当日无 bar = 停牌
+                vol = subset['volume'].iloc[-1]
+                return bool(pd.isna(vol) or vol == 0)
+
+        # 路径二：回退到基本面 _volume_lookup（仅当策略使用过基本面 API 时才有数据）
+        date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)[:10]
         volumes = self._volume_lookup.get(code)
         if volumes is None:
             return True  # 无数据 = 停牌
@@ -996,9 +1048,10 @@ class _CurrentDataProxy:
         self._engine = engine
 
     def __getitem__(self, code):
-        # Ensure data is initialized (lazy init)
-        if self._provider and not self._provider._initialized:
-            self._provider._init_data()
+        # 不在此处触发 provider._init_data()：停牌/涨跌停/价格判断改由
+        # _CurrentStockInfo 直接从引擎已加载（有界）的 K 线解析。
+        # 这样 get_current_data()[code].paused 不会误触发全市场基本面
+        # 批量 K 线加载，从根本上避免内存暴涨/OOM。
         return _CurrentStockInfo(code, self._provider, self._engine)
 
 

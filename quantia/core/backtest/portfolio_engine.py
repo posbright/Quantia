@@ -21,6 +21,8 @@
 import logging
 import datetime
 import time
+import os
+from collections import OrderedDict
 import numpy as np
 import pandas as pd
 
@@ -41,6 +43,78 @@ from .fundamentals import (
 
 __author__ = 'Quantia'
 __date__ = '2026/03/13'
+
+
+class _LRUStockData:
+    """有界 LRU 缓存，对外表现为 ``{code: DataFrame}`` 字典。
+
+    用于替代回测引擎中无上限增长的 ``_stock_data`` 字典：当常驻股票数量
+    超过 ``capacity`` 时，淘汰最久未访问（least-recently-used）的 K 线
+    DataFrame 以释放内存，从而把全市场加载改为「流式 / 按需 + 有界常驻」，
+    避免无上限加载导致服务器 OOM。被淘汰的股票在后续访问时会通过
+    ``_ensure_stock_loaded`` 透明地重新加载，数据完全一致，不影响回测结果。
+
+    ``pin`` 的代码（如基准指数）永不淘汰。
+    """
+
+    def __init__(self, capacity):
+        self._capacity = max(1, int(capacity))
+        self._data = OrderedDict()
+        self._pinned = set()
+
+    # —— dict 兼容接口 ——
+    def __contains__(self, code):
+        return code in self._data
+
+    def __len__(self):
+        return len(self._data)
+
+    def __iter__(self):
+        # 复制 key 列表，避免迭代期间淘汰导致 RuntimeError
+        return iter(list(self._data.keys()))
+
+    def get(self, code, default=None):
+        if code in self._data:
+            self._data.move_to_end(code)
+            return self._data[code]
+        return default
+
+    def __getitem__(self, code):
+        if code in self._data:
+            self._data.move_to_end(code)
+            return self._data[code]
+        raise KeyError(code)
+
+    def __setitem__(self, code, df):
+        if code in self._data:
+            self._data.move_to_end(code)
+        self._data[code] = df
+        self._evict_if_needed()
+
+    def keys(self):
+        return list(self._data.keys())
+
+    def values(self):
+        return list(self._data.values())
+
+    def items(self):
+        return list(self._data.items())
+
+    # —— LRU 控制 ——
+    def pin(self, code):
+        """将代码标记为常驻（永不淘汰），如基准指数。"""
+        self._pinned.add(code)
+
+    def _evict_if_needed(self):
+        while len(self._data) > self._capacity:
+            evicted = None
+            for k in self._data:  # OrderedDict 头部即最久未使用
+                if k not in self._pinned:
+                    evicted = k
+                    break
+            if evicted is None:
+                break  # 全部被 pin，无法继续淘汰
+            self._data.pop(evicted, None)
 
 
 class PortfolioBacktestEngine:
@@ -64,12 +138,19 @@ class PortfolioBacktestEngine:
         '399001', '399006', '399300', '399905', '399951',
     }
 
+    # 常驻内存中的最大股票数量（K 线 DataFrame）。超出后按 LRU 淘汰，
+    # 被淘汰股票在再次访问时透明重载。可通过环境变量覆盖，避免大票池
+    # 全市场加载导致 OOM。
+    _MAX_STOCKS_IN_MEM = int(os.environ.get('QUANTIA_BT_MAX_STOCKS_IN_MEM', '1000'))
+    # 预加载时分批拉取的批大小，降低加载峰值内存。
+    _PRELOAD_BATCH_SIZE = int(os.environ.get('QUANTIA_BT_PRELOAD_BATCH', '300'))
+
     def __init__(self):
         self.context = None
         self.data_proxy = None
         self.g = None
         self._strategy_funcs = None
-        self._stock_data = {}          # {code: DatetimeIndex-indexed DataFrame}
+        self._stock_data = _LRUStockData(self._MAX_STOCKS_IN_MEM)  # {code: DatetimeIndex-indexed DataFrame}，有界 LRU
         self._benchmark_data = None    # DataFrame
         self._nav_records = []         # [NavRecord]
         self._trade_records = []       # [TradeRecord]
@@ -190,7 +271,8 @@ class PortfolioBacktestEngine:
                 bm_full = load_benchmark_data(bm_code, pre_start, end_date)
                 if bm_full is not None:
                     self._stock_data[bm_code] = self._to_indexed_df(bm_full)
-                    self.data_proxy._set_history(bm_code, self._stock_data[bm_code])
+            # 基准频繁访问且需要全程可用，固定常驻不被 LRU 淘汰
+            self._stock_data.pin(bm_code)
 
         # 8. 主回测循环
         prev_nav = 1.0
@@ -1059,7 +1141,8 @@ class PortfolioBacktestEngine:
         def get_all_securities(types=None, date=None):
             """聚宽 get_all_securities() — 返回全部候选股票代码"""
             provider = engine._fundamental_provider
-            provider._init_data()
+            # 仅需候选代码列表，无需全市场 K 线 → load_klines=False 避免 OOM
+            provider._init_data(load_klines=False)
             codes = list(provider._candidate_codes) if provider._candidate_codes else []
             # 也包含已加载的 K 线股票
             for code in engine._stock_data:
@@ -1701,37 +1784,50 @@ class PortfolioBacktestEngine:
 
         if codes:
             index_codes = {code for code in codes if code in self._INDEX_CODES or code.startswith('399')}
-            stock_codes = codes - index_codes
-            logging.info(f"[回测引擎] 预加载 {len(stock_codes)} 只股票数据")
-            raw_data = load_multiple_stocks(stock_codes, pre_start, end_date) if stock_codes else {}
+            stock_codes = sorted(codes - index_codes)
+            self._all_codes = codes
+
+            # 预加载数量上限：票池过大时只预热前 N 只，其余在访问时按需
+            # 加载（_ensure_stock_loaded + LRU），把全市场加载改为流式 + 有界常驻。
+            cap = self._MAX_STOCKS_IN_MEM
+            preload_codes = stock_codes
+            if len(stock_codes) > cap:
+                preload_codes = stock_codes[:cap]
+                logging.info(
+                    f"[回测引擎] 候选股票 {len(stock_codes)} 只 > 常驻上限 {cap}，"
+                    f"仅预热前 {cap} 只，其余按需流式加载")
+            else:
+                logging.info(f"[回测引擎] 预加载 {len(stock_codes)} 只股票数据")
+
+            # 重置为有界 LRU，分批拉取以降低加载峰值内存
+            self._stock_data = _LRUStockData(cap)
+            batch = max(1, self._PRELOAD_BATCH_SIZE)
+            for start in range(0, len(preload_codes), batch):
+                chunk = preload_codes[start:start + batch]
+                raw_chunk = load_multiple_stocks(chunk, pre_start, end_date)
+                for code, df in raw_chunk.items():
+                    self._stock_data[code] = self._to_indexed_df(df)
+                del raw_chunk  # 立即释放本批原始数据
+
+            # 指数数据始终全部加载并固定常驻（数量少、需全程可用）
             for code in index_codes:
                 df = load_benchmark_data(code, pre_start, end_date)
                 if df is not None and len(df) > 0:
-                    raw_data[code] = df
-            self._all_codes = codes
-
-            # 转为 DatetimeIndex 格式并降精度（节省内存）
-            self._stock_data = {}
-            for code, df in raw_data.items():
-                self._stock_data[code] = self._to_indexed_df(df)
-            del raw_data  # 立即释放原始数据
+                    self._stock_data[code] = self._to_indexed_df(df)
+                    self._stock_data.pin(code)
 
             # 内存估算与警告
             total_mem = sum(df.memory_usage(deep=True).sum() for df in self._stock_data.values())
             mem_mb = total_mem / 1024 / 1024
-            logging.info(f"[回测引擎] 股票数据内存: {mem_mb:.0f} MB ({len(self._stock_data)} 只)")
+            logging.info(f"[回测引擎] 股票数据内存: {mem_mb:.0f} MB ({len(self._stock_data)} 只常驻)")
             if mem_mb > 500:
                 logging.warning(f"[回测引擎] 股票数据占用 {mem_mb:.0f}MB，低内存服务器可能出现 OOM")
 
             # 批量加载股票名称
             self._load_stock_names_batch(codes)
 
-            # 设置历史数据到 data_proxy
-            for code, df in self._stock_data.items():
-                self.data_proxy._set_history(code, df)
-
     def _load_single_stock(self, code):
-        """延迟加载单只股票或指数"""
+        """延迟加载单只股票或指数（被 LRU 淘汰后会再次触发此重载，数据一致）"""
         if code in self._stock_data:
             return
         # 使用更早的开始日期来提供多周期 history() 数据
@@ -1746,7 +1842,6 @@ class PortfolioBacktestEngine:
             df = load_stock_data(code, start_date=pre_start)
         if df is not None:
             self._stock_data[code] = self._to_indexed_df(df)
-            self.data_proxy._set_history(code, self._stock_data[code])
 
     # 聚宽兼容别名
     _ensure_stock_loaded = _load_single_stock
@@ -1787,6 +1882,32 @@ class PortfolioBacktestEngine:
                     'pre_close': float(row.get('pre_close', close)),
                 }
                 self.data_proxy._set_current(code, bar)
+
+        # 确保所有持仓都有当日价格：被 LRU 淘汰的持仓需重载后再估值，
+        # 否则市值会停留在旧价格导致净值计算错误。
+        try:
+            held = list(self.context.portfolio.positions.keys()) if self.context and self.context.portfolio else []
+        except Exception:
+            held = []
+        for code in held:
+            if code in prices:
+                continue
+            if code not in self._stock_data:
+                self._load_single_stock(code)
+            idx_df = self._stock_data.get(code)
+            if idx_df is None or ts_date not in idx_df.index:
+                continue
+            row = idx_df.loc[ts_date]
+            close = float(row['close'])
+            prices[code] = close
+            self.data_proxy._set_current(code, {
+                'open': float(row.get('open', close)),
+                'high': float(row.get('high', close)),
+                'low': float(row.get('low', close)),
+                'close': close,
+                'volume': int(row.get('volume', 0)),
+                'pre_close': float(row.get('pre_close', close)),
+            })
 
         return prices
 
