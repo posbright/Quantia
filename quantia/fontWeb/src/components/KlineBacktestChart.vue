@@ -225,6 +225,20 @@ const resize = () => {
   nextTick(() => chart?.resize())
 }
 
+// 定位到指定交易日：将 dataZoom 缩放到该日前后约 20 根 K 线的窗口
+const locate = (date: string) => {
+  if (!chart || !date) return
+  const kl = props.kline || []
+  const idx = kl.findIndex(k => k.date === date)
+  if (idx < 0) return
+  const total = kl.length
+  if (total <= 1) return
+  const half = 20
+  const startPct = Math.max(0, ((idx - half) / total) * 100)
+  const endPct = Math.min(100, ((idx + half) / total) * 100)
+  chart.dispatchAction({ type: 'dataZoom', start: startPct, end: endPct })
+}
+
 watch(() => props.kline, () => {
   applyRecommended()
   nextTick(initChart)
@@ -243,7 +257,7 @@ onBeforeUnmount(() => {
   chart = null
 })
 
-defineExpose({ resize })
+defineExpose({ resize, locate })
 </script>
 
 <style scoped>

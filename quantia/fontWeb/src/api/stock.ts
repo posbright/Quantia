@@ -112,8 +112,10 @@ export interface BacktestHistoryParams {
   page_size?: number
   code?: string
   strategy?: string
-  start_date?: string
-  end_date?: string
+  /** 区间起始（后端读 start，非 start_date）*/
+  start?: string
+  /** 区间结束（后端读 end，非 end_date）*/
+  end?: string
 }
 
 /** 回测历史列表 */

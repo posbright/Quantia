@@ -114,6 +114,32 @@ const fmtNum = (val: any, digits = 2) => {
 const exitReasonText = (r: string) => {
   return ({ hold_expired: '持仓到期', sell_signal: '策略卖点', interval_end: '区间末持仓' } as any)[r] || r || '—'
 }
+
+// 最大盈利 / 最大回撤对应的交易（用于指标卡副文案显示入场日）
+const closedTrades = () => (result.value?.trades || []).filter((t: any) => t.status === 'closed')
+const maxReturnTrade = () => {
+  const cs = closedTrades()
+  if (!cs.length) return null
+  return cs.reduce((a: any, b: any) => (b.rate > a.rate ? b : a))
+}
+const maxDrawdownTrade = () => {
+  const cs = closedTrades()
+  if (!cs.length) return null
+  return cs.reduce((a: any, b: any) => (b.rate < a.rate ? b : a))
+}
+// 平均每笔收益副文案：固定持仓显示周期，策略卖点显示出场方式
+const avgSubText = () => {
+  if (!result.value) return ''
+  return result.value.exit_mode === 'fixed'
+    ? `已平仓·持仓${result.value.hold_days}个交易日`
+    : '已平仓·策略卖点出场'
+}
+
+// 定位到 K 线上的某笔交易
+const locateTrade = (row: any) => {
+  if (row?.buy_date) chartRef.value?.locate(row.buy_date)
+}
+
 </script>
 
 <template>
@@ -156,15 +182,44 @@ const exitReasonText = (r: string) => {
     </el-card>
 
     <template v-if="result">
-      <!-- 指标卡 -->
-      <el-row :gutter="12" class="metric-row">
-        <el-col :span="4"><div class="metric-card"><div class="metric-label">交易笔数</div><div class="metric-value">{{ result.summary.trade_count }}</div></div></el-col>
-        <el-col :span="4"><div class="metric-card"><div class="metric-label">胜率</div><div class="metric-value" :class="(result.summary.win_rate ?? 0) >= 50 ? 'text-up' : 'text-down'">{{ result.summary.win_rate == null ? '—' : result.summary.win_rate + '%' }}</div></div></el-col>
-        <el-col :span="4"><div class="metric-card"><div class="metric-label">累计收益</div><div class="metric-value" :class="getRateClass(result.summary.cum_return)">{{ formatRate(result.summary.cum_return) }}</div></div></el-col>
-        <el-col :span="4"><div class="metric-card"><div class="metric-label">平均收益</div><div class="metric-value" :class="getRateClass(result.summary.avg_return)">{{ formatRate(result.summary.avg_return) }}</div></div></el-col>
-        <el-col :span="4"><div class="metric-card"><div class="metric-label">夏普比率</div><div class="metric-value">{{ fmtNum(result.summary.sharpe) }}</div></div></el-col>
-        <el-col :span="4"><div class="metric-card"><div class="metric-label">最大盈利/亏损</div><div class="metric-value"><span class="text-up">{{ formatRate(result.summary.max_trade_return) }}</span> / <span class="text-down">{{ formatRate(result.summary.max_trade_drawdown) }}</span></div></div></el-col>
-      </el-row>
+      <!-- 指标卡（对齐原型：7 张带副文案） -->
+      <div class="metric-grid">
+        <div class="metric-card">
+          <div class="metric-label">买卖点对数</div>
+          <div class="metric-value">{{ result.summary.trade_count }}</div>
+          <div class="metric-sub">{{ result.summary.closed_count }} 已平仓 / {{ result.summary.open_count }} 持仓中</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">胜率</div>
+          <div class="metric-value" :class="(result.summary.win_rate ?? 0) >= 50 ? 'text-up' : 'text-down'">{{ result.summary.win_rate == null ? '—' : result.summary.win_rate + '%' }}</div>
+          <div class="metric-sub">{{ result.summary.win_count }} 胜 / {{ result.summary.lose_count }} 负（仅计已平仓）</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">累计收益</div>
+          <div class="metric-value" :class="getRateClass(result.summary.cum_return)">{{ formatRate(result.summary.cum_return) }}</div>
+          <div class="metric-sub">已平仓复利，含0.30%成本</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">平均每笔收益</div>
+          <div class="metric-value" :class="getRateClass(result.summary.avg_return)">{{ formatRate(result.summary.avg_return) }}</div>
+          <div class="metric-sub">{{ avgSubText() }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">夏普比率</div>
+          <div class="metric-value">{{ fmtNum(result.summary.sharpe) }}</div>
+          <div class="metric-sub">基于交易级收益年化估算，无风险3%</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">最大单笔回撤</div>
+          <div class="metric-value text-down">{{ formatRate(result.summary.max_trade_drawdown) }}</div>
+          <div class="metric-sub">{{ maxDrawdownTrade() ? maxDrawdownTrade().buy_date + ' 入场' : '—' }}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">最大单笔盈利</div>
+          <div class="metric-value text-up">{{ formatRate(result.summary.max_trade_return) }}</div>
+          <div class="metric-sub">{{ maxReturnTrade() ? maxReturnTrade().buy_date + ' 入场' : '—' }}</div>
+        </div>
+      </div>
 
       <!-- K线买卖点图 -->
       <el-card shadow="never" class="chart-card">
@@ -182,6 +237,13 @@ const exitReasonText = (r: string) => {
         <template #header><span class="card-title">交易明细</span></template>
         <el-table :data="result.trades" border size="small" stripe max-height="420">
           <el-table-column prop="no" label="#" width="50" align="center" />
+          <el-table-column label="类型" width="80" align="center">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'open' ? 'warning' : 'danger'" size="small" effect="plain">
+                {{ row.status === 'open' ? '持仓中' : '买入' }}
+              </el-tag>
+            </template>
+          </el-table-column>
           <el-table-column prop="buy_date" label="买入日" width="110" align="center" />
           <el-table-column prop="buy_price" label="买入价" width="90" align="right" />
           <el-table-column label="卖出日" width="110" align="center">
@@ -206,6 +268,11 @@ const exitReasonText = (r: string) => {
               </el-tag>
             </template>
           </el-table-column>
+          <el-table-column label="操作" width="80" align="center">
+            <template #default="{ row }">
+              <el-button type="primary" link size="small" @click="locateTrade(row)">定位</el-button>
+            </template>
+          </el-table-column>
         </el-table>
       </el-card>
     </template>
@@ -222,6 +289,18 @@ const exitReasonText = (r: string) => {
 .header-row { display: flex; align-items: center; justify-content: space-between; }
 .hint { margin-left: 8px; font-size: 12px; color: #c0c4cc; }
 .metric-row { margin-bottom: 16px; }
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+@media (max-width: 1280px) {
+  .metric-grid { grid-template-columns: repeat(4, 1fr); }
+}
+@media (max-width: 768px) {
+  .metric-grid { grid-template-columns: repeat(2, 1fr); }
+}
 .metric-card {
   background: var(--el-bg-color-overlay);
   border: 1px solid var(--el-border-color-lighter);
@@ -231,6 +310,7 @@ const exitReasonText = (r: string) => {
 }
 .metric-label { font-size: 12px; color: #909399; margin-bottom: 6px; }
 .metric-value { font-size: 20px; font-weight: 600; }
+.metric-sub { font-size: 11px; color: #c0c4cc; margin-top: 6px; }
 .text-up { color: #f56c6c; }
 .text-down { color: #67c23a; }
 </style>

@@ -183,16 +183,17 @@
 | --- | --- | --- |
 | `GET /quantia/api/backtest/history` | `BacktestHistoryListHandler` | 入参 `code` / `strategy` / `start` / `end` / `page` / `page_size`；返回分页列表（不含 `detail_json`）|
 | `GET /quantia/api/backtest/history/detail?id=` | `BacktestHistoryDetailHandler` | 返回单条 `detail_json` 解析后的完整结果，用于复现图表 |
-| `DELETE /quantia/api/backtest/history?id=` | `BacktestHistoryDeleteHandler` | 删除一条历史 |
+| `DELETE /quantia/api/backtest/history/delete?id=` | `BacktestHistoryDeleteHandler` | 删除一条历史 |
 
 ### 3.4 策略卖点判定来源（`hold_days` 留空时）
-当未指定持仓周期时，需要为每个策略确定"何时卖出"。按优先级回退：
-1. **指标信号**：若策略本身基于指标买点（`indicators_buy`），对应用 `indicators_sell` 的卖出信号日离场。
-2. **反向选股信号**：对 `cn_stock_strategy_*` 类选股策略，逐日复用 `_scan_one_stock_for_signals` 思路，命中"该策略不再成立/反向条件"的首日离场（如均线多头 → 跌破多头排列首日）。
-3. **兜底**：若某策略无法定义明确卖点，则回退为"区间末收盘价平仓"，并在返回 `summary.warning` 中提示"该策略无内置卖点，已按区间末平仓"。
+当未指定持仓周期时，采用**统一的反向选股信号**规则确定卖点（不维护 per-strategy 映射，避免新增策略时漏配）：
 
-> 实现时为每个策略维护一张 `STRATEGY_EXIT_RULES` 映射（buy strategy → exit checker）；新增策略需补充该映射，否则走兜底。卖点判定同样只读 `cache/hist/`，不调外部 API。
-> `exit_reason` 取值枚举：`hold_expired`（固定持仓到期）、`sell_signal`（策略卖点命中）、`interval_end`（区间末兜底平仓 / 持仓中）。
+- 自买入日（`buy_i`）次日起逐日对同一策略函数复跑 `_strategy_hit`，**首个"该策略买入条件不再成立"的交易日按收盘价离场**（`exit_reason='sell_signal'`）。这对均线多头（跌破多头排列）、放量上涨、无大幅回撤等**持续型**选股条件语义自然。
+- 区间末（裁剪后的 `hist` 末根，即 `end_date`）仍未触发离场 → 标记**持仓中**（`exit_reason='interval_end'`，`status='open'`，按区间末收盘价计浮动收益）。
+- 卖点判定只读 `cache/hist/`，不调外部 API。
+
+> ⚠️ 局限：对**点事件型**选股条件（如回踩年线 `backtrace_ma250`、停机坪等形态/瞬时模式），"条件成立"本身是某一日的形态特征，买入次日通常即不再成立 → 会很快触发 `sell_signal`（短持仓）。这类策略更适合用**固定持仓周期**（`hold_days=N`）回测；统一反向规则下的短持仓结果仅作参考。
+> `exit_reason` 取值枚举：`hold_expired`（固定持仓到期）、`sell_signal`（策略买入条件不再成立离场）、`interval_end`（区间末仍持仓）。
 
 ### 3.5 下线/保留
 - **下线**：`backtestDashboardHandler.py` 的 5 个聚合端点 + 前端看板页（路由与 API 一并移除）。先标注 `@deprecated`、灰度一版后删除，避免外链 404。
