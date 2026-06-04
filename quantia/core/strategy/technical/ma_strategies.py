@@ -23,37 +23,71 @@ __date__ = '2026/02/14'
 @register_strategy
 class MABullishStrategy(TechnicalStrategy):
     """
-    均线多头策略
+    均线多头策略（均线多头排列）
 
     选股条件:
-    1. 30日前的30日均线<20日前的30日均线<10日前的30日均线<当日的30日均线
-    2. (当日的30日均线/30日前的30日均线)>1.2
+    1. 最新交易日满足 MA5 > MA10 > MA20 > MA30 > MA60 > 0
+       （短、中、长期均线自上而下呈多头排列）
+    2. 统计该多头排列从最新交易日向前连续出现的天数 bull_days
+
+    返回 dict（含 bull_days 及各周期均线值），用于选股结果表展示，
+    并支持按多头排列天数从小到大排序（天数越小表示刚形成多头排列）。
     """
     name = "keep_increasing"
     cn_name = "均线多头"
-    default_threshold = 30
-    description = "MA30均线持续上涨，涨幅超过20%"
+    default_threshold = 60
+    description = "MA5/10/20/30/60 形成多头排列，输出连续多头天数"
+
+    # 多头排列使用的均线周期（自短到长）
+    MA_PERIODS = (5, 10, 20, 30, 60)
 
     def check(self, code_name, data, date=None, **kwargs):
         data = self.prepare_data(code_name, data, date)
         if data is None:
             return False
 
-        data.loc[:, 'ma30'] = self.calc_ma(data, 'close', 30)
-        data = data.tail(n=self.threshold)
-
-        if len(data) < self.threshold:
+        # MA60 至少需要 60 根 K 线
+        if len(data) < 60:
             return False
 
-        step1 = round(self.threshold / 3)
-        step2 = round(self.threshold * 2 / 3)
+        data = data.copy()
+        for p in self.MA_PERIODS:
+            data[f'ma{p}'] = self.calc_ma(data, 'close', p)
 
-        # 均线持续上涨
-        if (data.iloc[0]['ma30'] < data.iloc[step1]['ma30'] <
-            data.iloc[step2]['ma30'] < data.iloc[-1]['ma30'] and
-            data.iloc[-1]['ma30'] > 1.2 * data.iloc[0]['ma30']):
-            return True
-        return False
+        ma5 = data['ma5'].values
+        ma10 = data['ma10'].values
+        ma20 = data['ma20'].values
+        ma30 = data['ma30'].values
+        ma60 = data['ma60'].values
+
+        # 每个交易日是否构成多头排列：MA5 > MA10 > MA20 > MA30 > MA60 > 0
+        bull = (
+            (ma5 > ma10) & (ma10 > ma20) &
+            (ma20 > ma30) & (ma30 > ma60) & (ma60 > 0)
+        )
+
+        # 最新交易日必须处于多头排列，否则不入选
+        if not bool(bull[-1]):
+            return False
+
+        # 从最新交易日向前回溯，统计连续多头排列天数
+        not_bull_idx = np.where(~bull)[0]
+        if len(not_bull_idx) == 0:
+            bull_days = int(len(bull))
+        else:
+            bull_days = int(len(bull) - 1 - not_bull_idx[-1])
+
+        last = data.iloc[-1]
+        return {
+            'p_change': round(float(last.get('p_change', 0) or 0), 2),
+            'close': round(float(last['close']), 2),
+            'bull_days': bull_days,
+            'ma5': round(float(last['ma5']), 3),
+            'ma10': round(float(last['ma10']), 3),
+            'ma20': round(float(last['ma20']), 3),
+            'ma30': round(float(last['ma30']), 3),
+            'ma60': round(float(last['ma60']), 3),
+        }
 
 
 @register_strategy
@@ -216,7 +250,7 @@ class LowATRGrowthStrategy(TechnicalStrategy):
 
 
 # 兼容性函数 - 供旧代码调用
-def check(code_name, data, date=None, threshold=30):
+def check(code_name, data, date=None, threshold=60):
     """均线多头策略检查函数（兼容旧接口）"""
     strategy = MABullishStrategy(threshold=threshold)
     return strategy.check(code_name, data, date)

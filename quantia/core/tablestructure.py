@@ -429,9 +429,11 @@ FIELD_FORMAT_MAP = {
     'vol_ma20': {'fmt': 'vol'},
     'vol_ratio': {'fmt': 'ratio'},
     # 均线多头
+    'bull_days': {'fmt': 'int'},
+    'ma5': {'fmt': 'price'},
+    'ma10': {'fmt': 'price'},
+    'ma20': {'fmt': 'price'},
     'ma30': {'fmt': 'price'},
-    'ma30_start': {'fmt': 'price'},
-    'ma30_ratio': {'fmt': 'ratio'},
     # 停机坪
     'limitup_price': {'fmt': 'price'},
     'limitup_pchange': {'fmt': 'pct', 'color': True},
@@ -578,9 +580,12 @@ _keep_increasing_columns = TABLE_CN_STOCK_FOREIGN_KEY['columns'].copy()
 _keep_increasing_columns.update({
     'p_change': {'type': FLOAT, 'cn': '涨跌幅(%)', 'size': 90},
     'close': {'type': FLOAT, 'cn': '收盘价', 'size': 80},
-    'ma30': {'type': FLOAT, 'cn': '30日均线', 'size': 90},
-    'ma30_start': {'type': FLOAT, 'cn': '30日前MA30', 'size': 90},
-    'ma30_ratio': {'type': FLOAT, 'cn': 'MA30增长比', 'size': 90},
+    'bull_days': {'type': Integer, 'cn': '多头排列天数', 'size': 110},
+    'ma5': {'type': FLOAT, 'cn': '5日均线', 'size': 80},
+    'ma10': {'type': FLOAT, 'cn': '10日均线', 'size': 80},
+    'ma20': {'type': FLOAT, 'cn': '20日均线', 'size': 80},
+    'ma30': {'type': FLOAT, 'cn': '30日均线', 'size': 80},
+    'ma60': {'type': FLOAT, 'cn': '60日均线', 'size': 80},
 })
 _keep_increasing_columns.update(TABLE_CN_STOCK_BACKTEST_DATA['columns'])
 

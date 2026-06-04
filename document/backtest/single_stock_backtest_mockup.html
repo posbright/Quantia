@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>单股回测 / 回测历史 — 界面设计稿</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  :root {
+    --primary: #409eff;
+    --success: #67c23a;
+    --danger: #f56c6c;
+    --warning: #e6a23c;
+    --info: #909399;
+    --border: #dcdfe6;
+    --bg: #f5f7fa;
+    --text: #303133;
+    --text-secondary: #606266;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .layout { display: flex; min-height: 100vh; }
+
+  /* 侧边栏 */
+  .sidebar {
+    width: 210px;
+    background: #304156;
+    color: #bfcbd9;
+    flex-shrink: 0;
+    padding-top: 12px;
+  }
+  .sidebar .logo { color: #fff; font-size: 18px; font-weight: 600; padding: 12px 20px 18px; }
+  .sidebar .menu-group { font-size: 12px; color: #8492a6; padding: 14px 20px 6px; letter-spacing: 1px; }
+  .sidebar .menu-item { padding: 11px 20px 11px 32px; cursor: pointer; font-size: 14px; }
+  .sidebar .menu-item:hover { background: #263445; color: #fff; }
+  .sidebar .menu-item.active { background: var(--primary); color: #fff; }
+
+  /* 主内容区 */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .topbar {
+    height: 52px; background: #fff; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 22px; gap: 10px;
+  }
+  .breadcrumb { color: var(--text-secondary); font-size: 13px; }
+  .breadcrumb b { color: var(--text); }
+  .content { padding: 18px; }
+
+  /* Tab 切换 */
+  .tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--border); margin-bottom: 18px; }
+  .tab {
+    padding: 10px 22px; cursor: pointer; font-size: 15px; font-weight: 500;
+    color: var(--text-secondary); border-bottom: 2px solid transparent; margin-bottom: -2px;
+  }
+  .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+  .card {
+    background: #fff; border-radius: var(--radius); padding: 18px 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06); margin-bottom: 16px;
+  }
+  .card-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+  .card-title::before { content: ''; width: 4px; height: 16px; background: var(--primary); border-radius: 2px; }
+
+  /* 表单 */
+  .form-row { display: flex; flex-wrap: wrap; gap: 18px 24px; align-items: flex-end; }
+  .form-item { display: flex; flex-direction: column; gap: 6px; }
+  .form-item label { font-size: 13px; color: var(--text-secondary); }
+  .control {
+    height: 34px; border: 1px solid var(--border); border-radius: 5px; padding: 0 11px;
+    font-size: 14px; background: #fff; color: var(--text); min-width: 150px; outline: none;
+  }
+  .control:focus { border-color: var(--primary); }
+  select.control { cursor: pointer; }
+  .btn {
+    height: 34px; padding: 0 18px; border: none; border-radius: 5px; cursor: pointer;
+    font-size: 14px; font-weight: 500; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: #66b1ff; }
+  .btn-default { background: #fff; color: var(--text); border: 1px solid var(--border); }
+  .btn-default:hover { color: var(--primary); border-color: var(--primary); }
+  .btn-text { background: transparent; color: var(--primary); padding: 0 8px; }
+
+  /* 指标卡片 */
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+  .metric {
+    background: #fafbfc; border: 1px solid #ebeef5; border-radius: var(--radius);
+    padding: 14px 16px; text-align: center;
+  }
+  .metric .label { font-size: 12px; color: var(--info); margin-bottom: 6px; }
+  .metric .value { font-size: 22px; font-weight: 700; }
+  .metric .sub { font-size: 12px; color: var(--info); margin-top: 4px; }
+  .up { color: var(--danger); }      /* A股红涨 */
+  .down { color: var(--success); }   /* A股绿跌 */
+
+  /* 图表 */
+  #klineChart { width: 100%; height: 420px; }
+  .overlay-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    padding: 10px 0 14px; font-size: 13px;
+  }
+  .overlay-label { color: var(--text-secondary); font-weight: 600; }
+  .overlay-hint { color: var(--info); font-size: 12px; margin-right: 4px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+    padding: 3px 10px; border: 1px solid var(--border); border-radius: 14px;
+    background: #fff; user-select: none;
+  }
+  .chip:hover { border-color: var(--primary); }
+  .chip input { cursor: pointer; margin: 0; }
+
+  /* 表格 */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 10px 12px; text-align: center; border-bottom: 1px solid #ebeef5; }
+  th { background: #fafafa; color: var(--text-secondary); font-weight: 600; }
+  tbody tr:hover { background: #f5f7fa; }
+  .tag {
+    display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px;
+  }
+  .tag-buy { background: #fef0f0; color: var(--danger); }
+  .tag-sell { background: #f0f9eb; color: var(--success); }
+  .tag-hold { background: #fdf6ec; color: var(--warning); }
+  .tag-win { background: #fef0f0; color: var(--danger); }
+  .tag-lose { background: #f0f9eb; color: var(--success); }
+
+  /* 分页 */
+  .pager { display: flex; justify-content: flex-end; gap: 6px; margin-top: 14px; align-items: center; }
+  .pager .page-btn {
+    min-width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 4px;
+    background: #fff; cursor: pointer; font-size: 13px;
+  }
+  .pager .page-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .hidden { display: none !important; }
+  .empty { text-align: center; color: var(--info); padding: 40px; font-size: 14px; }
+  .note {
+    background: #ecf5ff; border-left: 3px solid var(--primary); padding: 8px 12px;
+    border-radius: 4px; font-size: 12px; color: var(--text-secondary); margin-bottom: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <!-- 侧边栏 -->
+  <aside class="sidebar">
+    <div class="logo">Quantia</div>
+    <div class="menu-group">策略回测</div>
+    <div class="menu-item active">单股回测</div>
+    <div class="menu-item">策略验证中心</div>
+    <div class="menu-item">组合回测</div>
+    <div class="menu-group">行情</div>
+    <div class="menu-item">个股行情</div>
+    <div class="menu-item">策略选股</div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <span class="breadcrumb">策略回测 / <b>单股回测</b></span>
+    </div>
+
+    <div class="content">
+      <!-- 顶部 Tab：单股回测 / 回测历史 -->
+      <div class="tabs">
+        <div class="tab active" data-tab="single" onclick="switchTab('single')">单股回测</div>
+        <div class="tab" data-tab="history" onclick="switchTab('history')">回测历史</div>
+      </div>
+
+      <!-- ============ 单股回测 ============ -->
+      <div id="tab-single">
+        <!-- 参数表单 -->
+        <div class="card">
+          <div class="card-title">回测参数</div>
+          <div class="form-row">
+            <div class="form-item">
+              <label>股票代码</label>
+              <input class="control" placeholder="如 000001 / 600519" value="000001">
+            </div>
+            <div class="form-item">
+              <label>选择策略</label>
+              <select class="control">
+                <option>均线多头</option>
+                <option>放量上涨</option>
+                <option>停机坪</option>
+                <option>回踩年线</option>
+                <option>突破平台</option>
+                <option>海龟交易法则</option>
+                <option>指标买入信号</option>
+              </select>
+            </div>
+            <div class="form-item">
+              <label>回测时间范围</label>
+              <input class="control" type="date" value="2026-01-02" style="min-width:140px">
+            </div>
+            <div class="form-item">
+              <label>&nbsp;</label>
+              <input class="control" type="date" value="2026-05-30" style="min-width:140px">
+            </div>
+            <div class="form-item">
+              <label>持仓周期（交易日，可选）</label>
+              <input class="control" type="number" min="1" placeholder="留空=按策略卖点" value="10" style="min-width:160px">
+            </div>
+            <div class="form-item">
+              <button class="btn btn-primary" onclick="runBacktest()">▶ 执行回测</button>
+            </div>
+            <div class="form-item">
+              <button class="btn btn-default">重置</button>
+            </div>
+          </div>
+          <div class="note" style="margin-top:14px; margin-bottom:0">
+            持仓周期为<b>可选项</b>，可填任意正整数（交易日）。<b>留空</b>时按所选策略自身定义的卖出信号离场（信号驱动出场）；填值时按固定持仓 N 个交易日到期离场。
+          </div>
+        </div>
+
+        <!-- 结果汇总指标 -->
+        <div class="card">
+          <div class="card-title">回测结果汇总 · 平安银行 (000001) · 均线多头</div>
+          <div class="metrics">
+            <div class="metric">
+              <div class="label">买卖点对数</div>
+              <div class="value">6</div>
+              <div class="sub">5 已平仓 / 1 持仓中</div>
+            </div>
+            <div class="metric">
+              <div class="label">胜率</div>
+              <div class="value up">60.0%</div>
+              <div class="sub">3 胜 / 2 负（仅计已平仓）</div>
+            </div>
+            <div class="metric">
+              <div class="label">累计收益</div>
+              <div class="value up">+10.05%</div>
+              <div class="sub">已平仓复利，含0.30%成本</div>
+            </div>
+            <div class="metric">
+              <div class="label">平均每笔收益</div>
+              <div class="value up">+2.04%</div>
+              <div class="sub">已平仓·持仓10个交易日</div>
+            </div>
+            <div class="metric">
+              <div class="label">夏普比率</div>
+              <div class="value up">1.98</div>
+              <div class="sub">年化，无风险3%</div>
+            </div>
+            <div class="metric">
+              <div class="label">最大单笔回撤</div>
+              <div class="value down">-4.31%</div>
+              <div class="sub">2026-03-18 入场</div>
+            </div>
+            <div class="metric">
+              <div class="label">最大单笔盈利</div>
+              <div class="value up">+7.95%</div>
+              <div class="sub">2026-04-22 入场</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- K线 + 买卖点图 -->
+        <div class="card">
+          <div class="card-title">K线走势与买卖点</div>
+          <div class="note">红色 ▲ 为买入点（策略信号 T+1 开盘执行），蓝色 ▼ 为卖出点（固定持仓到期 / 策略卖点信号）。鼠标悬停查看明细。</div>
+          <!-- 指标叠加控制：根据所选策略自动推荐对应指标 -->
+          <div class="overlay-bar">
+            <span class="overlay-label">主图叠加：</span>
+            <span class="overlay-hint">（均线多头 · 系统推荐多头排列均线）</span>
+            <label class="chip"><input type="checkbox" checked onchange="toggleOverlay('ma5', this.checked)"><span style="color:#e6a23c">MA5</span></label>
+            <label class="chip"><input type="checkbox" checked onchange="toggleOverlay('ma10', this.checked)"><span style="color:#f56c6c">MA10</span></label>
+            <label class="chip"><input type="checkbox" checked onchange="toggleOverlay('ma20', this.checked)"><span style="color:#409eff">MA20</span></label>
+            <label class="chip"><input type="checkbox" checked onchange="toggleOverlay('ma30', this.checked)"><span style="color:#67c23a">MA30</span></label>
+            <label class="chip"><input type="checkbox" checked onchange="toggleOverlay('ma60', this.checked)"><span style="color:#909399">MA60</span></label>
+            <span style="width:1px;height:18px;background:#dcdfe6;margin:0 4px"></span>
+            <label class="chip"><input type="checkbox" onchange="toggleOverlay('ma250', this.checked)"><span style="color:#9b59b6">年线MA250</span></label>
+            <label class="chip"><input type="checkbox" onchange="toggleOverlay('boll', this.checked)"><span>BOLL</span></label>
+          </div>
+          <div class="overlay-bar" style="padding-top:0">
+            <span class="overlay-label">副图指标：</span>
+            <label class="chip"><input type="checkbox" onchange="toggleOverlay('vol', this.checked)"><span>成交量</span></label>
+            <label class="chip"><input type="checkbox" onchange="toggleOverlay('macd', this.checked)"><span>MACD</span></label>
+            <label class="chip"><input type="checkbox" onchange="toggleOverlay('kdj', this.checked)"><span>KDJ</span></label>
+            <label class="chip"><input type="checkbox" onchange="toggleOverlay('rsi', this.checked)"><span>RSI</span></label>
+          </div>
+          <div id="klineChart"></div>
+        </div>
+
+        <!-- 买卖点交易明细 -->
+        <div class="card">
+          <div class="card-title">买卖点交易明细</div>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th><th>类型</th><th>买入日</th><th>买入价</th>
+                <th>卖出日</th><th>卖出价</th><th>持仓天数</th>
+                <th>收益率</th><th>结果</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>1</td><td><span class="tag tag-buy">买入</span></td>
+                <td>2026-01-15</td><td>9.42</td><td>2026-01-29</td><td>9.98</td><td>10</td>
+                <td class="up">+5.64%</td><td><span class="tag tag-win">盈利</span></td>
+                <td><button class="btn btn-text">定位</button></td>
+              </tr>
+              <tr>
+                <td>2</td><td><span class="tag tag-buy">买入</span></td>
+                <td>2026-02-10</td><td>10.21</td><td>2026-02-26</td><td>10.55</td><td>10</td>
+                <td class="up">+3.03%</td><td><span class="tag tag-win">盈利</span></td>
+                <td><button class="btn btn-text">定位</button></td>
+              </tr>
+              <tr>
+                <td>3</td><td><span class="tag tag-buy">买入</span></td>
+                <td>2026-03-18</td><td>11.04</td><td>2026-04-01</td><td>10.56</td><td>10</td>
+                <td class="down">-4.31%</td><td><span class="tag tag-lose">亏损</span></td>
+                <td><button class="btn btn-text">定位</button></td>
+              </tr>
+              <tr>
+                <td>4</td><td><span class="tag tag-buy">买入</span></td>
+                <td>2026-04-22</td><td>10.18</td><td>2026-05-09</td><td>10.99</td><td>10</td>
+                <td class="up">+7.95%</td><td><span class="tag tag-win">盈利</span></td>
+                <td><button class="btn btn-text">定位</button></td>
+              </tr>
+              <tr>
+                <td>5</td><td><span class="tag tag-buy">买入</span></td>
+                <td>2026-05-14</td><td>11.32</td><td>2026-05-28</td><td>11.08</td><td>10</td>
+                <td class="down">-2.12%</td><td><span class="tag tag-lose">亏损</span></td>
+                <td><button class="btn btn-text">定位</button></td>
+              </tr>
+              <tr>
+                <td>6</td><td><span class="tag tag-hold">持仓中</span></td>
+                <td>2026-05-30</td><td>11.45</td><td>—</td><td>—</td><td>2</td>
+                <td class="up">+1.20%</td><td><span class="tag tag-hold">未平仓</span></td>
+                <td><button class="btn btn-text">定位</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ============ 回测历史 ============ -->
+      <div id="tab-history" class="hidden">
+        <div class="card">
+          <div class="card-title">历史筛选</div>
+          <div class="form-row">
+            <div class="form-item">
+              <label>股票代码</label>
+              <input class="control" placeholder="留空查看全部">
+            </div>
+            <div class="form-item">
+              <label>策略</label>
+              <select class="control">
+                <option>全部策略</option>
+                <option>均线多头</option>
+                <option>放量上涨</option>
+              </select>
+            </div>
+            <div class="form-item">
+              <label>回测日期范围</label>
+              <input class="control" type="date" value="2026-01-01" style="min-width:140px">
+            </div>
+            <div class="form-item">
+              <label>&nbsp;</label>
+              <input class="control" type="date" value="2026-06-04" style="min-width:140px">
+            </div>
+            <div class="form-item">
+              <button class="btn btn-primary">查询</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">回测历史记录</div>
+          <div class="note">记录每次单股回测的参数与汇总结果。点击「查看」可复现该次回测的买卖点与图表。</div>
+          <table>
+            <thead>
+              <tr>
+                <th>回测时间</th><th>股票</th><th>策略</th><th>区间</th>
+                <th>持仓</th><th>笔数</th><th>胜率</th><th>累计收益</th><th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>2026-06-04 14:32</td><td>平安银行<br><span style="color:#909399">000001</span></td>
+                <td>均线多头</td><td>2026-01-02 ~ 2026-05-30</td><td>10日</td><td>6</td>
+                <td class="up">60.0%</td><td class="up">+10.05%</td>
+                <td>
+                  <button class="btn btn-text" onclick="switchTab('single')">查看</button>
+                  <button class="btn btn-text" style="color:#f56c6c">删除</button>
+                </td>
+              </tr>
+              <tr>
+                <td>2026-06-03 10:18</td><td>贵州茅台<br><span style="color:#909399">600519</span></td>
+                <td>放量上涨</td><td>2025-09-01 ~ 2026-03-01</td><td>20日</td><td>3</td>
+                <td class="down">33.3%</td><td class="down">-2.41%</td>
+                <td>
+                  <button class="btn btn-text">查看</button>
+                  <button class="btn btn-text" style="color:#f56c6c">删除</button>
+                </td>
+              </tr>
+              <tr>
+                <td>2026-06-01 16:45</td><td>宁德时代<br><span style="color:#909399">300750</span></td>
+                <td>回踩年线</td><td>2025-06-01 ~ 2026-06-01</td><td>10日</td><td>8</td>
+                <td class="up">75.0%</td><td class="up">+23.10%</td>
+                <td>
+                  <button class="btn btn-text">查看</button>
+                  <button class="btn btn-text" style="color:#f56c6c">删除</button>
+                </td>
+              </tr>
+              <tr>
+                <td>2026-05-28 09:02</td><td>比亚迪<br><span style="color:#909399">002594</span></td>
+                <td>突破平台</td><td>2026-01-01 ~ 2026-05-28</td><td>5日</td><td>5</td>
+                <td class="up">60.0%</td><td class="up">+6.73%</td>
+                <td>
+                  <button class="btn btn-text">查看</button>
+                  <button class="btn btn-text" style="color:#f56c6c">删除</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="pager">
+            <button class="page-btn">‹</button>
+            <button class="page-btn active">1</button>
+            <button class="page-btn">2</button>
+            <button class="page-btn">3</button>
+            <button class="page-btn">›</button>
+            <span style="color:#909399; font-size:13px; margin-left:8px">共 28 条</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.getElementById('tab-single').classList.toggle('hidden', name !== 'single');
+  document.getElementById('tab-history').classList.toggle('hidden', name !== 'history');
+  if (name === 'single') setTimeout(() => chart && chart.resize(), 50);
+}
+
+// ---- 示例 K 线 + 买卖点（ECharts 原生 candlestick，无需额外图表库）----
+let chart;
+let klineState = null;                 // 缓存原始数据，叠加切换时复用
+const overlayOn = { ma5:true, ma10:true, ma20:true, ma30:true, ma60:true, ma250:false, boll:false, vol:false, macd:false, kdj:false, rsi:false };
+const MA_COLORS = { ma5:'#e6a23c', ma10:'#f56c6c', ma20:'#409eff', ma30:'#67c23a', ma60:'#909399', ma250:'#9b59b6' };
+const SUB_PANELS = ['vol', 'macd', 'kdj', 'rsi'];   // 可独立成子图的副图指标
+
+function genMockKline() {
+  // 生成足量历史（>=300 根），保证 MA250 等长周期指标从历史起点即可计算
+  const data = [], dates = [], vols = [], closes = [], highs = [], lows = [], buys = [], sells = [];
+  let price = 8.0;
+  const start = new Date('2025-03-01');
+  const buyDates = ['2026-01-15','2026-02-10','2026-03-18','2026-04-22','2026-05-14','2026-05-30'];
+  const sellDates = ['2026-01-29','2026-02-26','2026-04-01','2026-05-09','2026-05-28'];
+  for (let i = 0; i < 320; i++) {
+    const d = new Date(start); d.setDate(d.getDate() + Math.floor(i * 1.4));
+    const ds = d.toISOString().slice(0, 10);
+    const open = price;
+    const change = (Math.sin(i / 9) * 0.16) + (Math.random() - 0.48) * 0.2;
+    const close = Math.max(6, open + change);
+    const high = Math.max(open, close) + Math.random() * 0.16;
+    const low = Math.min(open, close) - Math.random() * 0.16;
+    dates.push(ds);
+    data.push([+open.toFixed(2), +close.toFixed(2), +low.toFixed(2), +high.toFixed(2)]);
+    closes.push(+close.toFixed(2)); highs.push(+high.toFixed(2)); lows.push(+low.toFixed(2));
+    vols.push({ value: Math.round(50000 + Math.random() * 80000), itemStyle: { color: close >= open ? '#f56c6c' : '#67c23a' } });
+    if (buyDates.includes(ds)) buys.push({ coord: [ds, low - 0.15], value: '买', date: ds, price: close });
+    if (sellDates.includes(ds)) sells.push({ coord: [ds, high + 0.15], value: '卖', date: ds, price: close });
+    price = close;
+  }
+  return { dates, data, vols, closes, highs, lows, buys, sells };
+}
+
+// ---- 指标计算：一律从历史起点(index 0)开始，前期不足周期处补 '-' ----
+function calcMA(closes, n) {
+  return closes.map((_, i) => {
+    if (i < n - 1) return '-';
+    let sum = 0; for (let j = i - n + 1; j <= i; j++) sum += closes[j];
+    return +(sum / n).toFixed(2);
+  });
+}
+function calcBOLL(closes, n = 20, k = 2) {
+  const mid = calcMA(closes, n), up = [], dn = [];
+  closes.forEach((_, i) => {
+    if (i < n - 1) { up.push('-'); dn.push('-'); return; }
+    let sum = 0; for (let j = i - n + 1; j <= i; j++) sum += Math.pow(closes[j] - mid[i], 2);
+    const sd = Math.sqrt(sum / n);
+    up.push(+(mid[i] + k * sd).toFixed(2)); dn.push(+(mid[i] - k * sd).toFixed(2));
+  });
+  return { mid, up, dn };
+}
+function ema(arr, n) {
+  const k = 2 / (n + 1); const out = []; let prev = arr[0];
+  arr.forEach((v, i) => { prev = i === 0 ? v : v * k + prev * (1 - k); out.push(prev); });
+  return out;
+}
+function calcMACD(closes, fast = 12, slow = 26, signal = 9) {
+  const ef = ema(closes, fast), es = ema(closes, slow);
+  const dif = closes.map((_, i) => ef[i] - es[i]);
+  const dea = ema(dif, signal);
+  const macd = dif.map((v, i) => +( (v - dea[i]) * 2 ).toFixed(3));
+  return { dif: dif.map(v => +v.toFixed(3)), dea: dea.map(v => +v.toFixed(3)), macd };
+}
+function calcKDJ(closes, highs, lows, n = 9) {
+  const k = [], dd = [], j = []; let pk = 50, pd = 50;
+  closes.forEach((_, i) => {
+    const s = Math.max(0, i - n + 1);
+    const hh = Math.max(...highs.slice(s, i + 1));
+    const ll = Math.min(...lows.slice(s, i + 1));
+    const rsv = hh === ll ? 50 : (closes[i] - ll) / (hh - ll) * 100;
+    pk = (2 / 3) * pk + (1 / 3) * rsv;
+    pd = (2 / 3) * pd + (1 / 3) * pk;
+    k.push(+pk.toFixed(2)); dd.push(+pd.toFixed(2)); j.push(+(3 * pk - 2 * pd).toFixed(2));
+  });
+  return { k, d: dd, j };
+}
+function calcRSI(closes, n = 6) {
+  const out = []; let avgG = 0, avgL = 0;
+  closes.forEach((c, i) => {
+    if (i === 0) { out.push('-'); return; }
+    const diff = c - closes[i - 1];
+    const g = Math.max(diff, 0), l = Math.max(-diff, 0);
+    if (i <= n) { avgG += g / n; avgL += l / n; out.push(i === n ? +(100 - 100 / (1 + avgG / (avgL || 1e-9))).toFixed(2) : '-'); }
+    else { avgG = (avgG * (n - 1) + g) / n; avgL = (avgL * (n - 1) + l) / n; out.push(+(100 - 100 / (1 + avgG / (avgL || 1e-9))).toFixed(2)); }
+  });
+  return out;
+}
+
+function buildSeries(panelIndex) {
+  const { data, vols, closes, highs, lows, buys, sells } = klineState;
+  const series = [];
+  // 主图均线（gridIndex 0）
+  ['ma5','ma10','ma20','ma30','ma60','ma250'].forEach(key => {
+    if (!overlayOn[key]) return;
+    const n = +key.slice(2);
+    series.push({ type:'line', name:key.toUpperCase(), data:calcMA(closes, n), smooth:true,
+      symbol:'none', lineStyle:{ width:1.4, color:MA_COLORS[key] }, xAxisIndex:0, yAxisIndex:0 });
+  });
+  if (overlayOn.boll) {
+    const b = calcBOLL(closes);
+    series.push({ type:'line', name:'BOLL上轨', data:b.up, symbol:'none', xAxisIndex:0, yAxisIndex:0, lineStyle:{width:1,type:'dashed',color:'#c0392b'} });
+    series.push({ type:'line', name:'BOLL中轨', data:b.mid, symbol:'none', xAxisIndex:0, yAxisIndex:0, lineStyle:{width:1,color:'#7f8c8d'} });
+    series.push({ type:'line', name:'BOLL下轨', data:b.dn, symbol:'none', xAxisIndex:0, yAxisIndex:0, lineStyle:{width:1,type:'dashed',color:'#27ae60'} });
+  }
+  // 主图 K 线 + 买卖点
+  series.push({
+    type:'candlestick', name:'日K', data:data, xAxisIndex:0, yAxisIndex:0,
+    itemStyle:{ color:'#f56c6c', color0:'#67c23a', borderColor:'#f56c6c', borderColor0:'#67c23a' },
+    markPoint:{ symbol:'triangle', symbolSize:14,
+      data:[ ...buys.map(b=>({...b, itemStyle:{color:'#f56c6c'}})), ...sells.map(s=>({...s, symbolRotate:180, itemStyle:{color:'#409eff'}})) ],
+      label:{ color:'#fff', fontSize:10, formatter:p=>p.data.value },
+      tooltip:{ formatter:p=>`${p.data.value}点<br/>${p.data.date}<br/>价格 ${p.data.price}` } }
+  });
+  // 副图指标（各占一个 grid）
+  SUB_PANELS.forEach(key => {
+    if (!overlayOn[key]) return;
+    const gi = panelIndex[key];
+    if (key === 'vol') {
+      series.push({ type:'bar', name:'成交量', data:vols, xAxisIndex:gi, yAxisIndex:gi });
+    } else if (key === 'macd') {
+      const m = calcMACD(closes);
+      series.push({ type:'bar', name:'MACD', data:m.macd.map(v=>({ value:v, itemStyle:{ color: v>=0 ? '#f56c6c' : '#67c23a' } })), xAxisIndex:gi, yAxisIndex:gi });
+      series.push({ type:'line', name:'DIF', data:m.dif, symbol:'none', xAxisIndex:gi, yAxisIndex:gi, lineStyle:{width:1,color:'#e6a23c'} });
+      series.push({ type:'line', name:'DEA', data:m.dea, symbol:'none', xAxisIndex:gi, yAxisIndex:gi, lineStyle:{width:1,color:'#409eff'} });
+    } else if (key === 'kdj') {
+      const kd = calcKDJ(closes, highs, lows);
+      series.push({ type:'line', name:'K', data:kd.k, symbol:'none', xAxisIndex:gi, yAxisIndex:gi, lineStyle:{width:1,color:'#e6a23c'} });
+      series.push({ type:'line', name:'D', data:kd.d, symbol:'none', xAxisIndex:gi, yAxisIndex:gi, lineStyle:{width:1,color:'#409eff'} });
+      series.push({ type:'line', name:'J', data:kd.j, symbol:'none', xAxisIndex:gi, yAxisIndex:gi, lineStyle:{width:1,color:'#9b59b6'} });
+    } else if (key === 'rsi') {
+      series.push({ type:'line', name:'RSI6', data:calcRSI(closes,6), symbol:'none', xAxisIndex:gi, yAxisIndex:gi, lineStyle:{width:1,color:'#f56c6c'} });
+      series.push({ type:'line', name:'RSI12', data:calcRSI(closes,12), symbol:'none', xAxisIndex:gi, yAxisIndex:gi, lineStyle:{width:1,color:'#409eff'} });
+    }
+  });
+  return series;
+}
+
+function renderChart() {
+  klineState = genMockKline();
+  chart = echarts.init(document.getElementById('klineChart'));
+  applyOption();
+}
+
+function applyOption() {
+  const { dates } = klineState;
+  const activeSubs = SUB_PANELS.filter(k => overlayOn[k]);
+  // 动态布局：主图 + N 个副图，整体高度随副图数量增长
+  const mainTop = 40, subH = 90, gap = 18, mainH = 250;
+  const totalH = mainTop + mainH + activeSubs.length * (subH + gap) + 40;
+  document.getElementById('klineChart').style.height = totalH + 'px';
+
+  const grids = [{ left: 52, right: 24, top: mainTop, height: mainH }];
+  const xAxes = [{ type:'category', data:dates, gridIndex:0, boundaryGap:true, axisLine:{lineStyle:{color:'#999'}} }];
+  const yAxes = [{ scale:true, gridIndex:0, splitLine:{lineStyle:{color:'#f0f0f0'}} }];
+  const panelIndex = {};
+  activeSubs.forEach((key, idx) => {
+    const gi = idx + 1;
+    panelIndex[key] = gi;
+    const top = mainTop + mainH + gap + idx * (subH + gap);
+    grids.push({ left: 52, right: 24, top, height: subH });
+    xAxes.push({ type:'category', data:dates, gridIndex:gi, boundaryGap:true, axisLabel:{ show: idx === activeSubs.length - 1 }, axisTick:{show:false} });
+    const yCfg = { gridIndex:gi, splitNumber:2, axisLabel:{ inside:false }, splitLine:{ show:false } };
+    if (key === 'kdj' || key === 'rsi') { yCfg.min = key === 'rsi' ? 0 : undefined; yCfg.max = key === 'rsi' ? 100 : undefined; }
+    yAxes.push(yCfg);
+    // 子图名称标签
+    grids[gi].subName = ({ vol:'成交量', macd:'MACD(12,26,9)', kdj:'KDJ(9,3,3)', rsi:'RSI(6,12)' })[key];
+  });
+  const allXIdx = grids.map((_, i) => i);
+
+  chart.setOption({
+    tooltip: { trigger:'axis', axisPointer:{ type:'cross' } },
+    legend: { top: 4, type:'scroll' },
+    axisPointer: { link: [{ xAxisIndex: 'all' }] },
+    graphic: activeSubs.map((key, idx) => ({
+      type:'text', left: 56, top: mainTop + mainH + gap + idx * (subH + gap) - 2,
+      style:{ text: grids[idx + 1].subName, fontSize: 11, fill:'#909399' }
+    })),
+    grid: grids.map(g => ({ left:g.left, right:g.right, top:g.top, height:g.height })),
+    xAxis: xAxes,
+    yAxis: yAxes,
+    dataZoom: [
+      { type:'inside', xAxisIndex: allXIdx, start: 0, end: 100 },   // 默认展示全部 K 线
+      { type:'slider', xAxisIndex: allXIdx, start: 0, end: 100, height: 18, bottom: 6 }
+    ],
+    series: buildSeries(panelIndex)
+  }, true);
+}
+
+// chip 勾选切换叠加指标
+function toggleOverlay(key, checked) {
+  overlayOn[key] = checked;
+  applyOption();
+}
+
+renderChart();
+window.addEventListener('resize', () => chart && chart.resize());
+</script>
+</body>
+</html>

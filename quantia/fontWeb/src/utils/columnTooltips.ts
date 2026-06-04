@@ -211,9 +211,12 @@ export const strategyColumnDescriptions: Record<string, Record<string, string>> 
   cn_stock_strategy_keep_increasing: {
     p_change: '涨跌幅(%)',
     close: '当日收盘价',
+    bull_days: '多头排列天数：MA5>MA10>MA20>MA30>MA60 连续保持的天数，数值越小表示刚形成多头排列',
+    ma5: '当日5日均线',
+    ma10: '当日10日均线',
+    ma20: '当日20日均线',
     ma30: '当日30日均线',
-    ma30_start: '30日前的30日均线值',
-    ma30_ratio: 'MA30增长比：筛选阈值 > 1.2。当日MA30 / 30日前MA30',
+    ma60: '当日60日均线',
   },
   cn_stock_strategy_parking_apron: {
     p_change: '涨跌幅(%)',

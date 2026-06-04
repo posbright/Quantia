@@ -50,21 +50,20 @@ TECHNICAL_STRATEGY_PARAMS = {
     },
     "keep_increasing": {
         "name": "均线多头",
-        "description": "检测MA30持续上升且涨幅显著的股票，表明中期趋势向好。\n\n"
+        "description": "检测均线多头排列的股票：短、中、长期均线自上而下依次排列，中期趋势向好。\n\n"
                        "选股条件：\n"
-                       "1. MA30在3个时间节点（1/3处、2/3处、当前）保持递增\n"
-                       "2. 当前MA30 ≥ 起始MA30 × 增长系数\n\n"
-                       "适用场景：中线趋势投资，适合追踪已确认上升趋势的标的。\n"
+                       "1. 最新交易日 MA5 > MA10 > MA20 > MA30 > MA60（多头排列）\n"
+                       "2. 统计多头排列已连续出现的天数（bull_days）\n\n"
+                       "结果默认按多头排列天数从小到大排序，天数越小表示刚形成多头排列。\n"
+                       "适用场景：中线趋势投资，适合追踪刚确认上升趋势的标的。\n"
                        "风险提示：均线是滞后指标，趋势末期可能发出虚假信号。",
         "strategy_func": "cn_stock_strategy_keep_increasing",
         "groups": [
             {
                 "group_name": "均线参数",
                 "params": [
-                    {"key": "threshold", "label": "均线周期/回溯天数", "description": "同时作为MA周期和分析窗口长度",
-                     "type": "number", "value": 30, "min": 10, "max": 120, "step": 5, "unit": "天"},
-                    {"key": "growth_ratio", "label": "最低增长比例", "description": "当前MA需达到起始MA的倍数（1.2=涨20%）",
-                     "type": "number", "value": 1.2, "min": 1.05, "max": 2.0, "step": 0.05, "unit": "倍"},
+                    {"key": "threshold", "label": "回溯天数", "description": "分析所需的最少历史交易日数（需≥60以计算MA60）",
+                     "type": "number", "value": 60, "min": 60, "max": 250, "step": 10, "unit": "天"},
                 ]
             }
         ]

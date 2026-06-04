@@ -227,6 +227,11 @@ class stock_web_module_data(metaclass=singleton_type):
         for table in tbs.TABLE_CN_STOCK_STRATEGIES:
             # 计算指标列（排除外键列和回测列）
             _ind_keys = set(table['columns'].keys()) - set(tbs.TABLE_CN_STOCK_FOREIGN_KEY['columns'].keys()) - set(tbs.TABLE_CN_STOCK_BACKTEST_DATA['columns'].keys())
+            # 均线多头：按多头排列天数从小到大排序（刚形成多头排列的标的优先）
+            if 'bull_days' in table['columns']:
+                _order_by = " `bull_days` ASC, `cdatetime` DESC"
+            else:
+                _order_by = " `cdatetime` DESC"
             self.data_list.append(
                 wmd.web_module_data(
                     mode="query",
@@ -239,7 +244,7 @@ class stock_web_module_data(metaclass=singleton_type):
                     primary_key=[],
                     is_realtime=False,
                     order_columns=f"(SELECT `datetime` FROM `{tbs.TABLE_CN_STOCK_ATTENTION['name']}` WHERE `code`=`{table['name']}`.`code`) AS `cdatetime`",
-                    order_by=" `cdatetime` DESC"
+                    order_by=_order_by
                 )
             )
 
