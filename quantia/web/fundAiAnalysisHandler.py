@@ -84,21 +84,26 @@ def _norm_date(d):
 
 # ── 数据装配 ──────────────────────────────────────────────────────────────────
 
-def gather_ctx(code):
-    """读取该基金已落库数据，返回 (ctx, composite)。
+def gather_ctx(code, table_presence=None):
+    """读取该基金已落库数据，返回 (ctx, composite, table_presence)。
 
     复用 F13 (cah) 的取数与规则装配，避免重复 SQL。
     基金数据表缺失或无该基金最新数据时返回 (None, None)。
     """
-    if not mdb.checkTableIsExist(_RANK_TABLE):
-        return None, None
+    if table_presence is None:
+        table_presence = mdb.checkTablesExist([
+            _AI_TABLE, _RANK_TABLE, _SCORE_TABLE, _HOLDING_TABLE, _PROFILE_TABLE
+        ])
+    if not table_presence.get(_RANK_TABLE, False):
+        return None, None, table_presence
 
     rank = cah._fetch_one(
         _RANK_TABLE,
         ['name', 'fund_type', 'nav_date', 'rate_1y', 'rate_3y'],
-        'code', code, extra_latest_date=True)
+        'code', code, extra_latest_date=True,
+        table_exists=table_presence.get(_RANK_TABLE))
     if not rank:
-        return None, None
+        return None, None, table_presence
 
     fund_type = rank.get('fund_type')
     name = rank.get('name')
@@ -107,15 +112,17 @@ def gather_ctx(code):
         _SCORE_TABLE,
         ['score', 'sharpe', 'max_drawdown', 'rate_3y', 'rate_5y',
          'excess_1y', 'main_industry', 'rank_in_type'],
-        'code', code, extra_latest_date=True)
+        'code', code, extra_latest_date=True,
+        table_exists=table_presence.get(_SCORE_TABLE))
     profile = cah._fetch_one(
         _PROFILE_TABLE,
         ['fund_type_detail', 'scale_yi', 'setup_date', 'company',
          'manager', 'rating', 'strategy', 'objective', 'benchmark'],
-        'code', code)
+        'code', code,
+        table_exists=table_presence.get(_PROFILE_TABLE))
 
     holdings = []
-    if mdb.checkTableIsExist(_HOLDING_TABLE):
+    if table_presence.get(_HOLDING_TABLE, False):
         hrows = mdb.executeSqlFetch(
             f"SELECT `stock_name`, `stock_code`, `industry`, `hold_ratio`, `quarter` "
             f"FROM `{_HOLDING_TABLE}` WHERE `code` = %s", (str(code),))
@@ -123,7 +130,7 @@ def gather_ctx(code):
                      'hold_ratio': r[3], 'quarter': r[4]} for r in (hrows or [])]
 
     peer_percentiles = {}
-    if fund_type and mdb.checkTableIsExist(_SCORE_TABLE):
+    if fund_type and table_presence.get(_SCORE_TABLE, False):
         try:
             bucket = pd.read_sql(
                 f"SELECT r.`code` AS code, r.`rate_1y` AS rate_1y, r.`fee` AS fee, "
@@ -148,7 +155,7 @@ def gather_ctx(code):
         'holdings': holdings, 'peer_percentiles': peer_percentiles,
     }
     composite = cah.build_composite_analysis(ctx)
-    return ctx, composite
+    return ctx, composite, table_presence
 
 
 def build_user_message(ctx, composite):
@@ -254,9 +261,9 @@ def _extract_sources(tool_calls):
 
 # ── 缓存读写 ──────────────────────────────────────────────────────────────────
 
-def _load_cache(code, data_date):
+def _load_cache(code, data_date, table_exists=None):
     """命中返回 {content, sources, model, created_at}，否则 None。"""
-    if not mdb.checkTableIsExist(_AI_TABLE):
+    if table_exists is False:
         return None
     rows = mdb.executeSqlFetch(
         f"SELECT `content`, `sources`, `model`, `created_at` FROM `{_AI_TABLE}` "
@@ -273,7 +280,7 @@ def _load_cache(code, data_date):
             'created_at': created_at}
 
 
-def _save_cache(code, data_date, content, sources, model):
+def _save_cache(code, data_date, content, sources, model, table_exists=None):
     """按主键 (code, data_date) 覆盖写缓存。失败仅告警不抛。"""
     try:
         df = pd.DataFrame([{
@@ -284,7 +291,7 @@ def _save_cache(code, data_date, content, sources, model):
             'model': (model or '')[:40],
             'created_at': datetime.datetime.now(),
         }])
-        if mdb.checkTableIsExist(_AI_TABLE):
+        if table_exists is True:
             try:
                 mdb.executeSql(
                     f"DELETE FROM `{_AI_TABLE}` WHERE `code` = %s AND `data_date` = %s",
@@ -311,12 +318,12 @@ class FundAiAnalysisHandler(webBase.BaseHandler):
             if not code:
                 _write_error(self, '缺少 code 参数')
                 return
-            ctx, composite = gather_ctx(code)
+            ctx, composite, table_presence = gather_ctx(code)
             if ctx is None:
                 _write_error(self, f'未找到基金 {code} 的最新数据', 404)
                 return
             data_date = _norm_date(ctx.get('data_date'))
-            cached = _load_cache(code, data_date)
+            cached = _load_cache(code, data_date, table_presence.get(_AI_TABLE))
             if cached:
                 _write_json(self, {
                     'code': code, 'name': ctx.get('name'),
@@ -345,14 +352,14 @@ class FundAiAnalysisHandler(webBase.BaseHandler):
                 _write_error(self, '缺少 code 参数')
                 return
 
-            ctx, composite = gather_ctx(code)
+            ctx, composite, table_presence = gather_ctx(code)
             if ctx is None:
                 _write_error(self, f'未找到基金 {code} 的最新数据', 404)
                 return
             data_date = _norm_date(ctx.get('data_date'))
 
             if not refresh:
-                cached = _load_cache(code, data_date)
+                cached = _load_cache(code, data_date, table_presence.get(_AI_TABLE))
                 if cached:
                     _write_json(self, {
                         'code': code, 'name': ctx.get('name'),
@@ -393,7 +400,7 @@ class FundAiAnalysisHandler(webBase.BaseHandler):
                     raise RuntimeError('LLM 返回空内容')
                 sources = _extract_sources(result.tool_calls)
                 model = result.model or result.provider or ''
-                _save_cache(code, data_date, content, sources, model)
+                _save_cache(code, data_date, content, sources, model, table_presence.get(_AI_TABLE))
                 _write_json(self, {
                     'code': code, 'name': ctx.get('name'),
                     'data_date': str(data_date), 'cached': False,

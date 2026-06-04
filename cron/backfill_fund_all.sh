@@ -30,30 +30,45 @@ export QUANTIA_FUND_NAV_TOPN="${QUANTIA_FUND_NAV_TOPN:-200}"
 export QUANTIA_FUND_PROFILE_TOPN="${QUANTIA_FUND_PROFILE_TOPN:-200}"
 export QUANTIA_FUND_HOLDING_TOPN="${QUANTIA_FUND_HOLDING_TOPN:-200}"
 
+# 首次全量铺底比日常增量慢很多：给足超时，避免正常任务被 2h/1h/30m 硬截断。
+export QUANTIA_FUND_NAV_TIMEOUT="${QUANTIA_FUND_NAV_TIMEOUT:-50000}"
+export QUANTIA_FUND_PROFILE_TIMEOUT="${QUANTIA_FUND_PROFILE_TIMEOUT:-50000}"
+export QUANTIA_FUND_HOLDING_TIMEOUT="${QUANTIA_FUND_HOLDING_TIMEOUT:-50000}"
+export QUANTIA_FUND_SCORE_TIMEOUT="${QUANTIA_FUND_SCORE_TIMEOUT:-50000}"
+
 log_info "══════ 基金全量铺底开始 (NAV_TOPN=$QUANTIA_FUND_NAV_TOPN, "\
 "PROFILE_TOPN=$QUANTIA_FUND_PROFILE_TOPN, HOLDING_TOPN=$QUANTIA_FUND_HOLDING_TOPN) ══════"
 
 FAILED=0
 
 # ① F8 净值历史 → cn_fund_nav_history（必须先于 F7）
-run_job "F8 基金净值历史 (fetch_fund_nav_history_job)" \
+if run_job "F8 基金净值历史 (fetch_fund_nav_history_job)" \
     "quantia/job/fetch_fund_nav_history_job.py" \
-    "${QUANTIA_FUND_NAV_TIMEOUT:-7200}" || FAILED=$((FAILED + 1))
+    "${QUANTIA_FUND_NAV_TIMEOUT}"; then
+    F8_OK=0
+else
+    F8_OK=$?
+    FAILED=$((FAILED + 1))
+fi
 
 # ② F10 基金画像 → cn_fund_profile（独立，失败不阻断）
 run_job "F10 基金画像 (fetch_fund_profile_job)" \
     "quantia/job/fetch_fund_profile_job.py" \
-    "${QUANTIA_FUND_PROFILE_TIMEOUT:-3600}" || FAILED=$((FAILED + 1))
+    "${QUANTIA_FUND_PROFILE_TIMEOUT}" || FAILED=$((FAILED + 1))
 
 # ③ F12 重仓股 → cn_fund_holding（独立，失败不阻断）
 run_job "F12 基金重仓股 (fetch_fund_holding_job)" \
     "quantia/job/fetch_fund_holding_job.py" \
-    "${QUANTIA_FUND_HOLDING_TIMEOUT:-3600}" || FAILED=$((FAILED + 1))
+    "${QUANTIA_FUND_HOLDING_TIMEOUT}" || FAILED=$((FAILED + 1))
 
 # ④ F7 综合评分 → cn_fund_rank_score（读 rank+nav 计算，零 API；放最后）
-run_job "F7 基金综合评分 (analysis_fund_score_job)" \
-    "quantia/job/analysis_fund_score_job.py" \
-    "${QUANTIA_FUND_SCORE_TIMEOUT:-1800}" || FAILED=$((FAILED + 1))
+if [ "${F8_OK:-1}" -ne 0 ]; then
+    log_warn "跳过 F7 基金综合评分：F8 净值历史未成功完成，避免基于不完整历史产出评分"
+else
+    run_job "F7 基金综合评分 (analysis_fund_score_job)" \
+        "quantia/job/analysis_fund_score_job.py" \
+        "${QUANTIA_FUND_SCORE_TIMEOUT}" || FAILED=$((FAILED + 1))
+fi
 
 if [ $FAILED -eq 0 ]; then
     log_info "══════ 基金全量铺底完成 ✓ ══════"

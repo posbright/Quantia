@@ -29,6 +29,11 @@ _DB_CONN_RETRIES = max(_cfg.get_int('QUANTIA_DB_CONN_RETRIES', 3), 1)
 # 默认 500 行/批：4367 行会分 ~9 批执行，单批 SQL 约 10-30 MB
 _DB_INSERT_CHUNKSIZE = _cfg.get_int('QUANTIA_DB_INSERT_CHUNKSIZE', 500)
 
+# information_schema 表存在性缓存（降低 Web 热路径/批处理反复探测 MySQL 的压力）
+_TABLE_EXISTS_TTL = max(_cfg.get_int('QUANTIA_DB_TABLE_EXISTS_TTL', 30), 0)
+_table_exists_cache = {}  # {table_name: (exists_bool, timestamp)}
+_table_exists_lock = threading.Lock()
+
 db_host = _cfg.get_str('QUANTIA_DB_HOST', '127.0.0.1')       # 数据库服务主机
 db_user = _cfg.get_str('QUANTIA_DB_USER', 'root')            # 数据库访问用户
 db_password = _cfg.get_str('QUANTIA_DB_PASSWORD', '')        # 数据库访问密码（生产环境务必配置）
@@ -215,6 +220,27 @@ def _sanitize_dataframe_for_mysql(data):
     return sanitized.where(sanitized.notnull(), None)
 
 
+def _cache_table_exists(table_name, exists):
+    if _TABLE_EXISTS_TTL <= 0:
+        return
+    with _table_exists_lock:
+        _table_exists_cache[str(table_name)] = (bool(exists), time.time())
+
+
+def _get_cached_table_exists(table_name):
+    if _TABLE_EXISTS_TTL <= 0:
+        return None
+    with _table_exists_lock:
+        item = _table_exists_cache.get(str(table_name))
+        if not item:
+            return None
+        exists, ts = item
+        if (time.time() - ts) > _TABLE_EXISTS_TTL:
+            _table_exists_cache.pop(str(table_name), None)
+            return None
+        return bool(exists)
+
+
 # 判断是否为可重试的数据库瞬态错误（死锁、锁超时、连接异常等）
 def _is_retryable_error(e):
     # 特殊异常类型：连接损坏导致的非数据库异常也应重试
@@ -238,15 +264,14 @@ def insert_db_from_df(data, table_name, cols_type, write_index, primary_keys, in
 
 # 增加一个插入到其他数据库的方法。
 def insert_other_db_from_df(to_db, data, table_name, cols_type, write_index, primary_keys, indexs=None):
+    global _engine_instance
     data = _sanitize_dataframe_for_mysql(data)
     # 定义engine
     if to_db is None:
         engine_mysql = engine()
     else:
         engine_mysql = engine_to_db(to_db)
-    # 使用 http://docs.sqlalchemy.org/en/latest/core/reflection.html
-    # 使用检查检查数据库表是否有主键。
-    ipt = inspect(engine_mysql)
+    ipt = None
     col_name_list = data.columns.tolist()
     # 如果有索引，把索引增加到varchar上面。
     if write_index:
@@ -255,11 +280,35 @@ def insert_other_db_from_df(to_db, data, table_name, cols_type, write_index, pri
 
     # 检查表是否已存在主键，决定是否使用upsert模式
     has_primary_key = False
-    try:
-        pk_cols = ipt.get_pk_constraint(table_name)['constrained_columns']
-        has_primary_key = bool(pk_cols)
-    except Exception:
-        logging.debug(f"检查主键约束异常（表可能不存在，首次创建）：{table_name}", exc_info=True)
+    for attempt in range(1, _DB_CONN_RETRIES + 1):
+        try:
+            # 使用 http://docs.sqlalchemy.org/en/latest/core/reflection.html
+            # 检查表是否有主键；连接抖动时这里也可能触发 packet sequence / lost connection。
+            ipt = inspect(engine_mysql)
+            pk_cols = ipt.get_pk_constraint(table_name)['constrained_columns']
+            has_primary_key = bool(pk_cols)
+            break
+        except Exception as e:
+            err = str(e).lower()
+            if 'no such table' in err or 'does not exist' in err:
+                logging.debug(f"检查主键约束异常（表可能不存在，首次创建）：{table_name}", exc_info=True)
+                break
+            if attempt < _DB_CONN_RETRIES and _is_retryable_error(e):
+                logging.warning(f"database.insert_other_db_from_df主键检查瞬态错误（第{attempt}/{_DB_CONN_RETRIES}次重试）：{table_name}表 - {type(e).__name__}")
+                try:
+                    engine_mysql.dispose()
+                except Exception:
+                    logging.debug("database.insert_other_db_from_df: dispose引擎异常", exc_info=True)
+                if to_db is None:
+                    with _engine_lock:
+                        _engine_instance = None
+                    engine_mysql = engine()
+                else:
+                    engine_mysql = engine_to_db(to_db)
+                time.sleep(1 * attempt)
+            else:
+                logging.error(f"database.insert_other_db_from_df主键检查异常：{table_name}表", exc_info=True)
+                return
 
     # 选择插入方法：有主键时使用upsert避免重复插入错误，否则普通append
     insert_method = _mysql_upsert if has_primary_key else None
@@ -278,6 +327,7 @@ def insert_other_db_from_df(to_db, data, table_name, cols_type, write_index, pri
                 data.to_sql(name=table_name, con=engine_mysql, schema=to_db, if_exists='append',
                             dtype=cols_type, index=write_index, method=insert_method,
                             chunksize=_DB_INSERT_CHUNKSIZE)
+            _cache_table_exists(table_name, True)
             break  # 成功则跳出重试循环
         except Exception as e:
             if attempt < max_retries and _is_retryable_error(e):
@@ -289,7 +339,6 @@ def insert_other_db_from_df(to_db, data, table_name, cols_type, write_index, pri
                     logging.debug(f"database.insert_other_db_from_df: dispose引擎异常", exc_info=True)
                 # 重新获取engine（单例模式下dispose后需要重建）
                 if to_db is None:
-                    global _engine_instance
                     with _engine_lock:
                         _engine_instance = None
                     engine_mysql = engine()
@@ -301,6 +350,12 @@ def insert_other_db_from_df(to_db, data, table_name, cols_type, write_index, pri
                 return
 
     # 判断是否存在主键（仅在首次创建表时添加）
+    if ipt is None:
+        try:
+            ipt = inspect(engine_mysql)
+        except Exception:
+            logging.error(f"database.insert_other_db_from_df检查主键异常：{table_name}表", exc_info=True)
+            return
     try:
         pk_exists = ipt.get_pk_constraint(table_name)['constrained_columns']
     except Exception as e:
@@ -370,6 +425,9 @@ def update_db_from_df(data, table_name, where):
 
 # 检查表是否存在
 def checkTableIsExist(tableName):
+    cached = _get_cached_table_exists(tableName)
+    if cached is not None:
+        return cached
     max_retries = _DB_CONN_RETRIES
     for attempt in range(1, max_retries + 1):
         try:
@@ -382,7 +440,9 @@ def checkTableIsExist(tableName):
                         """, (db_database, tableName))
                     row = db.fetchone()
                     if row is not None and row[0] >= 1:
+                        _cache_table_exists(tableName, True)
                         return True
+                    _cache_table_exists(tableName, False)
                     return False
         except Exception as e:
             _invalidate_shared_conn()  # 废弃损坏连接，避免重试时雪崩
@@ -392,6 +452,55 @@ def checkTableIsExist(tableName):
             else:
                 logging.error(f"database.checkTableIsExist处理异常", exc_info=True)
     return False
+
+
+def checkTablesExist(tableNames):
+    """一次性检查多个表是否存在，返回 {table_name: bool}。
+
+    会先命中/回填单表 TTL 缓存，再对未命中的表做一次 information_schema 批量查询。
+    """
+    names = [str(name) for name in (tableNames or []) if name]
+    if not names:
+        return {}
+    result = {}
+    pending = []
+    for name in names:
+        cached = _get_cached_table_exists(name)
+        if cached is None:
+            pending.append(name)
+        else:
+            result[name] = cached
+    if not pending:
+        return result
+
+    placeholders = ', '.join(['%s'] * len(pending))
+    max_retries = _DB_CONN_RETRIES
+    for attempt in range(1, max_retries + 1):
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as db:
+                    db.execute(
+                        f"SELECT table_name FROM information_schema.tables "
+                        f"WHERE table_schema = %s AND table_name IN ({placeholders})",
+                        (db_database, *pending))
+                    rows = db.fetchall() or []
+                    exists_set = {str(r[0]) for r in rows if r and r[0] is not None}
+                    for name in pending:
+                        exists = name in exists_set
+                        _cache_table_exists(name, exists)
+                        result[name] = exists
+                    return result
+        except Exception as e:
+            _invalidate_shared_conn()
+            if attempt < max_retries and _is_retryable_error(e):
+                logging.warning(f"database.checkTablesExist瞬态错误（第{attempt}/{max_retries}次重试）：{type(e).__name__}")
+                time.sleep(1 * attempt)
+            else:
+                logging.error("database.checkTablesExist处理异常", exc_info=True)
+                break
+    for name in pending:
+        result.setdefault(name, False)
+    return result
 
 # 增删改数据
 def executeSql(sql, params=()):

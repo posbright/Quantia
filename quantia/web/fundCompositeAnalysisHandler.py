@@ -245,9 +245,9 @@ def build_composite_analysis(ctx):
     }
 
 
-def _fetch_one(table, cols, where_code, code, extra_latest_date=None):
+def _fetch_one(table, cols, where_code, code, extra_latest_date=None, table_exists=None):
     """读单行 dict（最新快照日，可选）。表不存在返回 {}。"""
-    if not mdb.checkTableIsExist(table):
+    if table_exists is False:
         return {}
     col_sql = ', '.join(f'`{c}`' for c in cols)
     sql = f"SELECT {col_sql} FROM `{table}` WHERE `{where_code}` = %s"
@@ -272,14 +272,18 @@ class FundCompositeAnalysisHandler(webBase.BaseHandler):
             if not code:
                 _write_error(self, '缺少 code 参数')
                 return
-            if not mdb.checkTableIsExist(_RANK_TABLE):
+            table_presence = mdb.checkTablesExist([
+                _RANK_TABLE, _SCORE_TABLE, _HOLDING_TABLE, _PROFILE_TABLE
+            ])
+            if not table_presence.get(_RANK_TABLE, False):
                 _write_error(self, '基金数据尚未就绪', 503)
                 return
 
             rank = _fetch_one(
                 _RANK_TABLE,
                 ['name', 'fund_type', 'nav_date', 'rate_1y', 'rate_3y'],
-                'code', code, extra_latest_date=True)
+                'code', code, extra_latest_date=True,
+                table_exists=table_presence.get(_RANK_TABLE))
             if not rank:
                 _write_error(self, f'未找到基金 {code} 的最新数据', 404)
                 return
@@ -290,15 +294,17 @@ class FundCompositeAnalysisHandler(webBase.BaseHandler):
                 _SCORE_TABLE,
                 ['score', 'sharpe', 'max_drawdown', 'rate_3y', 'rate_5y',
                  'excess_1y', 'main_industry', 'rank_in_type'],
-                'code', code, extra_latest_date=True)
+                'code', code, extra_latest_date=True,
+                table_exists=table_presence.get(_SCORE_TABLE))
             profile = _fetch_one(
                 _PROFILE_TABLE,
                 ['fund_type_detail', 'scale_yi', 'setup_date', 'company',
                  'manager', 'rating', 'strategy', 'objective', 'benchmark'],
-                'code', code)
+                'code', code,
+                table_exists=table_presence.get(_PROFILE_TABLE))
 
             holdings = []
-            if mdb.checkTableIsExist(_HOLDING_TABLE):
+            if table_presence.get(_HOLDING_TABLE, False):
                 hrows = mdb.executeSqlFetch(
                     f"SELECT `stock_name`, `stock_code`, `industry`, `hold_ratio`, `quarter` "
                     f"FROM `{_HOLDING_TABLE}` WHERE `code` = %s", (str(code),))
@@ -307,7 +313,7 @@ class FundCompositeAnalysisHandler(webBase.BaseHandler):
 
             # 同类桶分位（夏普/抗跌的「同类前 Z%」需桶内对标）
             peer_percentiles = {}
-            if fund_type and mdb.checkTableIsExist(_SCORE_TABLE):
+            if fund_type and table_presence.get(_SCORE_TABLE, False):
                 bucket = pd.read_sql(
                     f"SELECT r.`code` AS code, r.`rate_1y` AS rate_1y, r.`fee` AS fee, "
                     f"       s.`sharpe` AS sharpe, s.`max_drawdown` AS max_drawdown, "

@@ -67,9 +67,12 @@ QUANTIA_FUND_NAV_TOPN=300 bash cron/backfill_fund_all.sh
 
 # 全量回填：TopN=0 表示不限桶内数量，回填所有非货币型/非债券型基金净值历史
 # （让全部基金都能算出夏普/最大回撤/同行业对标，耗时与 API 配额较大，仅首次或扩容时跑）
-# ⚠ 全量耗时约 5~12h（串行单线程，每只基金 2 次东财请求 + 限速 sleep，瓶颈在 API 而非 DB），
-#   远超 F8 默认 2h（QUANTIA_FUND_NAV_TIMEOUT=7200）的 run_job 超时，必须显式放大超时，否则会被中途 kill：
+# ⚠ 首次全量铺底建议把 F8/F10/F12/F7 的超时都放大到 50000：
+#   F8 全量约 5~12h（串行单线程，每只基金 2 次东财请求 + 限速 sleep，瓶颈在 API 而非 DB）；
+#   F10/F12 也会在 1h 默认超时内被截断，F7 依赖 F8 完成，必须一起放大，避免“前一阶段半成品、后一阶段照常跑”。
 QUANTIA_FUND_NAV_TOPN=0 QUANTIA_FUND_NAV_TIMEOUT=50000 \
+  QUANTIA_FUND_PROFILE_TIMEOUT=50000 QUANTIA_FUND_HOLDING_TIMEOUT=50000 \
+  QUANTIA_FUND_SCORE_TIMEOUT=50000 \
   nohup bash cron/backfill_fund_all.sh &
 ```
 
@@ -115,9 +118,21 @@ scp nav_dump.part*.csv.gz root@<server>:/root/Quantia/  # 分片（--parts N 产
 # ③ 服务器（1.6G）：只读文件增量 upsert 到 localhost MySQL，不发任何 API
 cd /root/Quantia
 python quantia/job/fetch_fund_nav_history_job.py --import nav_dump.csv.gz
+python quantia/job/fetch_fund_nav_history_job.py --import nav_dump.part01.csv.gz
+python quantia/job/fetch_fund_nav_history_job.py --import nav_dump.part02.csv.gz
+python quantia/job/fetch_fund_nav_history_job.py --import nav_dump.part03.csv.gz
+python quantia/job/fetch_fund_nav_history_job.py --import nav_dump.part04.csv.gz
 #   --import 自动发现同名分片 nav_dump.part*.csv.gz；也可传目录或通配符（逐文件入库省内存）
 ```
+##### 验证导入数据库是否成功sql:
+SELECT COUNT(*) AS total_rows,COUNT(DISTINCT code) AS fund_count,MIN(nav_date) AS min_date,MAX(nav_date) AS max_date FROM cn_fund_nav_history;
+##### 再看最近是否有写入（按你导入的是近 5 年数据）：
 
+SELECT nav_date, COUNT(*) AS rows_per_day FROM cn_fund_nav_history WHERE nav_date >= CURDATE() - INTERVAL 7 DAY GROUP BY nav_date ORDER BY nav_date DESC;
+
+##### 用任务状态表确认“导入任务”记录
+导入脚本会写任务跟踪，查最近几条：
+SELECT * FROM cn_job_status WHERE job_name = 'run_fund_nav_history' ORDER BY id DESC LIMIT 5;
 > 导出选项：`--topn N` 各 fund_type 桶 Top-N（默认读 `QUANTIA_FUND_NAV_TOPN`，未设为 200）；
 > `--years N` 仅保留最近 N 年净值（成立不足者保留全部）；`--parts N` 按基金均分成 N 个分片文件，
 > 规避 GitHub 单文件 100MB 限制（整只基金不跨文件，便于按基金增量入库）。

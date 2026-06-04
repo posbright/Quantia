@@ -127,7 +127,8 @@ class FundPeerCompareHandler(webBase.BaseHandler):
             if not code:
                 _write_error(self, '缺少 code 参数')
                 return
-            if not mdb.checkTableIsExist(_RANK_TABLE):
+            table_presence = mdb.checkTablesExist([_RANK_TABLE, _SCORE_TABLE, _PROFILE_TABLE])
+            if not table_presence.get(_RANK_TABLE, False):
                 _write_error(self, '基金数据尚未就绪', 503)
                 return
 
@@ -143,8 +144,8 @@ class FundPeerCompareHandler(webBase.BaseHandler):
 
             # 同类桶：rank(rate_1y,fee) 必有；score(sharpe,max_drawdown) / profile(scale_yi)
             # 为可选表，缺失（如评分/画像 job 未就绪）时跳过对应 JOIN，避免整条查询失败。
-            has_score = mdb.checkTableIsExist(_SCORE_TABLE)
-            has_profile = mdb.checkTableIsExist(_PROFILE_TABLE)
+            has_score = table_presence.get(_SCORE_TABLE, False)
+            has_profile = table_presence.get(_PROFILE_TABLE, False)
             select_parts = ['r.`code` AS code', 'r.`rate_1y` AS rate_1y', 'r.`fee` AS fee']
             joins = ''
             if has_score:
