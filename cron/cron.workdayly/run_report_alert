@@ -8,7 +8,8 @@ source "$PROJECT_ROOT/cron/_common.sh"
 init_env
 LOG_FILE=$LOG_DIR/report_alert.log
 
-check_trade_day "AI报告+评分预警"
+# T+1 凌晨运行：按「最近交易日」判定，确保周六凌晨可处理周五数据
+check_trade_day_t1 "AI报告+评分预警"
 
 log_info "开始 AI 定时分析 + 评分预警..."
 cd "$PROJECT_ROOT"

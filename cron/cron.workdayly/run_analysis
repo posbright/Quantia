@@ -9,7 +9,8 @@ source "$PROJECT_ROOT/cron/_common.sh"
 init_env
 LOG_FILE=$LOG_DIR/workdayly.log
 
-check_trade_day "数据分析"
+# T+1 凌晨运行：按「最近交易日」判定，确保周六凌晨可处理周五数据
+check_trade_day_t1 "数据分析"
 
 # ── OOM 防护：停止非关键服务，释放内存 ──
 # 拆分模式下本脚本独立调度（次日 04:30），需自行停服；run_workdayly 编排

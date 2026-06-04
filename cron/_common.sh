@@ -65,6 +65,41 @@ except Exception:
     fi
 }
 
+# ─── T+1 任务交易日检测 ───
+# 用法: check_trade_day_t1 "任务名称" [最大间隔天数=4]
+# 适用于"次日凌晨运行、处理上一交易日数据"的任务（analysis / paper / report，
+# crontab DOW 2-6 含周六凌晨槽位以处理周五数据）。
+#
+# 与 check_trade_day 的区别：
+#   check_trade_day   校验「运行当天」是否为交易日 —— 适合 T 日盘后运行的 fetch/kline。
+#   check_trade_day_t1 校验「最近一个交易日」是否在 N 天内 —— 适合 T+1 凌晨运行的任务。
+#
+# 修复缺陷：原先三个 T+1 任务复用 check_trade_day，在周六凌晨因
+# is_trade_date(周六)=False 被误跳过，导致每个周五的策略选股/模拟交易/报告
+# 永久缺失。改用「最近交易日」判定后，周六凌晨可正常处理周五数据；
+# 仅在长假等「最近交易日已超过 N 天」时才跳过空跑。
+check_trade_day_t1() {
+    local task_name="${1:-任务}"
+    local max_gap="${2:-4}"
+    local ok
+    ok=$("$PYTHON_BIN" -c "
+import sys, datetime; sys.path.insert(0, '$PROJECT_ROOT')
+try:
+    import quantia.lib.trade_time as trd
+    _, run_date_nph = trd.get_trade_date_last()
+    last = run_date_nph.date() if hasattr(run_date_nph, 'date') else run_date_nph
+    gap = (datetime.date.today() - last).days
+    print('1' if 0 <= gap <= $max_gap else '0')
+except Exception:
+    print('1')
+" 2>/dev/null)
+
+    if [ "$ok" = "0" ]; then
+        log_info "最近 ${max_gap} 天内无交易日，跳过${task_name}"
+        exit 0
+    fi
+}
+
 # ─── 运行 Python 作业 ───
 # 用法: run_job "标签" "脚本相对路径" [超时秒数]
 # 返回: Python 进程退出码（124 = 超时）

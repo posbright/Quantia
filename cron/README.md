@@ -228,6 +228,13 @@ source /etc/cron/_common.sh
 - `run_analysis` 无硬依赖，即使缓存未更新也能用历史数据运行
 - 每个阶段失败不影响后续阶段继续执行
 
+**交易日检测（T vs T+1）**：
+- `run_fetch` / `run_kline_cache` 在 **T 日盘后**运行，使用 `check_trade_day`（校验运行当天是否为交易日）。
+- `run_analysis` / `run_paper_trading` / `run_report_alert` 在 **T+1 凌晨**运行（DOW 2-6，含**周六**凌晨处理**周五**数据），
+  使用 `check_trade_day_t1`（校验「最近一个交易日」是否在 N 天内）。
+  > 修复缺陷：原先这三个 T+1 任务复用 `check_trade_day`，周六凌晨因 `is_trade_date(周六)=False` 被误跳过，
+  > 导致**每个周五的策略选股/模拟交易/报告永久缺失**。改用 `check_trade_day_t1` 后周六槽位可正常处理周五数据。
+
 **`run_workdayly` 编排器**：适合单机一键运行，串行调用 8 个阶段，含自动 OOM 防护：
 
 | Phase | 内容 | 入口 | 服务停止 |
