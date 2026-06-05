@@ -57,7 +57,7 @@ export interface ReportStreamEvent {
   status?: string
   elapsed_ms?: number
   text?: string
-  report?: ReportDetail & { data_updated?: boolean; update_reason?: string }
+  report?: ReportDetail & { data_updated?: boolean; update_reason?: string; reuse_hours?: number }
   report_id?: number
   tokens_used?: number
   latency_ms?: number
@@ -469,6 +469,7 @@ export interface ReportPreference {
   max_failures: number
   analysis_mode: 'top_score' | 'specified'
   analysis_codes: string[]
+  reuse_hours: number
 }
 
 /**

@@ -33,6 +33,13 @@
           <span class="hint">AI评分低于此值时触发钉钉预警</span>
         </el-form-item>
 
+        <el-form-item label="历史分析复用窗口">
+          <el-input-number v-model="form.reuse_hours" :min="0" :max="720" :step="24" />
+          <span class="hint">
+            进入 AI 分析时，若该窗口内已有较完整分析记录则直接复用历史、不重复调用 AI（单位：小时，72=3天，0=每次都重新分析）。定时分析任务同样遵循此窗口。
+          </span>
+        </el-form-item>
+
         <el-form-item label="每日自动分析">
           <el-switch v-model="form.auto_report" />
           <span class="hint">工作日收盘后自动分析关注列表</span>
@@ -114,6 +121,7 @@ const form = reactive({
   max_failures: 5,
   analysis_mode: 'top_score' as 'top_score' | 'specified',
   analysis_codes: [] as string[],
+  reuse_hours: 72,
 })
 
 async function loadPreference() {
@@ -130,6 +138,7 @@ async function loadPreference() {
     form.max_failures = res.max_failures || 5
     form.analysis_mode = res.analysis_mode === 'specified' ? 'specified' : 'top_score'
     form.analysis_codes = Array.isArray(res.analysis_codes) ? res.analysis_codes : []
+    form.reuse_hours = typeof res.reuse_hours === 'number' ? res.reuse_hours : 72
   } catch (err: any) {
     ElMessage.warning('加载偏好失败: ' + (err.message || err))
   } finally {
@@ -151,6 +160,7 @@ async function handleSave() {
       max_failures: form.max_failures,
       analysis_mode: form.analysis_mode,
       analysis_codes: form.analysis_codes,
+      reuse_hours: form.reuse_hours,
     })
     ElMessage.success('偏好保存成功')
   } catch (err: any) {

@@ -40,6 +40,8 @@ DEFAULT_SCORE_THRESHOLD = 50  # 评分跌破此值触发预警
 DEFAULT_ALERT_COOLDOWN_HOURS = 24  # 同一股票同一方向预警冷却时间
 DEFAULT_MAX_STOCKS = 10  # 每日定时分析最大股票数（防 token 耗尽）
 DEFAULT_MAX_FAILURES = 5  # 连续失败熔断阈值
+DEFAULT_REUSE_HOURS = 72  # 历史分析复用时间窗口（小时），默认 3 天
+_MAX_REUSE_HOURS = 720    # 30 天上限
 
 _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
 
@@ -76,10 +78,12 @@ def _get_analysis_config() -> Dict[str, Any]:
         'max_failures': DEFAULT_MAX_FAILURES,
         'analysis_mode': 'top_score',
         'analysis_codes': [],
+        'reuse_hours': DEFAULT_REUSE_HOURS,
     }
     try:
         sql = """
-            SELECT analysis_max_stocks, max_failures, analysis_mode, analysis_codes
+            SELECT analysis_max_stocks, max_failures, analysis_mode, analysis_codes,
+                   reuse_hours
             FROM `cn_stock_report_preference`
             ORDER BY updated_at DESC LIMIT 1
         """
@@ -102,6 +106,8 @@ def _get_analysis_config() -> Dict[str, Any]:
                     ]
                 except (json.JSONDecodeError, TypeError):
                     pass
+            if len(rows[0]) > 4 and rows[0][4] is not None:
+                config['reuse_hours'] = max(0, min(int(rows[0][4]), _MAX_REUSE_HOURS))
     except Exception:
         # 字段不存在（旧表）或读取失败 → 用默认值
         pass
@@ -233,7 +239,7 @@ def _is_alert_cooled_down(code: str, direction: str, cooldown_hours: int = DEFAU
         return False
 
 
-def _insert_report(code: str, name: str, content: str, result: Any, source: str) -> None:
+def _insert_report(code: str, name: str, content: str, result: Any, source: str) -> Dict[str, Any]:
     """持久化 AI 报告并抽取结构化字段（评级 / AI评分 / 操作建议等）。
 
     定时任务原先只写 report_md，导致 cn_stock_ai_report.rating / rating_score
@@ -273,6 +279,7 @@ def _insert_report(code: str, name: str, content: str, result: Any, source: str)
             source,
         ),
     )
+    return structured
 
 
 # ─── 功能 1: 定时分析 ─────────────────────────────────────────────
@@ -303,9 +310,10 @@ def scheduled_report_analysis(max_stocks: Optional[int] = None,
     max_failures = max(int(max_failures), 1)
     mode = cfg.get('analysis_mode', 'top_score')
     specified_codes = cfg.get('analysis_codes', [])
+    reuse_hours = cfg.get('reuse_hours', DEFAULT_REUSE_HOURS)
     _logger.info(
         f'[定时分析] 参数: max_stocks={max_stocks}, max_failures={max_failures}, '
-        f'mode={mode}, specified={len(specified_codes)}只'
+        f'mode={mode}, specified={len(specified_codes)}只, reuse_hours={reuse_hours}'
     )
 
     codes = _select_analysis_codes(max_stocks, mode, specified_codes)
@@ -316,22 +324,25 @@ def scheduled_report_analysis(max_stocks: Optional[int] = None,
             _logger.info('[定时分析] 关注列表为空，跳过')
         return {'generated': 0, 'skipped': 0, 'failed': 0, 'total': 0}
 
-    today = datetime.date.today().isoformat()
     stats = {'generated': 0, 'skipped': 0, 'failed': 0, 'total': len(codes)}
 
     for code in codes:
-        # 检查今日是否已有报告
-        try:
-            sql = f"""
-                SELECT COUNT(*) FROM `{_REPORT_TABLE}`
-                WHERE code = %s AND DATE(created_at) = %s
-            """
-            rows = mdb.executeSqlFetch(sql, (code, today))
-            if rows and rows[0][0] > 0:
-                stats['skipped'] += 1
-                continue
-        except Exception:
-            pass
+        # 复用窗口内已有较完整报告则跳过（reuse_hours<=0 表示每次都重新分析）
+        if reuse_hours > 0:
+            try:
+                sql = f"""
+                    SELECT COUNT(*) FROM `{_REPORT_TABLE}`
+                    WHERE code = %s
+                      AND created_at >= (NOW() - INTERVAL %s HOUR)
+                      AND (quality_score IS NULL OR quality_score > 0)
+                """
+                rows = mdb.executeSqlFetch(sql, (code, reuse_hours))
+                if rows and rows[0][0] > 0:
+                    stats['skipped'] += 1
+                    _logger.info(f'[定时分析] {code} 复用窗口({reuse_hours}h)内已有报告，跳过')
+                    continue
+            except Exception:
+                pass
 
         # 生成报告
         try:
@@ -363,14 +374,15 @@ def scheduled_report_analysis(max_stocks: Optional[int] = None,
                     stock_name = tc.get('result', {}).get('name', '')
                     break
 
-            _insert_report(code, stock_name, content, result, 'cron')
+            structured = _insert_report(code, stock_name, content, result, 'cron')
             stats['generated'] += 1
             _logger.info(f'[定时分析] {code} {stock_name} 报告生成成功')
 
             # 推送报告摘要到钉钉
             try:
                 summary = content[:500]
-                push_report_summary_to_dingtalk(code, stock_name, summary)
+                rating = (structured or {}).get('rating') or ''
+                push_report_summary_to_dingtalk(code, stock_name, summary, rating)
             except Exception as push_exc:
                 _logger.debug(f'[定时分析] {code} 推送失败(不影响主流程): {push_exc}')
 
@@ -558,9 +570,11 @@ def push_report_summary_to_dingtalk(code: str, name: str, summary: str, rating: 
         return False
 
     title = f"📊 AI 报告: {code} {name}"
-    rating_emoji = {'bullish': '🟢看多', 'bearish': '🔴看空', 'neutral': '🟡中性'}.get(
-        rating, rating or '—'
-    )
+    # rating 取值：结构化抽取为 buy/hold/avoid；兼容旧的 bullish/bearish/neutral
+    rating_emoji = {
+        'buy': '🟢看多', 'hold': '🟡中性', 'avoid': '🔴看空',
+        'bullish': '🟢看多', 'bearish': '🔴看空', 'neutral': '🟡中性',
+    }.get((rating or '').lower(), rating or '—')
     markdown = (
         f"## 📊 AI 分析报告摘要\n\n"
         f"**标的**: {code} {name}\n\n"

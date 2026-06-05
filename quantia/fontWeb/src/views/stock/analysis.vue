@@ -24,6 +24,19 @@
           <el-icon><VideoPlay /></el-icon>
           生成报告
         </el-button>
+        <el-tooltip
+          content="忽略历史分析记录，立即重新调用 AI 进行全新分析"
+          placement="top"
+        >
+          <el-button
+            v-if="currentCode"
+            :loading="generating"
+            :disabled="!currentCode"
+            @click="handleForceGenerate"
+          >
+            🔄 强制重新分析
+          </el-button>
+        </el-tooltip>
         <el-button
           v-if="attentionCount > 0"
           :loading="batchGenerating"
@@ -212,8 +225,22 @@
           <el-button size="small" type="primary" link @click="handleGenerate(true)">重新生成</el-button>
         </template>
       </el-alert>
+      <!-- 历史复用提示横幅：结果取自最近分析历史而非全新分析 -->
+      <el-alert
+        v-if="fromCache && !generating"
+        type="success"
+        :closable="false"
+        class="data-update-banner"
+      >
+        <template #title>
+          ✅ 本结果取自最近 {{ reuseWindowText }} 内的历史分析记录{{ reportMeta.created_at ? `（${reportMeta.created_at}）` : '' }}，未重复调用 AI。
+          如需获取最新结论，请点击
+          <el-button size="small" type="primary" link @click="handleForceGenerate">强制重新分析（全新分析）</el-button>
+        </template>
+      </el-alert>
       <div class="report-header">
-        <el-tag v-if="fromCache" type="info" size="small">缓存</el-tag>
+        <el-tag v-if="fromCache" type="info" size="small">历史复用</el-tag>
+        <el-tag v-else-if="reportContent && !generating" type="success" size="small">全新分析</el-tag>
         <span class="report-meta" v-if="reportMeta.model">
           模型：{{ reportMeta.model }}
         </span>
@@ -348,6 +375,13 @@ const firstStreamEventAt = ref<number | null>(null)
 const generateElapsedMs = ref(0)
 let generateElapsedTimer: number | null = null
 const fromCache = ref(false)
+const cacheReuseHours = ref(72)
+const reuseWindowText = computed(() => {
+  const h = cacheReuseHours.value
+  if (!h || h <= 0) return '复用窗口'
+  if (h % 24 === 0) return `${h / 24} 天`
+  return `${h} 小时`
+})
 const dataUpdateReason = ref('')
 const reportRef = ref<HTMLElement | null>(null)
 const abortController = ref<AbortController | null>(null)
@@ -574,6 +608,11 @@ function handleSelect(item: Record<string, any>) {
   searchText.value = `${item.code} ${item.name}`
 }
 
+async function handleForceGenerate() {
+  // 强制重新分析：忽略历史复用记录，立即重新调用 AI 进行全新分析
+  await handleGenerate(true)
+}
+
 async function handleGenerate(force?: boolean | MouseEvent) {
   if (!currentCode.value) {
     ElMessage.warning('请先选择股票')
@@ -657,6 +696,9 @@ function handleStreamEvent(ev: ReportStreamEvent) {
       if (ev.report) {
         reportContent.value = ev.report.report_md || ''
         currentName.value = ev.report.name || currentName.value
+        if (typeof ev.report.reuse_hours === 'number') {
+          cacheReuseHours.value = ev.report.reuse_hours
+        }
         reportMeta.value = {
           report_id: ev.report.id,
           created_at: ev.report.created_at,

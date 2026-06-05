@@ -42,6 +42,12 @@ _REPORT_TABLE = 'cn_stock_ai_report'
 _STREAM_SENTINEL = object()
 _executor = ThreadPoolExecutor(max_workers=4)
 
+# 历史分析复用时间窗口（小时）：默认 3 天 = 72h。
+# 用户可在「报告偏好」中调整：窗口内已有较完整报告时直接复用历史，
+# 窗口外或强制刷新（force）时才重新调用 AI 分析。0 表示不复用、每次都重新分析。
+DEFAULT_REUSE_HOURS = 72
+_MAX_REUSE_HOURS = 720  # 30 天上限
+
 _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
 
 _STRUCTURED_REPORT_FIELDS = [
@@ -314,22 +320,39 @@ def _lazy_ensure_table():
             _table_ensured = True
 
 
-def _check_cache(code: str) -> Optional[Dict[str, Any]]:
-    """检查缓存：盘中30min/收盘后当日有效。
+def _get_reuse_hours() -> int:
+    """读取用户配置的「历史分析复用时间窗口」（小时）。
 
-    quality_score=0 的报告（降级版）不作为有效缓存返回，
-    允许用户再次点击"生成报告"时触发真正的 AI 分析。
+    在该窗口内已有较完整报告时直接复用历史，不重复调用 AI。
+    读取失败 / 未配置时回退 DEFAULT_REUSE_HOURS（72h=3天）。0 表示不复用。
+    """
+    try:
+        rows = mdb.executeSqlFetch(
+            "SELECT reuse_hours FROM `cn_stock_report_preference` "
+            "ORDER BY updated_at DESC LIMIT 1"
+        )
+        if rows and rows[0][0] is not None:
+            return max(0, min(int(rows[0][0]), _MAX_REUSE_HOURS))
+    except Exception:
+        # 旧表无 reuse_hours 列或读取失败 → 默认值
+        pass
+    return DEFAULT_REUSE_HOURS
+
+
+def _check_cache(code: str) -> Optional[Dict[str, Any]]:
+    """检查缓存：复用窗口（默认3天，用户可配）内已有较完整报告时直接返回。
+
+    - 复用窗口由用户偏好 reuse_hours 控制（小时），0 表示不复用、每次重新分析。
+    - quality_score=0 的报告（降级版）不作为有效缓存返回，
+      允许用户再次点击"生成报告"时触发真正的 AI 分析。
     """
     _lazy_ensure_table()
+    reuse_hours = _get_reuse_hours()
+    if reuse_hours <= 0:
+        # 用户关闭复用 → 始终重新分析
+        return None
     now = datetime.now()
-    hour = now.hour
-    # 盘中 (09:30-15:00): TTL = 30 分钟
-    # 收盘后: TTL = 当日剩余时间（限制为同一自然日）
-    if 9 <= hour < 15:
-        cutoff = now - timedelta(minutes=30)
-    else:
-        # 使用当天 00:00 作为下界，确保不会命中昨天的报告
-        cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff = now - timedelta(hours=reuse_hours)
     sql = f"""
         SELECT id, code, name, report_md, model, provider, tools_used,
                tokens_used, latency_ms, created_at,
@@ -357,6 +380,7 @@ def _check_cache(code: str) -> Optional[Dict[str, Any]]:
         'tokens_used': row[7],
         'latency_ms': row[8],
         'created_at': str(row[9]),
+        'reuse_hours': reuse_hours,
     }
     result.update(_structured_report_payload(row, 10))
     return result
@@ -1848,6 +1872,7 @@ def _ensure_preference_table():
                 `max_failures` INT DEFAULT 5 COMMENT '连续失败熔断次数',
                 `analysis_mode` VARCHAR(16) DEFAULT 'top_score' COMMENT '定时分析选股方式: top_score(综合选股评分前N) / specified(用户指定)',
                 `analysis_codes` TEXT COMMENT '指定模式下需分析的股票代码JSON数组',
+                `reuse_hours` INT DEFAULT 72 COMMENT '历史分析复用时间窗口(小时), 窗口内复用历史报告, 0=每次重新分析',
                 `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
                 `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY `uq_user` (`user_id`)
@@ -1883,6 +1908,12 @@ def _ensure_preference_table():
                 f"ALTER TABLE `{_PREFERENCE_TABLE}` "
                 f"ADD COLUMN `analysis_codes` TEXT COMMENT '指定模式下需分析的股票代码JSON数组'"
             )
+        if 'reuse_hours' not in cols:
+            mdb.executeSql(
+                f"ALTER TABLE `{_PREFERENCE_TABLE}` "
+                f"ADD COLUMN `reuse_hours` INT DEFAULT 72 "
+                f"COMMENT '历史分析复用时间窗口(小时), 0=每次重新分析'"
+            )
     except Exception as exc:
         _logger.warning(f'[preference] 迁移新增列失败: {exc}')
 
@@ -1903,7 +1934,7 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
         sql = f"""
             SELECT focus_dimensions, language, voice_enabled, alert_threshold,
                    auto_report, push_enabled, analysis_max_stocks, max_failures,
-                   analysis_mode, analysis_codes
+                   analysis_mode, analysis_codes, reuse_hours
             FROM `{_PREFERENCE_TABLE}`
             WHERE user_id = %s
         """
@@ -1919,6 +1950,7 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
             except (json.JSONDecodeError, TypeError):
                 analysis_codes = []
             analysis_mode = r[8] if r[8] in ('top_score', 'specified') else 'top_score'
+            reuse_hours = r[10] if r[10] is not None else DEFAULT_REUSE_HOURS
             _write_json(self, {
                 'focus_dimensions': dims,
                 'language': r[1] or 'zh',
@@ -1930,6 +1962,7 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
                 'max_failures': r[7] if r[7] is not None else 5,
                 'analysis_mode': analysis_mode,
                 'analysis_codes': analysis_codes,
+                'reuse_hours': reuse_hours,
             })
         else:
             _write_json(self, {
@@ -1943,6 +1976,7 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
                 'max_failures': 5,
                 'analysis_mode': 'top_score',
                 'analysis_codes': [],
+                'reuse_hours': DEFAULT_REUSE_HOURS,
             })
 
     @gen.coroutine
@@ -1984,6 +2018,10 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
         analysis_mode = body.get('analysis_mode', 'top_score')
         if analysis_mode not in ('top_score', 'specified'):
             analysis_mode = 'top_score'
+        try:
+            reuse_hours = min(max(int(body.get('reuse_hours', DEFAULT_REUSE_HOURS)), 0), _MAX_REUSE_HOURS)
+        except (ValueError, TypeError):
+            reuse_hours = DEFAULT_REUSE_HOURS
         # 指定股票代码：仅保留 6 位数字代码，去重，最多 200 只
         raw_codes = body.get('analysis_codes') or []
         if not isinstance(raw_codes, list):
@@ -2002,8 +2040,9 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
             INSERT INTO `{_PREFERENCE_TABLE}`
                 (user_id, focus_dimensions, language, voice_enabled,
                  alert_threshold, auto_report, push_enabled,
-                 analysis_max_stocks, max_failures, analysis_mode, analysis_codes)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 analysis_max_stocks, max_failures, analysis_mode, analysis_codes,
+                 reuse_hours)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 focus_dimensions = VALUES(focus_dimensions),
                 language = VALUES(language),
@@ -2014,7 +2053,8 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
                 analysis_max_stocks = VALUES(analysis_max_stocks),
                 max_failures = VALUES(max_failures),
                 analysis_mode = VALUES(analysis_mode),
-                analysis_codes = VALUES(analysis_codes)
+                analysis_codes = VALUES(analysis_codes),
+                reuse_hours = VALUES(reuse_hours)
         """
         try:
             mdb.executeSql(sql, (
@@ -2022,6 +2062,7 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
                 alert_threshold, auto_report, push_enabled,
                 analysis_max_stocks, max_failures,
                 analysis_mode, json.dumps(analysis_codes),
+                reuse_hours,
             ))
             _write_json(self, {'ok': True})
         except Exception as exc:
