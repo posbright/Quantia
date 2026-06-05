@@ -10,4 +10,4 @@ LOG_FILE=$LOG_DIR/workdayly.log
 
 # T+1 凌晨运行：按「最近交易日」判定，确保周六凌晨可处理周五数据
 check_trade_day_t1 "模拟交易"
-run_job "模拟交易 (paper_trading_daily_job)" "quantia/job/paper_trading_daily_job.py"
+run_job "模拟交易 (paper_trading_daily_job)" "quantia/job/paper_trading_daily_job.py" "${QUANTIA_PAPER_TIMEOUT:-3600}"

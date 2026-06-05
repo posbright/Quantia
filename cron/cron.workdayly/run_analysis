@@ -31,11 +31,20 @@ if [ "${QUANTIA_NO_SERVICE_STOP:-0}" != "1" ]; then
     SERVICES_STOPPED=1
 fi
 
-run_job "数据分析 (analysis_daily_job)" "quantia/job/analysis_daily_job.py"
+run_job "数据分析 (analysis_daily_job)" "quantia/job/analysis_daily_job.py" "${QUANTIA_ANALYSIS_TIMEOUT:-14400}"
+ANALYSIS_RC=$?
+record_stage "数据分析 (analysis_daily_job)" $ANALYSIS_RC
 
 # ── F7 场外基金多因子综合评分（零 API，读 cn_fund_rank + cn_fund_nav_history）──
 # 依赖 run_fetch 已刷新基金排名与净值历史。失败不阻断其他分析。
 run_job "基金综合评分 (analysis_fund_score_job)" \
-    "quantia/job/analysis_fund_score_job.py" || true
+    "quantia/job/analysis_fund_score_job.py" "${QUANTIA_FUND_SCORE_TIMEOUT:-1800}"
+record_stage "基金综合评分 (analysis_fund_score_job)" $? warn
+
+# 在 workdayly.log 记录本次各子任务成功/失败 + 耗时（拆分模式下生产可见）
+print_stage_summary
 
 # EXIT trap 会自动恢复服务
+# 关键任务（数据分析）退出码透传给编排器，确保 run_workdayly 的 Phase 3 失败计数准确；
+# 基金评分为非关键链，不影响本脚本退出码。
+exit $ANALYSIS_RC

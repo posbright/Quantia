@@ -11,7 +11,7 @@ LOG_FILE=$LOG_DIR/refresh_ai_kb.log
 # 知识库索引器不区分交易日，每个工作日跑一次即可。
 cd "$PROJECT_ROOT"
 echo "[$(date +'%F %T')] 开始刷新 AI 知识库..." | tee -a "$LOG_FILE"
-"$PYTHON_BIN" -m quantia.lib.ai.retrieval.indexer >>"$LOG_FILE" 2>&1
+timeout "${QUANTIA_AIKB_TIMEOUT:-1800}" "$PYTHON_BIN" -m quantia.lib.ai.retrieval.indexer >>"$LOG_FILE" 2>&1
 RC=$?
 echo "[$(date +'%F %T')] 完成 (rc=$RC)" | tee -a "$LOG_FILE"
 exit $RC

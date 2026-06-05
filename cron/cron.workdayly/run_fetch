@@ -30,12 +30,17 @@ fi
 
 run_job "数据获取 (fetch_daily_job)" "quantia/job/fetch_daily_job.py" "${QUANTIA_FETCH_TIMEOUT:-7200}"
 RC=$?
+record_stage "数据获取 (fetch_daily_job)" $RC
 
 # ── F8 场外基金净值历史回填（慢 job，逐基金抓 akshare 单源；断点续抓）──
 # 依赖 fetch_daily_job 已刷新 cn_fund_rank（按 Top-N 选基金）。失败不阻断主链。
 run_job "基金净值回填 (fetch_fund_nav_history_job)" \
     "quantia/job/fetch_fund_nav_history_job.py" \
-    "${QUANTIA_FUND_NAV_TIMEOUT:-3600}" || true
+    "${QUANTIA_FUND_NAV_TIMEOUT:-3600}"
+record_stage "基金净值回填 (fetch_fund_nav_history_job)" $? warn
+
+# 在 workdayly.log 记录本次各子任务成功/失败 + 耗时（拆分模式下生产可见）
+print_stage_summary
 
 # EXIT trap 会自动恢复服务
 exit $RC

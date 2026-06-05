@@ -1,7 +1,15 @@
 #!/bin/bash
-# 完整每日任务 — 串行执行 fetch → kline_cache → analysis
-# 等价于分别调度三个独立脚本，但适合单机一键执行
-# 每个阶段失败不影响后续阶段继续执行
+# 完整每日任务 — 单机一键串行执行全部工作日阶段：
+#   Phase 1   数据获取        (run_fetch)
+#   Phase 1.5 公告与专利采集   (run_events_patents：公告→专利采集→专利聚合)
+#   Phase 2   K线缓存更新      (run_kline_cache，内存密集)
+#   Phase 3   数据分析        (run_analysis，内存密集)
+#   Phase 4   模拟交易        (run_paper_trading)
+#   Phase 5   AI报告+评分预警  (run_report_alert)
+#   Phase 6   综合指标股票池   (refresh_composite_universe)
+#   Phase 7   AI知识库索引     (refresh_ai_kb)
+# 等价于分别调度上述独立脚本，但适合单机一键执行（严格串行，单一内存峰值）。
+# 每个阶段失败不影响后续阶段继续执行。
 #
 # OOM 防护：Phase 2/3 是内存密集型任务，执行前自动停止
 # nginx + Quantia Web 服务，完成后自动恢复。
@@ -22,20 +30,12 @@ log_info "============ 每日完整任务开始 ============"
 
 # Phase 1: 数据获取（API 调用，内存占用低，无需停服务）
 # 抑制 run_fetch 自带的服务停止（由本脚本统一管理服务生命周期）
-QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 1: 数据获取" "$SCRIPT_DIR/run_fetch" || FAILED=$((FAILED + 1))
+QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 1: 数据获取" "$SCRIPT_DIR/run_fetch"
+rc=$?; [ $rc -ne 0 ] && FAILED=$((FAILED + 1)); record_stage "Phase 1: 数据获取" $rc
 
-# Phase 1.5: 公告事件采集（轻量 API 调用）
-log_info "开始采集今日公告事件"
-cd "$PROJECT_ROOT"
-"$PYTHON_BIN" -m quantia.job.stock_announcement_em --days 1 >> "$LOG_FILE" 2>&1 || log_warn "公告采集异常"
-
-# Phase 1.6: 专利数据采集（从巨潮公告挖掘专利信息）
-log_info "开始采集专利数据"
-"$PYTHON_BIN" -m quantia.job.stock_patent_crawler --days 7 >> "$LOG_FILE" 2>&1 || log_warn "专利采集异常"
-
-# Phase 1.7: 专利数据聚合（cn_stock_patent_info → cn_stock_patents 含金量评分）
-log_info "开始聚合专利数据"
-"$PYTHON_BIN" -m quantia.job.aggregate_patent_data >> "$LOG_FILE" 2>&1 || log_warn "专利聚合异常"
+# Phase 1.5: 公告与专利采集（轻量 API/计算，非关键链；自带子任务汇总）
+run_sub "Phase 1.5: 公告与专利采集" "$SCRIPT_DIR/run_events_patents"
+record_stage "Phase 1.5: 公告与专利采集" $? warn
 
 # ── OOM 防护：停止非关键服务，释放内存 ──
 SERVICES_STOPPED=0
@@ -56,10 +56,12 @@ fi
 
 # Phase 2: K线缓存增量更新（内存密集型）
 # 抑制子脚本自带的服务停止/恢复（由本编排器统一管理，跨 Phase 2/3 持续停服）
-QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 2: K线缓存更新" "$SCRIPT_DIR/run_kline_cache" || FAILED=$((FAILED + 1))
+QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 2: K线缓存更新" "$SCRIPT_DIR/run_kline_cache"
+rc=$?; [ $rc -ne 0 ] && FAILED=$((FAILED + 1)); record_stage "Phase 2: K线缓存更新" $rc
 
 # Phase 3: 数据分析（零 API，纯本地计算）
-QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 3: 数据分析" "$SCRIPT_DIR/run_analysis" || FAILED=$((FAILED + 1))
+QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 3: 数据分析" "$SCRIPT_DIR/run_analysis"
+rc=$?; [ $rc -ne 0 ] && FAILED=$((FAILED + 1)); record_stage "Phase 3: 数据分析" $rc
 
 # 主动恢复服务（trap 也会兜底）
 if [ $SERVICES_STOPPED -eq 1 ]; then
@@ -68,14 +70,27 @@ if [ $SERVICES_STOPPED -eq 1 ]; then
 fi
 
 # Phase 4: 模拟交易（依赖数据获取+K线缓存，内存占用低）
-run_sub "Phase 4: 模拟交易" "$SCRIPT_DIR/run_paper_trading" || FAILED=$((FAILED + 1))
+run_sub "Phase 4: 模拟交易" "$SCRIPT_DIR/run_paper_trading"
+rc=$?; [ $rc -ne 0 ] && FAILED=$((FAILED + 1)); record_stage "Phase 4: 模拟交易" $rc
 
 # Phase 5: AI 定时分析 + 评分预警（依赖模拟交易完成后的最新评分）
-run_sub "Phase 5: AI报告+评分预警" "$SCRIPT_DIR/run_report_alert" || FAILED=$((FAILED + 1))
+run_sub "Phase 5: AI报告+评分预警" "$SCRIPT_DIR/run_report_alert"
+rc=$?; [ $rc -ne 0 ] && FAILED=$((FAILED + 1)); record_stage "Phase 5: AI报告+评分预警" $rc
+
+# Phase 6: 综合指标股票池刷新（开盘前缓存，非关键链）
+run_sub "Phase 6: 综合指标股票池刷新" "$SCRIPT_DIR/refresh_composite_universe"
+record_stage "Phase 6: 综合指标股票池刷新" $? warn
+
+# Phase 7: AI 知识库索引刷新（FULLTEXT 索引，非关键链）
+run_sub "Phase 7: AI知识库索引刷新" "$SCRIPT_DIR/refresh_ai_kb"
+record_stage "Phase 7: AI知识库索引刷新" $? warn
 
 OVERALL_END=$(date +%s)
 OVERALL_DUR=$((OVERALL_END - OVERALL_START))
 OVERALL_STR=$(elapsed_fmt $OVERALL_DUR)
+
+# 逐项成功/失败清单（写入 workdayly.log 末尾）
+print_stage_summary
 
 if [ $FAILED -eq 0 ]; then
     log_info "============ 每日完整任务结束 ✓ (全部成功, ${OVERALL_STR}) ============"

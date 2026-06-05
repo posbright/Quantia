@@ -12,7 +12,7 @@ check_trade_day "刷新综合指标股票池"
 
 cd "$PROJECT_ROOT"
 echo "[$(date +'%F %T')] 开始刷新综合指标股票池..." | tee -a "$LOG_FILE"
-"$PYTHON_BIN" -m quantia.core.composite.dynamic_universe --refresh --top-n 500 \
+timeout "${QUANTIA_COMPOSITE_TIMEOUT:-1800}" "$PYTHON_BIN" -m quantia.core.composite.dynamic_universe --refresh --top-n 500 \
     >>"$LOG_FILE" 2>&1
 RC=$?
 echo "[$(date +'%F %T')] 完成 (rc=$RC)" | tee -a "$LOG_FILE"

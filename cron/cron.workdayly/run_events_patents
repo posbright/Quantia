@@ -1,0 +1,39 @@
+#!/bin/bash
+# 公告事件 + 专利数据采集（轻量 API/计算，零内存密集）
+# 串行执行：公告事件采集 → 专利采集（巨潮公告挖掘）→ 专利聚合（含金量评分）
+# 任一子任务失败仅告警，不阻断其他子任务（专利链对主选股非关键）。
+# 拆分模式：独立调度（建议 fetch 之后）；编排模式：由 run_workdayly 经 run_sub 复用。
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/workdayly.log
+
+check_trade_day "公告与专利采集"
+
+cd "$PROJECT_ROOT"
+
+# ── 公告事件采集（轻量 API 调用）──
+log_info "开始采集今日公告事件"
+_t=$(date +%s)
+timeout "${QUANTIA_ANNOUNCE_TIMEOUT:-1800}" "$PYTHON_BIN" -m quantia.job.stock_announcement_em --days 1 >> "$LOG_FILE" 2>&1
+record_stage "公告事件采集 (stock_announcement_em)" $? warn $(( $(date +%s) - _t ))
+
+# ── 专利数据采集（从巨潮公告挖掘专利信息）──
+log_info "开始采集专利数据"
+_t=$(date +%s)
+timeout "${QUANTIA_PATENT_CRAWL_TIMEOUT:-3600}" "$PYTHON_BIN" -m quantia.job.stock_patent_crawler --days 7 >> "$LOG_FILE" 2>&1
+record_stage "专利数据采集 (stock_patent_crawler)" $? warn $(( $(date +%s) - _t ))
+
+# ── 专利数据聚合（cn_stock_patent_info → cn_stock_patents 含金量评分）──
+log_info "开始聚合专利数据"
+_t=$(date +%s)
+timeout "${QUANTIA_PATENT_AGG_TIMEOUT:-1800}" "$PYTHON_BIN" -m quantia.job.aggregate_patent_data >> "$LOG_FILE" 2>&1
+record_stage "专利数据聚合 (aggregate_patent_data)" $? warn $(( $(date +%s) - _t ))
+
+# 本次各子任务成功/失败 + 耗时汇总（拆分模式下生产可见）
+print_stage_summary
+
+# 非关键链：整体退出码恒为 0，避免阻断上游编排的失败计数
+exit 0

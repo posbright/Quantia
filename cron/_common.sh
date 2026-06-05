@@ -122,6 +122,7 @@ run_job() {
     end_ts=$(date +%s)
     dur=$((end_ts - start_ts))
     dur_str=$(elapsed_fmt $dur)
+    LAST_STAGE_DURATION=$dur
 
     if [ $rc -eq 0 ]; then
         log_info "────── ${label} 完成 ✓ (${dur_str}) ──────"
@@ -151,6 +152,7 @@ run_sub() {
     end_ts=$(date +%s)
     dur=$((end_ts - start_ts))
     dur_str=$(elapsed_fmt $dur)
+    LAST_STAGE_DURATION=$dur
 
     if [ $rc -eq 0 ]; then
         log_info "══════ ${label} 完成 ✓ (${dur_str}) ══════"
@@ -159,6 +161,72 @@ run_sub() {
     fi
 
     return $rc
+}
+
+# ─── 阶段结果汇总（供 run_workdayly 等编排脚本在末尾输出成功/失败清单） ───
+# STAGE_SUMMARY 累积每个阶段的结果行；STAGE_FAIL/STAGE_WARN 计数。
+# STAGE_DURATIONS 累积「耗时秒|标签|状态」，供末尾耗时排行（辅助任务编排）。
+STAGE_SUMMARY=()
+STAGE_DURATIONS=()
+STAGE_FAIL=0
+STAGE_WARN=0
+LAST_STAGE_DURATION=0
+
+# 用法: record_stage "阶段标签" 退出码 [warn] [耗时秒]
+#   第三参数为 "warn" 时，失败记为 ⚠ 警告（非关键，不计入失败数）；
+#       否则失败记为 ✗ 失败（关键，计入 STAGE_FAIL）。
+#   第四参数为耗时（秒）；省略时自动取 run_sub/run_job 导出的 LAST_STAGE_DURATION。
+record_stage() {
+    local label="$1" rc="$2" mode="${3:-critical}" dur="${4:-$LAST_STAGE_DURATION}"
+    local dur_str status
+    dur="${dur:-0}"
+    dur_str=$(elapsed_fmt "$dur")
+    if [ "$rc" -eq 0 ]; then
+        status="成功"
+        STAGE_SUMMARY+=("✓ 成功  ${label}  [耗时 ${dur_str}]")
+    elif [ "$mode" = "warn" ]; then
+        status="警告"
+        STAGE_SUMMARY+=("⚠ 警告  ${label} (退出码 ${rc}, 非关键)  [耗时 ${dur_str}]")
+        STAGE_WARN=$((STAGE_WARN + 1))
+    else
+        status="失败"
+        STAGE_SUMMARY+=("✗ 失败  ${label} (退出码 ${rc})  [耗时 ${dur_str}]")
+        STAGE_FAIL=$((STAGE_FAIL + 1))
+    fi
+    STAGE_DURATIONS+=("${dur}|${label}|${status}")
+    # 用后即清零，避免下个未显式传 dur 的阶段误用上一个阶段耗时
+    LAST_STAGE_DURATION=0
+}
+
+# 用法: print_stage_summary
+# 在日志末尾逐行输出各阶段成功/失败明细 + 统计 + 耗时排行（降序）。
+print_stage_summary() {
+    local total=${#STAGE_SUMMARY[@]}
+    local ok=$((total - STAGE_FAIL - STAGE_WARN))
+    log_info "──────── 任务执行结果汇总 ────────"
+    local line
+    for line in "${STAGE_SUMMARY[@]}"; do
+        log_info "  ${line}"
+    done
+    log_info "──────── 共 ${total} 项：成功 ${ok}，失败 ${STAGE_FAIL}，警告 ${STAGE_WARN} ────────"
+
+    # 耗时排行（降序）+ 总耗时，便于后期按耗时编排任务
+    if [ "$total" -gt 0 ]; then
+        local total_dur=0 d
+        for line in "${STAGE_DURATIONS[@]}"; do
+            d="${line%%|*}"
+            total_dur=$((total_dur + ${d:-0}))
+        done
+        log_info "──────── 各阶段耗时排行（降序） ────────"
+        local sorted rank=1 lbl st
+        sorted=$(printf '%s\n' "${STAGE_DURATIONS[@]}" | sort -t'|' -k1,1 -rn)
+        while IFS='|' read -r d lbl st; do
+            [ -z "$lbl" ] && continue
+            log_info "  $(printf '%2d' $rank). $(printf '%8s' "$(elapsed_fmt "${d:-0}")")  ${lbl} (${st})"
+            rank=$((rank + 1))
+        done <<< "$sorted"
+        log_info "──────── 阶段总耗时 $(elapsed_fmt $total_dur) ────────"
+    fi
 }
 
 # ─── 服务管理（OOM 防护） ───

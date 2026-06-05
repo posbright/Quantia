@@ -13,11 +13,19 @@ check_trade_day_t1 "AI报告+评分预警"
 
 log_info "开始 AI 定时分析 + 评分预警..."
 cd "$PROJECT_ROOT"
-"$PYTHON_BIN" -m quantia.job.stock_report_scheduled --mode all --max-stocks 10 >> "$LOG_FILE" 2>&1
+# 超时兜底放宽到 2h：每只股票 run_agent 最多 4 轮 × 60s LLM + 工具调用，理论上限
+# ~8min/只 × max-stocks 10 ≈ 80min，故 1h 偏紧、有截断正常运行的风险；2h 留足余量。
+# 本阶段在 Phase 2/3 服务已恢复后运行，后续仅 6/7（综合指标池/AI知识库，秒级），放宽无副作用。
+timeout "${QUANTIA_REPORT_TIMEOUT:-7200}" "$PYTHON_BIN" -m quantia.job.stock_report_scheduled --mode all --max-stocks 10 >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 0 ]; then
     log_info "AI 定时分析 + 评分预警完成 ✓"
+elif [ $EXIT_CODE -eq 124 ]; then
+    log_warn "AI 定时分析 + 评分预警超时 ✗ (限制 ${QUANTIA_REPORT_TIMEOUT:-7200}s)"
 else
     log_warn "AI 定时分析 + 评分预警异常 (exit=$EXIT_CODE)"
 fi
+
+# 退出码透传给编排器（run_workdayly 的 Phase 5 失败计数）
+exit $EXIT_CODE

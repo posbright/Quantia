@@ -30,6 +30,6 @@ if [ "${QUANTIA_NO_SERVICE_STOP:-0}" != "1" ]; then
     SERVICES_STOPPED=1
 fi
 
-run_job "K线缓存增量更新 (kline_cache_daily_job)" "quantia/job/kline_cache_daily_job.py"
+run_job "K线缓存增量更新 (kline_cache_daily_job)" "quantia/job/kline_cache_daily_job.py" "${QUANTIA_KLINE_TIMEOUT:-7200}"
 
 # EXIT trap 会自动恢复服务
