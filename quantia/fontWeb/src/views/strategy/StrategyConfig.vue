@@ -14,7 +14,7 @@ import {
 import { toggleAttention } from '@/api/stock'
 import dayjs from 'dayjs'
 import type { ParamGroup, StrategyListItem } from '@/api/strategy'
-
+import IndicatorThresholdViz from '@/components/IndicatorThresholdViz.vue'
 const route = useRoute()
 const router = useRouter()
 
@@ -61,6 +61,11 @@ const hasCustomParams = computed(() => {
   }
   return false
 })
+
+// 指标买入/卖出信号：展示阈值确认逻辑可视化
+const isIndicatorSignal = computed(
+  () => activeStrategy.value === 'indicator_buy' || activeStrategy.value === 'indicator_sell'
+)
 
 // ========== 加载策略列表 ==========
 const loadStrategies = async () => {
@@ -335,6 +340,13 @@ const handleDiff = async () => {
         {{ strategyDescription }}
       </div>
     </el-card>
+
+    <!-- 指标买入/卖出信号：阈值确认逻辑可视化说明 -->
+    <IndicatorThresholdViz
+      v-if="isIndicatorSignal && paramGroups.length"
+      :strategy-key="activeStrategy"
+      :param-groups="paramGroups"
+    />
 
     <!-- 参数配置区域 -->
     <div class="config-layout" v-loading="loading">
