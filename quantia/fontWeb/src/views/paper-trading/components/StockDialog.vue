@@ -99,7 +99,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import * as echarts from 'echarts'
 import { getKlineData } from '@/api/stock'
 import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverlay'
@@ -125,6 +125,8 @@ const stockMonthlyEl = ref<HTMLElement | null>(null)
 let stockDailyChart: echarts.ECharts | null = null
 let stockWeeklyChart: echarts.ECharts | null = null
 let stockMonthlyChart: echarts.ECharts | null = null
+let resizeDebounceTimer: number | null = null
+let stockRenderTimer: number | null = null
 
 // ── 内部状态 ──
 const stockLoading = ref(false)
@@ -278,7 +280,11 @@ function selectTradeInDialog(row: any) {
 }
 
 function renderActiveStockChart() {
-  setTimeout(() => renderStockChart(stockActivePeriod.value), 80)
+  if (stockRenderTimer !== null) window.clearTimeout(stockRenderTimer)
+  stockRenderTimer = window.setTimeout(() => {
+    stockRenderTimer = null
+    renderStockChart(stockActivePeriod.value)
+  }, 80)
 }
 
 function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
@@ -287,7 +293,10 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
   if (!el || !kline?.dates?.length) return
   if (el.clientWidth === 0) { setTimeout(() => renderStockChart(period), 120); return }
   getStockChart(period)?.dispose()
-  const instance = echarts.init(el)
+  const instance = echarts.init(el, undefined, {
+    devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
+    useDirtyRect: false,
+  })
   setStockChart(period, instance)
 
   const dates = kline.dates as string[]
@@ -309,7 +318,9 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
     if (trade) selectedPaperTrade.value = trade
   })
 
+  instance.clear()
   instance.setOption({
+    animation: false,
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'cross' },
@@ -342,8 +353,8 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
       ...(ext.subPanel ? [{ left: 58, right: 38, top: 530, height: 60 }] : []),
     ],
     dataZoom: [
-      { type: 'inside', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end },
-      { type: 'slider', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, bottom: 4, height: 20 },
+      { type: 'inside', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, throttle: 80 },
+      { type: 'slider', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, bottom: 4, height: 20, realtime: false },
     ],
     xAxis: [
       { type: 'category', data: dates, boundaryGap: true, axisLabel: { fontSize: 10 } },
@@ -384,8 +395,30 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
       ...(ext.mainSignalSeries ? [{ ...ext.mainSignalSeries, xAxisIndex: 0, yAxisIndex: 0 }] : []),
       ...(ext.subPanel ? ext.subPanel.series.map(s => ({ ...s, xAxisIndex: 3, yAxisIndex: 3 })) : []),
     ],
-  })
+  }, { notMerge: true, lazyUpdate: false })
 }
+
+function onResize() {
+  if (resizeDebounceTimer !== null) window.clearTimeout(resizeDebounceTimer)
+  resizeDebounceTimer = window.setTimeout(() => {
+    resizeDebounceTimer = null
+    stockDailyChart?.resize()
+    stockWeeklyChart?.resize()
+    stockMonthlyChart?.resize()
+  }, 120)
+}
+
+onMounted(() => {
+  window.addEventListener('resize', onResize, { passive: true })
+  ;(window as any).visualViewport?.addEventListener?.('resize', onResize, { passive: true })
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onResize)
+  ;(window as any).visualViewport?.removeEventListener?.('resize', onResize)
+  if (resizeDebounceTimer !== null) window.clearTimeout(resizeDebounceTimer)
+  if (stockRenderTimer !== null) window.clearTimeout(stockRenderTimer)
+})
 
 function stockDataZoomRange(dates: string[]) {
   if (!dates.length) return { start: 0, end: 100 }

@@ -445,6 +445,8 @@ let tradeChart: echarts.ECharts | null = null
 let stockDailyChart: echarts.ECharts | null = null
 let stockWeeklyChart: echarts.ECharts | null = null
 let stockMonthlyChart: echarts.ECharts | null = null
+let resizeDebounceTimer: number | null = null
+let stockRenderTimer: number | null = null
 
 const stockDialogVisible = ref(false)
 const stockLoading = ref(false)
@@ -836,8 +838,12 @@ watch(btId, (newId, oldId) => {
 })
 
 const onResize = () => {
-  chart?.resize(); pnlChart?.resize(); tradeChart?.resize()
-  stockDailyChart?.resize(); stockWeeklyChart?.resize(); stockMonthlyChart?.resize()
+  if (resizeDebounceTimer !== null) window.clearTimeout(resizeDebounceTimer)
+  resizeDebounceTimer = window.setTimeout(() => {
+    resizeDebounceTimer = null
+    chart?.resize(); pnlChart?.resize(); tradeChart?.resize()
+    stockDailyChart?.resize(); stockWeeklyChart?.resize(); stockMonthlyChart?.resize()
+  }, 120)
 }
 onMounted(() => {
   window.addEventListener('resize', onResize, { passive: true })
@@ -846,6 +852,8 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
   ;(window as any).visualViewport?.removeEventListener?.('resize', onResize)
+  if (resizeDebounceTimer !== null) window.clearTimeout(resizeDebounceTimer)
+  if (stockRenderTimer !== null) window.clearTimeout(stockRenderTimer)
   disposeAllCharts()
 })
 
@@ -936,7 +944,7 @@ function renderReturnChart() {
     },
     legend: { data: legend, top: 4, textStyle: { fontSize: 11 } },
     grid: { left: isMobile.value ? 38 : 55, right: isMobile.value ? 8 : 20, top: 38, bottom: 36 },
-    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
+    dataZoom: [{ type: 'inside', start: 0, end: 100, throttle: 80 }],
     xAxis: {
       type: 'category', data: dates, boundaryGap: false,
       axisLabel: { fontSize: 10 },
@@ -987,7 +995,7 @@ function renderPnlChart() {
     },
     legend: { data: ['日收益率', '日盈亏金额'], top: 4, textStyle: { fontSize: 11 } },
     grid: { left: isMobile.value ? 42 : 60, right: isMobile.value ? 42 : 60, top: 38, bottom: 36 },
-    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
+    dataZoom: [{ type: 'inside', start: 0, end: 100, throttle: 80 }],
     xAxis: {
       type: 'category', data: dates, boundaryGap: true,
       axisLabel: { fontSize: 10 },
@@ -1072,7 +1080,7 @@ function renderTradeChart() {
     },
     legend: { data: ['总资产', '买入', '卖出'], top: 4, textStyle: { fontSize: 11 } },
     grid: { left: isMobile.value ? 46 : 70, right: isMobile.value ? 8 : 20, top: 38, bottom: 36 },
-    dataZoom: [{ type: 'inside', start: 0, end: 100 }],
+    dataZoom: [{ type: 'inside', start: 0, end: 100, throttle: 80 }],
     xAxis: {
       type: 'category', data: dates, boundaryGap: false,
       axisLabel: { fontSize: 10 },
@@ -1151,7 +1159,11 @@ function selectTradeInDialog(row: any) {
 }
 
 function renderActiveStockChart() {
-  setTimeout(() => renderStockChart(stockActivePeriod.value), 80)
+  if (stockRenderTimer !== null) window.clearTimeout(stockRenderTimer)
+  stockRenderTimer = window.setTimeout(() => {
+    stockRenderTimer = null
+    renderStockChart(stockActivePeriod.value)
+  }, 80)
 }
 
 function getStockChartRef(period: string) {
@@ -1178,9 +1190,14 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
   if (!el || !kline?.dates?.length) return
   if (el.clientWidth === 0) { setTimeout(() => renderStockChart(period), 120); return }
   getStockChart(period)?.dispose()
+  // NOTE:
+  // Stock K-line has multiple grids + candlestick + dataZoom.
+  // With useDirtyRect + large mode, some GPU/canvas paths may leave local repaint artifacts
+  // after repeated zoom in/out (appears as a "stuck" colorful segment on the right side).
+  // Use full-canvas repaint here for correctness.
   const instance = echarts.init(el, undefined, {
     devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
-    useDirtyRect: true,
+    useDirtyRect: false,
   })
   setStockChart(period, instance)
 
@@ -1205,7 +1222,9 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
     if (trade) selectedTrade.value = trade
   })
 
+  instance.clear()
   instance.setOption({
+    animation: false,
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'cross' },
@@ -1238,8 +1257,8 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
       ...(ext.subPanel ? [{ left: isMobile.value ? 40 : 58, right: isMobile.value ? 16 : 62, top: 550, height: 60 }] : []),
     ],
     dataZoom: [
-      { type: 'inside', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, minSpan: Math.max(5, Math.round(150 / dates.length * 100)) },
-      { type: 'slider', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, bottom: 4, height: 20, minSpan: Math.max(5, Math.round(150 / dates.length * 100)) },
+      { type: 'inside', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, minSpan: Math.max(5, Math.round(150 / dates.length * 100)), throttle: 80 },
+      { type: 'slider', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, bottom: 4, height: 20, minSpan: Math.max(5, Math.round(150 / dates.length * 100)), realtime: false },
     ],
     xAxis: [
       { type: 'category', data: dates, boundaryGap: true, axisLabel: { fontSize: 10 } },
@@ -1255,7 +1274,7 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
       ...(ext.subPanel ? [{ scale: true, gridIndex: 3, min: 0, max: 100, splitNumber: 3, axisLabel: { fontSize: 10 } }] : []),
     ],
     series: [
-      { name: 'K线', type: 'candlestick', data: ohlc, barMaxWidth: 20, barMinWidth: 1, large: true, largeThreshold: 300, itemStyle: { color: '#f56c6c', color0: '#67c23a', borderColor: '#f56c6c', borderColor0: '#67c23a' } },
+      { name: 'K线', type: 'candlestick', data: ohlc, barMaxWidth: 20, barMinWidth: 1, large: false, itemStyle: { color: '#f56c6c', color0: '#67c23a', borderColor: '#f56c6c', borderColor0: '#67c23a' } },
       ...overlaySeries,
       ...(benchmarkOverlay ? [benchmarkOverlay] : []),
       { name: '买入', type: 'scatter', data: tradeMarkers.buy, symbol: 'triangle', symbolSize: 18, itemStyle: { color: '#f56c6c', borderColor: '#8a1f11', borderWidth: 1 }, label: tradeMarkerLabel('buy'), emphasis: { scale: 1.5 } },
@@ -1272,7 +1291,7 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
         ...s, xAxisIndex: 3, yAxisIndex: benchmarkOverlay ? 4 : 3,
       })) : []),
     ],
-  })
+  }, { notMerge: true, lazyUpdate: false })
 }
 
 function stockDataZoomRange(dates: string[]) {
@@ -1341,8 +1360,7 @@ function buildBenchmarkOverlay(period: string, dates: string[]) {
     barWidth: '45%',
     barMaxWidth: 20,
     barMinWidth: 1,
-    large: true,
-    largeThreshold: 300,
+    large: false,
     barGap: '-55%',
     z: 1,
   }

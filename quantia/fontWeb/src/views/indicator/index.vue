@@ -21,6 +21,7 @@ let chartInstance: echarts.ECharts | null = null
 const chartShallow = shallowRef<echarts.ECharts | null>(null)
 const klineWrapRef = ref<HTMLDivElement>()
 const klineChartFs = useChartFullscreen(klineWrapRef, chartShallow)
+let resizeDebounceTimer: number | null = null
 
 const code = computed(() => route.query.code as string)
 const date = computed(() => route.query.date as string || dayjs().format('YYYY-MM-DD'))
@@ -177,10 +178,10 @@ const renderChart = () => {
   const padRight = isMobile.value ? 8 : 24
 
   if (chartInstance) { chartInstance.dispose() }
-  // PR-09: 限制 DPR 上限 + 启用脏矩形，提升移动端高 DPR 设备的渲染性能
+  // K-line 主图采用完整重绘，避免多面板 + dataZoom 在部分环境下出现局部残影
   chartInstance = echarts.init(klineChartRef.value, undefined, {
     devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
-    useDirtyRect: true,
+    useDirtyRect: false,
   })
 
   const dates: string[] = d.dates
@@ -516,18 +517,20 @@ const renderChart = () => {
     xAxis: xAxes,
     yAxis: yAxes,
     dataZoom: [
-      { type: 'inside', xAxisIndex: zoomXIndices, start: zoomStart, end: 100 },
+      { type: 'inside', xAxisIndex: zoomXIndices, start: zoomStart, end: 100, throttle: 80 },
       {
         show: true, xAxisIndex: zoomXIndices, type: 'slider',
         bottom: 6, height: 18, start: zoomStart, end: 100,
         borderColor: '#ddd', fillerColor: 'rgba(64,158,255,0.15)',
         handleStyle: { color: '#409eff' },
+        realtime: false,
       },
     ],
     series,
   }
 
-  chartInstance.setOption(option)
+  chartInstance.clear()
+  chartInstance.setOption(option, { notMerge: true, lazyUpdate: false })
   chartShallow.value = chartInstance
 }
 
@@ -795,9 +798,13 @@ const fmtPct = (val: number | undefined | null): string => {
 }
 
 const handleResize = () => {
-  chartInstance?.resize()
-  financialChartInstance?.resize()
-  expenseChartInstance?.resize()
+  if (resizeDebounceTimer !== null) window.clearTimeout(resizeDebounceTimer)
+  resizeDebounceTimer = window.setTimeout(() => {
+    resizeDebounceTimer = null
+    chartInstance?.resize()
+    financialChartInstance?.resize()
+    expenseChartInstance?.resize()
+  }, 120)
 }
 
 // keep-alive 缓存期间标记，避免无意义的 breakpoint 重渲
@@ -865,6 +872,7 @@ onDeactivated(() => {
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
   ;(window as any).visualViewport?.removeEventListener?.('resize', handleResize)
+  if (resizeDebounceTimer !== null) window.clearTimeout(resizeDebounceTimer)
   chartInstance?.dispose()
   chartInstance = null
   financialChartInstance?.dispose()

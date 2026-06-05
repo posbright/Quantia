@@ -57,6 +57,8 @@ const props = defineProps<{
 
 const chartRef = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
+let resizeDebounceTimer: number | null = null
+let renderDebounceTimer: number | null = null
 
 const mainOptions = [
   { key: 'ma5', label: 'MA5' },
@@ -178,8 +180,8 @@ const buildOption = (): echarts.EChartsOption => {
     xAxis: xAxes,
     yAxis: yAxes,
     dataZoom: [
-      { type: 'inside', xAxisIndex: Array.from({ length: xCount }, (_, i) => i), start: 0, end: 100 },
-      { type: 'slider', xAxisIndex: Array.from({ length: xCount }, (_, i) => i), start: 0, end: 100, bottom: 6, height: 18 },
+      { type: 'inside', xAxisIndex: Array.from({ length: xCount }, (_, i) => i), start: 0, end: 100, throttle: 80 },
+      { type: 'slider', xAxisIndex: Array.from({ length: xCount }, (_, i) => i), start: 0, end: 100, bottom: 6, height: 18, realtime: false },
     ],
     series,
   }
@@ -211,8 +213,12 @@ const buildMarkPoints = () => {
 }
 
 const renderChart = () => {
-  if (!chart) return
-  chart.setOption(buildOption(), true)
+  if (renderDebounceTimer !== null) window.clearTimeout(renderDebounceTimer)
+  renderDebounceTimer = window.setTimeout(() => {
+    renderDebounceTimer = null
+    if (!chart) return
+    chart.setOption(buildOption(), true)
+  }, 60)
 }
 
 const initChart = () => {
@@ -222,7 +228,11 @@ const initChart = () => {
 }
 
 const resize = () => {
-  nextTick(() => chart?.resize())
+  if (resizeDebounceTimer !== null) window.clearTimeout(resizeDebounceTimer)
+  resizeDebounceTimer = window.setTimeout(() => {
+    resizeDebounceTimer = null
+    nextTick(() => chart?.resize())
+  }, 120)
 }
 
 // 定位到指定交易日：将 dataZoom 缩放到该日前后约 20 根 K 线的窗口
@@ -253,6 +263,8 @@ onMounted(() => {
 onActivated(() => resize())
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resize)
+  if (resizeDebounceTimer !== null) window.clearTimeout(resizeDebounceTimer)
+  if (renderDebounceTimer !== null) window.clearTimeout(renderDebounceTimer)
   chart?.dispose()
   chart = null
 })

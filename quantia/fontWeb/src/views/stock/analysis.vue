@@ -359,6 +359,7 @@ const klineChartRef = ref<HTMLElement | null>(null)
 const klineLoaded = ref(false)
 const klineCollapsed = ref(false)
 let chartInstance: echarts.ECharts | null = null
+let resizeDebounceTimer: number | null = null
 
 // ---- Follow-up State ----
 const followupText = ref('')
@@ -1049,7 +1050,10 @@ async function loadKlineChart(code: string) {
 
     if (!klineChartRef.value) return
     if (chartInstance) chartInstance.dispose()
-    chartInstance = echarts.init(klineChartRef.value)
+    chartInstance = echarts.init(klineChartRef.value, undefined, {
+      devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2.5),
+      useDirtyRect: false,
+    })
 
     const dates: string[] = data.dates
     const ohlc: number[][] = data.ohlc || []
@@ -1082,8 +1086,8 @@ async function loadKlineChart(code: string) {
         { left: 56, right: 20, top: 360, height: 50 },
       ],
       dataZoom: [
-        { type: 'inside', xAxisIndex: [0, 1, 2], start: startPercent, end: 100 },
-        { type: 'slider', xAxisIndex: [0, 1, 2], start: startPercent, end: 100, bottom: 4, height: 16 },
+        { type: 'inside', xAxisIndex: [0, 1, 2], start: startPercent, end: 100, throttle: 80 },
+        { type: 'slider', xAxisIndex: [0, 1, 2], start: startPercent, end: 100, bottom: 4, height: 16, realtime: false },
       ],
       xAxis: [
         { type: 'category', data: dates, boundaryGap: true, axisLabel: { fontSize: 10 } },
@@ -1141,7 +1145,8 @@ async function loadKlineChart(code: string) {
       ],
     }
 
-    chartInstance.setOption(option)
+    chartInstance.clear()
+    chartInstance.setOption(option, { notMerge: true, lazyUpdate: false })
   } catch (e) {
     console.warn('[analysis] K线数据加载失败:', e)
   }
@@ -1229,8 +1234,12 @@ function renderScoreTrendChart() {
 }
 
 function handleChartResize() {
-  chartInstance?.resize()
-  scoreTrendChart?.resize()
+  if (resizeDebounceTimer !== null) window.clearTimeout(resizeDebounceTimer)
+  resizeDebounceTimer = window.setTimeout(() => {
+    resizeDebounceTimer = null
+    chartInstance?.resize()
+    scoreTrendChart?.resize()
+  }, 120)
 }
 
 // ---- Lifecycle ----
@@ -1267,6 +1276,7 @@ onActivated(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleChartResize)
+  if (resizeDebounceTimer !== null) window.clearTimeout(resizeDebounceTimer)
   if (abortController.value) {
     abortController.value.abort()
   }
