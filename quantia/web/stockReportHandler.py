@@ -1134,11 +1134,16 @@ class StockReportAttentionListHandler(webBase.BaseHandler, ABC):
     def get(self):
         import quantia.core.tablestructure as tbs
         table_name = tbs.TABLE_CN_STOCK_ATTENTION['name']
+        # 名称回退：股票(cn_stock_spot) → ETF(cn_etf_spot) → 指数(cn_index_spot)，
+        # 否则 ETF / 指数代码（如 159148、000300）会显示空名称。
         sql = f"""
-            SELECT a.code, COALESCE(MAX(s.name), '') as name,
+            SELECT a.code,
+                   COALESCE(MAX(s.name), MAX(e.name), MAX(i.name), '') as name,
                    MAX(a.datetime) as latest
             FROM `{table_name}` a
             LEFT JOIN cn_stock_spot s ON a.code = s.code
+            LEFT JOIN cn_etf_spot e ON a.code = e.code
+            LEFT JOIN cn_index_spot i ON a.code = i.code
             GROUP BY a.code
             ORDER BY latest DESC
         """

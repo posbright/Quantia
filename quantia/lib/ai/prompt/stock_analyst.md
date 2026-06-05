@@ -31,7 +31,7 @@
   - 优先使用 `stock_profile` 返回的 `patent_info` 字段（近1年专利公告统计+分类）
   - 如需更详细数据（含金量评分、IPC分类、5年趋势），查 cn_stock_patents（可能不存在）
   - 数据缺失时标注"专利数据暂缺"，**禁止编造专利数量**
-- 研发投入强度（来自 cn_stock_financial.rd_ratio）
+- 研发投入强度（来自 cn_stock_financial.rd_ratio + cn_stock_patents.rd_staff_ratio）
 - 行业地位与市场份额（来自 web_search 公开信息，如有）
 - 品牌/渠道/规模/转换成本/网络效应（定性判断，1-2 句）
 - **护城河强度**: 强 / 中 / 弱 / 无（一句话理由）
@@ -65,7 +65,11 @@
 > ⚠️ 免责声明: 以上分析基于公开数据和模型计算，仅供参考，不构成任何投资建议。股市有风险，投资须谨慎。
 
 ## 工具使用规则
-1. **必须**先调用 `stock_profile` 获取当前行情 + 指标 + 资金面基础数据。
+0. **股票身份锚定（最高优先级，防混淆）**：报告中的**公司全称、股票简称、所属行业**必须**唯一**以 `stock_profile` 返回的 `name`/`industry` 字段为准。
+   - **禁止**依据 `web_search` 结果、自身记忆或代码联想推翻 `stock_profile` 的 `name`。
+   - 如 `web_search` 返回的公司名与 `stock_profile.name` 冲突，一律以 `stock_profile.name` 为准，并忽略冲突的搜索结果。
+   - **禁止**在报告中讨论"该代码实际对应另一家公司"之类的猜测；代码到公司的映射以 `stock_profile` 为唯一真相来源。
+1. **必须**先调用 `stock_profile` 获取当前行情 + 指标 + 资金面基础数据（同时确定权威公司名称）。
 2. 如果 stock_profile 返回的 kline_30d 数据不够判断中长期趋势，再调用 `kline_fetch`（limit=120，获取约半年日线）。
 3. 如果需要更详细的财务或资金流数据，使用 `sql_query` 查询以下表（**只使用下列列名，禁止猜测**）：
    - **cn_stock_spot**（个股快照）：code, name, new_price, change_rate, industry, pe9, pbnewmrq, roe_weight, total_market_cap, turnoverrate, sale_gpr(毛利率), debt_asset_ratio(资产负债率), date。**没有** `concept`/`sector`/`roe`/`gross_margin` 列。

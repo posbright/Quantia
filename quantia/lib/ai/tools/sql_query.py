@@ -11,6 +11,7 @@
 - **列验证**：执行前对 SELECT 中引用的列名做真实 schema 校验，拒绝不存在的列。
 """
 
+import difflib
 import logging
 import re
 from typing import Any, Dict, List, Optional, Set
@@ -66,6 +67,61 @@ def _get_table_columns(table_name: str) -> Optional[Set[str]]:
     except Exception as exc:
         _logger.debug(f"获取表 {table_name} schema 失败: {exc}")
         return None
+
+
+# ── 表存在性验证：执行前确认引用的表真实存在 ──────────────────────────
+# 缓存匹配白名单前缀的真实表名集合，进程生命周期内有效
+_TABLE_LIST_CACHE: Optional[Set[str]] = None
+
+
+def _get_available_tables() -> Optional[Set[str]]:
+    """获取当前库中匹配白名单前缀的真实表名集合（带进程级缓存）。"""
+    global _TABLE_LIST_CACHE
+    if _TABLE_LIST_CACHE is not None:
+        return _TABLE_LIST_CACHE
+    try:
+        rows = mdb.executeSqlFetch(
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+            "WHERE TABLE_SCHEMA = DATABASE()"
+        )
+        if not rows:
+            return None
+        names: Set[str] = set()
+        for r in rows:
+            if isinstance(r, dict):
+                names.add(str(r.get('TABLE_NAME', '')).lower())
+            elif isinstance(r, (list, tuple)):
+                names.add(str(r[0]).lower())
+        # 仅保留匹配白名单前缀的业务表
+        names = {n for n in names if any(n.startswith(p.lower()) for p in _ALLOWED_PREFIXES)}
+        _TABLE_LIST_CACHE = names
+        return names
+    except Exception as exc:
+        _logger.debug(f"获取库表清单失败: {exc}")
+        return None
+
+
+def _validate_tables_exist(tables: List[str]) -> None:
+    """执行前校验引用的表是否真实存在，避免无效执行 + 引导 LLM 自行修正。
+
+    通过前缀白名单但实际不存在的表（如 LLM 把 cn_stock_financial 误写成
+    cn_stock_finance）会在此被拦截，并返回最接近的真实表名建议。
+    """
+    available = _get_available_tables()
+    if not available:
+        return  # 无法获取表清单（DB 异常），跳过，交由执行阶段报错
+    missing = [t for t in tables if t.lower() not in available]
+    if not missing:
+        return
+    parts = []
+    for t in missing:
+        suggestions = difflib.get_close_matches(t.lower(), available, n=3, cutoff=0.6)
+        if suggestions:
+            parts.append(f"表 `{t}` 不存在，是否想查询: {', '.join(suggestions)}")
+        else:
+            sample = sorted(available)[:15]
+            parts.append(f"表 `{t}` 不存在。可用业务表（部分）: {', '.join(sample)}")
+    raise ToolError('表验证失败——' + '；'.join(parts))
 
 
 # 提取 SQL 中 SELECT 列表和 WHERE/ORDER BY/GROUP BY 中引用的标识符
@@ -227,6 +283,8 @@ class SqlQueryTool(Tool):
             raise ToolError('sql 必须是字符串')
         sql = _normalize_sql(sql_in)
         tables = _check_safety(sql)
+        # ── 表验证：执行前确认引用表真实存在（拦截 cn_stock_finance 这类近似错名）──
+        _validate_tables_exist(tables)
         # ── 列验证：执行前确认引用列在真实 schema 中存在 ──
         _validate_columns(sql, tables)
         # P1-4（一轮审计）：LLM 可能传不合法的 limit 类型，需提前报错避免

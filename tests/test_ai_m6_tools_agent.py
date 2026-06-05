@@ -14,7 +14,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from quantia.lib.ai import tools as tools_pkg
 from quantia.lib.ai.tools import Tool, ToolError, get_registry, reset_registry
-from quantia.lib.ai.tools.sql_query import SqlQueryTool, _check_safety, _inject_limit
+from quantia.lib.ai.tools.sql_query import (
+    SqlQueryTool, _check_safety, _inject_limit, _validate_tables_exist,
+)
 from quantia.lib.ai.tools.code_validate import CodeValidateTool
 from quantia.lib.ai.tools.web_search import WebSearchTool
 from quantia.lib.ai.agent import AgentRuntime, AgentRunResult
@@ -74,6 +76,32 @@ class SqlQuerySafetyTests(unittest.TestCase):
         # UNION 攻击：第二段 FROM 应被表前缀检查拦截
         with self.assertRaises(ToolError):
             _check_safety("SELECT 1 UNION SELECT * FROM mysql.user")
+
+    def test_reject_nonexistent_table_with_suggestion(self):
+        # 过前缀白名单但实际不存在的表（如 LLM 把 financial 误写为 finance）
+        # 应在执行前被拦截，并返回最接近的真实表名建议。
+        with mock.patch(
+            'quantia.lib.ai.tools.sql_query._get_available_tables',
+            return_value={'cn_stock_financial', 'cn_stock_spot'},
+        ):
+            with self.assertRaises(ToolError) as ctx:
+                _validate_tables_exist(['cn_stock_finance'])
+            self.assertIn('cn_stock_financial', str(ctx.exception))
+
+    def test_existing_table_passes_validation(self):
+        with mock.patch(
+            'quantia.lib.ai.tools.sql_query._get_available_tables',
+            return_value={'cn_stock_financial', 'cn_stock_spot'},
+        ):
+            _validate_tables_exist(['cn_stock_spot'])  # 不报错
+
+    def test_table_validation_skips_when_list_unavailable(self):
+        # 无法获取表清单（DB 异常）时跳过，不误拦
+        with mock.patch(
+            'quantia.lib.ai.tools.sql_query._get_available_tables',
+            return_value=None,
+        ):
+            _validate_tables_exist(['cn_stock_anything'])  # 不报错
 
 
 # ── code_validate tool ───────────────────────────────────────────────
