@@ -294,9 +294,12 @@ def _build_industry_summary_items(df: pd.DataFrame, use_view_score: bool = False
         }
         if 'score_growth' in g2.columns:
             item['prosperity_score'] = float(pd.to_numeric(g2['score_growth'], errors='coerce').mean())
+        # 行业热度：兼顾质量（均分）与广度（成分股数量），用于"热门行业宫格"排序。
+        avg_score = item['avg_total_score'] or 0.0
+        item['heat_score'] = round(float(avg_score) * math.log1p(total), 4)
         items.append(item)
 
-    items.sort(key=lambda x: (-(x.get('avg_total_score') or 0.0), x.get('industry', '')))
+    items.sort(key=lambda x: (-(x.get('heat_score') or 0.0), x.get('industry', '')))
     return items
 
 

@@ -325,7 +325,7 @@ onMounted(loadAll)
         <div v-if="!industryData.length" class="empty-tip">暂无行业汇总</div>
         <div v-else class="industry-grid">
           <button
-            v-for="item in industryData.slice(0, 12)"
+            v-for="item in industryData.slice(0, 16)"
             :key="item.industry"
             class="industry-card"
             type="button"

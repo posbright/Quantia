@@ -92,6 +92,37 @@ DIMENSION_FAMILIES: dict[str, dict[str, list[str]]] = {
 # 维度估值族中、若 PE/PB/PS ≤ 0（亏损/负净资产）则该族剔除并重归一（P5）
 VALUATION_POSITIVE_ONLY = {'pe9', 'pettmdeducted', 'dtsyl', 'pbnewmrq', 'ps9'}
 
+# 技术面（technical）维度：基于东方财富选股器 BIT 信号列（0/1）。
+# 与连续因子不同，技术信号是离散看涨/看跌标记，按加权计数聚合为"净看涨强度"后映射。
+# 权重口径见 document/chooseview/综合选股重构需求与开发文档.md §4.4：
+#   多周期金叉(月/周) +1.5、日线金叉 +1.0、均线多头 +2.0、放量突破类 +1.5、
+#   均线突破/看涨形态 +1.0、均线空头 −2.0、看跌形态/高位资金流出 −1.0。
+TECHNICAL_SIGNAL_WEIGHTS: dict[str, float] = {
+    # 多周期金叉（月/周线）
+    'macd_golden_forky': 1.5, 'macd_golden_forkz': 1.5,
+    'kdj_golden_forky': 1.5, 'kdj_golden_forkz': 1.5,
+    # 日线金叉
+    'macd_golden_fork': 1.0, 'kdj_golden_fork': 1.0,
+    # 均线多头排列
+    'long_avg_array': 2.0,
+    # 放量突破类
+    'break_through': 1.5, 'upside_volume': 1.5, 'upper_large_volume': 1.5,
+    # 均线突破 / 低位资金流入
+    'breakup_ma_5days': 1.0, 'breakup_ma_10days': 1.0, 'breakup_ma_20days': 1.0,
+    'breakup_ma_30days': 1.0, 'breakup_ma_60days': 1.0, 'low_funds_inflow': 1.0,
+    # 看涨形态
+    'one_dayang_line': 1.0, 'two_dayang_lines': 1.0, 'rise_sun': 1.0,
+    'power_fulgun': 1.0, 'restore_justice': 1.0, 'reversing_hammer': 1.0,
+    'first_dawn': 1.0, 'morning_star': 1.0,
+    'upper_4days': 1.0, 'upper_8days': 1.0, 'upper_9days': 1.0,
+    # 均线空头排列
+    'short_avg_array': -2.0,
+    # 看跌形态 / 高位资金流出
+    'high_funds_outflow': -1.0, 'down_narrow_volume': -1.0, 'down_7days': -1.0,
+    'bearish_engulfing': -1.0, 'shooting_star': -1.0,
+    'evening_star': -1.0, 'black_cloud_tops': -1.0,
+}
+
 def _normalize_weights(weights: dict[str, float]) -> dict[str, float]:
     total = float(sum(weights.values()))
     if total <= 0:
@@ -308,6 +339,8 @@ def _family_representative(df: pd.DataFrame, fields: list[str]) -> Optional[pd.S
 
 def compute_dimension_q(df: pd.DataFrame, dimension: str) -> Optional[pd.Series]:
     """维度绝对分 Q_d ∈ [0,1]：族间等权聚合标准化值 → logistic。无可用族返回 None。"""
+    if dimension == 'technical':
+        return compute_technical_q(df)
     families = DIMENSION_FAMILIES.get(dimension)
     if not families:
         return None
@@ -320,6 +353,40 @@ def compute_dimension_q(df: pd.DataFrame, dimension: str) -> Optional[pd.Series]
         return None
     dim_raw = pd.concat(fam_means, axis=1).mean(axis=1)
     return logistic(dim_raw)
+
+
+def _bit_series(s: pd.Series) -> pd.Series:
+    """将 BIT 信号列归一为 0/1 浮点：bytes/bool/数值统一按"非零即真"处理，缺失记 0。"""
+    raw = pd.Series(s)
+    # pymysql 可能返回 b'\x00'/b'\x01' 字节串，先转布尔再转数值。
+    if raw.dtype == object:
+        def _truthy(v):
+            if v is None:
+                return 0.0
+            if isinstance(v, (bytes, bytearray)):
+                return 1.0 if any(b for b in v) else 0.0
+            try:
+                return 1.0 if float(v) != 0 else 0.0
+            except (TypeError, ValueError):
+                return 1.0 if str(v).strip() not in ('', '0', 'False', 'false') else 0.0
+        return raw.map(_truthy).astype(float)
+    num = pd.to_numeric(raw, errors='coerce').fillna(0.0)
+    return (num != 0).astype(float)
+
+
+def compute_technical_q(df: pd.DataFrame) -> Optional[pd.Series]:
+    """技术面维度 Q ∈ [0,1]：BIT 信号加权净看涨强度 → 稳健Z → logistic。
+
+    净强度 tech_raw = Σ(看涨信号·权重) − Σ(看跌信号·权重)（权重见 TECHNICAL_SIGNAL_WEIGHTS）。
+    无任何技术信号列时返回 None（与连续维度缺失行为一致，不污染加权）。
+    """
+    cols = [c for c in TECHNICAL_SIGNAL_WEIGHTS if c in df.columns]
+    if not cols:
+        return None
+    net = pd.Series(0.0, index=df.index)
+    for c in cols:
+        net = net + _bit_series(df[c]) * float(TECHNICAL_SIGNAL_WEIGHTS[c])
+    return logistic(robust_z(net))
 
 
 def compute_quality_score(
@@ -403,6 +470,78 @@ def _rating_from_quality(q: pd.Series) -> pd.Series:
     out = out.mask(q >= 75, 'A')
     out = out.mask(q >= 85, 'S')
     return out
+
+
+def _compose_tags(row: dict) -> list[str]:
+    """根据维度分/评级/行业名次生成亮点标签（中文，去重保序）。"""
+    tags: list[str] = []
+    rating = str(row.get('rating') or '')
+    if rating == 'S':
+        tags.append('S级优质')
+    elif rating == 'A':
+        tags.append('A级优质')
+
+    label_map = [
+        ('score_valuation', '估值优势'),
+        ('score_profitability', '盈利强劲'),
+        ('score_growth', '高成长'),
+        ('score_health', '财务稳健'),
+        ('score_capital', '资金青睐'),
+        ('score_technical', '技术强势'),
+        ('score_sentiment', '人气活跃'),
+    ]
+    for key, label in label_map:
+        v = row.get(key)
+        if v is not None and pd.notna(v) and float(v) >= 70.0:
+            tags.append(label)
+
+    rank = row.get('industry_rank')
+    if rank is not None and pd.notna(rank):
+        try:
+            r = int(rank)
+            if r == 1:
+                tags.append('行业龙头')
+            elif r <= 3:
+                tags.append('行业前三')
+        except (TypeError, ValueError):
+            pass
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for t in tags:
+        if t not in seen:
+            seen.add(t)
+            ordered.append(t)
+    return ordered
+
+
+def _compose_risk_flags(row: dict) -> list[str]:
+    """根据维度短板/数据完整度生成风险标签（中文，去重保序）。"""
+    flags: list[str] = []
+    label_map = [
+        ('score_valuation', '估值偏高'),
+        ('score_profitability', '盈利偏弱'),
+        ('score_growth', '成长乏力'),
+        ('score_health', '财务风险'),
+        ('score_capital', '资金流出'),
+        ('score_technical', '技术弱势'),
+    ]
+    for key, label in label_map:
+        v = row.get(key)
+        if v is not None and pd.notna(v) and float(v) <= 30.0:
+            flags.append(label)
+
+    dc = row.get('data_completeness')
+    if dc is not None and pd.notna(dc) and float(dc) < 0.5:
+        flags.append('数据不全')
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for f in flags:
+        if f not in seen:
+            seen.add(f)
+            ordered.append(f)
+    return ordered
 
 
 def _append_flag_json_array(value, flag: str) -> str:
@@ -492,6 +631,11 @@ def build_daily_selection_scores(
             out[key] = dim_scores[dim]
         else:
             out[key] = np.nan
+
+    # 亮点/风险标签：基于维度分、评级、行业名次与数据完整度生成（依赖上面的 score_* 列）。
+    records = out.to_dict(orient='records')
+    out['tags'] = [json.dumps(_compose_tags(r), ensure_ascii=False) for r in records]
+    out['risk_flags'] = [json.dumps(_compose_risk_flags(r), ensure_ascii=False) for r in records]
 
     return out
 

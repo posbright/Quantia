@@ -193,6 +193,89 @@ class TestValidationPrimitives(unittest.TestCase):
 
 class TestM2DailyBuilder(unittest.TestCase):
 
+    def test_technical_q_from_bit_signals(self):
+        # 构造净看涨强度递增的样本：信号越多/越强，技术分应越高。
+        df = pd.DataFrame({
+            'long_avg_array': [0, 0, 1, 1],
+            'macd_golden_forky': [0, 0, 0, 1],
+            'break_through': [0, 1, 1, 1],
+            'short_avg_array': [1, 0, 0, 0],
+            'evening_star': [1, 0, 0, 0],
+        })
+        q = sc.compute_technical_q(df)
+        self.assertIsNotNone(q)
+        self.assertTrue(((q >= 0) & (q <= 1)).all())
+        # 看跌行（index 0）应低于看涨行（index 3）
+        self.assertLess(float(q.iloc[0]), float(q.iloc[3]))
+        # compute_dimension_q 应路由到技术分支
+        q2 = sc.compute_dimension_q(df, 'technical')
+        self.assertIsNotNone(q2)
+
+    def test_technical_q_handles_bytes_bit(self):
+        # pymysql BIT 可能返回字节串 b'\x00'/b'\x01'
+        df = pd.DataFrame({
+            'long_avg_array': [b'\x00', b'\x01', b'\x01'],
+            'break_through': [b'\x00', b'\x00', b'\x01'],
+        })
+        q = sc.compute_technical_q(df)
+        self.assertIsNotNone(q)
+        self.assertTrue(((q >= 0) & (q <= 1)).all())
+        self.assertLessEqual(float(q.iloc[0]), float(q.iloc[2]))
+
+    def test_technical_q_missing_signals_returns_none(self):
+        df = pd.DataFrame({'roe_weight': [1.0, 2.0, 3.0]})
+        self.assertIsNone(sc.compute_technical_q(df))
+
+    def test_compose_tags_and_risk_flags(self):
+        strong = {
+            'rating': 'S', 'industry_rank': 1,
+            'score_valuation': 80, 'score_profitability': 85, 'score_growth': 90,
+            'score_health': 75, 'score_capital': 72, 'score_technical': 71,
+            'score_sentiment': 60, 'data_completeness': 0.95,
+        }
+        tags = sc._compose_tags(strong)
+        self.assertIn('S级优质', tags)
+        self.assertIn('行业龙头', tags)
+        self.assertIn('高成长', tags)
+        self.assertEqual(sc._compose_risk_flags(strong), [])
+
+        weak = {
+            'rating': 'D', 'industry_rank': 30,
+            'score_valuation': 20, 'score_profitability': 25, 'score_growth': 18,
+            'score_health': 28, 'score_capital': 22, 'score_technical': 15,
+            'score_sentiment': 40, 'data_completeness': 0.3,
+        }
+        flags = sc._compose_risk_flags(weak)
+        self.assertIn('成长乏力', flags)
+        self.assertIn('技术弱势', flags)
+        self.assertIn('数据不全', flags)
+        self.assertEqual(sc._compose_tags(weak), [])
+
+    def test_build_daily_selection_scores_populates_technical_and_tags(self):
+        rng = np.random.default_rng(7)
+        n = 60
+        df = pd.DataFrame({
+            'date': pd.to_datetime(['2026-06-01'] * n),
+            'code': [f'{i:06d}' for i in range(n)],
+            'name': [f'S{i}' for i in range(n)],
+            'industry': (['银行'] * (n // 2)) + (['电池'] * (n - n // 2)),
+            'roe_weight': rng.normal(10, 5, n),
+            'jroa': rng.normal(5, 2, n),
+            'pe9': np.abs(rng.normal(30, 10, n)) + 1,
+            'long_avg_array': rng.integers(0, 2, n),
+            'macd_golden_fork': rng.integers(0, 2, n),
+            'break_through': rng.integers(0, 2, n),
+            'short_avg_array': rng.integers(0, 2, n),
+        })
+        out = sc.build_daily_selection_scores(df)
+        # 技术维度应被填充（非全 NaN）
+        self.assertTrue(out['score_technical'].notna().any())
+        # tags / risk_flags 为合法 JSON 数组字符串
+        for v in out['tags']:
+            self.assertIsInstance(json.loads(v), list)
+        for v in out['risk_flags']:
+            self.assertIsInstance(json.loads(v), list)
+
     def test_build_daily_selection_scores_basic(self):
         df = pd.DataFrame({
             'date': pd.to_datetime(['2026-06-01', '2026-06-01', '2026-06-01']),

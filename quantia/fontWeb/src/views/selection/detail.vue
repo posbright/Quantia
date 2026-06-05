@@ -94,6 +94,19 @@ function backToAll() {
   router.push('/selection/all')
 }
 
+function goStockDetail() {
+  const c = String(detail.value?.code || code.value || '').trim()
+  if (!c) return
+  router.push({
+    path: '/indicator/detail',
+    query: {
+      code: c,
+      name: detail.value?.name || undefined,
+      date: meta.value?.date_effective || detail.value?.date || date.value || undefined,
+    },
+  })
+}
+
 watch(() => [code.value, date.value], loadDetail)
 onMounted(loadDetail)
 
@@ -109,7 +122,7 @@ onBeforeUnmount(() => {
   <div class="detail-page" v-loading="loading">
     <section class="hero" v-if="detail">
       <div>
-        <h1>{{ detail.name || code }}（{{ detail.code || code }}）</h1>
+        <h1 class="hero-title" @click="goStockDetail" title="点击查看K线技术指标详情">{{ detail.name || code }}（{{ detail.code || code }}）</h1>
         <p>
           评分日 {{ meta.date_effective || detail.date || date || '--' }} · 评级 {{ detail.rating || '--' }}
           · 行业 {{ detail.industry || '--' }}
@@ -209,6 +222,20 @@ onBeforeUnmount(() => {
 .hero h1 {
   margin: 0;
   font-size: 24px;
+}
+
+.hero-title {
+  cursor: pointer;
+  display: inline-block;
+  transition: opacity 0.15s ease, text-decoration-color 0.15s ease;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.35);
+  text-underline-offset: 4px;
+}
+
+.hero-title:hover {
+  opacity: 0.85;
+  text-decoration-color: rgba(255, 255, 255, 0.9);
 }
 
 .hero p {

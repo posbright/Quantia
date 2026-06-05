@@ -1656,10 +1656,11 @@ class TestSelectionScoreHandlerHelpers(unittest.TestCase):
 
         items = _build_industry_summary_items(df)
         self.assertEqual(len(items), 2)
-        # 按 avg_total_score 降序，电池在前
-        self.assertEqual(items[0]['industry'], '电池')
-        self.assertEqual(items[0]['leader_code'], '300750')
-        self.assertEqual(items[0]['stock_count'], 1)
+        # 按 heat_score（均分×广度）降序：银行成分股更多，热度更高，排在电池之前
+        self.assertEqual(items[0]['industry'], '银行')
+        self.assertEqual(items[0]['leader_code'], '000001')
+        self.assertEqual(items[0]['stock_count'], 2)
+        self.assertIn('heat_score', items[0])
 
         bank = next(x for x in items if x['industry'] == '银行')
         self.assertEqual(bank['leader_code'], '000001')
