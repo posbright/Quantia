@@ -290,7 +290,18 @@ def insert_other_db_from_df(to_db, data, table_name, cols_type, write_index, pri
             break
         except Exception as e:
             err = str(e).lower()
-            if 'no such table' in err or 'does not exist' in err:
+            # 表不存在（首次创建）判定要稳健：
+            #   - SQLAlchemy 包装为 NoSuchTableError，其 str(e) 仅是表名，匹配不到任何关键字；
+            #   - MySQL/PyMySQL 原始错误是 "Table '...' doesn't exist"（错误码 1146），含缩写 doesn't。
+            # 命中即 break，让后续 to_sql(if_exists='append') 正常建表，避免误入 else 分支 return 丢数据。
+            is_no_such_table = (
+                type(e).__name__ == 'NoSuchTableError'
+                or 'no such table' in err
+                or 'does not exist' in err
+                or "doesn't exist" in err
+                or '1146' in err
+            )
+            if is_no_such_table:
                 logging.debug(f"检查主键约束异常（表可能不存在，首次创建）：{table_name}", exc_info=True)
                 break
             if attempt < _DB_CONN_RETRIES and _is_retryable_error(e):
