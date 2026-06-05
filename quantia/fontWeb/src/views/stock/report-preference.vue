@@ -38,6 +38,16 @@
           <span class="hint">工作日收盘后自动分析关注列表</span>
         </el-form-item>
 
+        <el-form-item label="定时分析股票数">
+          <el-input-number v-model="form.analysis_max_stocks" :min="1" :max="200" :step="1" />
+          <span class="hint">每日定时分析最多生成报告的股票数（关注列表本身不限数量）</span>
+        </el-form-item>
+
+        <el-form-item label="连续失败熔断次数">
+          <el-input-number v-model="form.max_failures" :min="1" :max="50" :step="1" />
+          <span class="hint">定时分析连续失败达此次数且无成功时提前熔断终止</span>
+        </el-form-item>
+
         <el-form-item label="钉钉推送">
           <el-switch v-model="form.push_enabled" />
           <span class="hint">将报告摘要和预警推送到钉钉群</span>
@@ -67,6 +77,8 @@ const form = reactive({
   alert_threshold: 50,
   auto_report: false,
   push_enabled: false,
+  analysis_max_stocks: 10,
+  max_failures: 5,
 })
 
 async function loadPreference() {
@@ -79,6 +91,8 @@ async function loadPreference() {
     form.alert_threshold = res.alert_threshold || 50
     form.auto_report = !!res.auto_report
     form.push_enabled = !!res.push_enabled
+    form.analysis_max_stocks = res.analysis_max_stocks || 10
+    form.max_failures = res.max_failures || 5
   } catch (err: any) {
     ElMessage.warning('加载偏好失败: ' + (err.message || err))
   } finally {
@@ -96,6 +110,8 @@ async function handleSave() {
       alert_threshold: form.alert_threshold,
       auto_report: form.auto_report,
       push_enabled: form.push_enabled,
+      analysis_max_stocks: form.analysis_max_stocks,
+      max_failures: form.max_failures,
     })
     ElMessage.success('偏好保存成功')
   } catch (err: any) {

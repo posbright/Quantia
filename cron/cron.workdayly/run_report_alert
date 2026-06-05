@@ -13,10 +13,13 @@ check_trade_day_t1 "AI报告+评分预警"
 
 log_info "开始 AI 定时分析 + 评分预警..."
 cd "$PROJECT_ROOT"
+# 分析股票数 / 连续失败熔断次数 由「报告偏好」页面持久化到 cn_stock_report_preference，
+# job 自动读取（不再硬编码 --max-stocks）。如需临时覆盖可加 --max-stocks N / --max-failures N。
 # 超时兜底放宽到 2h：每只股票 run_agent 最多 4 轮 × 60s LLM + 工具调用，理论上限
-# ~8min/只 × max-stocks 10 ≈ 80min，故 1h 偏紧、有截断正常运行的风险；2h 留足余量。
+# ~8min/只 × 默认 10 只 ≈ 80min，故 1h 偏紧、有截断正常运行的风险；2h 留足余量。
+# 注意：若用户在偏好里调大分析股票数，应同步调大 QUANTIA_REPORT_TIMEOUT，避免被超时截断。
 # 本阶段在 Phase 2/3 服务已恢复后运行，后续仅 6/7（综合指标池/AI知识库，秒级），放宽无副作用。
-timeout "${QUANTIA_REPORT_TIMEOUT:-7200}" "$PYTHON_BIN" -m quantia.job.stock_report_scheduled --mode all --max-stocks 10 >> "$LOG_FILE" 2>&1
+timeout "${QUANTIA_REPORT_TIMEOUT:-7200}" "$PYTHON_BIN" -m quantia.job.stock_report_scheduled --mode all >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 0 ]; then

@@ -38,6 +38,8 @@ _NOTIFICATION_CONFIG_TABLE = 'cn_stock_notification_config'
 
 DEFAULT_SCORE_THRESHOLD = 50  # 评分跌破此值触发预警
 DEFAULT_ALERT_COOLDOWN_HOURS = 24  # 同一股票同一方向预警冷却时间
+DEFAULT_MAX_STOCKS = 10  # 每日定时分析最大股票数（防 token 耗尽）
+DEFAULT_MAX_FAILURES = 5  # 连续失败熔断阈值
 
 _ALLOWED_TOOLS = ['stock_profile', 'kline_fetch', 'web_search', 'sql_query']
 
@@ -50,13 +52,41 @@ def _get_effective_tools() -> list:
 # ─── 工具函数 ──────────────────────────────────────────────────────
 
 def _get_attention_codes() -> List[str]:
-    """获取关注列表中的股票代码（按最近添加时间排序）。"""
+    """获取关注列表中的股票代码（按最近添加时间排序，不限制数量）。
+
+    关注列表本身不限数量；实际参与定时分析的股票数由
+    `scheduled_report_analysis(max_stocks=...)` 控制（按偏好设置截取）。
+    """
     sql = f"""SELECT code FROM (
         SELECT code, MAX(datetime) AS latest
-        FROM `{_ATTENTION_TABLE}` GROUP BY code ORDER BY latest DESC LIMIT 50
+        FROM `{_ATTENTION_TABLE}` GROUP BY code ORDER BY latest DESC
     ) t"""
     rows = mdb.executeSqlFetch(sql) or []
     return [r[0] for r in rows if r[0] and len(r[0]) == 6]
+
+
+def _get_analysis_config() -> Dict[str, int]:
+    """从报告偏好表读取定时分析参数（分析股票数 / 连续失败熔断次数）。
+
+    用户可在前端“报告偏好”页面调整；读取失败或未配置时回退默认值。
+    """
+    config = {'max_stocks': DEFAULT_MAX_STOCKS, 'max_failures': DEFAULT_MAX_FAILURES}
+    try:
+        sql = """
+            SELECT analysis_max_stocks, max_failures
+            FROM `cn_stock_report_preference`
+            ORDER BY updated_at DESC LIMIT 1
+        """
+        rows = mdb.executeSqlFetch(sql)
+        if rows:
+            if rows[0][0] is not None:
+                config['max_stocks'] = max(int(rows[0][0]), 1)
+            if rows[0][1] is not None:
+                config['max_failures'] = max(int(rows[0][1]), 1)
+    except Exception:
+        # 字段不存在（旧表）或读取失败 → 用默认值
+        pass
+    return config
 
 
 def _get_user_preference() -> Dict[str, Any]:
@@ -134,18 +164,31 @@ def _is_alert_cooled_down(code: str, direction: str, cooldown_hours: int = DEFAU
 
 # ─── 功能 1: 定时分析 ─────────────────────────────────────────────
 
-def scheduled_report_analysis(max_stocks: int = 10) -> Dict[str, Any]:
+def scheduled_report_analysis(max_stocks: Optional[int] = None,
+                              max_failures: Optional[int] = None) -> Dict[str, Any]:
     """为关注列表中的股票自动生成 AI 分析报告。
 
     - 每日最多生成 max_stocks 只（防止 token 耗尽）
     - 跳过今日已有报告的股票
     - 结果存入 cn_stock_ai_report
     - 仅当用户偏好 auto_report=True 时执行
+
+    max_stocks / max_failures 为 None 时从报告偏好表读取（用户可配置），
+    显式传参时优先使用传入值。
     """
     pref = _get_user_preference()
     if not pref.get('auto_report', True):
         _logger.info('[定时分析] 用户偏好已关闭自动分析，跳过')
         return {'generated': 0, 'skipped': 0, 'failed': 0, 'total': 0, 'reason': 'disabled'}
+
+    cfg = _get_analysis_config()
+    if max_stocks is None:
+        max_stocks = cfg['max_stocks']
+    if max_failures is None:
+        max_failures = cfg['max_failures']
+    max_stocks = max(int(max_stocks), 1)
+    max_failures = max(int(max_failures), 1)
+    _logger.info(f'[定时分析] 参数: max_stocks={max_stocks}, max_failures={max_failures}')
 
     codes = _get_attention_codes()
     if not codes:
@@ -226,8 +269,8 @@ def scheduled_report_analysis(max_stocks: int = 10) -> Dict[str, Any]:
             _logger.warning(f'[定时分析] {code} 报告生成失败: {exc}')
 
         # 熔断：连续失败过多则提前终止
-        if stats['failed'] >= 5 and stats['generated'] == 0:
-            _logger.error('[定时分析] 连续失败过多，熔断终止')
+        if stats['failed'] >= max_failures and stats['generated'] == 0:
+            _logger.error(f'[定时分析] 连续失败 {stats["failed"]} 次（阈值 {max_failures}），熔断终止')
             break
 
         # 简单限速，避免 API 过载
@@ -429,13 +472,17 @@ def push_report_summary_to_dingtalk(code: str, name: str, summary: str, rating: 
 
 # ─── 功能 4: 热门股票预生成 (optimization_review §13) ──────────────
 
-def pregenerate_hot_stocks(top_n: int = 50) -> Dict[str, Any]:
+def pregenerate_hot_stocks(top_n: int = 50,
+                           max_failures: Optional[int] = None) -> Dict[str, Any]:
     """收盘后对今日成交额 Top N 股票预生成报告，命中缓存时毫秒级响应。
 
     - 受 feature_switch 'report_cron_pregenerate' 开关控制
     - 跳过今日已有报告的股票
     - 结果标记 source='batch'
     """
+    if max_failures is None:
+        max_failures = _get_analysis_config()['max_failures']
+    max_failures = max(int(max_failures), 1)
     try:
         from quantia.lib.ai.feature_switch import check_feature
         check_feature('report_cron_pregenerate')
@@ -499,9 +546,9 @@ def pregenerate_hot_stocks(top_n: int = 50) -> Dict[str, Any]:
             stats['failed'] += 1
             _logger.warning(f'[热门预生成] {code} 失败: {exc}')
 
-        # 熔断：连续失败 5 次则提前终止
-        if stats['failed'] >= 5 and stats['generated'] == 0:
-            _logger.error('[热门预生成] 连续失败过多，熔断终止')
+        # 熔断：连续失败过多则提前终止
+        if stats['failed'] >= max_failures and stats['generated'] == 0:
+            _logger.error(f'[热门预生成] 连续失败 {stats["failed"]} 次（阈值 {max_failures}），熔断终止')
             break
 
         time.sleep(3)  # 限速，避免 API 过载
@@ -512,12 +559,13 @@ def pregenerate_hot_stocks(top_n: int = 50) -> Dict[str, Any]:
 
 # ─── 入口 ─────────────────────────────────────────────────────────
 
-def run_all():
+def run_all(max_stocks: Optional[int] = None,
+            max_failures: Optional[int] = None):
     """执行所有定时任务。"""
     _logger.info('=' * 40 + ' 定时分析任务开始 ' + '=' * 40)
 
     # 1. 定时分析
-    report_stats = scheduled_report_analysis()
+    report_stats = scheduled_report_analysis(max_stocks=max_stocks, max_failures=max_failures)
 
     # 2. 评分预警
     alert_stats = score_alert_check()
@@ -538,17 +586,19 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Quantia 定时分析 + 评分预警')
     parser.add_argument('--mode', choices=['report', 'alert', 'pregenerate', 'all'], default='all',
                         help='执行模式: report=仅定时分析, alert=仅评分预警, pregenerate=热门预生成, all=全部')
-    parser.add_argument('--max-stocks', type=int, default=10,
-                        help='定时分析最大股票数')
+    parser.add_argument('--max-stocks', type=int, default=None,
+                        help='定时分析最大股票数（不传则从报告偏好表读取，默认 10）')
+    parser.add_argument('--max-failures', type=int, default=None,
+                        help='连续失败熔断阈值（不传则从报告偏好表读取，默认 5）')
     parser.add_argument('--top-n', type=int, default=50,
                         help='热门预生成 Top N')
     args = parser.parse_args()
 
     if args.mode == 'report':
-        scheduled_report_analysis(max_stocks=args.max_stocks)
+        scheduled_report_analysis(max_stocks=args.max_stocks, max_failures=args.max_failures)
     elif args.mode == 'alert':
         score_alert_check()
     elif args.mode == 'pregenerate':
-        pregenerate_hot_stocks(top_n=args.top_n)
+        pregenerate_hot_stocks(top_n=args.top_n, max_failures=args.max_failures)
     else:
-        run_all()
+        run_all(max_stocks=args.max_stocks, max_failures=args.max_failures)

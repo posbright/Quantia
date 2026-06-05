@@ -28,6 +28,20 @@ const routes: RouteRecordRaw[] = [
     ]
   },
   {
+    path: '/attention',
+    component: Layout,
+    redirect: '/attention/list',
+    meta: { title: '我的关注', icon: 'Star' },
+    children: [
+      {
+        path: 'list',
+        name: 'AttentionList',
+        component: () => import('@/views/attention/index.vue'),
+        meta: { title: '我的关注', icon: 'Star' }
+      }
+    ]
+  },
+  {
     path: '/selection',
     component: Layout,
     redirect: '/selection/all',

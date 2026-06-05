@@ -1135,20 +1135,62 @@ class StockReportAttentionListHandler(webBase.BaseHandler, ABC):
         import quantia.core.tablestructure as tbs
         table_name = tbs.TABLE_CN_STOCK_ATTENTION['name']
         sql = f"""
-            SELECT a.code, COALESCE(MAX(s.name), '') as name
+            SELECT a.code, COALESCE(MAX(s.name), '') as name,
+                   MAX(a.datetime) as latest
             FROM `{table_name}` a
             LEFT JOIN cn_stock_spot s ON a.code = s.code
             GROUP BY a.code
-            ORDER BY MAX(a.datetime) DESC
-            LIMIT 50
+            ORDER BY latest DESC
         """
         try:
             rows = mdb.executeSqlFetch(sql)
-            items = [{'code': r[0], 'name': r[1]} for r in rows] if rows else []
+            codes = [r[0] for r in rows] if rows else []
+            score_map = self._fetch_latest_scores(codes)
+            items = []
+            for r in (rows or []):
+                code = r[0]
+                sc = score_map.get(code, {})
+                items.append({
+                    'code': code,
+                    'name': r[1],
+                    'score': sc.get('score'),
+                    'action': sc.get('action'),
+                    'scored_at': sc.get('scored_at'),
+                })
             _write_json(self, {'items': items, 'count': len(items)})
         except Exception as exc:
             _logger.warning(f'[stockReport] 获取关注列表失败: {exc}', exc_info=True)
             _write_json(self, {'items': [], 'count': 0})
+
+    @staticmethod
+    def _fetch_latest_scores(codes):
+        """批量获取关注股票的最新 AI 评分（code -> {score, action, scored_at}）。"""
+        if not codes:
+            return {}
+        try:
+            placeholders = ','.join(['%s'] * len(codes))
+            sql = f"""
+                SELECT t.code, t.score, t.action, t.created_at
+                FROM `cn_stock_trade_ai_score` t
+                JOIN (
+                    SELECT code, MAX(created_at) AS mx
+                    FROM `cn_stock_trade_ai_score`
+                    WHERE code IN ({placeholders})
+                    GROUP BY code
+                ) m ON t.code = m.code AND t.created_at = m.mx
+            """
+            rows = mdb.executeSqlFetch(sql, tuple(codes)) or []
+            out = {}
+            for code, score, action, created_at in rows:
+                out[code] = {
+                    'score': float(score) if score is not None else None,
+                    'action': action or '',
+                    'scored_at': str(created_at) if created_at else '',
+                }
+            return out
+        except Exception as exc:
+            _logger.debug(f'[stockReport] 获取评分失败(不影响列表): {exc}')
+            return {}
 
 
 def _run_batch_summary(codes: List[str], q: queue.Queue, cancel: threading.Event):
@@ -1694,7 +1736,7 @@ _PREFERENCE_TABLE = 'cn_stock_report_preference'
 
 
 def _ensure_preference_table():
-    """确保用户偏好表存在。"""
+    """确保用户偏好表存在，并补齐新增列（analysis_max_stocks / max_failures）。"""
     if not mdb.checkTableIsExist(_PREFERENCE_TABLE):
         mdb.executeSql(f'''
             CREATE TABLE IF NOT EXISTS `{_PREFERENCE_TABLE}` (
@@ -1706,11 +1748,34 @@ def _ensure_preference_table():
                 `alert_threshold` INT DEFAULT 50 COMMENT '评分预警阈值',
                 `auto_report` TINYINT(1) DEFAULT 0 COMMENT '是否启用定时自动分析',
                 `push_enabled` TINYINT(1) DEFAULT 0 COMMENT '是否启用钉钉推送',
+                `analysis_max_stocks` INT DEFAULT 10 COMMENT '每日定时分析最大股票数',
+                `max_failures` INT DEFAULT 5 COMMENT '连续失败熔断次数',
                 `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
                 `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY `uq_user` (`user_id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ''')
+        return
+    # 旧表迁移：补齐新增列（按 INFORMATION_SCHEMA 校验后再 ALTER）
+    try:
+        existing = mdb.executeSqlFetch(
+            """SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""",
+            (_PREFERENCE_TABLE,),
+        ) or []
+        cols = {r[0] for r in existing}
+        if 'analysis_max_stocks' not in cols:
+            mdb.executeSql(
+                f"ALTER TABLE `{_PREFERENCE_TABLE}` "
+                f"ADD COLUMN `analysis_max_stocks` INT DEFAULT 10 COMMENT '每日定时分析最大股票数'"
+            )
+        if 'max_failures' not in cols:
+            mdb.executeSql(
+                f"ALTER TABLE `{_PREFERENCE_TABLE}` "
+                f"ADD COLUMN `max_failures` INT DEFAULT 5 COMMENT '连续失败熔断次数'"
+            )
+    except Exception as exc:
+        _logger.warning(f'[preference] 迁移新增列失败: {exc}')
 
 
 class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
@@ -1728,7 +1793,7 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
             user_id = 'default'
         sql = f"""
             SELECT focus_dimensions, language, voice_enabled, alert_threshold,
-                   auto_report, push_enabled
+                   auto_report, push_enabled, analysis_max_stocks, max_failures
             FROM `{_PREFERENCE_TABLE}`
             WHERE user_id = %s
         """
@@ -1746,6 +1811,8 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
                 'alert_threshold': r[3] or 50,
                 'auto_report': bool(r[4]),
                 'push_enabled': bool(r[5]),
+                'analysis_max_stocks': r[6] if r[6] is not None else 10,
+                'max_failures': r[7] if r[7] is not None else 5,
             })
         else:
             _write_json(self, {
@@ -1755,6 +1822,8 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
                 'alert_threshold': 50,
                 'auto_report': False,
                 'push_enabled': False,
+                'analysis_max_stocks': 10,
+                'max_failures': 5,
             })
 
     @gen.coroutine
@@ -1784,24 +1853,36 @@ class StockReportPreferenceHandler(webBase.BaseHandler, ABC):
             alert_threshold = 50
         auto_report = 1 if body.get('auto_report') else 0
         push_enabled = 1 if body.get('push_enabled') else 0
+        try:
+            analysis_max_stocks = min(max(int(body.get('analysis_max_stocks', 10)), 1), 200)
+        except (ValueError, TypeError):
+            analysis_max_stocks = 10
+        try:
+            max_failures = min(max(int(body.get('max_failures', 5)), 1), 50)
+        except (ValueError, TypeError):
+            max_failures = 5
 
         sql = f"""
             INSERT INTO `{_PREFERENCE_TABLE}`
                 (user_id, focus_dimensions, language, voice_enabled,
-                 alert_threshold, auto_report, push_enabled)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                 alert_threshold, auto_report, push_enabled,
+                 analysis_max_stocks, max_failures)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 focus_dimensions = VALUES(focus_dimensions),
                 language = VALUES(language),
                 voice_enabled = VALUES(voice_enabled),
                 alert_threshold = VALUES(alert_threshold),
                 auto_report = VALUES(auto_report),
-                push_enabled = VALUES(push_enabled)
+                push_enabled = VALUES(push_enabled),
+                analysis_max_stocks = VALUES(analysis_max_stocks),
+                max_failures = VALUES(max_failures)
         """
         try:
             mdb.executeSql(sql, (
                 user_id, json.dumps(dims), language, voice_enabled,
                 alert_threshold, auto_report, push_enabled,
+                analysis_max_stocks, max_failures,
             ))
             _write_json(self, {'ok': True})
         except Exception as exc:

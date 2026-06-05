@@ -322,6 +322,9 @@ export function createShareLink(reportId: number) {
 export interface AttentionListItem {
   code: string
   name: string
+  score?: number | null
+  action?: string
+  scored_at?: string
 }
 
 export interface BatchSummaryEvent {
@@ -452,6 +455,8 @@ export interface ReportPreference {
   alert_threshold: number
   auto_report: boolean
   push_enabled: boolean
+  analysis_max_stocks: number
+  max_failures: number
 }
 
 /**
