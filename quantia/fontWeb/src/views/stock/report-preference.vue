@@ -38,9 +38,42 @@
           <span class="hint">工作日收盘后自动分析关注列表</span>
         </el-form-item>
 
+        <el-form-item label="定时分析选股方式">
+          <el-radio-group v-model="form.analysis_mode">
+            <el-radio value="top_score">综合选股评分最高的前 N 只</el-radio>
+            <el-radio value="specified">指定股票</el-radio>
+          </el-radio-group>
+          <div class="hint block-hint">
+            「前 N 只」：从关注列表中按综合选股评分降序取前 N 只；「指定股票」：只分析你指定的股票并推送钉钉。
+          </div>
+        </el-form-item>
+
+        <el-form-item v-if="form.analysis_mode === 'specified'" label="指定股票代码">
+          <el-select
+            v-model="form.analysis_codes"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            :reserve-keyword="false"
+            placeholder="输入 6 位股票代码后回车（如 603259）"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="c in form.analysis_codes"
+              :key="c"
+              :label="c"
+              :value="c"
+            />
+          </el-select>
+          <span class="hint block-hint">只保留 6 位数字代码，最多 200 只；上限仍受「定时分析股票数」控制。</span>
+        </el-form-item>
+
         <el-form-item label="定时分析股票数">
           <el-input-number v-model="form.analysis_max_stocks" :min="1" :max="200" :step="1" />
-          <span class="hint">每日定时分析最多生成报告的股票数（关注列表本身不限数量）</span>
+          <span class="hint">
+            {{ form.analysis_mode === 'specified' ? '指定股票本次最多分析数' : '按综合选股评分取前 N 只（关注列表本身不限数量）' }}
+          </span>
         </el-form-item>
 
         <el-form-item label="连续失败熔断次数">
@@ -79,6 +112,8 @@ const form = reactive({
   push_enabled: false,
   analysis_max_stocks: 10,
   max_failures: 5,
+  analysis_mode: 'top_score' as 'top_score' | 'specified',
+  analysis_codes: [] as string[],
 })
 
 async function loadPreference() {
@@ -93,6 +128,8 @@ async function loadPreference() {
     form.push_enabled = !!res.push_enabled
     form.analysis_max_stocks = res.analysis_max_stocks || 10
     form.max_failures = res.max_failures || 5
+    form.analysis_mode = res.analysis_mode === 'specified' ? 'specified' : 'top_score'
+    form.analysis_codes = Array.isArray(res.analysis_codes) ? res.analysis_codes : []
   } catch (err: any) {
     ElMessage.warning('加载偏好失败: ' + (err.message || err))
   } finally {
@@ -112,6 +149,8 @@ async function handleSave() {
       push_enabled: form.push_enabled,
       analysis_max_stocks: form.analysis_max_stocks,
       max_failures: form.max_failures,
+      analysis_mode: form.analysis_mode,
+      analysis_codes: form.analysis_codes,
     })
     ElMessage.success('偏好保存成功')
   } catch (err: any) {
@@ -139,5 +178,10 @@ onActivated(() => {
   margin-left: 12px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+.block-hint {
+  display: block;
+  margin-left: 0;
+  margin-top: 6px;
 }
 </style>

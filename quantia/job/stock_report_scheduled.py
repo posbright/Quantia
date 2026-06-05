@@ -65,15 +65,21 @@ def _get_attention_codes() -> List[str]:
     return [r[0] for r in rows if r[0] and len(r[0]) == 6]
 
 
-def _get_analysis_config() -> Dict[str, int]:
-    """从报告偏好表读取定时分析参数（分析股票数 / 连续失败熔断次数）。
+def _get_analysis_config() -> Dict[str, Any]:
+    """从报告偏好表读取定时分析参数。
 
-    用户可在前端“报告偏好”页面调整；读取失败或未配置时回退默认值。
+    返回 max_stocks / max_failures / analysis_mode / analysis_codes。
+    用户可在前端"报告偏好"页面调整；读取失败或未配置时回退默认值。
     """
-    config = {'max_stocks': DEFAULT_MAX_STOCKS, 'max_failures': DEFAULT_MAX_FAILURES}
+    config: Dict[str, Any] = {
+        'max_stocks': DEFAULT_MAX_STOCKS,
+        'max_failures': DEFAULT_MAX_FAILURES,
+        'analysis_mode': 'top_score',
+        'analysis_codes': [],
+    }
     try:
         sql = """
-            SELECT analysis_max_stocks, max_failures
+            SELECT analysis_max_stocks, max_failures, analysis_mode, analysis_codes
             FROM `cn_stock_report_preference`
             ORDER BY updated_at DESC LIMIT 1
         """
@@ -83,10 +89,75 @@ def _get_analysis_config() -> Dict[str, int]:
                 config['max_stocks'] = max(int(rows[0][0]), 1)
             if rows[0][1] is not None:
                 config['max_failures'] = max(int(rows[0][1]), 1)
+            mode = rows[0][2]
+            if mode in ('top_score', 'specified'):
+                config['analysis_mode'] = mode
+            raw_codes = rows[0][3]
+            if raw_codes:
+                try:
+                    codes = json.loads(raw_codes)
+                    config['analysis_codes'] = [
+                        str(c) for c in codes
+                        if str(c).isdigit() and len(str(c)) == 6
+                    ]
+                except (json.JSONDecodeError, TypeError):
+                    pass
     except Exception:
         # 字段不存在（旧表）或读取失败 → 用默认值
         pass
     return config
+
+
+def _get_selection_score_map(codes: List[str]) -> Dict[str, float]:
+    """批量获取股票的综合选股评分（code -> total_score，取最新交易日）。
+
+    数据源 cn_stock_selection_score（每日多因子综合打分）。无评分的股票不在返回中。
+    """
+    if not codes:
+        return {}
+    try:
+        placeholders = ','.join(['%s'] * len(codes))
+        sql = f"""
+            SELECT s.code, s.total_score
+            FROM `cn_stock_selection_score` s
+            JOIN (
+                SELECT code, MAX(date) AS mx
+                FROM `cn_stock_selection_score`
+                WHERE code IN ({placeholders})
+                GROUP BY code
+            ) m ON s.code = m.code AND s.date = m.mx
+        """
+        rows = mdb.executeSqlFetch(sql, tuple(codes)) or []
+        return {r[0]: float(r[1]) for r in rows if r[1] is not None}
+    except Exception as exc:
+        _logger.debug(f'[定时分析] 读取综合选股评分失败: {exc}')
+        return {}
+
+
+def _select_analysis_codes(max_stocks: int, mode: str,
+                           specified_codes: List[str]) -> List[str]:
+    """根据选股方式确定本次定时分析的股票代码列表。
+
+    - mode='specified': 直接使用用户指定的股票（最多 max_stocks 只）。
+    - mode='top_score': 取关注列表中综合选股评分最高的前 max_stocks 只
+      （无评分的股票排在最后，按关注时间兜底排序）。
+    """
+    if mode == 'specified':
+        return specified_codes[:max_stocks]
+
+    # top_score: 关注列表按综合选股评分降序
+    codes = _get_attention_codes()
+    if not codes:
+        return []
+    score_map = _get_selection_score_map(codes)
+    # 有评分的优先（按评分降序），无评分的保留原顺序（关注时间）排在后面
+    ranked = sorted(
+        codes,
+        key=lambda c: (c in score_map, score_map.get(c, float('-inf'))),
+        reverse=True,
+    )
+    return ranked[:max_stocks]
+
 
 
 def _get_user_preference() -> Dict[str, Any]:
@@ -162,6 +233,48 @@ def _is_alert_cooled_down(code: str, direction: str, cooldown_hours: int = DEFAU
         return False
 
 
+def _insert_report(code: str, name: str, content: str, result: Any, source: str) -> None:
+    """持久化 AI 报告并抽取结构化字段（评级 / AI评分 / 操作建议等）。
+
+    定时任务原先只写 report_md，导致 cn_stock_ai_report.rating / rating_score
+    全为 NULL，前端"AI评分"无内容可显示。此处与 SSE 生成路径一致，调用
+    report_parser.extract_structured_fields 抽取结构化字段后再写库。
+    """
+    try:
+        from quantia.lib.ai.report_parser import extract_structured_fields
+        structured = extract_structured_fields(content) or {}
+    except Exception as exc:
+        _logger.debug(f'[定时分析] {code} 结构化抽取失败(降级写入): {exc}')
+        structured = {}
+
+    moat_factors_json = json.dumps(structured.get('moat_factors') or {}, ensure_ascii=False)
+    tools_json = json.dumps([tc.get('name') for tc in (result.tool_calls or [])])
+    mdb.executeSql(
+        f"""INSERT INTO `{_REPORT_TABLE}`
+            (code, name, report_md, model, provider, tools_used,
+             tokens_used, latency_ms,
+             rating, rating_score, short_term_advice, mid_term_advice,
+             long_term_advice, target_price_low, target_price_high,
+             stop_loss_price, moat_score, moat_factors,
+             source, data_cutoff_date, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, CURDATE(), NOW())""",
+        (
+            code, name or '', content,
+            result.model or '', result.provider or '',
+            tools_json,
+            result.total_tokens or 0, 0,
+            structured.get('rating'), structured.get('rating_score'),
+            structured.get('short_term_advice'), structured.get('mid_term_advice'),
+            structured.get('long_term_advice'), structured.get('target_price_low'),
+            structured.get('target_price_high'), structured.get('stop_loss_price'),
+            structured.get('moat_score'), moat_factors_json,
+            source,
+        ),
+    )
+
+
 # ─── 功能 1: 定时分析 ─────────────────────────────────────────────
 
 def scheduled_report_analysis(max_stocks: Optional[int] = None,
@@ -188,17 +301,25 @@ def scheduled_report_analysis(max_stocks: Optional[int] = None,
         max_failures = cfg['max_failures']
     max_stocks = max(int(max_stocks), 1)
     max_failures = max(int(max_failures), 1)
-    _logger.info(f'[定时分析] 参数: max_stocks={max_stocks}, max_failures={max_failures}')
+    mode = cfg.get('analysis_mode', 'top_score')
+    specified_codes = cfg.get('analysis_codes', [])
+    _logger.info(
+        f'[定时分析] 参数: max_stocks={max_stocks}, max_failures={max_failures}, '
+        f'mode={mode}, specified={len(specified_codes)}只'
+    )
 
-    codes = _get_attention_codes()
+    codes = _select_analysis_codes(max_stocks, mode, specified_codes)
     if not codes:
-        _logger.info('[定时分析] 关注列表为空，跳过')
+        if mode == 'specified':
+            _logger.info('[定时分析] 指定股票列表为空，跳过')
+        else:
+            _logger.info('[定时分析] 关注列表为空，跳过')
         return {'generated': 0, 'skipped': 0, 'failed': 0, 'total': 0}
 
     today = datetime.date.today().isoformat()
     stats = {'generated': 0, 'skipped': 0, 'failed': 0, 'total': len(codes)}
 
-    for code in codes[:max_stocks]:
+    for code in codes:
         # 检查今日是否已有报告
         try:
             sql = f"""
@@ -242,18 +363,7 @@ def scheduled_report_analysis(max_stocks: Optional[int] = None,
                     stock_name = tc.get('result', {}).get('name', '')
                     break
 
-            mdb.executeSql(
-                f"""INSERT INTO `{_REPORT_TABLE}`
-                    (code, name, report_md, model, provider, tools_used,
-                     tokens_used, latency_ms, source, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'cron', NOW())""",
-                (
-                    code, stock_name, content,
-                    result.model or '', result.provider or '',
-                    json.dumps([tc.get('name') for tc in (result.tool_calls or [])]),
-                    result.total_tokens or 0, 0,
-                )
-            )
+            _insert_report(code, stock_name, content, result, 'cron')
             stats['generated'] += 1
             _logger.info(f'[定时分析] {code} {stock_name} 报告生成成功')
 
@@ -528,18 +638,7 @@ def pregenerate_hot_stocks(top_n: int = 50,
                 allowed_tools=_get_effective_tools(),
             )
             content = (result.content or '')[:10000]
-            mdb.executeSql(
-                f"""INSERT INTO `{_REPORT_TABLE}`
-                    (code, name, report_md, model, provider, tools_used,
-                     tokens_used, latency_ms, source, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'batch', NOW())""",
-                (
-                    code, name or '', content,
-                    result.model or '', result.provider or '',
-                    json.dumps([tc.get('name') for tc in (result.tool_calls or [])]),
-                    result.total_tokens or 0, 0,
-                ),
-            )
+            _insert_report(code, name, content, result, 'batch')
             stats['generated'] += 1
             _logger.info(f'[热门预生成] {code} {name} 完成')
         except Exception as exc:

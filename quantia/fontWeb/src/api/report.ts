@@ -325,6 +325,16 @@ export interface AttentionListItem {
   score?: number | null
   action?: string
   scored_at?: string
+  sel_score?: number | null
+  sel_rating?: string
+  sel_rank?: number | null
+  sel_total?: number | null
+  sel_industry?: string
+  sel_date?: string
+  report_id?: number | null
+  report_rating?: string
+  report_rating_score?: number | null
+  report_at?: string
 }
 
 export interface BatchSummaryEvent {
@@ -457,6 +467,8 @@ export interface ReportPreference {
   push_enabled: boolean
   analysis_max_stocks: number
   max_failures: number
+  analysis_mode: 'top_score' | 'specified'
+  analysis_codes: string[]
 }
 
 /**

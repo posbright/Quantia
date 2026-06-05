@@ -18,7 +18,13 @@
       </span>
     </div>
 
-    <el-table :data="historyList" v-loading="loading" stripe empty-text="暂无报告数据">
+    <el-tabs v-model="activeTab" class="history-tabs">
+      <el-tab-pane label="AI分析报告" name="report" />
+      <el-tab-pane label="AI评分趋势" name="score" />
+    </el-tabs>
+
+    <!-- AI分析报告：完整报告列表 + Markdown 查看 -->
+    <el-table v-if="activeTab === 'report'" :data="historyList" v-loading="loading" stripe empty-text="暂无报告数据">
       <el-table-column prop="code" label="代码" width="90" />
       <el-table-column prop="name" label="名称" width="120" />
       <el-table-column label="评级" width="90">
@@ -27,6 +33,11 @@
             {{ ratingLabel(row.rating) }}
           </el-tag>
           <span v-else>-</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="AI评分" width="90" align="right">
+        <template #default="{ row }">
+          {{ row.rating_score ?? '-' }}
         </template>
       </el-table-column>
       <el-table-column label="护城河" width="90" align="right">
@@ -48,6 +59,39 @@
       <el-table-column label="操作" width="100">
         <template #default="{ row }">
           <el-button link type="primary" @click="viewReport(row)">查看</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+
+    <!-- AI评分趋势：聚焦每次分析的 AI 评分 / 评级变化 -->
+    <el-table v-else :data="historyList" v-loading="loading" stripe empty-text="暂无评分数据">
+      <el-table-column prop="created_at" label="分析时间" width="180" />
+      <el-table-column label="版本" width="80" align="right">
+        <template #default="{ row }">v{{ row.report_version || 1 }}</template>
+      </el-table-column>
+      <el-table-column label="AI评分" width="120">
+        <template #default="{ row }">
+          <el-tag v-if="row.rating_score != null" :type="scoreTagType(row.rating_score)" effect="dark">
+            {{ row.rating_score }}
+          </el-tag>
+          <span v-else class="muted">未评分</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="评级" width="90">
+        <template #default="{ row }">
+          <el-tag v-if="row.rating" :type="ratingType(row.rating)" size="small">
+            {{ ratingLabel(row.rating) }}
+          </el-tag>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="短期建议" min-width="220" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.short_term_advice || '-' }}</template>
+      </el-table-column>
+      <el-table-column prop="model" label="模型" width="140" />
+      <el-table-column label="操作" width="100">
+        <template #default="{ row }">
+          <el-button link type="primary" @click="viewReport(row)">查看报告</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -102,11 +146,14 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onActivated } from 'vue'
+import { useRoute } from 'vue-router'
 import { getReportHistory, getReportDetail } from '@/api/report'
 import type { ReportDetail, ReportHistoryItem, ReportRating } from '@/api/report'
 
+const route = useRoute()
 const loading = ref(false)
 const filterCode = ref('')
+const activeTab = ref<'report' | 'score'>('report')
 const historyList = ref<ReportHistoryItem[]>([])
 const currentPage = ref(1)
 const pageSize = 20
@@ -196,6 +243,12 @@ function ratingType(rating?: ReportRating | null) {
   return 'info'
 }
 
+function scoreTagType(score: number) {
+  if (score >= 70) return 'success'
+  if (score >= 50) return 'warning'
+  return 'danger'
+}
+
 function formatPriceRange(report: ReportDetail) {
   const low = report.target_price_low
   const high = report.target_price_high
@@ -203,11 +256,23 @@ function formatPriceRange(report: ReportDetail) {
   return `${low || high || '-'}`
 }
 
+function applyRouteQuery() {
+  const code = (route.query.code as string) || ''
+  const tab = (route.query.tab as string) || ''
+  if (code && code.trim()) {
+    filterCode.value = code.trim()
+    currentPage.value = 1
+  }
+  activeTab.value = tab === 'score' ? 'score' : 'report'
+}
+
 onMounted(() => {
+  applyRouteQuery()
   loadHistory()
 })
 
 onActivated(() => {
+  applyRouteQuery()
   loadHistory()
 })
 </script>
@@ -269,5 +334,11 @@ onActivated(() => {
 }
 .advice-item span {
   color: var(--el-text-color-regular);
+}
+.history-tabs {
+  margin-bottom: 4px;
+}
+.muted {
+  color: var(--el-text-color-placeholder);
 }
 </style>

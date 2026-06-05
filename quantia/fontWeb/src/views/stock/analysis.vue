@@ -31,6 +31,9 @@
         >
           📋 批量分析({{ attentionCount }})
         </el-button>
+        <el-button v-if="currentCode" @click="goHistory">
+          📜 分析历史
+        </el-button>
       </div>
       <!-- 报告工具栏：仅报告生成后显示 -->
       <div v-if="reportContent" class="toolbar-row">
@@ -311,7 +314,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onActivated, onBeforeUnmount, nextTick, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   VideoPlay, CopyDocument, Loading, CircleCheckFilled, Clock, DataAnalysis, ArrowDown
 } from '@element-plus/icons-vue'
@@ -333,6 +336,7 @@ async function ensureMarkdownIt() {
 
 // ---- State ----
 const route = useRoute()
+const router = useRouter()
 const searchText = ref('')
 const currentCode = ref('')
 const currentName = ref('')
@@ -1172,6 +1176,11 @@ async function loadReportTimeline(code: string) {
   } catch {
     reportTimeline.value = []
   }
+}
+
+function goHistory() {
+  if (!currentCode.value) return
+  router.push({ path: '/ai-report/history', query: { code: currentCode.value } })
 }
 
 async function loadTimelineReport(id: number) {
