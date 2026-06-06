@@ -1794,8 +1794,10 @@ def clean_expired_cache(expire_days=None):
     except Exception as e:
         logging.warning(f"获取股票列表失败，跳过退市股票清理：{e}")
 
-    # 获取近期已实施除权除息的股票代码（需要刷新前复权缓存）
-    bonus_codes = set()
+    # 获取近期除权除息的股票代码及其除权日（需要刷新前复权缓存）
+    # 关键修复：避免在35天窗口内"每天重复删除同一只股票缓存"。
+    # 删除条件下移到逐文件判定：仅当「除权已发生 且 缓存生成于除权日前」时删一次。
+    bonus_exdiv_map = {}  # {code: ex_dividend_date(datetime.date)}
     try:
         bonus_data = fetch_stocks_bonus(None)
         if bonus_data is not None and len(bonus_data) > 0:
@@ -1807,9 +1809,16 @@ def clean_expired_cache(expire_days=None):
                     bonus_data[ex_div_col].notna() &
                     (bonus_data[ex_div_col].astype(str) >= cutoff_date)
                 ]
-                bonus_codes = set(recent_bonus['code'].tolist())
-            if bonus_codes:
-                logging.info(f"发现 {len(bonus_codes)} 只近期已除权除息的股票")
+                if len(recent_bonus) > 0:
+                    # 每只股票保留最新的除权日（同一窗口内可能有多条记录）
+                    _tmp = recent_bonus[['code', ex_div_col]].copy()
+                    _tmp[ex_div_col] = pd.to_datetime(_tmp[ex_div_col], errors='coerce').dt.date
+                    _tmp = _tmp.dropna(subset=[ex_div_col])
+                    if len(_tmp) > 0:
+                        _tmp = _tmp.sort_values(ex_div_col).drop_duplicates(subset=['code'], keep='last')
+                        bonus_exdiv_map = {str(r['code']): r[ex_div_col] for _, r in _tmp.iterrows()}
+            if bonus_exdiv_map:
+                logging.info(f"发现 {len(bonus_exdiv_map)} 只近期已除权除息的股票")
     except Exception:
         logging.debug("获取除权除息数据异常，不影响缓存清理", exc_info=True)  # 获取失败不影响清理
 
@@ -1852,10 +1861,32 @@ def clean_expired_cache(expire_days=None):
                     continue
 
                 # 2. 清理有除权除息的股票的前复权缓存（以便重新拉取正确数据）
-                if code in bonus_codes and adjust == 'qfq':
-                    _remove_cache_pair(meta_path)
-                    bonus_count += 1
-                    continue
+                # 仅在「除权已发生 且 缓存在除权日前生成」时删除一次，避免：
+                #   (a) 未来已公告未执行的除权：qfq 调整因子尚未变化，旧缓存仍正确，不应删；
+                #   (b) 已在除权日当天/之后重建的缓存：已是正确调整，不重复删。
+                # 新鲜度判定用 meta 的 update_time（本程序写入，比文件系统 mtime 更可靠）。
+                if code in bonus_exdiv_map and adjust == 'qfq':
+                    ex_div_date = bonus_exdiv_map.get(code)
+                    today = datetime.date.today()
+                    should_remove = False
+                    # 仅当除权除息日已到达（<= 今天）才需要刷新前复权缓存
+                    if ex_div_date is not None and ex_div_date <= today:
+                        meta = _read_cache_meta(code, adjust)
+                        cache_refreshed = False
+                        ut = str(meta['update_time']) if (meta and meta.get('update_time')) else ''
+                        if len(ut) >= 8:
+                            try:
+                                cache_update_date = datetime.datetime.strptime(ut[:8], "%Y%m%d").date()
+                                # 缓存在除权日当天或之后写入 → 已含正确调整，无需再删
+                                cache_refreshed = cache_update_date >= ex_div_date
+                            except ValueError:
+                                cache_refreshed = False
+                        should_remove = not cache_refreshed
+
+                    if should_remove:
+                        _remove_cache_pair(meta_path)
+                        bonus_count += 1
+                        continue
 
     except Exception as e:
         logging.error(f"清理缓存失败", exc_info=True)
