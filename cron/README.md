@@ -284,7 +284,7 @@ source /etc/cron/_common.sh
   | 公告采集 | `QUANTIA_ANNOUNCE_TIMEOUT` | 1800 |
   | 专利采集 | `QUANTIA_PATENT_CRAWL_TIMEOUT` | 3600 |
   | 专利聚合 | `QUANTIA_PATENT_AGG_TIMEOUT` | 1800 |
-  | K线缓存 | `QUANTIA_KLINE_TIMEOUT` | 7200 |
+  | K线缓存 | `QUANTIA_KLINE_TIMEOUT` | 21600 |
   | 数据分析（含回测，最长 ~2h） | `QUANTIA_ANALYSIS_TIMEOUT` | 14400 |
   | 基金综合评分 | `QUANTIA_FUND_SCORE_TIMEOUT` | 1800 |
   | 模拟交易 | `QUANTIA_PAPER_TIMEOUT` | 3600 |
@@ -613,7 +613,7 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 | `HIST_DATA_DEFAULT_YEARS` | 10 (Docker: 3) | 历史K线默认获取年数 |
 | `QUANTIA_BATCH_SIZE` | 50 | 流式分析每批处理股票数 |
 | `QUANTIA_ANALYSIS_WORKERS` | 2 | 流式分析并发线程数 |
-| `QUANTIA_KLINE_CACHE_WORKERS` | 2 | K线缓存更新并发数 |
+| `QUANTIA_KLINE_CACHE_WORKERS` | 3 | K线缓存更新并发数 |
 | `QUANTIA_FUND_NAV_WORKERS` | 1 | F8 基金净值历史并发**进程**数（1=串行；akshare 依赖 py_mini_racer/V8 非线程安全，故用多进程而非多线程；每进程约数百 MB，16G 本机可设 8~12，1.6G 服务器勿超 2~4） |
 | `QUANTIA_FUND_NAV_OFFLINE` | 0 | 设为 `1` 时 `--export` 跳过数据库选 code、直接用 akshare 全市场排行（本机连不上 MySQL 时用，省去连库超时重试） |
 | `QUANTIA_FUND_NAV_YEARS` | 0 | `--export` 默认仅保留最近 N 年净值（成立不足者保留全部）；0=不限。命令行 `--years` 优先 |

@@ -1945,7 +1945,7 @@ def update_all_caches(stocks, date_start, date_end, workers=2, spot_df=None):
     - 缓存损坏：读取失败自动回退到API
 
     5层限流防护策略：
-    第1层 - 控制并发：默认 2 线程（最大 8），可通过环境变量 QUANTIA_KLINE_CACHE_WORKERS 配置
+    第1层 - 控制并发：服务器默认 3 线程（本地 6，最大 4/12），可通过环境变量 QUANTIA_KLINE_CACHE_WORKERS 配置
     第2层 - 请求间隔：每次 API 请求后等待（可通过环境变量配置）
     第3层 - 批次冷却：每 N 只股票暂停（可通过环境变量配置）
     第4层 - 限流检测：连续 N 次失败即触发暂停，渐进退避
@@ -1959,7 +1959,7 @@ def update_all_caches(stocks, date_start, date_end, workers=2, spot_df=None):
         stocks: 股票列表 [(date, code), ...]
         date_start: 起始日期 YYYYMMDD
         date_end: 结束日期 YYYYMMDD
-        workers: 并发线程数（默认2，本地可设置更高）
+        workers: 并发线程数（服务器默认3，本地默认6，可通过环境变量覆盖）
         spot_df: 实时行情DataFrame（来自 stock_data().get_data()），
                  包含全市场当日OHLCV数据，用于快速追加模式
     返回：
@@ -1984,15 +1984,15 @@ def update_all_caches(stocks, date_start, date_end, workers=2, spot_df=None):
         CHUNK_SIZE = 300                 # 本地更大的批次
         logging.info("K线缓存更新：本地模式（高并发、少延迟）")
     else:
-        # 服务器模式：保守配置（防OOM、防限流）
-        DEFAULT_WORKERS = 2              # 服务器默认2线程
+        # 服务器模式：平衡配置（优先避免超时，同时保留限流/熔断保护）
+        DEFAULT_WORKERS = 3              # 服务器默认3线程
         MAX_WORKERS = 4                  # 服务器最大4线程
-        REQUEST_DELAY = (1.0, 3.0)       # 服务器请求间隔更长
-        BATCH_PAUSE_SECONDS = (8, 15)    # 服务器暂停时间更长
-        CONSECUTIVE_FAIL_THRESHOLD = 3   # 服务器容忍较少失败
-        BASE_THROTTLE_PAUSE = 120        # 服务器限流暂停更长
-        MAX_THROTTLE_COUNT = 3           # 服务器容忍较少限流
-        CHUNK_SIZE = 100                 # 服务器标准批次
+        REQUEST_DELAY = (0.6, 1.5)       # 服务器请求间隔适度放宽吞吐
+        BATCH_PAUSE_SECONDS = (5, 10)    # 服务器批次暂停缩短，降低总耗时
+        CONSECUTIVE_FAIL_THRESHOLD = 4   # 服务器容忍少量瞬时失败，避免过早退避
+        BASE_THROTTLE_PAUSE = 90         # 服务器限流暂停保守但不过长
+        MAX_THROTTLE_COUNT = 4           # 服务器允许更多次限流恢复
+        CHUNK_SIZE = 150                 # 服务器批次略增，减少批间停顿占比
 
     # 允许通过环境变量覆盖默认值
     workers = _cfg.get_int('QUANTIA_KLINE_CACHE_WORKERS', workers if workers > 2 else DEFAULT_WORKERS)

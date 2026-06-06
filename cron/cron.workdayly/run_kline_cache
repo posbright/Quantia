@@ -30,6 +30,8 @@ if [ "${QUANTIA_NO_SERVICE_STOP:-0}" != "1" ]; then
     SERVICES_STOPPED=1
 fi
 
-run_job "K线缓存增量更新 (kline_cache_daily_job)" "quantia/job/kline_cache_daily_job.py" "${QUANTIA_KLINE_TIMEOUT:-7200}"
+# 默认超时放宽到 6h：已消除重复删缓存主因后，首次除权重建/源站退化/补量运行
+# 仍可能超过 2h；超时在这里是防卡死安全网，不应截断正常慢任务。
+run_job "K线缓存增量更新 (kline_cache_daily_job)" "quantia/job/kline_cache_daily_job.py" "${QUANTIA_KLINE_TIMEOUT:-21600}"
 
 # EXIT trap 会自动恢复服务
