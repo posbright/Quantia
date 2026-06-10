@@ -6,7 +6,9 @@ import { QuestionFilled } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 import { getBacktestConfig, runSingleBacktest } from '@/api/stock'
 import KlineBacktestChart from '@/components/KlineBacktestChart.vue'
+import { useResponsive } from '@/composables/useResponsive'
 
+const { isMobile } = useResponsive()
 const route = useRoute()
 const router = useRouter()
 
@@ -265,7 +267,7 @@ const goHistory = () => {
       <!-- 交易明细 -->
       <el-card shadow="never" class="result-card">
         <template #header><span class="card-title">交易明细</span></template>
-        <el-table :data="result.trades" border size="small" stripe max-height="420">
+        <el-table v-if="!isMobile" :data="result.trades" border size="small" stripe max-height="420">
           <el-table-column prop="no" label="#" width="50" align="center" />
           <el-table-column label="类型" width="80" align="center">
             <template #default="{ row }">
@@ -304,6 +306,30 @@ const goHistory = () => {
             </template>
           </el-table-column>
         </el-table>
+
+        <!-- 移动端卡片视图 -->
+        <div v-if="isMobile" class="tr-card-list">
+          <el-empty v-if="(result.trades || []).length === 0" description="暂无交易" :image-size="60" />
+          <div v-for="(row, ri) in result.trades" :key="ri" class="tr-card">
+            <div class="tr-card-head">
+              <span class="tr-card-title">#{{ row.no }} {{ row.buy_date }}</span>
+              <el-tag :type="row.status === 'open' ? 'warning' : (row.win ? 'success' : 'info')" size="small">
+                {{ row.status === 'open' ? '持仓中' : (row.win ? '盈利' : '亏损') }}
+              </el-tag>
+            </div>
+            <div class="tr-card-body">
+              <div class="tr-field"><span class="tr-lbl">买入价</span><span>{{ row.buy_price }}</span></div>
+              <div class="tr-field"><span class="tr-lbl">卖出日</span><span>{{ row.sell_date || '—' }}</span></div>
+              <div class="tr-field"><span class="tr-lbl">卖出价</span><span>{{ row.sell_price ?? '—' }}</span></div>
+              <div class="tr-field"><span class="tr-lbl">持仓天数</span><span>{{ row.hold_days }}</span></div>
+              <div class="tr-field"><span class="tr-lbl">出场原因</span><span>{{ exitReasonText(row.exit_reason) }}</span></div>
+              <div class="tr-field"><span class="tr-lbl">收益率</span><span :class="getRateClass(row.rate)">{{ formatRate(row.rate) }}</span></div>
+            </div>
+            <div class="tr-card-ops">
+              <span class="tr-op" @click="locateTrade(row)">定位</span>
+            </div>
+          </div>
+        </div>
       </el-card>
     </template>
 
@@ -345,4 +371,28 @@ const goHistory = () => {
 .metric-sub { font-size: 11px; color: #c0c4cc; margin-top: 6px; }
 .text-up { color: #f56c6c; }
 .text-down { color: #67c23a; }
+
+/* ─── 移动端交易明细卡片 ─── */
+.tr-card-list { display: flex; flex-direction: column; gap: 10px; }
+.tr-card { background: var(--el-bg-color-overlay); border: 1px solid var(--el-border-color-lighter); border-radius: 6px; padding: 10px 12px; }
+.tr-card-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; border-bottom: 1px dashed var(--el-border-color-lighter); }
+.tr-card-title { font-weight: 600; font-size: 14px; }
+.tr-card-body { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 13px; padding: 8px 0; }
+.tr-field { display: flex; justify-content: space-between; gap: 6px; }
+.tr-lbl { color: #909399; }
+.tr-card-ops { display: flex; justify-content: flex-end; padding-top: 8px; border-top: 1px dashed var(--el-border-color-lighter); }
+.tr-op { color: #409eff; cursor: pointer; font-size: 13px; }
+
+@include sm-down {
+  .config-card, .chart-card, .result-card { margin-bottom: 12px; }
+  .header-row { flex-wrap: wrap; gap: 6px; }
+  :deep(.el-form--inline) {
+    .el-form-item { display: flex; margin-right: 0; margin-bottom: 10px; width: 100%; }
+    .el-form-item__content { flex: 1; }
+    .el-form-item__content > .el-input,
+    .el-form-item__content > .el-select,
+    .el-form-item__content > .el-input-number { width: 100% !important; }
+  }
+  .range-sep { margin: 0 6px; }
+}
 </style>

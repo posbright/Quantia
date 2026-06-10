@@ -7,9 +7,12 @@ import {
   getSelectionScoreList,
   getSelectionScoreTop,
 } from '@/api/selectionScore'
+import { useResponsive } from '@/composables/useResponsive'
 
 type AnyObj = Record<string, any>
 const router = useRouter()
+
+const { isMobile } = useResponsive()
 
 const loading = ref(false)
 const loadingTop = ref(false)
@@ -346,7 +349,7 @@ onMounted(loadAll)
 
       <el-alert v-if="warningText" :title="warningText" type="warning" :closable="false" show-icon style="margin-bottom: 12px" />
 
-      <el-table :data="listData" stripe border v-loading="loading" height="560">
+      <el-table v-if="!isMobile" :data="listData" stripe border v-loading="loading" height="560">
         <el-table-column type="index" width="64" label="#" />
         <el-table-column prop="code" label="代码" width="92" />
         <el-table-column prop="name" label="名称" min-width="120">
@@ -372,6 +375,33 @@ onMounted(loadAll)
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 移动端卡片视图 -->
+      <div v-if="isMobile" v-loading="loading" class="ss-card-list">
+        <el-empty v-if="!loading && listData.length === 0" description="暂无数据" :image-size="60" />
+        <div v-for="(row, ri) in listData" :key="ri" class="ss-card">
+          <div class="ss-card-head">
+            <div class="ss-card-title">
+              <el-button link type="primary" @click="goDetail(String(row.code || ''))">{{ row.name || row.code }}</el-button>
+              <span class="ss-card-code">{{ row.code }}</span>
+            </div>
+            <el-tag size="small" effect="plain">{{ row.rating || '--' }}</el-tag>
+          </div>
+          <div class="ss-card-body">
+            <div class="ss-field"><span class="ss-lbl">行业</span><span>{{ row.industry || '--' }}</span></div>
+            <div class="ss-field"><span class="ss-lbl">展示分</span><span>{{ toNum(row.display_score) }}</span></div>
+            <div class="ss-field"><span class="ss-lbl">质量分Q</span><span>{{ toNum(row.quality_score) }}</span></div>
+            <div class="ss-field"><span class="ss-lbl">行业名次</span><span>{{ row.industry_rank || '--' }}</span></div>
+            <div class="ss-field">
+              <span class="ss-lbl">排名变化</span>
+              <span>
+                {{ row.rank_change_1d ?? '--' }}
+                <el-tag v-if="row.rank_change_comparable === false" size="small" type="info">不可比</el-tag>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div class="pager-wrap">
         <el-pagination
@@ -617,6 +647,50 @@ onMounted(loadAll)
 .empty-tip {
   color: #7b8ba8;
   font-size: 13px;
+}
+
+/* ─── 移动端卡片视图 ─── */
+.ss-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ss-card {
+  background: #fff;
+  border: 1px solid #dce7ff;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.ss-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #e3ecff;
+}
+.ss-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ss-card-code {
+  font-size: 12px;
+  color: #909399;
+}
+.ss-card-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+  padding: 8px 0 2px;
+}
+.ss-field {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+.ss-lbl {
+  color: #909399;
 }
 
 @media (max-width: 1024px) {

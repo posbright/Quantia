@@ -3,7 +3,9 @@ import { ref, onMounted, onActivated } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getBacktestConfig, runBacktest, runBatchBacktest } from '@/api/stock'
+import { useResponsive } from '@/composables/useResponsive'
 
+const { isMobile } = useResponsive()
 const route = useRoute()
 const router = useRouter()
 
@@ -240,7 +242,7 @@ const getRateClass = (val: any) => {
       </template>
       
       <!-- 概要信息 -->
-      <el-descriptions :column="4" border size="small">
+      <el-descriptions :column="isMobile ? 1 : 4" border size="small">
         <el-descriptions-item label="买入日期">{{ singleResult.buy_date }}</el-descriptions-item>
         <el-descriptions-item label="买入价格">{{ singleResult.buy_price }}</el-descriptions-item>
         <el-descriptions-item label="回测周期">{{ singleResult.period }}</el-descriptions-item>
@@ -273,7 +275,7 @@ const getRateClass = (val: any) => {
 
       <!-- 关键指标 -->
       <h4 v-if="singleResult.indicators && Object.keys(singleResult.indicators).length > 0" style="margin: 16px 0 8px">买入日关键指标</h4>
-      <el-descriptions v-if="singleResult.indicators" :column="5" border size="small">
+      <el-descriptions v-if="singleResult.indicators" :column="isMobile ? 2 : 5" border size="small">
         <el-descriptions-item v-for="(val, key) in singleResult.indicators" :key="key" :label="String(key).toUpperCase()">
           {{ val !== null ? val : '-' }}
         </el-descriptions-item>
@@ -287,7 +289,7 @@ const getRateClass = (val: any) => {
       </template>
       
       <!-- 汇总统计 -->
-      <el-descriptions :column="4" border size="small">
+      <el-descriptions :column="isMobile ? 1 : 4" border size="small">
         <el-descriptions-item label="回测天数">{{ batchResult.total_days }} 天</el-descriptions-item>
         <el-descriptions-item label="总选股数">{{ batchResult.total_stocks }} 只</el-descriptions-item>
         <el-descriptions-item label="成功数">{{ batchResult.success_count }} 只</el-descriptions-item>
@@ -358,5 +360,33 @@ const getRateClass = (val: any) => {
 
 :deep(.el-descriptions__label) {
   width: 120px;
+}
+
+@include sm-down {
+  .config-card,
+  .result-card {
+    margin-bottom: 12px;
+  }
+  .header-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  :deep(.el-form--inline) {
+    .el-form-item {
+      display: flex;
+      margin-right: 0;
+      margin-bottom: 10px;
+      width: 100%;
+    }
+    .el-form-item__content {
+      flex: 1;
+    }
+    .el-form-item__content > *:not(.el-radio):not(.el-radio-group) {
+      width: 100% !important;
+    }
+  }
+  :deep(.el-descriptions__label) {
+    width: 96px;
+  }
 }
 </style>

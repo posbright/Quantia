@@ -8,7 +8,7 @@
       </div>
     </div>
 
-    <el-table :data="agents" v-loading="loading" border stripe size="small"
+    <el-table v-if="!isMobile" :data="agents" v-loading="loading" border stripe size="small"
               empty-text="暂无 agent">
       <el-table-column prop="name" label="名称" width="180">
         <template #default="{ row }">
@@ -50,9 +50,46 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="min(640px, 92vw)"
+    <!-- 移动端卡片视图 -->
+    <div v-if="isMobile" v-loading="loading" class="am-card-list">
+      <el-empty v-if="!loading && agents.length === 0" description="暂无 agent" :image-size="60" />
+      <div v-for="row in agents" :key="row.name" class="am-card">
+        <div class="am-card-head">
+          <span class="am-card-title">
+            {{ row.name }}
+            <el-tag v-if="row.is_builtin" size="small" type="info">内置</el-tag>
+          </span>
+          <el-tag :type="row.enabled ? 'success' : 'danger'" size="small">{{ row.enabled ? '启用' : '禁用' }}</el-tag>
+        </div>
+        <div class="am-card-body">
+          <div class="am-field"><span class="am-lbl">显示名</span><span>{{ row.display_name || '--' }}</span></div>
+          <div class="am-field"><span class="am-lbl">provider</span><span>{{ row.default_provider || '--' }}</span></div>
+          <div class="am-field"><span class="am-lbl">model</span><span>{{ row.default_model || '--' }}</span></div>
+          <div class="am-field am-field-full" v-if="row.description"><span class="am-lbl">描述</span><span>{{ row.description }}</span></div>
+          <div class="am-field am-field-full" v-if="(row.allowed_tools || []).length">
+            <span class="am-lbl">工具</span>
+            <span class="am-tools">
+              <el-tag v-for="t in (row.allowed_tools || [])" :key="t" size="small">{{ t }}</el-tag>
+            </span>
+          </div>
+        </div>
+        <div class="am-card-ops">
+          <span class="am-op" @click="openEdit(row)">编辑</span>
+          <template v-if="!row.is_builtin">
+            <span class="am-op-sep">|</span>
+            <el-popconfirm :title="`确认删除 ${row.name}?`" @confirm="onDelete(row)">
+              <template #reference>
+                <span class="am-op am-op-danger">删除</span>
+              </template>
+            </el-popconfirm>
+          </template>
+        </div>
+      </div>
+    </div>
+
+    <el-dialog v-model="dialogVisible" :title="dialogTitle" :fullscreen="isMobile" :width="isMobile ? '100%' : 'min(640px, 92vw)'"
                :close-on-click-modal="false">
-      <el-form :model="form" label-width="120px" ref="formRef" :rules="rules">
+      <el-form :model="form" :label-width="isMobile ? '96px' : '120px'" ref="formRef" :rules="rules">
         <el-form-item label="名称" prop="name">
           <el-input v-model="form.name" :disabled="isEdit"
                     placeholder="字母/数字/下划线，例如 market_summarizer" maxlength="64" />
@@ -112,7 +149,9 @@ import {
   aiDeleteAgent,
   type AiAgentRecord,
 } from '@/api/ai'
+import { useResponsive } from '@/composables/useResponsive'
 
+const { isMobile } = useResponsive()
 const TOOL_CHOICES = ['sql_query', 'kline_fetch', 'code_validate', 'backtest_run', 'web_search']
 
 const agents = ref<AiAgentRecord[]>([])
@@ -274,12 +313,25 @@ onMounted(reload)
   margin-top: 4px;
 }
 
+/* ─── 移动端卡片视图 ─── */
+.am-card-list { display: flex; flex-direction: column; gap: 10px; }
+.am-card { background: #fff; border: 1px solid #ebeef5; border-radius: 6px; padding: 10px 12px; }
+.am-card-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; border-bottom: 1px dashed #ebeef5; }
+.am-card-title { font-weight: 600; color: #303133; font-size: 14px; display: flex; align-items: center; gap: 6px; }
+.am-card-body { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 13px; padding: 8px 0; }
+.am-field { display: flex; justify-content: space-between; gap: 6px; }
+.am-field-full { grid-column: 1 / -1; }
+.am-tools { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.am-lbl { color: #909399; white-space: nowrap; }
+.am-card-ops { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px dashed #ebeef5; }
+.am-op { color: #409eff; cursor: pointer; font-size: 13px; }
+.am-op-danger { color: #f56c6c; }
+.am-op-sep { color: #dcdfe6; }
+
 /* 移动端适配（PR-10） */
 @media (max-width: 768px) {
   .agent-manager { padding: 10px 8px; }
   .header { flex-direction: column; align-items: stretch; gap: 8px; }
   .actions { flex-wrap: wrap; }
-  :deep(.el-table) { font-size: 12px; }
-  :deep(.el-table .cell) { padding: 0 6px; }
 }
 </style>

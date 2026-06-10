@@ -4,11 +4,14 @@ import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 import { getSelectionScoreIndustries, getSelectionScoreList } from '@/api/selectionScore'
+import { useResponsive } from '@/composables/useResponsive'
 
 type AnyObj = Record<string, any>
 
 const route = useRoute()
 const router = useRouter()
+
+const { isMobile } = useResponsive()
 
 const loading = ref(false)
 const loadingSummary = ref(false)
@@ -261,7 +264,7 @@ onBeforeUnmount(() => {
       <template #header>
         <div class="table-title">行业内股票列表</div>
       </template>
-      <el-table :data="listData" stripe border v-loading="loading" height="580">
+      <el-table v-if="!isMobile" :data="listData" stripe border v-loading="loading" height="580">
         <el-table-column type="index" width="60" label="#" />
         <el-table-column prop="code" label="代码" width="96" />
         <el-table-column prop="name" label="名称" min-width="120">
@@ -284,6 +287,33 @@ onBeforeUnmount(() => {
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 移动端卡片视图 -->
+      <div v-if="isMobile" v-loading="loading" class="iz-card-list">
+        <el-empty v-if="!loading && listData.length === 0" description="暂无数据" :image-size="60" />
+        <div v-for="(row, ri) in listData" :key="ri" class="iz-card">
+          <div class="iz-card-head">
+            <div class="iz-card-title">
+              <el-button link type="primary" @click="toDetail(row)">{{ row.name || row.code }}</el-button>
+              <span class="iz-card-code">{{ row.code }}</span>
+            </div>
+            <el-tag size="small" effect="plain">{{ row.rating || '--' }}</el-tag>
+          </div>
+          <div class="iz-card-body">
+            <div class="iz-field"><span class="iz-lbl">展示分</span><span>{{ toNum(row.display_score) }}</span></div>
+            <div class="iz-field"><span class="iz-lbl">质量分Q</span><span>{{ toNum(row.quality_score) }}</span></div>
+            <div class="iz-field"><span class="iz-lbl">行业名次</span><span>{{ row.industry_rank || '--' }}</span></div>
+            <div class="iz-field">
+              <span class="iz-lbl">排名变化</span>
+              <span>
+                {{ row.rank_change_1d ?? '--' }}
+                <el-tag v-if="row.rank_change_comparable === false" size="small" type="info">不可比</el-tag>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="pager-wrap">
         <el-pagination
           background
@@ -359,6 +389,50 @@ onBeforeUnmount(() => {
   margin-top: 12px;
   display: flex;
   justify-content: flex-end;
+}
+
+/* ─── 移动端卡片视图 ─── */
+.iz-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.iz-card {
+  background: #fff;
+  border: 1px solid #dce7ff;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.iz-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #e3ecff;
+}
+.iz-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.iz-card-code {
+  font-size: 12px;
+  color: #909399;
+}
+.iz-card-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+  padding: 8px 0 2px;
+}
+.iz-field {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+.iz-lbl {
+  color: #909399;
 }
 
 @media (max-width: 960px) {
