@@ -24,7 +24,7 @@
     </el-tabs>
 
     <!-- AI分析报告：完整报告列表 + Markdown 查看 -->
-    <el-table v-if="activeTab === 'report'" :data="historyList" v-loading="loading" stripe empty-text="暂无报告数据">
+    <el-table v-if="activeTab === 'report' && !isMobile" :data="historyList" v-loading="loading" stripe empty-text="暂无报告数据">
       <el-table-column prop="code" label="代码" width="90" />
       <el-table-column prop="name" label="名称" width="120" />
       <el-table-column label="评级" width="90">
@@ -64,7 +64,7 @@
     </el-table>
 
     <!-- AI评分趋势：聚焦每次分析的 AI 评分 / 评级变化 -->
-    <el-table v-else :data="historyList" v-loading="loading" stripe empty-text="暂无评分数据">
+    <el-table v-else-if="!isMobile" :data="historyList" v-loading="loading" stripe empty-text="暂无评分数据">
       <el-table-column prop="created_at" label="分析时间" width="180" />
       <el-table-column label="版本" width="80" align="right">
         <template #default="{ row }">v{{ row.report_version || 1 }}</template>
@@ -96,6 +96,53 @@
       </el-table-column>
     </el-table>
 
+    <!-- 移动端卡片视图（两个 tab 共用一套卡片，按 activeTab 调整展示字段） -->
+    <div v-if="isMobile" v-loading="loading" class="rh-card-list">
+      <div v-for="row in historyList" :key="row.id" class="rh-card">
+        <div class="rh-card-head">
+          <span class="rh-card-code">{{ row.code }}</span>
+          <span class="rh-card-name">{{ row.name }}</span>
+          <el-tag v-if="row.rating" :type="ratingType(row.rating)" size="small">
+            {{ ratingLabel(row.rating) }}
+          </el-tag>
+        </div>
+        <div class="rh-card-body">
+          <div class="rh-card-field">
+            <span class="rh-lbl">AI评分</span>
+            <el-tag v-if="row.rating_score != null" :type="scoreTagType(row.rating_score)" effect="dark" size="small">
+              {{ row.rating_score }}
+            </el-tag>
+            <span v-else class="muted">—</span>
+          </div>
+          <div class="rh-card-field">
+            <span class="rh-lbl">版本</span>
+            <span>v{{ row.report_version || 1 }}</span>
+          </div>
+          <div v-if="activeTab === 'report'" class="rh-card-field">
+            <span class="rh-lbl">护城河</span>
+            <span v-if="row.moat_score != null">{{ row.moat_score }}/5</span>
+            <span v-else class="muted">—</span>
+          </div>
+          <div class="rh-card-field">
+            <span class="rh-lbl">模型</span>
+            <span class="rh-model">{{ row.model || '—' }}</span>
+          </div>
+          <div class="rh-card-field rh-card-field-full">
+            <span class="rh-lbl">时间</span>
+            <span>{{ row.created_at }}</span>
+          </div>
+          <div v-if="activeTab === 'score' && row.short_term_advice" class="rh-card-field rh-card-field-full rh-advice">
+            <span class="rh-lbl">短期建议</span>
+            <span>{{ row.short_term_advice }}</span>
+          </div>
+        </div>
+        <div class="rh-card-ops">
+          <a class="rh-op" @click="viewReport(row)">查看报告</a>
+        </div>
+      </div>
+      <el-empty v-if="!loading && historyList.length === 0" description="暂无数据" />
+    </div>
+
     <div class="pagination-bar" v-if="total > pageSize">
       <el-pagination
         layout="total, prev, pager, next"
@@ -107,7 +154,7 @@
     </div>
 
     <!-- 报告详情弹窗 -->
-    <el-dialog v-model="dialogVisible" title="报告详情" width="min(900px, 92vw)" top="5vh">
+    <el-dialog v-model="dialogVisible" title="报告详情" :fullscreen="isMobile" :width="isMobile ? '100%' : 'min(900px, 92vw)'" :top="isMobile ? '0' : '5vh'">
       <div v-if="detailReport" class="structured-summary">
         <div class="summary-row">
           <el-tag v-if="detailReport.rating" :type="ratingType(detailReport.rating)">
@@ -149,8 +196,10 @@ import { ref, onMounted, onActivated } from 'vue'
 import { useRoute } from 'vue-router'
 import { getReportHistory, getReportDetail } from '@/api/report'
 import type { ReportDetail, ReportHistoryItem, ReportRating } from '@/api/report'
+import { useResponsive } from '@/composables/useResponsive'
 
 const route = useRoute()
+const { isMobile } = useResponsive()
 const loading = ref(false)
 const filterCode = ref('')
 const activeTab = ref<'report' | 'score'>('report')
@@ -340,5 +389,100 @@ onActivated(() => {
 }
 .muted {
   color: var(--el-text-color-placeholder);
+}
+
+/* ===== 移动端卡片视图（断点对齐 useResponsive：isMobile < 768） ===== */
+.rh-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rh-card {
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.rh-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px dashed var(--el-border-color-lighter);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+}
+.rh-card-code {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--el-color-primary);
+}
+.rh-card-name {
+  flex: 1;
+  color: var(--el-text-color-primary);
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rh-card-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+.rh-card-field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.rh-card-field-full {
+  grid-column: 1 / -1;
+}
+.rh-advice {
+  align-items: flex-start;
+}
+.rh-advice span:last-child {
+  text-align: right;
+  color: var(--el-text-color-regular);
+}
+.rh-lbl {
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+.rh-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+.rh-card-ops {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+  display: flex;
+  justify-content: flex-end;
+  font-size: 13px;
+}
+.rh-op {
+  color: var(--el-color-primary);
+  cursor: pointer;
+}
+.rh-op:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 767.98px) {
+  .report-history {
+    padding: 10px;
+  }
+  .filter-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .filter-bar .el-input {
+    width: 100% !important;
+  }
 }
 </style>

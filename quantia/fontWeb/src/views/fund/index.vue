@@ -73,6 +73,7 @@
 
     <!-- 排名表格 -->
     <el-table
+      v-if="!isMobile"
       v-loading="loading"
       :data="items"
       size="small"
@@ -204,6 +205,71 @@
       </template>
     </el-table>
 
+    <!-- 移动端卡片视图 -->
+    <div v-if="isMobile" v-loading="loading" class="fund-card-list">
+      <div v-for="(row, idx) in items" :key="row.code" class="fund-card" @click="openDetail(row)">
+        <div class="fund-card-head">
+          <span class="rank-badge" :class="rankClass(idx)">{{ medal(idx) }}</span>
+          <div class="fund-card-title">
+            <span class="fund-card-name">{{ row.name }}</span>
+            <span class="fund-card-code">{{ row.code }}</span>
+          </div>
+          <span v-if="!isMoneyType && row.score != null" class="fund-card-score" :style="{ color: scoreColor(row.score) }">
+            {{ Math.round(row.score) }}分
+          </span>
+        </div>
+        <div class="fund-card-body">
+          <template v-if="isMoneyType">
+            <div class="fund-card-field">
+              <span class="fund-lbl">7日年化</span>
+              <span :style="returnStyle(row.seven_day_annual)">{{ fmtPct(row.seven_day_annual) }}</span>
+            </div>
+            <div class="fund-card-field">
+              <span class="fund-lbl">万份收益</span>
+              <span>{{ fmtNum(row.million_unit_income, 4) }}</span>
+            </div>
+          </template>
+          <template v-else>
+            <div class="fund-card-field">
+              <span class="fund-lbl">单位净值</span>
+              <span>{{ fmtNum(row.unit_nav, 4) }}</span>
+            </div>
+            <div class="fund-card-field">
+              <span class="fund-lbl">日增长</span>
+              <span :style="returnStyle(row.day_growth)">{{ fmtPct(row.day_growth) }}</span>
+            </div>
+          </template>
+          <div class="fund-card-field">
+            <span class="fund-lbl">近1月</span>
+            <span :style="returnStyle(row.rate_1m)">{{ fmtPct(row.rate_1m) }}</span>
+          </div>
+          <div class="fund-card-field">
+            <span class="fund-lbl">近1年</span>
+            <span :style="returnStyle(row.rate_1y)">{{ fmtPct(row.rate_1y) }}</span>
+          </div>
+          <div class="fund-card-field">
+            <span class="fund-lbl">今年来</span>
+            <span :style="returnStyle(row.rate_ytd)">{{ fmtPct(row.rate_ytd) }}</span>
+          </div>
+          <div class="fund-card-field">
+            <span class="fund-lbl">净值日</span>
+            <span>{{ row.nav_date || '—' }}</span>
+          </div>
+          <template v-if="!isMoneyType">
+            <div class="fund-card-field">
+              <span class="fund-lbl">夏普</span>
+              <span :style="sharpeStyle(row.sharpe)">{{ fmtNum(row.sharpe, 2) }}</span>
+            </div>
+            <div class="fund-card-field">
+              <span class="fund-lbl">评级</span>
+              <span>{{ row.rating || '—' }}</span>
+            </div>
+          </template>
+        </div>
+      </div>
+      <el-empty v-if="!loading && items.length === 0" description="该类型暂无数据" />
+    </div>
+
     <div class="fund-footer" v-if="items.length">
       共 {{ count }} 条 · {{ fundType }} · 按{{ activePeriodLabel }}降序
     </div>
@@ -235,7 +301,9 @@ import {
 } from '@/api/fund'
 import FundDetailDrawer from './FundDetailDrawer.vue'
 import FundCompareTab from './FundCompareTab.vue'
+import { useResponsive } from '@/composables/useResponsive'
 
+const { isMobile } = useResponsive()
 const meta = ref<FundRankMeta | null>(null)
 const fundTypes = ref<string[]>([])
 const periodOptions = ref<FundPeriodOption[]>([])
@@ -571,5 +639,87 @@ onActivated(async () => {
   font-size: 12px;
   color: #909399;
   text-align: right;
+}
+
+/* ===== 移动端卡片视图（断点对齐 useResponsive：isMobile < 768） ===== */
+.fund-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fund-card {
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.fund-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px dashed #ebeef5;
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+}
+.fund-card-title {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.fund-card-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fund-card-code {
+  font-size: 12px;
+  color: #909399;
+}
+.fund-card-score {
+  font-size: 16px;
+  font-weight: 700;
+}
+.fund-card-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+.fund-card-field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.fund-lbl {
+  color: #909399;
+  white-space: nowrap;
+}
+
+@media (max-width: 767.98px) {
+  .fund-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .toolbar-left {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    align-items: center;
+  }
+  .toolbar-right {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .fund-header {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+  }
 }
 </style>

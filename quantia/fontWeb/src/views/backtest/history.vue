@@ -3,9 +3,11 @@ import { ref, onMounted, onActivated } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getBacktestConfig, getBacktestHistory, deleteBacktestHistory } from '@/api/stock'
+import { useResponsive } from '@/composables/useResponsive'
 
 const route = useRoute()
 const router = useRouter()
+const { isMobile } = useResponsive()
 
 const strategies = ref<any[]>([])
 const loading = ref(false)
@@ -156,7 +158,7 @@ const goSingleBacktest = () => {
     </el-card>
 
     <el-card shadow="never" class="table-card">
-      <el-table v-loading="loading" :data="items" border size="small" stripe>
+      <el-table v-if="!isMobile" v-loading="loading" :data="items" border size="small" stripe>
         <template #empty>
           <div class="empty-state">
             <p>{{ filter.code ? `股票 ${filter.code}${queryName ? '（' + queryName + '）' : ''} 暂无回测历史` : '暂无回测历史' }}</p>
@@ -188,6 +190,52 @@ const goSingleBacktest = () => {
         </el-table-column>
       </el-table>
 
+      <!-- 移动端卡片视图 -->
+      <div v-if="isMobile" v-loading="loading" class="bh-card-list">
+        <div v-for="row in items" :key="row.id" class="bh-card">
+          <div class="bh-card-head">
+            <span class="bh-card-code">{{ row.code }}</span>
+            <span class="bh-card-name">{{ row.name }}</span>
+            <span :class="getRateClass(row.cum_return)" class="bh-card-return">{{ formatRate(row.cum_return) }}</span>
+          </div>
+          <div class="bh-card-body">
+            <div class="bh-card-field">
+              <span class="bh-lbl">策略</span>
+              <span>{{ row.strategy_cn }}</span>
+            </div>
+            <div class="bh-card-field">
+              <span class="bh-lbl">胜率</span>
+              <span>{{ row.win_rate == null ? '—' : row.win_rate + '%' }}</span>
+            </div>
+            <div class="bh-card-field">
+              <span class="bh-lbl">出场模式</span>
+              <span>{{ row.exit_mode === 'fixed' ? `固定 ${row.hold_days} 日` : '策略卖点' }}</span>
+            </div>
+            <div class="bh-card-field">
+              <span class="bh-lbl">笔数</span>
+              <span>{{ row.trade_count ?? '—' }}</span>
+            </div>
+            <div class="bh-card-field bh-card-field-full">
+              <span class="bh-lbl">区间</span>
+              <span>{{ row.start_date }} ~ {{ row.end_date }}</span>
+            </div>
+            <div class="bh-card-field bh-card-field-full">
+              <span class="bh-lbl">创建时间</span>
+              <span>{{ row.created_at }}</span>
+            </div>
+          </div>
+          <div class="bh-card-ops">
+            <a class="bh-op" @click="handleView(row)">查看</a>
+            <span class="bh-op-sep">|</span>
+            <a class="bh-op bh-op-danger" @click="handleDelete(row)">删除</a>
+          </div>
+        </div>
+        <div v-if="!loading && items.length === 0" class="empty-state">
+          <p>{{ filter.code ? `股票 ${filter.code}${queryName ? '（' + queryName + '）' : ''} 暂无回测历史` : '暂无回测历史' }}</p>
+          <el-button type="primary" @click="goSingleBacktest">前往单股回测</el-button>
+        </div>
+      </div>
+
       <div class="pagination-row">
         <el-pagination
           v-model:current-page="filter.page"
@@ -212,4 +260,53 @@ const goSingleBacktest = () => {
 .empty-state p { margin: 0 0 12px; }
 .text-up { color: #f56c6c; }
 .text-down { color: #67c23a; }
+
+/* 移动端卡片视图 */
+.bh-card-list { display: flex; flex-direction: column; gap: 10px; }
+.bh-card {
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.bh-card-head {
+  display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px dashed var(--el-border-color-lighter);
+  padding-bottom: 6px; margin-bottom: 8px;
+}
+.bh-card-code { font-weight: 600; font-size: 15px; color: var(--el-color-primary); }
+.bh-card-name { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bh-card-return { font-weight: 600; font-size: 14px; }
+.bh-card-body {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 13px;
+}
+.bh-card-field { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0; }
+.bh-card-field-full { grid-column: 1 / -1; }
+.bh-lbl { color: var(--el-text-color-secondary); white-space: nowrap; }
+.bh-card-ops {
+  margin-top: 10px; padding-top: 8px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+  display: flex; justify-content: flex-end; gap: 8px; font-size: 13px;
+}
+.bh-op { color: var(--el-color-primary); cursor: pointer; }
+.bh-op:hover { text-decoration: underline; }
+.bh-op-danger { color: var(--el-color-danger); }
+.bh-op-sep { color: var(--el-border-color); }
+
+@include sm-down {
+  .filter-card :deep(.el-form--inline .el-form-item) {
+    display: flex;
+    width: 100%;
+    margin-right: 0;
+  }
+  .filter-card :deep(.el-form--inline .el-form-item__content) {
+    flex: 1;
+  }
+  .filter-card :deep(.el-input),
+  .filter-card :deep(.el-select),
+  .filter-card :deep(.el-date-editor) {
+    width: 100% !important;
+  }
+  .pagination-row { justify-content: center; }
+}
 </style>

@@ -20,7 +20,7 @@
         <router-link to="/settings/live-trading">实盘交易开关</router-link> 一起使用。
       </el-alert>
 
-      <el-table :data="rows" stripe border size="small">
+      <el-table :data="rows" v-if="!isMobile" stripe border size="small">
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="created_at" label="时间" width="170" />
         <el-table-column prop="source_channel" label="渠道" width="80" />
@@ -47,6 +47,48 @@
         </el-table-column>
       </el-table>
 
+      <!-- 移动端卡片视图 -->
+      <div v-if="isMobile" class="imc-card-list">
+        <div v-for="row in rows" :key="row.id" class="imc-card">
+          <div class="imc-card-head">
+            <span class="imc-id">#{{ row.id }}</span>
+            <span class="imc-cmd">{{ row.command_type }}</span>
+            <span v-if="row.code" class="imc-code">{{ row.code }}</span>
+            <el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag>
+          </div>
+          <div class="imc-card-body">
+            <div class="imc-field">
+              <span class="imc-lbl">渠道</span>
+              <span>{{ row.source_channel || '—' }}</span>
+            </div>
+            <div class="imc-field">
+              <span class="imc-lbl">方向</span>
+              <span>{{ row.direction || '—' }}</span>
+            </div>
+            <div class="imc-field">
+              <span class="imc-lbl">数量</span>
+              <span>{{ row.amount ?? '—' }}</span>
+            </div>
+            <div class="imc-field">
+              <span class="imc-lbl">金额</span>
+              <span>{{ row.value != null ? '¥' + Number(row.value).toFixed(2) : '—' }}</span>
+            </div>
+            <div class="imc-field imc-field-full">
+              <span class="imc-lbl">操作人</span>
+              <span class="imc-operator">{{ row.operator_id || '—' }}</span>
+            </div>
+            <div class="imc-field imc-field-full">
+              <span class="imc-lbl">时间</span>
+              <span>{{ row.created_at }}</span>
+            </div>
+          </div>
+          <div class="imc-card-ops">
+            <a class="imc-op" @click="openDetail(row)">详情</a>
+          </div>
+        </div>
+        <el-empty v-if="rows.length === 0" description="暂无指令记录" />
+      </div>
+
       <div class="pagination">
         <el-button size="small" :disabled="offset === 0" @click="prevPage">上一页</el-button>
         <span style="margin:0 12px">offset {{ offset }} | limit {{ limit }}</span>
@@ -54,8 +96,8 @@
       </div>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="`指令详情 #${current?.id ?? ''}`" width="min(780px, 92vw)">
-      <el-descriptions v-if="current" :column="2" border size="small">
+    <el-dialog v-model="dialogVisible" :title="`指令详情 #${current?.id ?? ''}`" :fullscreen="isMobile" :width="isMobile ? '100%' : 'min(780px, 92vw)'">
+      <el-descriptions v-if="current" :column="isMobile ? 1 : 2" border size="small">
         <el-descriptions-item label="ID">{{ current.id }}</el-descriptions-item>
         <el-descriptions-item label="状态">
           <el-tag :type="statusType(current.status)" size="small">{{ current.status }}</el-tag>
@@ -92,7 +134,9 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { IMCommand, listIMCommands, getIMCommand } from '@/api/imLive'
+import { useResponsive } from '@/composables/useResponsive'
 
+const { isMobile } = useResponsive()
 const STATUSES = ['pending', 'approved', 'rejected', 'expired', 'executed', 'failed', 'unauthorized', 'invalid', 'duplicate']
 
 const rows = ref<IMCommand[]>([])
@@ -154,5 +198,41 @@ onMounted(loadList)
   background: #f7f7f9; padding: 10px; border-radius: 4px;
   font-size: 12px; max-height: 280px; overflow: auto;
   font-family: Consolas, monospace; white-space: pre-wrap;
+}
+
+/* 移动端卡片视图 */
+.imc-card-list { display: flex; flex-direction: column; gap: 10px; }
+.imc-card {
+  background: #fff; border: 1px solid #ebeef5; border-radius: 6px; padding: 10px 12px;
+}
+.imc-card-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  border-bottom: 1px dashed #ebeef5; padding-bottom: 6px; margin-bottom: 8px;
+}
+.imc-id { color: #909399; font-size: 12px; }
+.imc-cmd { font-weight: 600; font-size: 14px; color: #303133; }
+.imc-code { color: #409eff; font-size: 13px; }
+.imc-card-body {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 13px;
+}
+.imc-field { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0; }
+.imc-field-full { grid-column: 1 / -1; }
+.imc-lbl { color: #909399; white-space: nowrap; }
+.imc-operator { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imc-card-ops {
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed #ebeef5;
+  display: flex; justify-content: flex-end; font-size: 13px;
+}
+.imc-op { color: #409eff; cursor: pointer; }
+.imc-op:hover { text-decoration: underline; }
+
+@media (max-width: 767.98px) {
+  .card-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .card-header > div { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
+  .card-header :deep(.el-select),
+  .card-header :deep(.el-input-number) {
+    width: 100% !important;
+    margin-right: 0 !important;
+  }
 }
 </style>
