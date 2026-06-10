@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import os
+ghimport re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -380,7 +381,8 @@ def scheduled_report_analysis(max_stocks: Optional[int] = None,
 
             # 推送报告摘要到钉钉
             try:
-                summary = content[:500]
+                # 智能摘要：若 content <= 2000字全部显示，否则提取结论或后半段
+                summary = _get_smart_summary(content, structured, threshold=2000)
                 rating = (structured or {}).get('rating') or ''
                 push_report_summary_to_dingtalk(code, stock_name, summary, rating)
             except Exception as push_exc:
@@ -483,7 +485,12 @@ def _build_score_alert_message(
     code: str, name: str, score: float, threshold: int,
     action: str, reason: str, scored_at: str
 ) -> Dict[str, str]:
-    """构建钉钉预警 markdown 消息。"""
+    """构建钉钉预警 markdown 消息。
+    
+    reason 智能截断策略：
+    - 如果 reason <= 500 字，直接使用
+    - 如果 reason > 500 字，截断至 500 字（预警消息需简洁）
+    """
     title = f"⚠️ AI 评分预警: {code} {name}"
     action_label = {'reject': '拒绝交易', 'hold': '建议观望', 'pass': '允许交易'}.get(
         action, action or '未知'
@@ -495,7 +502,9 @@ def _build_score_alert_message(
         f"**AI 建议**: {action_label}\n\n"
     )
     if reason:
-        markdown += f"**摘要**: {reason[:200]}\n\n"
+        # 预警消息简洁要求：限制在 500 字（预警原因通常较短，500 字足够）
+        reason_content = reason[:500] if len(reason) > 500 else reason
+        markdown += f"**摘要**: {reason_content}\n\n"
     markdown += (
         f"**评分时间**: {scored_at}\n\n"
         f"---\n\n"
@@ -553,8 +562,74 @@ def _send_score_alert(code: str, name: str, direction: str, message: Dict[str, s
 
 # ─── 功能 3: 钉钉推送报告摘要 ────────────────────────────────────
 
+def _get_smart_summary(content: str, structured: Optional[Dict[str, Any]] = None, threshold: int = 2000) -> str:
+    """智能摘要生成：超过阈值则提取结论，否则返回全文。
+    
+    Strategy:
+    - content <= threshold: 返回全部内容（通常 <= 2000字）
+    - content > threshold:
+      1. 优先提取结构化字段（rating/advice）组成摘要
+      2. 若结构化字段不足，从报告后半段提取结论分节
+      3. 最终限制在 1500 字（确保消息在钉钉上展示完整）
+    """
+    if not content:
+        return ''
+    
+    content = content or ''
+    if len(content) <= threshold:
+        return content
+    
+    # 内容超过阈值，进行智能摘要
+    structured = structured or {}
+    summary_parts = []
+    
+    # 第一优先级：结构化建议
+    if structured.get('short_term_advice'):
+        summary_parts.append(f"**短期**：{structured['short_term_advice'][:300]}")
+    if structured.get('mid_term_advice'):
+        summary_parts.append(f"**中期**：{structured['mid_term_advice'][:300]}")
+    if structured.get('long_term_advice'):
+        summary_parts.append(f"**长期**：{structured['long_term_advice'][:300]}")
+    
+    if summary_parts:
+        fallback_summary = '\n\n'.join(summary_parts)
+        return fallback_summary[:1500]
+    
+    # 第二优先级：从后半段提取结论分节
+    lines = content.splitlines()
+    mid_point = len(lines) // 2
+    later_half = '\n'.join(lines[mid_point:])
+    
+    # 尝试找到结论/综合评估分节
+    conclusion_patterns = (
+        r'(?m)^#+\s*(?:结论|综合评估|总体判断|投资建议)',
+        r'(?m)^#+\s*第[六7](?:部分|节)',
+    )
+    
+    for pattern in conclusion_patterns:
+        match = re.search(pattern, later_half)
+        if match:
+            section_start = match.start()
+            section_end = min(section_start + 1200, len(later_half))
+            return later_half[section_start:section_end][:1500]
+    
+    # 第三优先级：取后 1500 字（结论通常在报告末尾）
+    return content[-1500:]
+
+
+# 钉钉 markdown 消息 text 字段硬限制：2000 字。调用方传入的 summary 已经过
+# _get_smart_summary 智能处理（<=2000 全文；>2000 提取结论后限 1500）。
+# 此处的 2000 仅作为防越界的最后一道安全限制，与智能摘要阈值保持一致。
+_DINGTALK_MARKDOWN_LIMIT = 2000
+
+
 def push_report_summary_to_dingtalk(code: str, name: str, summary: str, rating: str = '') -> bool:
-    """将报告摘要推送到钉钉群。受用户偏好 push_enabled 控制。"""
+    """将报告摘要推送到钉钉群。受用户偏好 push_enabled 控制。
+    
+    摘要内容决策（调用方已由 _get_smart_summary 预处理）：
+    - summary <= 2000 字：全部显示
+    - summary > 2000 字：钉钉 markdown 硬限制 2000 字，此处作为防越界安全截断
+    """
     # 检查用户偏好
     pref = _get_user_preference()
     if not pref.get('push_enabled', False):
@@ -575,11 +650,17 @@ def push_report_summary_to_dingtalk(code: str, name: str, summary: str, rating: 
         'buy': '🟢看多', 'hold': '🟡中性', 'avoid': '🔴看空',
         'bullish': '🟢看多', 'bearish': '🔴看空', 'neutral': '🟡中性',
     }.get((rating or '').lower(), rating or '—')
+    
+    # 钉钉消息内容决策：防越界安全截断（与智能摘要阈值 2000 一致）
+    # 正常情况下 summary 已由 _get_smart_summary 处理，不会超过 2000；
+    # 此处仅防止调用方直接传入超长内容导致钉钉报错。
+    summary_content = summary if len(summary) <= _DINGTALK_MARKDOWN_LIMIT else summary[:_DINGTALK_MARKDOWN_LIMIT]
+    
     markdown = (
         f"## 📊 AI 分析报告摘要\n\n"
         f"**标的**: {code} {name}\n\n"
         f"**评级**: {rating_emoji}\n\n"
-        f"**摘要**:\n\n{summary[:500]}\n\n"
+        f"**摘要**:\n\n{summary_content}\n\n"
         f"---\n\n"
         f"> 由 Quantia AI 定时分析生成，完整报告请登录系统查看。"
     )
