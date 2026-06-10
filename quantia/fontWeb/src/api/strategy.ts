@@ -112,3 +112,15 @@ export function getParamsDiff(strategy: string, v1: number, v2: number) {
     params: { strategy, v1, v2 }
   })
 }
+
+/**
+ * 查询某只股票被某策略历史选中的全部日期（用于在指标详情页标注策略有效性）
+ * @param strategy 策略 key（如 enter）或策略选股结果表名（如 cn_stock_strategy_enter）
+ */
+export function getStrategyHistory(strategy: string, code: string, startDate?: string, endDate?: string) {
+  return request({
+    url: '/api/strategy/history',
+    method: 'get',
+    params: { strategy, code, start_date: startDate, end_date: endDate }
+  })
+}

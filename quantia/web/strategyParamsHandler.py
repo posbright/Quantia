@@ -1156,6 +1156,85 @@ class FilterStocksHandler(webBase.BaseHandler, ABC):
                 self.write(json.dumps({"error": f"查询异常: {error_msg}"}, ensure_ascii=False))
 
 
+# 策略选股结果表名 -> {key, 中文名} 反查表，用于"历史选中"标注
+_STRATEGY_TABLE_INFO = {
+    cfg['strategy_func']: {'key': key, 'name': cfg.get('name', key)}
+    for key, cfg in TECHNICAL_STRATEGY_PARAMS.items()
+    if cfg.get('strategy_func')
+}
+
+
+class GetStrategyHistoryHandler(webBase.BaseHandler, ABC):
+    """查询某只股票被某策略历史选中的全部日期。
+
+    用于在指标详情页 K 线图上标注"该股票在哪些时间点被该策略选中"，
+    从而直观展示策略的有效性。数据来源为每日流式分析任务写入的策略选股结果表。
+    """
+
+    def _resolve(self, strategy):
+        """把策略 key 或表名解析为 (表名, 中文名)。非策略选股表一律返回 ('', '')。"""
+        if not strategy:
+            return '', ''
+        # 1) 策略 key（如 enter）-> strategy_func 表名
+        cfg = TECHNICAL_STRATEGY_PARAMS.get(strategy)
+        if cfg and cfg.get('strategy_func'):
+            table = cfg['strategy_func']
+            return table, cfg.get('name', strategy)
+        # 2) 直接传入策略表名（如 cn_stock_strategy_enter）
+        info = _STRATEGY_TABLE_INFO.get(strategy)
+        if info:
+            return strategy, info['name']
+        if strategy.startswith('cn_stock_strategy_'):
+            return strategy, strategy
+        return '', ''
+
+    def get(self):
+        self.set_header('Content-Type', 'application/json;charset=UTF-8')
+        strategy = self.get_argument("strategy", default="", strip=True)
+        code = self.get_argument("code", default="", strip=True)
+        start_date = self.get_argument("start_date", default=None, strip=True)
+        end_date = self.get_argument("end_date", default=None, strip=True)
+
+        table_name, strategy_name = self._resolve(strategy)
+        # 白名单 + 存在性校验：仅允许查询确实存在的策略选股结果表，杜绝任意表名注入
+        if (not code or not table_name
+                or not table_name.startswith('cn_stock_strategy_')
+                or not mdb.checkTableIsExist(table_name)):
+            self.write(json.dumps({
+                "success": True, "strategy": strategy, "strategy_name": strategy_name,
+                "code": code, "dates": []
+            }, ensure_ascii=False))
+            return
+
+        conditions = ["`code` = %s"]
+        sql_params = [code]
+        if start_date:
+            conditions.append("`date` >= %s")
+            sql_params.append(start_date)
+        if end_date:
+            conditions.append("`date` <= %s")
+            sql_params.append(end_date)
+        where = " WHERE " + " AND ".join(conditions)
+        sql = f"SELECT `date` FROM `{table_name}`{where} ORDER BY `date` ASC"
+        try:
+            rows = self.db.query(sql, *sql_params)
+            dates = [str(r['date'])[:10] for r in (rows or []) if r.get('date') is not None]
+            self.write(json.dumps({
+                "success": True,
+                "strategy": strategy,
+                "strategy_name": strategy_name,
+                "table": table_name,
+                "code": code,
+                "dates": dates,
+            }, ensure_ascii=False))
+        except Exception as e:
+            logging.error("GetStrategyHistoryHandler 查询异常", exc_info=True)
+            self.write(json.dumps({
+                "success": False, "strategy": strategy, "code": code,
+                "dates": [], "error": str(e)
+            }, ensure_ascii=False))
+
+
 class GetParamsHistoryHandler(webBase.BaseHandler, ABC):
     """查询策略参数变更历史"""
 

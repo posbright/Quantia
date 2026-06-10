@@ -205,7 +205,9 @@ const viewIndicators = (row: any) => {
     query: {
       code: row.code,
       date: row.date || filterDate.value,
-      name: row.name
+      name: row.name,
+      // 传递当前策略，指标详情页据此在 K 线图上标注该股票历史被本策略选中的时间点
+      strategy: activeStrategy.value
     }
   })
 }

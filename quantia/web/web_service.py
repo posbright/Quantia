@@ -96,6 +96,7 @@ class Application(tornado.web.Application):
             (r"/quantia/api/strategy/params/history", strategyParamsHandler.GetParamsHistoryHandler),
             (r"/quantia/api/strategy/params/diff", strategyParamsHandler.GetParamsDiffHandler),
             (r"/quantia/api/strategy/filter", strategyParamsHandler.FilterStocksHandler),
+            (r"/quantia/api/strategy/history", strategyParamsHandler.GetStrategyHistoryHandler),
             # K线数据JSON API
             (r"/quantia/api/kline", klineHandler.GetKlineDataHandler),
             # 股票财务数据

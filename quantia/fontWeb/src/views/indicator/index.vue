@@ -5,8 +5,9 @@ import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { getKlineData, getFinancialSummary, getBacktestHistory, type KlineParams, type FinancialSummaryResult } from '@/api/stock'
 import { getReportHistory, type ReportHistoryItem } from '@/api/report'
-import { ElMessage } from 'element-plus'
+import { getStrategyHistory } from '@/api/strategy'
 import { ChatDotRound } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverlay'
 import CustomIndicatorOverlayBar from '@/components/CustomIndicatorOverlayBar.vue'
 import { useResponsive } from '@/composables/useResponsive'
@@ -54,6 +55,39 @@ const subIndicatorOptions = ['MACD', 'KDJ', 'RSI', 'WR', '多空趋势']
 
 // K-line data
 const klineData = ref<any>(null)
+
+// === 策略选中标记 (策略选股有效性可视化) ===
+// 该股票被当前策略历史选中的全部日期（来自策略选股结果表），在日K主图上以图钉标注
+const strategyMarkDates = ref<string[]>([])
+const strategyMarkName = ref<string>('')
+let lastMarkKey = ''  // `${code}|${strategy}` 缓存键，避免重复请求
+
+const loadStrategyMarks = async () => {
+  const stg = strategy.value
+  // 仅当带有策略标识、且为个股时才查询（指数/ETF/资金流等非策略选股表后端会返回空）
+  if (!code.value || !stg) {
+    strategyMarkDates.value = []
+    strategyMarkName.value = ''
+    lastMarkKey = ''
+    return
+  }
+  const key = `${code.value}|${stg}`
+  if (key === lastMarkKey) return  // 同股票同策略已查过，直接复用
+  lastMarkKey = key
+  try {
+    const res: any = await getStrategyHistory(stg, code.value)
+    if (res?.success && Array.isArray(res.dates)) {
+      strategyMarkDates.value = res.dates
+      strategyMarkName.value = res.strategy_name || ''
+    } else {
+      strategyMarkDates.value = []
+      strategyMarkName.value = ''
+    }
+  } catch {
+    strategyMarkDates.value = []
+    strategyMarkName.value = ''
+  }
+}
 
 // === 财务分析数据 ===
 const financialData = ref<FinancialSummaryResult | null>(null)
@@ -456,6 +490,38 @@ const renderChart = () => {
     }
   }
 
+  // === 策略选中标记：仅日K，标注该股票被当前策略历史选中的时间点 ===
+  if (currentPeriod.value === 'daily' && strategyMarkDates.value.length) {
+    const markSet = new Set(strategyMarkDates.value.map(s => s.slice(0, 10)))
+    const markData: any[] = []
+    for (let i = 0; i < dates.length; i++) {
+      if (markSet.has(dates[i].slice(0, 10))) {
+        const high = ohlc[i]?.[3]
+        if (high != null) markData.push({ value: [dates[i], high], date: dates[i].slice(0, 10) })
+      }
+    }
+    if (markData.length) {
+      series.push({
+        name: '策略选中',
+        type: 'scatter',
+        data: markData,
+        symbol: 'pin',
+        symbolSize: 22,
+        symbolOffset: [0, '-55%'],
+        itemStyle: { color: 'rgba(146,84,222,0.92)', borderColor: '#fff', borderWidth: 1 },
+        label: { show: false },
+        emphasis: { scale: 1.25 },
+        tooltip: {
+          trigger: 'item',
+          formatter: (p: any) => `${strategyMarkName.value || '策略'}选中<br/>${p.data.date}`,
+        },
+        z: 6,
+        zlevel: 1,
+      })
+      legendData.push('策略选中')
+    }
+  }
+
   // === dataZoom ===
   const zoomStart = getZoomStart(dates.length)
   const zoomXIndices: number[] = hasSub ? [0, 1, 2] : [0, 1]
@@ -545,6 +611,11 @@ watch([currentSubIndicator, mainOverlays], () => { renderChart() }, { deep: true
 
 // PR-5: 自定义指标叠加变化时重渲
 watch(() => ciOverlay.extension.value, async () => { await nextTick(); renderChart() }, { deep: true })
+
+// 策略选中标记到达后重渲（仅日K生效）
+watch(strategyMarkDates, () => {
+  if (klineData.value && currentPeriod.value === 'daily') renderChart()
+})
 
 // Navigate to backtest
 // 优先跳转「回测历史」并按本股票过滤；若无历史则跳转「单股回测」携带代码回填
@@ -818,8 +889,12 @@ watch(() => route.query.code, (newCode, oldCode) => {
     loadKlineData()
     loadFinancialData()
     loadLatestReport()
+    loadStrategyMarks()
   }
 })
+
+// 策略标识变化（同股票切换不同策略）时重新拉取选中标记
+watch(() => route.query.strategy, () => { loadStrategyMarks() })
 
 // 断点变化时（桌面 <-> 移动）重新渲染：grid 左右内边距会切换
 watch(breakpoint, () => {
@@ -838,6 +913,7 @@ onMounted(() => {
   loadKlineData()
   loadFinancialData()
   loadLatestReport()
+  loadStrategyMarks()
   window.addEventListener('resize', handleResize)
   ;(window as any).visualViewport?.addEventListener?.('resize', handleResize)
 })
@@ -850,6 +926,7 @@ onActivated(() => {
     loadKlineData()
     loadFinancialData()
     loadLatestReport()
+    loadStrategyMarks()
   } else {
     // Same stock: re-render charts that were clear()ed during deactivation
     nextTick(() => {
@@ -918,6 +995,10 @@ onUnmounted(() => {
           </el-checkbox-group>
         </div>
         <CustomIndicatorOverlayBar :state="ciOverlay" />
+      </div>
+      <div v-if="currentPeriod === 'daily' && strategyMarkDates.length" class="strategy-mark-hint">
+        <span class="dot"></span>
+        <span class="txt">{{ strategyMarkName || '策略' }} 历史选中 <b>{{ strategyMarkDates.length }}</b> 次（图钉标注）</span>
       </div>
     </div>
 
@@ -1112,10 +1193,16 @@ onUnmounted(() => {
 /* Toolbar */
 .toolbar {
   display: flex; align-items: center; padding: 6px 16px; border-bottom: 1px solid #f0f0f0;
-  background: #fafafa;
+  background: #fafafa; flex-wrap: wrap; gap: 8px;
 }
 .toolbar-left {
   display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
+}
+.strategy-mark-hint {
+  margin-left: auto; display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: #7b3fe4; white-space: nowrap;
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(146,84,222,0.92); flex: none; }
+  b { font-weight: 700; }
 }
 .period-tabs {
   display: flex; gap: 2px;
