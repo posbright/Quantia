@@ -169,6 +169,7 @@ class PortfolioBacktestEngine:
         self._current_day_prices = {}  # 当日价格 {code: close_price}
         self._fundamental_provider = None  # 基本面数据提供器
         self._stock_names = {}         # 股票名称缓存 {code: name}
+        self._index_stocks_cache = {}  # get_index_stocks 结果缓存 {clean_code: [codes]}
         # 订单执行遥测：用于在 0 笔交易时给出基于真实运行证据的诊断。
         # 每个键代表一种订单结果，值为发生次数。
         self._order_stats = {
@@ -1051,14 +1052,16 @@ class PortfolioBacktestEngine:
         def get_index_stocks(index_code, date=None):
             """获取指数成份股列表（兼容聚宽 get_index_stocks）
 
-            支持的指数：
-            - 399951.XSHE: 中证银行指数
-            - 000300.XSHG: 沪深300
+            数据源优先级（均只读 MySQL，符合"分析管道不访问外部 API"约束）：
+            1. 主流宽基指数（沪深300/上证50/中证500/中证1000/创业板50）从
+               cn_stock_selection 表的 is_* 标记列读取（取 <= 回测当前日的最新
+               快照，无则退回全局最新快照）。
+            2. 中证银行指数(399951) 用内置静态名单（该指数无对应 is_* 列）。
             """
             clean = index_code.split('.')[0] if '.' in index_code else index_code
 
-            # 中证银行指数 (399951) 成份股 — 截至2024年
-            _INDEX_STOCKS = {
+            # 中证银行指数 (399951) 成份股 — 截至2024年（无 is_* 标记列覆盖）
+            _STATIC_INDEX_STOCKS = {
                 '399951': [
                     '601398',  # 工商银行
                     '601939',  # 建设银行
@@ -1094,12 +1097,61 @@ class PortfolioBacktestEngine:
                     '600919',  # 江苏银行
                 ],
             }
+            if clean in _STATIC_INDEX_STOCKS:
+                return list(_STATIC_INDEX_STOCKS[clean])
 
-            stocks = _INDEX_STOCKS.get(clean, [])
-            if not stocks:
-                engine._log_messages.append(
-                    f"[{engine.context.current_dt}] [WARN] 未知指数 {index_code}，返回空列表")
-            return stocks
+            # 主流宽基指数 → cn_stock_selection 标记列（白名单，固定取值，无注入风险）
+            _SELECTION_FLAG_COL = {
+                '000300': 'is_hs300',    # 沪深300
+                '000016': 'is_sz50',     # 上证50
+                '000905': 'is_zz500',    # 中证500
+                '000852': 'is_zz1000',   # 中证1000
+                '399673': 'is_cy50',     # 创业板50
+            }
+            col = _SELECTION_FLAG_COL.get(clean)
+            if col:
+                if clean in engine._index_stocks_cache:
+                    return list(engine._index_stocks_cache[clean])
+                try:
+                    from quantia.lib.database import executeSqlFetch
+                    cur = engine.context.current_dt
+                    ref_date = None
+                    if cur is not None:
+                        ref_date = (cur.strftime('%Y-%m-%d')
+                                    if hasattr(cur, 'strftime') else str(cur)[:10])
+                    snap = None
+                    if ref_date:
+                        r = executeSqlFetch(
+                            "SELECT MAX(date) FROM cn_stock_selection "
+                            "WHERE date <= %s AND `" + col + "` = %s",
+                            (ref_date, '是'))
+                        snap = r[0][0] if r and r[0] else None
+                    if snap is None:  # 回测区间早于数据起点 → 退回全局最新快照
+                        r = executeSqlFetch(
+                            "SELECT MAX(date) FROM cn_stock_selection "
+                            "WHERE `" + col + "` = %s", ('是',))
+                        snap = r[0][0] if r and r[0] else None
+                    stocks = []
+                    if snap is not None:
+                        rows = executeSqlFetch(
+                            "SELECT DISTINCT code FROM cn_stock_selection "
+                            "WHERE date = %s AND `" + col + "` = %s",
+                            (snap, '是'))
+                        stocks = [row[0] for row in (rows or [])]
+                    engine._index_stocks_cache[clean] = stocks
+                    if not stocks:
+                        engine._log_messages.append(
+                            f"[{engine.context.current_dt}] [WARN] 指数 {index_code} "
+                            f"在 cn_stock_selection 无成份股数据，返回空列表")
+                    return list(stocks)
+                except Exception as e:
+                    logging.warning(f"[回测] get_index_stocks({index_code}) 查询失败: {e}")
+                    engine._index_stocks_cache[clean] = []
+                    return []
+
+            engine._log_messages.append(
+                f"[{engine.context.current_dt}] [WARN] 未知指数 {index_code}，返回空列表")
+            return []
 
         def get_fundamentals(q, date=None):
             """聚宽 get_fundamentals() — 查询基本面数据。

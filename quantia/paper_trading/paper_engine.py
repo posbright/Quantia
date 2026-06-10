@@ -1481,7 +1481,16 @@ def _create_api(context, data_proxy, g):
             return pd.DataFrame()
 
     # ── 指数成份股查询 ──
-    _INDEX_STOCKS = {
+    # 主流宽基指数 → cn_stock_selection 标记列（白名单，固定取值，无注入风险）
+    _SELECTION_FLAG_COL = {
+        '000300': 'is_hs300',    # 沪深300
+        '000016': 'is_sz50',     # 上证50
+        '000905': 'is_zz500',    # 中证500
+        '000852': 'is_zz1000',   # 中证1000
+        '399673': 'is_cy50',     # 创业板50
+    }
+    # 中证银行指数(399951) 无对应 is_* 列，用内置静态名单
+    _STATIC_INDEX_STOCKS = {
         '399951': [
             '601398', '601939', '601288', '601988', '600036', '601166',
             '000001', '601328', '601818', '600016', '601009', '600000',
@@ -1491,13 +1500,54 @@ def _create_api(context, data_proxy, g):
             '002966', '600919',
         ],
     }
+    _index_stocks_cache = {}
 
     def get_index_stocks(index_code, date=None):
         clean = index_code.split('.')[0] if '.' in index_code else index_code
-        stocks = _INDEX_STOCKS.get(clean, [])
-        if not stocks:
-            logging.warning(f"[模拟交易] 未知指数 {index_code}，返回空列表")
-        return stocks
+        if clean in _STATIC_INDEX_STOCKS:
+            return list(_STATIC_INDEX_STOCKS[clean])
+
+        col = _SELECTION_FLAG_COL.get(clean)
+        if col:
+            if clean in _index_stocks_cache:
+                return list(_index_stocks_cache[clean])
+            try:
+                import quantia.lib.database as mdb
+                cur = date or context.current_dt
+                ref_date = (cur.strftime('%Y-%m-%d')
+                            if hasattr(cur, 'strftime') else str(cur)[:10]) if cur else None
+                snap = None
+                if ref_date:
+                    r = mdb.executeSqlFetch(
+                        "SELECT MAX(date) FROM cn_stock_selection "
+                        "WHERE date <= %s AND `" + col + "` = %s",
+                        (ref_date, '是'))
+                    snap = r[0][0] if r and r[0] else None
+                if snap is None:  # 退回全局最新快照
+                    r = mdb.executeSqlFetch(
+                        "SELECT MAX(date) FROM cn_stock_selection "
+                        "WHERE `" + col + "` = %s", ('是',))
+                    snap = r[0][0] if r and r[0] else None
+                stocks = []
+                if snap is not None:
+                    rows = mdb.executeSqlFetch(
+                        "SELECT DISTINCT code FROM cn_stock_selection "
+                        "WHERE date = %s AND `" + col + "` = %s",
+                        (snap, '是'))
+                    stocks = [row[0] for row in (rows or [])]
+                _index_stocks_cache[clean] = stocks
+                if not stocks:
+                    logging.warning(f"[模拟交易] 指数 {index_code} 在 cn_stock_selection "
+                                    f"无成份股数据，返回空列表")
+                return list(stocks)
+            except Exception as e:
+                logging.warning(f"[模拟交易] get_index_stocks({index_code}) 查询失败: {e}")
+                _index_stocks_cache[clean] = []
+                return []
+
+        logging.warning(f"[模拟交易] 未知指数 {index_code}，返回空列表")
+        return []
+
 
     # ── get_all_securities ──
     def get_all_securities(types=None, date=None):
