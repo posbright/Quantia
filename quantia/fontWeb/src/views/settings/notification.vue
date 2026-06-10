@@ -17,7 +17,7 @@
         点击「测试发送」。
       </el-alert>
 
-      <el-table :data="rows" stripe border size="small">
+      <el-table v-if="!isMobile" :data="rows" stripe border size="small">
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="paper_id" label="模拟盘 ID" width="100">
           <template #default="{ row }">{{ row.paper_id ?? '全局' }}</template>
@@ -48,10 +48,40 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 移动端卡片视图 -->
+      <div v-if="isMobile" class="nc-card-list">
+        <el-empty v-if="rows.length === 0" description="暂无配置" :image-size="60" />
+        <div v-for="row in rows" :key="row.id" class="nc-card">
+          <div class="nc-card-head">
+            <span class="nc-card-title">#{{ row.id }} {{ row.event_type }}</span>
+            <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
+              {{ row.enabled ? '启用' : '关闭' }}
+            </el-tag>
+          </div>
+          <div class="nc-card-body">
+            <div class="nc-field"><span class="nc-lbl">模拟盘 ID</span><span>{{ row.paper_id ?? '全局' }}</span></div>
+            <div class="nc-field"><span class="nc-lbl">渠道</span><span>{{ row.channel }}</span></div>
+            <div class="nc-field"><span class="nc-lbl">版本</span><span>{{ row.config_version }}</span></div>
+            <div class="nc-field">
+              <span class="nc-lbl">webhook</span>
+              <el-tag :type="row.webhook_is_configured ? 'success' : 'danger'" size="small">{{ row.webhook_is_configured ? '已注入' : '未注入' }}</el-tag>
+            </div>
+            <div class="nc-field nc-field-full"><span class="nc-lbl">webhook_env</span><span class="nc-val-mono">{{ row.webhook_env }}</span></div>
+          </div>
+          <div class="nc-card-ops">
+            <span class="nc-op" @click="openEdit(row)">编辑</span>
+            <span class="nc-op-sep">|</span>
+            <span class="nc-op" @click="onTestSend(row)">测试发送</span>
+            <span class="nc-op-sep">|</span>
+            <span class="nc-op nc-op-danger" @click="onDelete(row)">删除</span>
+          </div>
+        </div>
+      </div>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑通知配置' : '新增通知配置'" width="min(640px, 92vw)">
-      <el-form :model="form" label-width="120px">
+    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑通知配置' : '新增通知配置'" :fullscreen="isMobile" :width="isMobile ? '100%' : 'min(640px, 92vw)'">
+      <el-form :model="form" :label-width="isMobile ? '100px' : '120px'">
         <el-form-item label="模拟盘 ID">
           <el-input v-model.number="form.paper_id" placeholder="留空表示全局生效" clearable />
         </el-form-item>
@@ -106,7 +136,9 @@ import {
   listNotificationConfigs, saveNotificationConfig, deleteNotificationConfig,
   testSendNotification, NotificationConfig
 } from '@/api/settings'
+import { useResponsive } from '@/composables/useResponsive'
 
+const { isMobile } = useResponsive()
 const rows = ref<NotificationConfig[]>([])
 const dialogVisible = ref(false)
 const saving = ref(false)
@@ -183,4 +215,24 @@ onMounted(loadList)
 <style scoped>
 .settings-page { padding: 16px }
 .card-header { display: flex; justify-content: space-between; align-items: center }
+
+/* ─── 移动端卡片视图 ─── */
+.nc-card-list { display: flex; flex-direction: column; gap: 10px; }
+.nc-card { background: #fff; border: 1px solid #ebeef5; border-radius: 6px; padding: 10px 12px; }
+.nc-card-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; border-bottom: 1px dashed #ebeef5; }
+.nc-card-title { font-weight: 600; color: #303133; font-size: 14px; }
+.nc-card-body { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 13px; padding: 8px 0; }
+.nc-field { display: flex; justify-content: space-between; align-items: center; }
+.nc-field-full { grid-column: 1 / -1; }
+.nc-val-mono { font-family: monospace; font-size: 12px; word-break: break-all; }
+.nc-lbl { color: #909399; }
+.nc-card-ops { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px dashed #ebeef5; }
+.nc-op { color: #409eff; cursor: pointer; font-size: 13px; }
+.nc-op-danger { color: #f56c6c; }
+.nc-op-sep { color: #dcdfe6; }
+
+@media (max-width: 767.98px) {
+  .settings-page { padding: 10px }
+  .card-header { flex-wrap: wrap; gap: 8px; }
+}
 </style>

@@ -15,6 +15,8 @@ import { toggleAttention } from '@/api/stock'
 import dayjs from 'dayjs'
 import type { ParamGroup, StrategyListItem } from '@/api/strategy'
 import IndicatorThresholdViz from '@/components/IndicatorThresholdViz.vue'
+import { useResponsive } from '@/composables/useResponsive'
+const { isMobile } = useResponsive()
 const route = useRoute()
 const router = useRouter()
 
@@ -508,6 +510,7 @@ const handleDiff = async () => {
       </div>
 
       <el-table
+        v-if="!isMobile"
         :data="filterResult"
         stripe
         border
@@ -570,6 +573,39 @@ const handleDiff = async () => {
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 移动端卡片视图 -->
+      <div v-if="isMobile" v-loading="filtering" class="sc-card-list">
+        <el-empty
+          v-if="!filtering && filterResult.length === 0"
+          description="暂无筛选结果"
+          :image-size="60"
+        />
+        <div v-for="(row, ri) in filterResult" :key="ri" class="sc-card">
+          <div class="sc-card-head">
+            <div class="sc-card-title">
+              <el-link type="primary" @click="viewIndicators(row)">{{ row.code }}</el-link>
+              <span class="sc-card-name">{{ row.name }}</span>
+            </div>
+            <span class="sc-card-date">{{ row.date }}</span>
+          </div>
+          <div class="sc-card-body">
+            <div class="sc-field"><span class="sc-lbl">PE(TTM)</span><span>{{ formatValue(row.pe9) }}</span></div>
+            <div class="sc-field"><span class="sc-lbl">ROE(%)</span><span>{{ formatValue(row.roe_weight) }}</span></div>
+            <div class="sc-field"><span class="sc-lbl">毛利率(%)</span><span>{{ formatValue(row.sale_gpr) }}</span></div>
+            <div class="sc-field"><span class="sc-lbl">净利率(%)</span><span>{{ formatValue(row.sale_npr) }}</span></div>
+            <div class="sc-field"><span class="sc-lbl">营收3年CAGR(%)</span><span>{{ formatValue(row.income_growthrate_3y) }}</span></div>
+            <div class="sc-field"><span class="sc-lbl">净利3年CAGR(%)</span><span>{{ formatValue(row.netprofit_growthrate_3y) }}</span></div>
+            <div class="sc-field"><span class="sc-lbl">资产负债率(%)</span><span>{{ formatValue(row.debt_asset_ratio) }}</span></div>
+            <div class="sc-field"><span class="sc-lbl">每股现金流</span><span>{{ formatValue(row.per_netcash_operate) }}</span></div>
+          </div>
+          <div class="sc-card-ops">
+            <span class="sc-op" @click="goBacktest(row)">回测</span>
+            <span class="sc-op-sep">|</span>
+            <span class="sc-op" @click="handleAttention(row)">{{ row.cdatetime ? '取消关注' : '加关注' }}</span>
+          </div>
+        </div>
+      </div>
 
       <div class="pagination-wrapper">
         <span class="total-info">共 {{ filterTotal }} 条记录</span>
@@ -827,6 +863,99 @@ const handleDiff = async () => {
   .total-info {
     font-size: 14px;
     color: #909399;
+  }
+}
+
+/* ─── 移动端卡片视图 ─── */
+.sc-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sc-card {
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.sc-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #ebeef5;
+}
+.sc-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.sc-card-name {
+  color: #303133;
+  font-size: 14px;
+}
+.sc-card-date {
+  font-size: 12px;
+  color: #909399;
+}
+.sc-card-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+  padding: 8px 0;
+}
+.sc-field {
+  display: flex;
+  justify-content: space-between;
+}
+.sc-lbl {
+  color: #909399;
+}
+.sc-card-ops {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #ebeef5;
+}
+.sc-op {
+  color: #409eff;
+  cursor: pointer;
+  font-size: 13px;
+}
+.sc-op-sep {
+  color: #dcdfe6;
+}
+
+@media (max-width: 767.98px) {
+  .config-layout {
+    flex-direction: column;
+    gap: 12px;
+  }
+  .action-buttons {
+    padding: 12px 0;
+    :deep(.el-button) {
+      flex: 1 1 auto;
+    }
+  }
+  .result-header {
+    flex-wrap: wrap;
+    gap: 8px;
+    :deep(.el-input) {
+      width: 100% !important;
+    }
+  }
+  .strategy-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .pagination-wrapper {
+    flex-direction: column;
+    gap: 8px;
+    align-items: stretch;
   }
 }
 </style>

@@ -17,7 +17,7 @@
         （默认 <code>QUANTIA_AI_API_KEY</code>）。Gate 默认关闭，开启前请在回测/模拟盘中验证。
       </el-alert>
 
-      <el-table :data="rows" stripe border size="small">
+      <el-table v-if="!isMobile" :data="rows" stripe border size="small">
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="name" label="名称" />
         <el-table-column prop="source_type" label="来源" width="90" />
@@ -52,10 +52,42 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 移动端卡片视图 -->
+      <div v-if="isMobile" class="ac-card-list">
+        <el-empty v-if="rows.length === 0" description="暂无配置" :image-size="60" />
+        <div v-for="row in rows" :key="row.id" class="ac-card">
+          <div class="ac-card-head">
+            <span class="ac-card-title">#{{ row.id }} {{ row.name }}</span>
+            <el-tag :type="row.enabled ? 'success' : 'info'" size="small">
+              {{ row.enabled ? '启用' : '关闭' }}
+            </el-tag>
+          </div>
+          <div class="ac-card-body">
+            <div class="ac-field"><span class="ac-lbl">来源</span><span>{{ row.source_type }}</span></div>
+            <div class="ac-field"><span class="ac-lbl">版本</span><span>{{ row.config_version }}</span></div>
+            <div class="ac-field"><span class="ac-lbl">Provider</span><span>{{ row.provider }}</span></div>
+            <div class="ac-field"><span class="ac-lbl">Model</span><span>{{ row.model_name }}</span></div>
+            <div class="ac-field">
+              <span class="ac-lbl">作为 Gate</span>
+              <el-tag :type="row.enabled_as_gate ? 'warning' : 'info'" size="small">{{ row.enabled_as_gate ? '是' : '否' }}</el-tag>
+            </div>
+            <div class="ac-field">
+              <span class="ac-lbl">API Key</span>
+              <el-tag :type="row.api_key_is_configured ? 'success' : 'danger'" size="small">{{ row.api_key_is_configured ? '已注入' : '未注入' }}</el-tag>
+            </div>
+          </div>
+          <div class="ac-card-ops">
+            <span class="ac-op" @click="openEdit(row)">编辑</span>
+            <span class="ac-op-sep">|</span>
+            <span class="ac-op ac-op-danger" @click="onDelete(row)">删除</span>
+          </div>
+        </div>
+      </div>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑 AI 配置' : '新增 AI 配置'" width="min(780px, 92vw)">
-      <el-form :model="form" label-width="140px">
+    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑 AI 配置' : '新增 AI 配置'" :fullscreen="isMobile" :width="isMobile ? '100%' : 'min(780px, 92vw)'">
+      <el-form :model="form" :label-width="isMobile ? '110px' : '140px'">
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="例如：默认模拟盘 Pre-Buy" />
         </el-form-item>
@@ -153,11 +185,12 @@ import {
   listAIConfigs, saveAIConfig, deleteAIConfig, AIDecisionConfig,
 } from '@/api/settings'
 import { aiGetConfig, type AiProviderProfile } from '@/api/ai'
+import { useResponsive } from '@/composables/useResponsive'
 
+const { isMobile } = useResponsive()
 const rows = ref<AIDecisionConfig[]>([])
 const dialogVisible = ref(false)
 const saving = ref(false)
-
 // ---- 动态 provider / model 下拉（从 /api/ai/config 拉取 QUANTIA_AI_PROVIDER_*） ----
 const profiles = ref<AiProviderProfile[]>([])
 const providerLoading = ref(false)
@@ -262,4 +295,22 @@ onMounted(async () => {
 .settings-page { padding: 16px }
 .card-header { display: flex; justify-content: space-between; align-items: center }
 .hint { color: #909399; font-size: 12px; margin-left: 8px }
+
+/* ─── 移动端卡片视图 ─── */
+.ac-card-list { display: flex; flex-direction: column; gap: 10px; }
+.ac-card { background: #fff; border: 1px solid #ebeef5; border-radius: 6px; padding: 10px 12px; }
+.ac-card-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; border-bottom: 1px dashed #ebeef5; }
+.ac-card-title { font-weight: 600; color: #303133; font-size: 14px; }
+.ac-card-body { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 13px; padding: 8px 0; }
+.ac-field { display: flex; justify-content: space-between; align-items: center; }
+.ac-lbl { color: #909399; }
+.ac-card-ops { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px dashed #ebeef5; }
+.ac-op { color: #409eff; cursor: pointer; font-size: 13px; }
+.ac-op-danger { color: #f56c6c; }
+.ac-op-sep { color: #dcdfe6; }
+
+@media (max-width: 767.98px) {
+  .settings-page { padding: 10px }
+  .card-header { flex-wrap: wrap; gap: 8px; }
+}
 </style>

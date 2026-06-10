@@ -10,7 +10,9 @@ import {
   getBacktestDashboardDistribution,
   getBacktestDashboardTradePairs,
 } from '@/api/stock'
+import { useResponsive } from '@/composables/useResponsive'
 
+const { isMobile } = useResponsive()
 const route = useRoute()
 const router = useRouter()
 
@@ -490,7 +492,7 @@ watch(
         </el-form-item>
       </el-form>
 
-      <el-table :data="detail?.rows || []" border size="small" stripe>
+      <el-table v-if="!isMobile" :data="detail?.rows || []" border size="small" stripe>
         <el-table-column prop="date" label="日期" width="120" align="center" />
         <el-table-column prop="code" label="代码" width="100" align="center" />
         <el-table-column prop="name" label="名称" min-width="120" />
@@ -506,6 +508,28 @@ watch(
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 移动端卡片视图 -->
+      <div v-if="isMobile" class="bd-card-list">
+        <el-empty v-if="(detail?.rows || []).length === 0" description="暂无明细" :image-size="60" />
+        <div v-for="(row, ri) in (detail?.rows || [])" :key="ri" class="bd-card">
+          <div class="bd-card-head">
+            <span class="bd-card-title">{{ row.code }} {{ row.name }}</span>
+            <span class="bd-card-date">{{ row.date }}</span>
+          </div>
+          <div class="bd-card-body">
+            <div v-for="h in (detail?.horizons || [])" :key="h" class="bd-field">
+              <span class="bd-lbl">{{ h }}日收益</span>
+              <span :class="getRateClass(row[`rate_${h}`])">{{ formatRate(row[`rate_${h}`]) }}</span>
+            </div>
+          </div>
+          <div class="bd-card-ops">
+            <span class="bd-op" @click="goIndicatorDetail(row)">K线指标</span>
+            <span class="bd-op-sep">|</span>
+            <span class="bd-op" @click="goCustomBacktest(row)">单股回测</span>
+          </div>
+        </div>
+      </div>
 
       <div class="pager">
         <el-pagination
@@ -556,7 +580,7 @@ watch(
         </el-form-item>
       </el-form>
 
-      <el-table :data="tradePairs?.rows || []" border size="small" stripe>
+      <el-table v-if="!isMobile" :data="tradePairs?.rows || []" border size="small" stripe>
         <el-table-column prop="buy_date" label="买入日" width="120" align="center" />
         <el-table-column prop="sell_date" label="卖出日" width="120" align="center" />
         <el-table-column prop="code" label="代码" width="100" align="center" />
@@ -576,6 +600,29 @@ watch(
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 移动端卡片视图 -->
+      <div v-if="isMobile" class="bd-card-list">
+        <el-empty v-if="(tradePairs?.rows || []).length === 0" description="暂无配对" :image-size="60" />
+        <div v-for="(row, ri) in (tradePairs?.rows || [])" :key="ri" class="bd-card">
+          <div class="bd-card-head">
+            <span class="bd-card-title">{{ row.code }} {{ row.name }}</span>
+            <span :class="getRateClass(row.return_rate)">{{ formatRate(row.return_rate) }}</span>
+          </div>
+          <div class="bd-card-body">
+            <div class="bd-field"><span class="bd-lbl">买入日</span><span>{{ row.buy_date }}</span></div>
+            <div class="bd-field"><span class="bd-lbl">卖出日</span><span>{{ row.sell_date }}</span></div>
+            <div class="bd-field"><span class="bd-lbl">持有(天)</span><span>{{ row.hold_days }}</span></div>
+            <div class="bd-field"><span class="bd-lbl">买入价</span><span>{{ row.buy_price }}</span></div>
+            <div class="bd-field"><span class="bd-lbl">卖出价</span><span>{{ row.sell_price }}</span></div>
+          </div>
+          <div class="bd-card-ops">
+            <span class="bd-op" @click="goIndicatorDetail({ code: row.code, name: row.name, date: row.buy_date })">K线指标</span>
+            <span class="bd-op-sep">|</span>
+            <span class="bd-op" @click="goCustomBacktest({ code: row.code, name: row.name })">单股回测</span>
+          </div>
+        </div>
+      </div>
 
       <div class="pager">
         <el-pagination
@@ -634,5 +681,95 @@ watch(
 .text-down {
   color: #67c23a;
   font-weight: 500;
+}
+
+/* ─── 移动端卡片视图 ─── */
+.bd-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.bd-card {
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.bd-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #ebeef5;
+}
+.bd-card-title {
+  font-weight: 600;
+  color: #303133;
+  font-size: 14px;
+}
+.bd-card-date {
+  font-size: 12px;
+  color: #909399;
+}
+.bd-card-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+  padding: 8px 0;
+}
+.bd-field {
+  display: flex;
+  justify-content: space-between;
+}
+.bd-lbl {
+  color: #909399;
+}
+.bd-card-ops {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #ebeef5;
+}
+.bd-op {
+  color: #409eff;
+  cursor: pointer;
+  font-size: 13px;
+}
+.bd-op-sep {
+  color: #dcdfe6;
+}
+
+@include sm-down {
+  .config-card,
+  .result-card {
+    margin-bottom: 12px;
+  }
+  .header-row {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .chart {
+    height: 240px;
+  }
+  :deep(.el-form--inline) {
+    .el-form-item {
+      display: flex;
+      margin-right: 0;
+      margin-bottom: 10px;
+      width: 100%;
+    }
+    .el-form-item__content {
+      flex: 1;
+    }
+    .el-form-item__content > * {
+      width: 100% !important;
+    }
+  }
+  .pager {
+    justify-content: center;
+  }
 }
 </style>

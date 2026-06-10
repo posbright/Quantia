@@ -2,8 +2,9 @@
   <el-dialog
     v-model="visible"
     title="交易决策依据"
-    width="min(720px, 92vw)"
-    :top="isMobile ? '3vh' : '6vh'"
+    :fullscreen="isMobile"
+    :width="isMobile ? '100%' : 'min(720px, 92vw)'"
+    :top="isMobile ? '0' : '6vh'"
     destroy-on-close
   >
     <div v-loading="loading" class="trade-decision-dialog">
@@ -101,16 +102,16 @@
           指标快照
           <span class="td-block-sub">{{ indicator.trade_date }}</span>
         </span>
-        <el-descriptions :column="4" border size="small" class="td-indicators">
+        <el-descriptions :column="isMobile ? 1 : 4" border size="small" class="td-indicators">
           <el-descriptions-item label="开盘">{{ formatters.fmtNumDp(indicator.open_price) }}</el-descriptions-item>
           <el-descriptions-item label="收盘">{{ formatters.fmtNumDp(indicator.close_price) }}</el-descriptions-item>
           <el-descriptions-item label="最低">{{ formatters.fmtNumDp(indicator.low_price) }}</el-descriptions-item>
           <el-descriptions-item label="最高">{{ formatters.fmtNumDp(indicator.high_price) }}</el-descriptions-item>
-          <el-descriptions-item label="成交量" :span="4">{{ formatters.fmtVolumeHuman(indicator.volume) }}</el-descriptions-item>
-          <el-descriptions-item label="MA" :span="4">{{ formatters.fmtIndicatorDictMA(indicator.ma) }}</el-descriptions-item>
-          <el-descriptions-item label="BOLL" :span="4">{{ formatters.fmtIndicatorBOLL(indicator.boll) }}</el-descriptions-item>
-          <el-descriptions-item label="RSI" :span="4">{{ formatters.fmtIndicatorRSI(indicator.rsi) }}</el-descriptions-item>
-          <el-descriptions-item label="MACD" :span="4">{{ formatters.fmtIndicatorMACD(indicator.macd) }}</el-descriptions-item>
+          <el-descriptions-item label="成交量" :span="isMobile ? 1 : 4">{{ formatters.fmtVolumeHuman(indicator.volume) }}</el-descriptions-item>
+          <el-descriptions-item label="MA" :span="isMobile ? 1 : 4">{{ formatters.fmtIndicatorDictMA(indicator.ma) }}</el-descriptions-item>
+          <el-descriptions-item label="BOLL" :span="isMobile ? 1 : 4">{{ formatters.fmtIndicatorBOLL(indicator.boll) }}</el-descriptions-item>
+          <el-descriptions-item label="RSI" :span="isMobile ? 1 : 4">{{ formatters.fmtIndicatorRSI(indicator.rsi) }}</el-descriptions-item>
+          <el-descriptions-item label="MACD" :span="isMobile ? 1 : 4">{{ formatters.fmtIndicatorMACD(indicator.macd) }}</el-descriptions-item>
         </el-descriptions>
       </div>
     </div>
