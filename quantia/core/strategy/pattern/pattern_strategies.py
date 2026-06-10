@@ -26,17 +26,20 @@ class BreakthroughPlatformStrategy(PatternStrategy):
     突破平台策略
 
     选股条件:
-    1. 60日内某日收盘价>=60日均线>开盘价
-    2. 且该日放量上涨
-    3. 之前时间，任意一天收盘价与60日均线偏离在-5%~20%之间
+    1. 真实平台: 突破日之前需有不少于 min_platform_days 个交易日收盘价贴近 MA60（偏离 -5%~20%）
+    2. 近期突破: 突破日（开盘价<MA60<=收盘价 且放量上涨）须发生在信号日当天或最近 recent_days 个交易日内
+    3. 仍站稳平台: 突破日至信号日收盘价持续 >= MA60，未跌回均线下方
     """
     name = "breakthrough_platform"
     cn_name = "突破平台"
     default_threshold = 60
-    description = "在平台整理后放量突破60日均线"
+    description = "在横盘平台后近期放量突破60日均线，且当前仍站稳均线之上"
 
     def check(self, code_name, data, date=None, **kwargs):
         from ..volume.volume_strategies import VolumeIncreaseStrategy
+
+        recent_days = kwargs.get('recent_days', 3)
+        min_platform_days = kwargs.get('min_platform_days', 10)
 
         origin_data = data
         if date is None:
@@ -60,10 +63,13 @@ class BreakthroughPlatformStrategy(PatternStrategy):
 
         volume_strategy = VolumeIncreaseStrategy(threshold=self.threshold)
 
+        # A. 仅在最近 recent_days 个交易日内寻找突破日，并取最近的一次突破。
+        recent = data.tail(n=max(1, recent_days))
         breakthrough_row = None
-        for _close, _open, _date, _ma60 in zip(data['close'].values, data['open'].values,
-                                                data['date'].values, data['ma60'].values):
-            if _open < _ma60 <= _close:
+        for _close, _open, _date, _ma60 in zip(
+                recent['close'].values[::-1], recent['open'].values[::-1],
+                recent['date'].values[::-1], recent['ma60'].values[::-1]):
+            if _ma60 > 0 and _open < _ma60 <= _close:
                 check_date = pd.Timestamp(_date)
                 if volume_strategy.check(code_name, origin_data, date=check_date):
                     breakthrough_row = _date
@@ -72,11 +78,20 @@ class BreakthroughPlatformStrategy(PatternStrategy):
         if breakthrough_row is None:
             return False
 
+        # C. 突破日之前需构成真实平台：样本足够多，且全部贴近 MA60。
         data_front = data.loc[(data['date'] < breakthrough_row) & (data['ma60'] > 0)]
+        if len(data_front) < min_platform_days:
+            return False
         for _close, _ma60 in zip(data_front['close'].values, data_front['ma60'].values):
             # 收盘价与60日均线偏离在-5%~20%之间
             deviation = (_close - _ma60) / _ma60
             if not (-0.05 < deviation < 0.2):
+                return False
+
+        # B. 突破日至信号日收盘价需持续站稳 MA60 之上，未跌回均线下方。
+        data_after = data.loc[data['date'] >= breakthrough_row]
+        for _close, _ma60 in zip(data_after['close'].values, data_after['ma60'].values):
+            if _ma60 <= 0 or _close < _ma60:
                 return False
 
         return True

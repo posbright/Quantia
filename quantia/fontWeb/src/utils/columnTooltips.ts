@@ -187,7 +187,7 @@ export const strategyDescriptions: Record<string, string> = {
   cn_stock_strategy_keep_increasing: '均线多头：MA30在30个交易日内持续上升且涨幅超过20%，表示中期趋势向好',
   cn_stock_strategy_parking_apron: '停机坪：高位放量滞涨后缩量回调，回调幅度小于上涨幅度的一半，准备再次拉升',
   cn_stock_strategy_backtrace_ma250: '回踩年线：股价突破250日均线后回踩不破，伴随缩量，是经典的买入位置',
-  cn_stock_strategy_breakthrough_platform: '突破平台：股价长期在60日均线附近横盘整理后放量突破，形成上升趋势',
+  cn_stock_strategy_breakthrough_platform: '突破平台：股价在MA60附近长期横盘整理后，近期放量向上突破，且当前仍站稳均线之上（过滤数月前的旧突破）',
   cn_stock_strategy_low_backtrace_increase: '无大幅回撤：低波动稳健上涨，近期涨幅>10%但回撤<高点的20%',
   cn_stock_strategy_turtle_trade: '海龟交易法则：突破20日最高价买入。经典趋势跟踪策略',
   cn_stock_strategy_high_tight_flag: '高而窄的旗形：快速大涨(翻倍+)后窄幅整理，突破后继续上涨。需近3月龙虎榜机构买入>1次',

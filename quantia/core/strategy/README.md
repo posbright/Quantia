@@ -41,7 +41,7 @@ quantia/core/strategy/
 | `keep_increasing.py` | 均线多头 | cn_stock_strategy_keep_increasing | MA30均线持续上涨超20% |
 | `parking_apron.py` | 停机坪 | cn_stock_strategy_parking_apron | 涨停后横盘整理 |
 | `backtrace_ma250.py` | 回踩年线 | cn_stock_strategy_backtrace_ma250 | 突破年线后回踩不破 |
-| `breakthrough_platform.py` | 突破平台 | cn_stock_strategy_breakthrough_platform | 放量突破60日均线 |
+| `breakthrough_platform.py` | 突破平台 | cn_stock_strategy_breakthrough_platform | 横盘平台后近期放量突破60日均线且仍站稳均线 |
 | `low_backtrace_increase.py` | 无大幅回撤 | cn_stock_strategy_low_backtrace_increase | 稳健上涨无大幅回撤 |
 
 #### 策略选股菜单（/strategy/）
