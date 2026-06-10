@@ -289,6 +289,27 @@ GET /quantia/api/strategy/filter
 
 ---
 
+### 10. 策略参数生效机制（K线技术策略）
+
+K线技术策略的可调参数（保存在 `cn_strategy_params` 表）通过统一白名单
+`_PARAM_WIRED_STRATEGIES`（[strategy_data_daily_job.py](quantia/job/strategy_data_daily_job.py)）真正接入到策略 `check()`：
+
+| 路径 | 是否应用已保存参数 | 说明 |
+|------|------------------|------|
+| 每日选股任务（`strategy_data_daily_job`） | 是 | `_load_strategy_kwargs(table, func)` 读 `cn_strategy_params`，按 `check()` 签名过滤后 `**kwargs` 传入；重算结果落 `cn_stock_strategy_*` 表 |
+| 选股验证中心 / 策略因子实验室（`verifyOptimizeHandler`） | 是 | `_load_verify_strategy_kwargs` 复用同一加载器，扫描 K 线时把参数传入 `check()`；参数签名纳入信号缓存键，调参后缓存自动失效 |
+| 动态筛选（`/api/strategy/filter` 的 K 线策略） | 间接 | 读预计算的 `cn_stock_strategy_*` 表，需待每日任务按新参数重算后才反映 |
+
+已接入参数化的策略（参数 key 与 `check()` 形参一一对应，默认值等于历史硬编码、行为不变）：
+`enter`、`keep_increasing`、`parking_apron`、`backtrace_ma250`、`breakthrough_platform`、
+`low_backtrace_increase`、`turtle_trade`、`high_tight_flag`、`climax_limitdown`、`low_atr`。
+
+> 基本面/指标类策略（`gpt_value`、`fundamental_buy`、`indicator_buy`、`indicator_sell`）的参数直接拼入筛选 SQL，始终即时生效。
+
+> 调整参数后若要让「动态筛选/选股结果表」反映新逻辑，需重新运行 `strategy_data_daily_job`；验证中心则即时生效（首次扫描后走参数化缓存）。
+
+---
+
 ## 数据表字段说明
 
 ### cn_stock_spot (每日股票数据)

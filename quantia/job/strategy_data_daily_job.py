@@ -29,7 +29,16 @@ _STRATEGY_OUTER_WORKERS = _cfg.get_int('QUANTIA_STRATEGY_OUTER_WORKERS', 2)
 # 仅对白名单内的策略读取 cn_strategy_params 并按函数签名过滤后传入 check()，
 # 避免影响未开启参数化的其它策略。
 _PARAM_WIRED_STRATEGIES = {
+    'cn_stock_strategy_enter': 'enter',
     'cn_stock_strategy_keep_increasing': 'keep_increasing',
+    'cn_stock_strategy_parking_apron': 'parking_apron',
+    'cn_stock_strategy_backtrace_ma250': 'backtrace_ma250',
+    'cn_stock_strategy_breakthrough_platform': 'breakthrough_platform',
+    'cn_stock_strategy_low_backtrace_increase': 'low_backtrace_increase',
+    'cn_stock_strategy_turtle_trade': 'turtle_trade',
+    'cn_stock_strategy_high_tight_flag': 'high_tight_flag',
+    'cn_stock_strategy_climax_limitdown': 'climax_limitdown',
+    'cn_stock_strategy_low_atr': 'low_atr',
 }
 
 

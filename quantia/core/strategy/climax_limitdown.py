@@ -10,10 +10,17 @@ __author__ = 'Quantia'
 __date__ = '2026/02/14'
 
 # 放量跌停
-# 1.跌>9.5%
-# 2.成交额不低于2亿
-# 3.成交量至少是5日平均成交量的4倍
-def check(code_name, data, date=None, threshold=60):
+# 1.跌 > limit_down_pct%
+# 2.成交额不低于 min_turnover 亿
+# 3.成交量至少是5日平均成交量的 vol_ratio 倍
+#
+# 参数（可经 UI/数据库 cn_strategy_params 真正接入每日选股与验证中心）：
+#   limit_down_pct  当日最低跌幅(取绝对值,%)，默认 9.5
+#   vol_ratio       当日成交量需达到5日均量的倍数，默认 4
+#   min_turnover    最低成交额(亿)，默认 2
+#   threshold       分析所需最少历史交易日数，默认 60
+def check(code_name, data, date=None, threshold=60,
+          limit_down_pct=9.5, vol_ratio=4, min_turnover=2):
     if date is None:
         end_date = code_name[0]
     else:
@@ -28,8 +35,22 @@ def check(code_name, data, date=None, threshold=60):
     if len(data.index) < threshold:
         return False
 
+    # 参数归一化（UI/DB 传入可能是字符串）
+    try:
+        limit_down_pct = abs(float(limit_down_pct))
+    except (TypeError, ValueError):
+        limit_down_pct = 9.5
+    try:
+        vol_ratio_th = float(vol_ratio)
+    except (TypeError, ValueError):
+        vol_ratio_th = 4.0
+    try:
+        min_amount = float(min_turnover) * 100000000
+    except (TypeError, ValueError):
+        min_amount = 200000000
+
     p_change = data.iloc[-1]['p_change']
-    if p_change > -9.5:
+    if p_change > -limit_down_pct:
         return False
 
     data.loc[:, 'vol_ma5'] = tl.MA(data['volume'].values, timeperiod=5)
@@ -46,8 +67,8 @@ def check(code_name, data, date=None, threshold=60):
 
     amount = last_close * last_vol
 
-    # 成交额不低于2亿
-    if amount < 200000000:
+    # 成交额不低于 min_turnover 亿
+    if amount < min_amount:
         return False
 
     data = data.head(n=threshold)
@@ -58,7 +79,7 @@ def check(code_name, data, date=None, threshold=60):
         return False
 
     vol_ratio = last_vol / mean_vol
-    if vol_ratio >= 4:
+    if vol_ratio >= vol_ratio_th:
         return {
             'p_change': round(float(p_change), 2),
             'volume': int(last_vol),

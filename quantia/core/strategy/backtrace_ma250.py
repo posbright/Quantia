@@ -11,11 +11,21 @@ __date__ = '2026/02/14'
 
 
 # 回踩年线
-# 1.时间段：前段=最近60交易日最高收盘价之前交易日(长度>0)，后段=最高价当日及后面的交易日
-# 2.前段由年线(250日)以下向上突破
-# 3.后段必须在年线以上运行，且后段最低价日与最高价日相差必须在10-50日间
-# 4.回踩伴随缩量：最高价日交易量/后段最低价日交易量>2,后段最低价/最高价<0.8
-def check(code_name, data, date=None, threshold=60):
+# 1.时间段：前段=最近 threshold 交易日最高收盘价之前交易日(长度>0)，后段=最高价当日及后面的交易日
+# 2.前段由年线(ma_period 日)以下向上突破
+# 3.后段必须在年线以上运行，且后段最低价日与最高价日相差必须在 min_pullback_days~max_pullback_days 日间
+# 4.回踩伴随缩量：最高价日交易量/后段最低价日交易量 > vol_shrink_ratio，后段最低价/最高价 < max_back_ratio
+#
+# 参数（可经 UI/数据库 cn_strategy_params 真正接入每日选股与验证中心）：
+#   ma_period          年线周期，默认 250
+#   min_pullback_days  最高价到最低价的最少间隔天数，默认 10
+#   max_pullback_days  最高价到最低价的最多间隔天数，默认 50
+#   vol_shrink_ratio   缩量比例下限，默认 2
+#   max_back_ratio     最大回撤比上限，默认 0.8
+#   threshold          寻找最高/最低价的窗口，默认 60
+def check(code_name, data, date=None, threshold=60,
+          ma_period=250, min_pullback_days=10, max_pullback_days=50,
+          vol_shrink_ratio=2, max_back_ratio=0.8):
     if date is None:
         end_date = code_name[0]
     else:
@@ -28,10 +38,33 @@ def check(code_name, data, date=None, threshold=60):
         end_date = pd.Timestamp(end_date)
         mask = (data['date'] <= end_date)
         data = data.loc[mask].copy()
-    if len(data.index) < 250:
+
+    # 参数归一化（UI/DB 传入可能是字符串）
+    try:
+        ma_period = max(1, int(ma_period))
+    except (TypeError, ValueError):
+        ma_period = 250
+    try:
+        min_pullback_days = int(min_pullback_days)
+    except (TypeError, ValueError):
+        min_pullback_days = 10
+    try:
+        max_pullback_days = int(max_pullback_days)
+    except (TypeError, ValueError):
+        max_pullback_days = 50
+    try:
+        vol_shrink_ratio = float(vol_shrink_ratio)
+    except (TypeError, ValueError):
+        vol_shrink_ratio = 2.0
+    try:
+        max_back_ratio = float(max_back_ratio)
+    except (TypeError, ValueError):
+        max_back_ratio = 0.8
+
+    if len(data.index) < ma_period:
         return False
 
-    data.loc[:, 'ma250'] = tl.MA(data['close'].values, timeperiod=250)
+    data.loc[:, 'ma250'] = tl.MA(data['close'].values, timeperiod=ma_period)
     data['ma250'] = data['ma250'].fillna(0.0)
 
     data = data.tail(n=threshold)
@@ -81,7 +114,7 @@ def check(code_name, data, date=None, threshold=60):
         return False
     date_diff = pd.Timestamp(recent_lowest_row[2]) - pd.Timestamp(highest_row[2])
 
-    if not (timedelta(days=10) <= date_diff <= timedelta(days=50)):
+    if not (timedelta(days=min_pullback_days) <= date_diff <= timedelta(days=max_pullback_days)):
         return False
     # 回踩伴随缩量
     if recent_lowest_row[1] <= 0 or highest_row[0] <= 0:
@@ -89,7 +122,7 @@ def check(code_name, data, date=None, threshold=60):
     vol_ratio = highest_row[1] / recent_lowest_row[1]
     back_ratio = recent_lowest_row[0] / highest_row[0]
 
-    if not (vol_ratio > 2 and back_ratio < 0.8):
+    if not (vol_ratio > vol_shrink_ratio and back_ratio < max_back_ratio):
         return False
 
     p_change = data.iloc[-1]['p_change'] if 'p_change' in data.columns else 0.0

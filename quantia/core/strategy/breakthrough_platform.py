@@ -21,7 +21,8 @@ __date__ = '2026/02/14'
 #    持续误判为买入信号。
 # 3. 仍站稳平台（B）：突破日至信号日之间收盘价持续 >= MA60，未跌回均线下方；
 #    过滤已经反转、跌破均线的失效突破（典型误选：3 个月前突破、如今已跌破 MA60 仍被选中）。
-def check(code_name, data, date=None, threshold=60, recent_days=3, min_platform_days=10):
+def check(code_name, data, date=None, threshold=60, recent_days=3, min_platform_days=10,
+          ma_period=60, min_deviation=-5, max_deviation=20):
     origin_data = data
     if date is None:
         end_date = code_name[0]
@@ -37,7 +38,21 @@ def check(code_name, data, date=None, threshold=60, recent_days=3, min_platform_
     if len(data.index) < threshold:
         return False
 
-    data.loc[:, 'ma60'] = tl.MA(data['close'].values, timeperiod=60)
+    # 参数归一化（UI/DB 传入可能是字符串）
+    try:
+        ma_period = max(1, int(ma_period))
+    except (TypeError, ValueError):
+        ma_period = 60
+    try:
+        dev_lo = float(min_deviation) / 100.0
+    except (TypeError, ValueError):
+        dev_lo = -0.05
+    try:
+        dev_hi = float(max_deviation) / 100.0
+    except (TypeError, ValueError):
+        dev_hi = 0.2
+
+    data.loc[:, 'ma60'] = tl.MA(data['close'].values, timeperiod=ma_period)
     data['ma60'] = data['ma60'].fillna(0.0)
 
     data = data.tail(n=threshold)
@@ -61,9 +76,9 @@ def check(code_name, data, date=None, threshold=60, recent_days=3, min_platform_
     if len(data_front) < min_platform_days:
         return False
     for _close, _ma60 in zip(data_front['close'].values, data_front['ma60'].values):
-        # 收盘价与60日均线偏离在-5%~20%之间
+        # 收盘价与均线偏离在 [min_deviation, max_deviation] 之间
         deviation = (_close - _ma60) / _ma60
-        if not (-0.05 < deviation < 0.2):
+        if not (dev_lo < deviation < dev_hi):
             return False
 
     # B. 突破日至信号日收盘价需持续站稳 MA60 之上，未跌回均线下方。

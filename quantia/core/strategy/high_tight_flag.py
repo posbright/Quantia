@@ -8,10 +8,16 @@ __date__ = '2026/02/14'
 
 
 # 高而窄的旗形
-# 1.必须至少上市交易60日
-# 2.当日收盘价/之前24~10日的最低价>=1.9
-# 3.之前24~10日必须连续两天涨幅大于等于9.5%
-def check_high_tight(code_name, data, date=None, threshold=60, istop=False):
+# 1.必须至少上市交易 threshold 日
+# 2.当日收盘价/之前24~10日的最低价 >= price_ratio
+# 3.之前24~10日必须连续两天涨幅大于等于 limit_up_pct%
+#
+# 参数（可经 UI/数据库 cn_strategy_params 真正接入每日选股与验证中心）：
+#   price_ratio   收盘价需达到区间最低价的倍数，默认 1.9
+#   limit_up_pct  连续涨停的最低涨幅(%)，默认 9.5
+#   threshold     最少上市交易天数，默认 60
+def check_high_tight(code_name, data, date=None, threshold=60, istop=False,
+                     price_ratio=1.9, limit_up_pct=9.5):
     # 龙虎榜上必须有机构
     if not istop:
         return False
@@ -29,6 +35,16 @@ def check_high_tight(code_name, data, date=None, threshold=60, istop=False):
     if len(data.index) < threshold:
         return False
 
+    # 参数归一化（UI/DB 传入可能是字符串）
+    try:
+        price_ratio = float(price_ratio)
+    except (TypeError, ValueError):
+        price_ratio = 1.9
+    try:
+        limit_up_pct = float(limit_up_pct)
+    except (TypeError, ValueError):
+        limit_up_pct = 9.5
+
     data = data.tail(n=threshold)
 
     current_close = data.iloc[-1]['close']  # 保存当日收盘价
@@ -38,15 +54,14 @@ def check_high_tight(code_name, data, date=None, threshold=60, istop=False):
     if low == 0:
         return False
     ratio_increase = current_close / low  # 当日收盘价/区间最低价
-    if ratio_increase < 1.9:
+    if ratio_increase < price_ratio:
         return False
 
-    # 连续两天涨幅大于等于10%
+    # 连续两天涨幅大于等于 limit_up_pct%
     previous_p_change = 0.0
     for _p_change in data['p_change'].values:
-        # 单日跌幅超7%；高开低走7%；两日累计跌幅10%；两日高开低走累计10%
-        if _p_change >= 9.5:
-            if previous_p_change >= 9.5:
+        if _p_change >= limit_up_pct:
+            if previous_p_change >= limit_up_pct:
                 last_p_change = data.iloc[-1]['p_change'] if 'p_change' in data.columns else 0.0
                 return {
                     'p_change': round(float(last_p_change), 2),
