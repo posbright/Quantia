@@ -1051,7 +1051,7 @@ const BUILTIN_STRATEGY_DESC: Record<string, { buy: string; sell: string }> = {
     sell: '跌破年线或触发止损时卖出。',
   },
   '突破平台': {
-    buy: '60 日内价格在 MA60 附近整理后放量上穿 MA60 时买入。',
+    buy: '在 MA60 附近横盘整理后，最近数日内放量上穿 MA60，且突破后收盘价持续站稳 MA60 时买入（过滤已跌破均线的旧突破）。',
     sell: '跌回平台或触发止损时卖出。',
   },
   '低ATR成长': {
