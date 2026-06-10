@@ -21,6 +21,17 @@ applyTo: "quantia/fontWeb/src/**/*.ts, quantia/fontWeb/src/**/*.vue, quantia/fon
 - 日期处理统一用 `dayjs`。
 - 布局用 `<keep-alive>`，因此组件状态在路由切换间持久化——需要刷新数据时用 `onActivated()` 而不是 `onMounted()`。
 
+## 移动端适配（新增/改动页面必做）
+- **断点真相源**：`src/composables/useResponsive.ts` 暴露 `{ isMobile, isTablet, isDesktop, isSmallScreen, ... }`，`isMobile` = 视口 < 768px。组件内 `const { isMobile } = useResponsive()`。
+- **禁止裸写 `@media`**：新增媒体查询用 `src/styles/_breakpoints.scss` 的 mixin（`@include sm-down` / `@include md-down` / `@include mobile-only`），或对齐 useResponsive 断点值（767.98px）。
+- **宽表格（`el-table` ≥ 5 列）必须双视图**：桌面 `<el-table v-if="!isMobile">`，移动端 `<div v-if="isMobile" class="xxx-card-list">` 卡片渲染。参考实现：`views/paper-trading/index.vue`（`.pt-card`）、`views/attention/index.vue`（`.att-card`）。卡片结构 = 头部（代码/名称/关键标签）+ body（`grid-template-columns: 1fr 1fr` 字段对）+ ops（操作行，`.xxx-op` 链接 + `|` 分隔）。
+- **弹窗**：`el-dialog` 移动端用 `:fullscreen="isMobile"` 或响应式 `:width` / `:top`。
+- **ECharts**：移动端缩小 `grid` 内边距与轴字号；tab 切换 / v-show 复现后调 `chart.resize()`。
+- **视口高度**用 `100dvh`（非 `100vh`），适配移动浏览器地址栏折叠。
+- **零桌面端回归**：移动样式必须包在断点内；`localStorage.setItem('quantia.forceDesktop','1')` 可强制桌面回滚验证。
+- 全量未适配清单见 [document/mobile_adaptation_plan.md](../../document/mobile_adaptation_plan.md)。
+
+
 ## API 调用
 - **所有** HTTP 请求必须经过 `src/api/` 模块，不要在组件里直接用 axios。
 - 基础路径：`/quantia`，Vite dev 代理到 `http://localhost:9988`。

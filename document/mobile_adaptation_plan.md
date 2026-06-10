@@ -1,5 +1,10 @@
 # Quantia 前端移动端适配方案 v2.0
 
+> **v2.1 实施现状更新（2026 增量审计）**：本计划早期（v2.0）标注 0% 实施已过时。截至本次审计，全量 45 个视图页中约 **23 页已适配**（home / login / register / paper-trading/index / indicator/index / stock/StockData / verify/* / algo/* 等），1 页部分适配，**21 页未适配**。
+> - ✅ 本次新增：`views/attention/index.vue`（我的关注，8+ 列宽表）已加移动端卡片视图（`.att-card`），引入 `useResponsive`。
+> - 🟠 **高优先级未适配宽表页（待办）**：`strategy/StrategyConfig.vue`（12+列）、`stock/report-history.vue`（10+列）、`settings/im-commands.vue`（13列）、`settings/ai-config.vue`、`settings/notification.vue`、`settings/im-operator.vue`、`settings/token-usage.vue`、`fund/index.vue`（10+列）、`backtest/history.vue`（10+列）、`backtest/dashboard.vue`、`settings/live-trading.vue`、`settings/audit.vue`、`customIndicator/index.vue`、`paper-trading/components/TradeDecisionDialog.vue`。
+> - 适配铁律已写入 `AGENTS.md`（Frontend mobile adaptation）与 `.github/instructions/frontend-vue.instructions.md`（移动端适配章节）：新增/改动页面强制使用 `useResponsive` + `_breakpoints.scss`，宽表（≥5 列）必须提供卡片视图。
+
 > 文档版本：v2.0 ｜ 修订日期：2026-05-20 ｜ 适用分支：`backTest_dev`
 > 范围：`quantia/fontWeb/`（Vue 3.4.21 + Element Plus 2.6.1 + Vite 5.1.6 + echarts 5.5.0）
 > 目标设备：手机（≥360px）/ 平板（≥768px）/ 横竖屏自适应；零桌面端回归

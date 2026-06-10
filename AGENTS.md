@@ -64,6 +64,19 @@ Env: copy `.env` template; required keys are `QUANTIA_DB_HOST/QUANTIA_DB_USER/QU
 - Sync tracks `template_id`, `template_hash`, `user_modified`. Frontend-saved built-ins are protected from overwrite when their code differs from official templates.
 - If you change a template's code, restart the web service so sync runs (or hit the sync endpoint) — otherwise frontend edit / backtest pages keep the old code.
 
+## Frontend mobile adaptation（新增/改动前端页面必须遵循）
+
+所有新增或改动的前端页面（`quantia/fontWeb/src/views/**`、`src/components/**`）**必须**做移动端适配，禁止只在桌面宽度下能用。统一基础设施：
+
+- **断点真相源**：`src/composables/useResponsive.ts`（`isMobile` < 768，xs<576 / sm<768 / md<992 / lg/xl/xxl）+ SCSS mixin `src/styles/_breakpoints.scss`。**禁止**裸写 `@media (max-width: 768px)`，新增媒体查询走 mixin（`@include sm-down` / `@include mobile-only` 等）或对齐 useResponsive 断点值（767.98px）。
+- **宽表格（`el-table` ≥ 5 列）必须提供移动端卡片视图**：桌面 `<el-table v-if="!isMobile">`，移动端 `<div v-if="isMobile" class="xxx-card-list">` 渲染卡片。参考实现：[paper-trading/index.vue](quantia/fontWeb/src/views/paper-trading/index.vue)（`.pt-card`）、[attention/index.vue](quantia/fontWeb/src/views/attention/index.vue)（`.att-card`）。卡片结构：头部（代码/名称/关键标签）+ body（`grid-template-columns: 1fr 1fr` 字段对）+ ops（操作行）。
+- **弹窗 `el-dialog`**：移动端用 `:fullscreen="isMobile"` 或 `:width="isMobile ? '100vw' : '...'"` + `:top="isMobile ? '0' : '...'"`。
+- **ECharts**：移动端缩小 `grid.left/right` 内边距与轴字号（`isMobile.value ? 38 : 60` 等），参考 [indicator/index.vue](quantia/fontWeb/src/views/indicator/index.vue)。
+- **视口高度**用 `100dvh` 而非 `100vh`（iOS/Android 地址栏折叠）。
+- **零桌面端回归**：所有移动样式必须包在断点内，桌面表现不变。`localStorage.setItem('quantia.forceDesktop','1')` 可强制桌面回滚验证。
+- **完整未适配清单**见 [document/mobile_adaptation_plan.md](document/mobile_adaptation_plan.md)；改动相邻页面时顺手适配。已知高优先级未适配宽表页：`strategy/StrategyConfig.vue`、`stock/report-history.vue`、`settings/im-commands.vue`、`fund/index.vue`、`backtest/history.vue`、`backtest/dashboard.vue` 及多数 `settings/*`。
+
+
 ## Memory efficiency
 
 Streaming analysis ([quantia/job/streaming_analysis_job.py]) processes 4900+ stocks with <100 MB peak memory by single-pass iteration. Don't materialize full universe DataFrames in handlers or jobs.
