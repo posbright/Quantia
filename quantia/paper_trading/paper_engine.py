@@ -268,6 +268,67 @@ __author__ = 'Quantia'
 __date__ = '2026/03/13'
 
 
+def _net_same_bar_orders(pending_orders, context, today_prices):
+    """同一 handle_data（同 bar）内对同一标的的多笔订单做价值空间净额合并。
+
+    背景：部分策略的卖出循环与买入循环不互斥，会对同一标的先 ``order_target(code,0)``
+    卖光、又 ``order_target_value(code,target)`` 买回，产生"卖光再买回"的无效换手
+    （双倍佣金 + T+1 锁定 + 次轮陈旧价成交）。本函数把同一标的的多笔订单按聚宽语义
+    在「价值空间」顺序回放为一个净目标，再折算成单笔净额订单，最终持仓不变但消除中间
+    的对冲成交。单笔订单 / 无当日价 / 无法估值的标的保持原样，行为完全等价。
+
+    回放规则（与 order_* 包装的 delta 计算口径一致，均相对 bar 起始持仓）：
+      - order_target(T)        -> 目标值 = T * price        （绝对，后者覆盖前者）
+      - order_target_value(Tv) -> 目标值 = stored_value + 起始持仓市值（绝对）
+      - order_target_percent(p)-> 目标值 = p * total_value   （绝对）
+      - order(amt)             -> 目标值 += amt * price      （增量累加）
+      - order_value(v)         -> 目标值 += v                （增量累加）
+    """
+    from collections import OrderedDict
+    groups = OrderedDict()
+    for o in pending_orders:
+        groups.setdefault(o.get('code'), []).append(o)
+
+    netted = []
+    for code, orders in groups.items():
+        if len(orders) <= 1:
+            netted.extend(orders)
+            continue
+        exec_price = today_prices.get(code)
+        if not exec_price or exec_price <= 0:
+            netted.extend(orders)  # 无法估值，保持原样
+            continue
+
+        pos = context.portfolio.positions.get(code)
+        start_value = pos.value if (pos and pos.amount > 0) else 0.0
+
+        running = start_value
+        for o in orders:
+            api = o.get('order_api')
+            amt = o.get('amount')
+            val = o.get('value')
+            if api == 'order_target':
+                running = (o.get('target_amount') or 0) * exec_price
+            elif api == 'order_target_value':
+                running = (val if val is not None else 0.0) + start_value
+            elif api == 'order_target_percent':
+                running = (o.get('target_percent') or 0) * context.portfolio.total_value
+            else:
+                # 增量型 order / order_value
+                if amt is not None:
+                    running += amt * exec_price
+                elif val is not None:
+                    running += val
+
+        net_value = running - start_value
+        merged = dict(orders[-1])  # 沿用最后一笔订单的 reason/decision/indicators
+        merged['amount'] = None
+        merged['value'] = net_value
+        netted.append(merged)
+
+    return netted
+
+
 def run_paper_trading_daily(paper_id, scheduled=False, now=None):
     """
     执行指定模拟盘的每日交易。
@@ -605,45 +666,64 @@ def run_paper_trading_daily(paper_id, scheduled=False, now=None):
                 _update_paper_error(paper_id, f'initialize 异常: {e}')
                 return {'status': 'error', 'message': f'initialize 异常: {e}'}
 
-        # before_trading_start
-        if strategy_funcs.get('before_trading_start'):
-            try:
-                strategy_funcs['before_trading_start'].__globals__.update(api_ns)
-                strategy_funcs['before_trading_start'](context)
-            except Exception as e:
-                logging.warning(f"[模拟交易] before_trading_start 异常: {e}")
+        # RC1 修复：initialize 每轮都会重跑并把 context.hold_days / g.days 等调仓
+        # 计数器重置为默认值。此处在 initialize 之后回填持久化的运行期标量，使调仓
+        # 门按真实交易日连续推进；否则 hourly 调度下 hold_days 恒为 1，hold_days%20
+        # ==1 恒真 → 每次运行都调仓，表现为“同日卖出又买入”。
+        if state_json:
+            from quantia.paper_trading.state_manager import restore_runtime_vars
+            restore_runtime_vars(context, state_json, g)
 
-        # handle_data
-        if strategy_funcs.get('handle_data'):
-            try:
-                strategy_funcs['handle_data'].__globals__.update(api_ns)
-                strategy_funcs['handle_data'](context, data_proxy)
-            except Exception as e:
-                logging.warning(f"[模拟交易] handle_data 异常: {e}")
+        # 日频策略逻辑（before_trading_start / handle_data / run_daily / run_weekly
+        # 回调）每个交易日只执行一次。hourly 调度下同一交易日的后续运行只刷新行情与
+        # NAV，不再重复推进计数器或调仓，从根上消除“同日买入又卖出”的换手。
+        if is_new_trade_day:
+            # before_trading_start
+            if strategy_funcs.get('before_trading_start'):
+                try:
+                    strategy_funcs['before_trading_start'].__globals__.update(api_ns)
+                    strategy_funcs['before_trading_start'](context)
+                except Exception as e:
+                    logging.warning(f"[模拟交易] before_trading_start 异常: {e}")
 
-        # 执行 run_weekly 注册的回调
-        if api_ns.get('_weekly_callbacks'):
-            py_weekday = run_date_nph.weekday() if hasattr(run_date_nph, 'weekday') else pd.Timestamp(run_date_nph).weekday()
-            jq_weekday = py_weekday + 1  # 聚宽: 1=Mon ... 5=Fri
-            for (cb, wd) in api_ns['_weekly_callbacks']:
-                if jq_weekday == wd:
-                    try:
-                        cb.__globals__.update(api_ns)
-                        cb(context)
-                    except Exception as e:
-                        cb_name = getattr(cb, '__name__', str(cb))
-                        logging.warning(f"[模拟交易] run_weekly({cb_name}) 异常: {e}")
+            # handle_data
+            if strategy_funcs.get('handle_data'):
+                try:
+                    strategy_funcs['handle_data'].__globals__.update(api_ns)
+                    strategy_funcs['handle_data'](context, data_proxy)
+                except Exception as e:
+                    logging.warning(f"[模拟交易] handle_data 异常: {e}")
 
-        # 执行 run_daily 注册的回调
-        for cb in api_ns.get('_daily_callbacks', []):
-            try:
-                cb.__globals__.update(api_ns)
-                cb(context)
-            except Exception as e:
-                cb_name = getattr(cb, '__name__', str(cb))
-                logging.warning(f"[模拟交易] run_daily({cb_name}) 异常: {e}")
+            # 执行 run_weekly 注册的回调
+            if api_ns.get('_weekly_callbacks'):
+                py_weekday = run_date_nph.weekday() if hasattr(run_date_nph, 'weekday') else pd.Timestamp(run_date_nph).weekday()
+                jq_weekday = py_weekday + 1  # 聚宽: 1=Mon ... 5=Fri
+                for (cb, wd) in api_ns['_weekly_callbacks']:
+                    if jq_weekday == wd:
+                        try:
+                            cb.__globals__.update(api_ns)
+                            cb(context)
+                        except Exception as e:
+                            cb_name = getattr(cb, '__name__', str(cb))
+                            logging.warning(f"[模拟交易] run_weekly({cb_name}) 异常: {e}")
+
+            # 执行 run_daily 注册的回调
+            for cb in api_ns.get('_daily_callbacks', []):
+                try:
+                    cb.__globals__.update(api_ns)
+                    cb(context)
+                except Exception as e:
+                    cb_name = getattr(cb, '__name__', str(cb))
+                    logging.warning(f"[模拟交易] run_daily({cb_name}) 异常: {e}")
+        else:
+            logging.info(
+                f"[模拟交易] #{paper_id} {date_str} 同一交易日重入，"
+                f"跳过日频策略逻辑（仅刷新行情/NAV）")
 
         # 7. 撮合订单
+        # 同 bar 对冲单净额合并：消除同一标的在一次 handle_data 内“卖光再买回”的
+        # 无效换手与双倍佣金（同日买卖的结构性兜底，惠及所有策略）。
+        pending_orders = _net_same_bar_orders(pending_orders, context, today_prices)
         trade_records = []
         # Phase 2: 与 trade_records 严格 1:1 对应，记录每笔成交对应的策略原始订单输入。
         signal_inputs = []

@@ -15,6 +15,15 @@ __author__ = 'Quantia'
 __date__ = '2026/03/13'
 
 
+# context 上由 state 顶层字段单独序列化 / 由引擎管理的属性，不纳入 context_vars，
+# 避免与显式字段重复或覆盖引擎内部对象。
+_CTX_SERIALIZED_KEYS = {
+    'portfolio', 'current_dt', 'previous_dt', 'benchmark',
+    'benchmark_base_code', 'benchmark_base_date', 'benchmark_base_price',
+    'commission_rate', 'stamp_tax_rate', 'slippage_rate',
+}
+
+
 def serialize_portfolio(context):
     """
     将 Portfolio + GlobalVars 序列化为 JSON 字符串。
@@ -48,10 +57,22 @@ def serialize_portfolio(context):
             if isinstance(val, (str, int, float, bool, list, dict, type(None))):
                 g_vars[attr] = val
 
+    # 序列化 context 上的运行期标量状态（如 hold_days / days 等调仓计数器）。
+    # initialize() 每轮都会重新执行并把这些计数器重置为默认值，若不持久化并在
+    # initialize 后回填，hourly 调度下 hold_days 永远为 1，调仓门 hold_days%20==1
+    # 恒真 → 每次运行都调仓（同日卖出又买入）。这里只保存标量，不动 portfolio。
+    context_vars = {}
+    for attr, val in list(vars(context).items()):
+        if attr.startswith('_') or attr in _CTX_SERIALIZED_KEYS:
+            continue
+        if isinstance(val, (str, int, float, bool, list, dict, type(None))):
+            context_vars[attr] = val
+
     state = {
         'available_cash': context.portfolio.available_cash,
         'positions': positions,
         'g_vars': g_vars,
+        'context_vars': context_vars,
         'current_dt': str(context.current_dt) if context.current_dt else None,
         'benchmark': context.benchmark,
         'benchmark_base_code': getattr(context, 'benchmark_base_code', context.benchmark),
@@ -113,3 +134,32 @@ def restore_portfolio(context, state_json, g_obj=None):
     if g_obj and 'g_vars' in state:
         for key, val in state['g_vars'].items():
             setattr(g_obj, key, val)
+
+
+def restore_runtime_vars(context, state_json, g_obj=None):
+    """在 initialize() 重新执行（会把 hold_days/days 等计数器重置为默认值）之后，
+    回填持久化的运行期标量状态（context_vars + g_vars）。
+
+    必须在 initialize 之后调用：引擎每轮都会重跑 initialize 以重新注册 run_daily
+    等回调，副作用是把调仓计数器清零。此处回填真实计数器值，使调仓门按真实交易日
+    连续推进，避免 hourly 调度下 hold_days 恒为 1、每次运行都调仓的同日买卖问题。
+    """
+    if not state_json:
+        return
+    try:
+        state = json.loads(state_json)
+    except (json.JSONDecodeError, TypeError):
+        return
+
+    for key, val in (state.get('context_vars') or {}).items():
+        try:
+            setattr(context, key, val)
+        except Exception:
+            pass
+
+    if g_obj is not None:
+        for key, val in (state.get('g_vars') or {}).items():
+            try:
+                setattr(g_obj, key, val)
+            except Exception:
+                pass

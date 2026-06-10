@@ -24,7 +24,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from quantia.core.backtest.strategy_context import (
     Context, Portfolio, Position, GlobalVars, DataProxy, TradeRecord, NavRecord,
 )
-from quantia.paper_trading.state_manager import serialize_portfolio, restore_portfolio
+from quantia.paper_trading.state_manager import (
+    serialize_portfolio, restore_portfolio, restore_runtime_vars,
+)
 from quantia.paper_trading.paper_engine import (
     _create_api,
     _update_paper_error,
@@ -33,6 +35,7 @@ from quantia.paper_trading.paper_engine import (
     _ensure_position_table,
     _is_paper_due,
     _load_security_data,
+    _net_same_bar_orders,
     _normalize_security_code,
     run_paper_trading_daily,
     run_all_paper_trading,
@@ -1316,7 +1319,11 @@ class TestRunPaperTradingDaily:
     def test_intraday_rerun_preserves_t_plus_one(self, mock_get_conn, mock_load,
                                                   mock_compile, mock_is_td, mock_get_td,
                                                   mock_fetch, mock_exec, mock_check):
-        """同日 hourly 重入：closeable_amount 不应被重置为 amount（保留 T+1 约束）。"""
+        """同日 hourly 重入：日频策略逻辑(handle_data)只在每个交易日执行一次。
+
+        修复后语义：同一交易日的后续运行跳过 handle_data（不再重复调仓），
+        既保留 T+1（closeable_amount 不被重置），又从根上消除“同日买入又卖出”。
+        """
         import pandas as pd
 
         mock_get_td.return_value = (datetime.date(2026, 3, 18), datetime.date(2026, 3, 18))
@@ -1380,9 +1387,9 @@ class TestRunPaperTradingDaily:
             1, scheduled=True,
             now=datetime.datetime(2026, 3, 18, 11, 0))
         assert result['status'] == 'ok'
-        # 关键断言: 同日重入不应把 closeable_amount 拉回 amount
-        assert captured['amount'] == 200
-        assert captured['closeable_amount'] == 0
+        # 关键断言：同一交易日重入跳过 handle_data（日频逻辑每日仅执行一次），
+        # 因此不会重复调仓、不会把 closeable_amount 拉回 amount。
+        assert 'amount' not in captured
 
     @patch('quantia.lib.database.checkTableIsExist', return_value=True)
     @patch('quantia.lib.database.executeSql')
@@ -1613,3 +1620,157 @@ class TestContextPositionEdgeCases:
         )
         assert ctx.portfolio.market_value == 100 * 200 + 200 * 60
         assert ctx.portfolio.total_value == 400000 + 100 * 200 + 200 * 60
+
+
+# ===========================================================================
+#  RC1: context_vars 持久化 + restore_runtime_vars（修复调仓计数器每轮被重置）
+# ===========================================================================
+
+class TestContextVarsPersistence:
+    """context 标量状态（如 hold_days）必须跨运行持久化，否则 hourly 下调仓门被击穿。"""
+
+    def test_context_vars_serialized(self):
+        ctx, _g = _make_context_with_positions(cash=1000000)
+        ctx.hold_days = 7
+        ctx.stocks = ['600519', '000001']
+        ctx.pool_size = 80
+
+        state = json.loads(serialize_portfolio(ctx))
+        assert 'context_vars' in state
+        assert state['context_vars']['hold_days'] == 7
+        assert state['context_vars']['stocks'] == ['600519', '000001']
+        assert state['context_vars']['pool_size'] == 80
+
+    def test_context_vars_excludes_reserved_and_objects(self):
+        ctx, _g = _make_context_with_positions(cash=1000000)
+        ctx.hold_days = 3
+        state = json.loads(serialize_portfolio(ctx))
+        cv = state['context_vars']
+        # 引擎管理 / 顶层已序列化的字段不应混入 context_vars
+        for k in ('portfolio', 'benchmark', 'commission_rate', 'current_dt',
+                  'slippage_rate', 'stamp_tax_rate'):
+            assert k not in cv
+
+    def test_restore_runtime_vars_reapplies_counter(self):
+        """模拟 initialize 把 hold_days 重置为 0 后，restore_runtime_vars 回填真实值。"""
+        ctx, g = _make_context_with_positions(cash=1000000)
+        ctx.hold_days = 19
+        g.days = 19
+        state_json = serialize_portfolio(ctx)
+
+        # 模拟下一轮：initialize 重置计数器
+        ctx.hold_days = 0
+        g.days = 0
+        restore_runtime_vars(ctx, state_json, g)
+        assert ctx.hold_days == 19
+        assert g.days == 19
+
+    def test_restore_runtime_vars_noop_on_empty(self):
+        ctx, g = _make_context_with_positions(cash=1000000)
+        ctx.hold_days = 5
+        restore_runtime_vars(ctx, None, g)
+        restore_runtime_vars(ctx, '', g)
+        assert ctx.hold_days == 5
+
+    def test_rebalance_gate_holds_across_runs(self):
+        """端到端语义：counter 持久化后，hold_days%20 只在第 1、21 天满足。"""
+        ctx, g = _make_context_with_positions(cash=1000000)
+        rebalance_days = []
+        state_json = None
+        for day in range(1, 42):
+            # 每个新交易日：initialize 重置 -> 回填 -> handle_data +1
+            ctx.hold_days = 0
+            if state_json:
+                restore_runtime_vars(ctx, state_json, g)
+            ctx.hold_days += 1
+            if ctx.hold_days % 20 == 1:
+                rebalance_days.append(day)
+            state_json = serialize_portfolio(ctx)
+        assert rebalance_days == [1, 21, 41]
+
+
+# ===========================================================================
+#  RC2: 同 bar 对冲单净额合并（消除“卖光又买回”的同日换手）
+# ===========================================================================
+
+class TestNetSameBarOrders:
+    """_net_same_bar_orders 把同一标的的对冲单在价值空间合并为净额。"""
+
+    @staticmethod
+    def _ctx_with_pos(code, amount, price):
+        ctx = Context(1000000)
+        pos = Position(code, '')
+        pos.amount = amount
+        pos.closeable_amount = amount
+        pos.avg_cost = price
+        pos.price = price
+        pos.value = amount * price
+        ctx.portfolio.positions[code] = pos
+        ctx.portfolio.available_cash = 1000000
+        ctx.portfolio._update_value()
+        return ctx
+
+    def test_sell_then_rebuy_same_target_collapses_to_hold(self):
+        """order_target(0) + order_target_value(=当前市值) -> 净额≈0（持有，不换手）。"""
+        code = '603066'
+        price = 10.75
+        ctx = self._ctx_with_pos(code, 2700, price)
+        cur_val = 2700 * price
+        orders = [
+            # 卖出循环：order_target(code, 0) -> amount = 0 - 2700
+            {'code': code, 'amount': -2700, 'value': None,
+             'order_api': 'order_target', 'target_amount': 0, 'reason': 'sell'},
+            # 买入循环：order_target_value(code, cur_val) -> value = cur_val - cur_val = 0
+            {'code': code, 'amount': None, 'value': 0.0,
+             'order_api': 'order_target_value', 'reason': 'buy'},
+        ]
+        netted = _net_same_bar_orders(orders, ctx, {code: price})
+        assert len(netted) == 1
+        # 净额价值≈0 -> 撮合时折算成 0 手 -> 不成交
+        net_amt = int((netted[0]['value'] or 0) / price / 100) * 100
+        assert net_amt == 0
+
+    def test_sell_then_rebuy_to_higher_target_nets_buy(self):
+        """卖光后买回到更高目标 -> 净额为正（小幅买入），而非先卖光再全额买。"""
+        code = '600036'
+        price = 37.70
+        ctx = self._ctx_with_pos(code, 800, price)
+        cur_val = 800 * price
+        target_val = cur_val + 10000  # 想加仓 1 万
+        orders = [
+            {'code': code, 'amount': -800, 'value': None,
+             'order_api': 'order_target', 'target_amount': 0, 'reason': 'sell'},
+            {'code': code, 'amount': None, 'value': target_val - cur_val,
+             'order_api': 'order_target_value', 'reason': 'buy'},
+        ]
+        netted = _net_same_bar_orders(orders, ctx, {code: price})
+        assert len(netted) == 1
+        assert abs(netted[0]['value'] - 10000) < 1e-6  # 净额 = 目标 - 起始 = +1万
+
+    def test_single_order_untouched(self):
+        code = '000001'
+        ctx = self._ctx_with_pos(code, 500, 15.0)
+        orders = [{'code': code, 'amount': 100, 'value': None,
+                   'order_api': 'order', 'reason': 'add'}]
+        netted = _net_same_bar_orders(orders, ctx, {code: 15.0})
+        assert netted == orders
+
+    def test_distinct_codes_untouched(self):
+        ctx = Context(1000000)
+        orders = [
+            {'code': 'A', 'amount': 100, 'value': None, 'order_api': 'order'},
+            {'code': 'B', 'amount': -200, 'value': None, 'order_api': 'order'},
+        ]
+        netted = _net_same_bar_orders(orders, ctx, {'A': 10.0, 'B': 20.0})
+        assert len(netted) == 2
+
+    def test_no_price_keeps_original(self):
+        code = 'C'
+        ctx = self._ctx_with_pos(code, 100, 5.0)
+        orders = [
+            {'code': code, 'amount': -100, 'value': None, 'order_api': 'order_target', 'target_amount': 0},
+            {'code': code, 'amount': None, 'value': 500.0, 'order_api': 'order_target_value'},
+        ]
+        netted = _net_same_bar_orders(orders, ctx, {})  # 无当日价
+        assert len(netted) == 2  # 保持原样，不强行合并
+
