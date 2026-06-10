@@ -304,17 +304,34 @@ _FALLBACK_HIST_BUFFER_DAYS = 365 * 2  # K 线前置缓冲（供 TA-Lib 窗口用
 _FALLBACK_FORWARD_BUFFER_DAYS = 130   # 后向缓冲（供 rate_60 等前向收益计算）
 
 
-def _signal_cache_path(strategy_table: str, start_date, end_date, max_rate: int = 100) -> str:
+def _signal_cache_path(strategy_table: str, start_date, end_date, max_rate: int = 100,
+                       params_sig: str = '') -> str:
     if not os.path.exists(_SIGNAL_CACHE_DIR):
         try:
             os.makedirs(_SIGNAL_CACHE_DIR, exist_ok=True)
         except Exception:
             pass
     # max_rate 不同 → 缓存文件分开，避免 100 档与 240 档相互覆盖
+    # params_sig 不同 → 可调参数变化后缓存自动失效，避免返回旧参数的信号
+    suffix = f"_p{params_sig}" if params_sig else ''
     return os.path.join(
         _SIGNAL_CACHE_DIR,
-        f"{strategy_table}_{start_date}_{end_date}_r{int(max_rate)}.gzip.pickle",
+        f"{strategy_table}_{start_date}_{end_date}_r{int(max_rate)}{suffix}.gzip.pickle",
     )
+
+
+def _load_verify_strategy_kwargs(strategy_table: str, strategy_func):
+    """读取该策略在验证中心需应用的可调参数（与每日选股 job 同源）。
+
+    复用 strategy_data_daily_job._load_strategy_kwargs：仅对白名单策略读取
+    cn_strategy_params 并按 check() 签名过滤，未配置/读取失败返回空 dict。
+    """
+    try:
+        from quantia.job.strategy_data_daily_job import _load_strategy_kwargs
+        return _load_strategy_kwargs(strategy_table, strategy_func) or {}
+    except Exception:
+        logging.warning(f"[signal-fallback] 加载策略可调参数失败：{strategy_table}", exc_info=True)
+        return {}
 
 
 def _load_signal_cache_file(path: str):
@@ -365,8 +382,10 @@ def _load_fallback_stock_universe(max_stocks: int):
 
 
 def _scan_one_stock_for_signals(stock, strategy_func, threshold, start_ts, end_ts,
-                                 ext_start_str, ext_end_str, rate_cols_all):
+                                 ext_start_str, ext_end_str, rate_cols_all,
+                                 extra_kwargs=None):
     """单只股票扫描：返回 [{date,code,name,p_change,rate_1..rate_N}, ...]"""
+    extra_kwargs = extra_kwargs or {}
     code = stock[1]
     name = stock[2] if len(stock) > 2 else ''
     try:
@@ -394,11 +413,11 @@ def _scan_one_stock_for_signals(stock, strategy_func, threshold, start_ts, end_t
     for _, row in in_range.iterrows():
         d = row['date']
         try:
-            matched = strategy_func(stock, hist, date=d.to_pydatetime())
+            matched = strategy_func(stock, hist, date=d.to_pydatetime(), **extra_kwargs)
         except TypeError:
             # 个别策略需要 istop 等额外参数；这里 fallback 用 False
             try:
-                matched = strategy_func(stock, hist, date=d.to_pydatetime(), istop=False)
+                matched = strategy_func(stock, hist, date=d.to_pydatetime(), istop=False, **extra_kwargs)
             except Exception:
                 continue
         except Exception:
@@ -445,18 +464,27 @@ def _compute_signals_from_kline_cache(strategy_table: str, start_date, end_date,
         return None
 
     max_rate = max(1, int(max_rate))
-    cache_path = _signal_cache_path(strategy_table, start_date, end_date, max_rate)
-    cached = _load_signal_cache_file(cache_path)
-    if cached is not None and len(cached) > 0:
-        logging.info(
-            f"[signal-fallback] 命中文件缓存 {cache_path}: {len(cached)} rows (max_rate={max_rate})"
-        )
-        return cached
 
     strategy_func, threshold = _get_builtin_strategy_func(strategy_table)
     if strategy_func is None:
         logging.info(f"[signal-fallback] 策略 {strategy_table} 不在内置注册表，跳过 fallback")
         return None
+
+    # 读取该策略已保存的可调参数（仅白名单策略生效），并纳入缓存键
+    extra_kwargs = _load_verify_strategy_kwargs(strategy_table, strategy_func)
+    params_sig = ''
+    if extra_kwargs:
+        canon = json.dumps(extra_kwargs, sort_keys=True, ensure_ascii=False, default=str)
+        params_sig = hashlib.md5(canon.encode('utf-8')).hexdigest()[:8]
+
+    cache_path = _signal_cache_path(strategy_table, start_date, end_date, max_rate, params_sig)
+    cached = _load_signal_cache_file(cache_path)
+    if cached is not None and len(cached) > 0:
+        logging.info(
+            f"[signal-fallback] 命中文件缓存 {cache_path}: {len(cached)} rows "
+            f"(max_rate={max_rate}, params={extra_kwargs or '默认'})"
+        )
+        return cached
 
     stocks = _load_fallback_stock_universe(_FALLBACK_MAX_STOCKS)
     if not stocks:
@@ -482,7 +510,8 @@ def _compute_signals_from_kline_cache(strategy_table: str, start_date, end_date,
                              thread_name_prefix='verify-fallback') as ex:
         futs = [
             ex.submit(_scan_one_stock_for_signals, s, strategy_func, threshold,
-                      start_ts, end_ts, ext_start, ext_end, rate_cols_all)
+                      start_ts, end_ts, ext_start, ext_end, rate_cols_all,
+                      extra_kwargs)
             for s in stocks
         ]
         done = 0

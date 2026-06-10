@@ -50,10 +50,12 @@ TECHNICAL_STRATEGY_PARAMS = {
     },
     "keep_increasing": {
         "name": "均线多头",
-        "description": "检测均线多头排列的股票：短、中、长期均线自上而下依次排列，中期趋势向好。\n\n"
-                       "选股条件：\n"
-                       "1. 最新交易日 MA5 > MA10 > MA20 > MA30 > MA60（多头排列）\n"
-                       "2. 统计多头排列已连续出现的天数（bull_days）\n\n"
+        "description": "检测均线多头排列的股票：短、中、长期均线自上而下排列，中期趋势向好。\n\n"
+                       "选股条件（可调优）：\n"
+                       "1. 中期严格多头：MA10 > MA20 > MA30\n"
+                       "2. 短期条件：默认放宽为 MA5 > MA20（容忍上升通道中的小回调）；可切换为严格 MA5 > MA10\n"
+                       "3. 长期趋势：默认用「MA60 斜率向上」确认（上升初期即可入选）；可切换为严格 MA30 > MA60\n"
+                       "4. 统计多头排列已连续出现的天数（bull_days）\n\n"
                        "结果默认按多头排列天数从小到大排序，天数越小表示刚形成多头排列。\n"
                        "适用场景：中线趋势投资，适合追踪刚确认上升趋势的标的。\n"
                        "风险提示：均线是滞后指标，趋势末期可能发出虚假信号。",
@@ -64,6 +66,14 @@ TECHNICAL_STRATEGY_PARAMS = {
                 "params": [
                     {"key": "threshold", "label": "回溯天数", "description": "分析所需的最少历史交易日数（需≥60以计算MA60）",
                      "type": "number", "value": 60, "min": 60, "max": 250, "step": 10, "unit": "天"},
+                    {"key": "include_ma5", "label": "短期均线约束", "description": "短期均线判定方式。放宽(推荐)：仅要求 MA5>MA20，容忍上升途中的小回调；严格：要求 MA5>MA10，对短期噪声敏感、信号更少。",
+                     "type": "select", "value": 0,
+                     "options": [{"label": "放宽 MA5>MA20（推荐）", "value": 0}, {"label": "严格 MA5>MA10", "value": 1}]},
+                    {"key": "ma60_mode", "label": "长期趋势判定", "description": "MA30 与 MA60 的关系判定。斜率向上(推荐)：MA60 上行即确认，入场更早；严格：要求 MA30>MA60，入场滞后；任一满足：两者满足其一。",
+                     "type": "select", "value": "rising",
+                     "options": [{"label": "MA60 斜率向上（推荐）", "value": "rising"}, {"label": "严格 MA30>MA60", "value": "strict"}, {"label": "任一满足", "value": "either"}]},
+                    {"key": "ma60_slope_window", "label": "MA60斜率回看", "description": "判定 MA60 斜率向上时的回看交易日数（当前MA60 > N日前MA60 即视为上行）",
+                     "type": "number", "value": 5, "min": 1, "max": 20, "step": 1, "unit": "天"},
                 ]
             }
         ]

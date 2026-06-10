@@ -3,6 +3,8 @@
 
 import logging
 import concurrent.futures
+import inspect
+import json
 import pandas as pd
 import os.path
 import sys
@@ -23,6 +25,49 @@ __date__ = '2026/02/14'
 _STRATEGY_WORKERS = _cfg.get_int('QUANTIA_STRATEGY_WORKERS', 4)
 _STRATEGY_OUTER_WORKERS = _cfg.get_int('QUANTIA_STRATEGY_OUTER_WORKERS', 2)
 
+# 支持「UI 可调参数真正接入每日选股」的策略：策略结果表名 -> 参数配置 strategy_key。
+# 仅对白名单内的策略读取 cn_strategy_params 并按函数签名过滤后传入 check()，
+# 避免影响未开启参数化的其它策略。
+_PARAM_WIRED_STRATEGIES = {
+    'cn_stock_strategy_keep_increasing': 'keep_increasing',
+}
+
+
+def _load_strategy_kwargs(table_name, strategy_fun):
+    """读取该策略已保存的可调参数（cn_strategy_params），按 check() 签名过滤后返回。
+
+    未配置/读取失败/无白名单时返回空 dict，check() 使用其默认参数。
+    """
+    strategy_key = _PARAM_WIRED_STRATEGIES.get(table_name)
+    if not strategy_key:
+        return {}
+    try:
+        if not mdb.checkTableIsExist('cn_strategy_params'):
+            return {}
+        rows = mdb.executeSqlFetch(
+            "SELECT `param_key`, `param_value` FROM `cn_strategy_params` WHERE `strategy_key` = %s",
+            (strategy_key,))
+        if not rows:
+            return {}
+        accepted = set(inspect.signature(strategy_fun).parameters.keys())
+        kwargs = {}
+        for param_key, raw in rows:
+            if param_key not in accepted or raw is None:
+                continue
+            if isinstance(raw, (int, float, bool)):
+                kwargs[param_key] = raw
+            else:
+                try:
+                    kwargs[param_key] = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+        return kwargs
+    except Exception:
+        logging.error(f"加载策略可调参数异常：{table_name}", exc_info=True)
+        mdb._invalidate_shared_conn()
+        return {}
+
+
 
 def prepare(date, strategy):
     try:
@@ -33,7 +78,8 @@ def prepare(date, strategy):
             return
         table_name = strategy['name']
         strategy_func = strategy['func']
-        results, extras = run_check(strategy_func, table_name, stocks_data, date)
+        extra_kwargs = _load_strategy_kwargs(table_name, strategy_func)
+        results, extras = run_check(strategy_func, table_name, stocks_data, date, extra_kwargs=extra_kwargs)
         if results is None:
             return
 
@@ -73,20 +119,21 @@ def prepare(date, strategy):
         logging.error(f"strategy_data_daily_job.prepare处理异常：{strategy}策略", exc_info=True)
 
 
-def run_check(strategy_fun, table_name, stocks, date, workers=_STRATEGY_WORKERS):
+def run_check(strategy_fun, table_name, stocks, date, workers=_STRATEGY_WORKERS, extra_kwargs=None):
     is_check_high_tight = False
     if strategy_fun.__name__ == 'check_high_tight':
         stock_tops = fetch_stock_top_entity_data(date)
         if stock_tops is not None:
             is_check_high_tight = True
+    extra_kwargs = extra_kwargs or {}
     data = []
     extras = {}  # stock_key -> metrics dict (for strategies that return enriched data)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             if is_check_high_tight:
-                future_to_data = {executor.submit(strategy_fun, k, stocks[k], date=date, istop=(k[1] in stock_tops)): k for k in stocks}
+                future_to_data = {executor.submit(strategy_fun, k, stocks[k], date=date, istop=(k[1] in stock_tops), **extra_kwargs): k for k in stocks}
             else:
-                future_to_data = {executor.submit(strategy_fun, k, stocks[k], date=date): k for k in stocks}
+                future_to_data = {executor.submit(strategy_fun, k, stocks[k], date=date, **extra_kwargs): k for k in stocks}
             for future in concurrent.futures.as_completed(future_to_data):
                 stock = future_to_data[future]
                 try:
