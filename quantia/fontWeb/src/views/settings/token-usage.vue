@@ -57,7 +57,7 @@
     <!-- 功能开关状态 -->
     <el-card shadow="hover" style="margin-top: 16px">
       <template #header><span>功能配额状态</span></template>
-      <el-table :data="featureList" stripe size="small">
+      <el-table v-if="!isMobile" :data="featureList" stripe size="small">
         <el-table-column prop="feature" label="功能" width="180">
           <template #default="{ row }">{{ featureLabel(row.feature) }}</template>
         </el-table-column>
@@ -94,12 +94,44 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 移动端卡片：功能配额 -->
+      <div v-if="isMobile" class="tu-card-list">
+        <div v-for="row in featureList" :key="row.feature" class="tu-card">
+          <div class="tu-card-head">
+            <span class="tu-card-title">{{ featureLabel(row.feature) }}</span>
+            <el-tag v-if="!row.enabled" type="info" size="small">关闭</el-tag>
+            <el-tag v-else-if="row.remaining !== null && row.remaining <= 0" type="danger" size="small">超限</el-tag>
+            <el-tag v-else type="success" size="small">正常</el-tag>
+            <el-switch v-model="row.enabled" size="small" style="margin-left:auto" @change="onToggle(row)" />
+          </div>
+          <div class="tu-card-body">
+            <div class="tu-field">
+              <span class="tu-lbl">日预算</span>
+              <span v-if="row.daily_budget">{{ formatNumber(row.daily_budget) }}</span>
+              <span v-else class="text-muted">不限</span>
+            </div>
+            <div class="tu-field">
+              <span class="tu-lbl">今日已用</span>
+              <span>{{ formatNumber(row.used_today) }}</span>
+            </div>
+            <div class="tu-field">
+              <span class="tu-lbl">余量</span>
+              <span v-if="row.remaining !== null">{{ formatNumber(row.remaining) }}</span>
+              <span v-else class="text-muted">—</span>
+            </div>
+          </div>
+          <div class="tu-card-ops">
+            <a class="tu-op" @click="editBudget(row)">编辑预算</a>
+          </div>
+        </div>
+      </div>
     </el-card>
 
     <!-- 最近调用 -->
     <el-card shadow="hover" style="margin-top: 16px">
       <template #header><span>最近调用记录</span></template>
-      <el-table :data="recentCalls" stripe size="small" max-height="360">
+      <el-table v-if="!isMobile" :data="recentCalls" stripe size="small" max-height="360">
         <el-table-column prop="created_at" label="时间" width="170" />
         <el-table-column prop="scene" label="场景" width="160" />
         <el-table-column prop="model" label="模型" width="180" />
@@ -116,10 +148,39 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <!-- 移动端卡片：最近调用 -->
+      <div v-if="isMobile" class="tu-card-list tu-call-list">
+        <div v-for="(row, i) in recentCalls" :key="i" class="tu-card">
+          <div class="tu-card-head">
+            <span class="tu-card-title">{{ row.scene }}</span>
+            <el-tag :type="row.ok ? 'success' : 'danger'" size="small" style="margin-left:auto">{{ row.ok ? '✓' : '✗' }}</el-tag>
+          </div>
+          <div class="tu-card-body">
+            <div class="tu-field tu-field-full">
+              <span class="tu-lbl">模型</span>
+              <span class="tu-model">{{ row.model }}</span>
+            </div>
+            <div class="tu-field">
+              <span class="tu-lbl">Tokens</span>
+              <span>{{ row.total_tokens ?? '-' }}</span>
+            </div>
+            <div class="tu-field">
+              <span class="tu-lbl">耗时</span>
+              <span>{{ row.latency_ms ? (row.latency_ms / 1000).toFixed(1) + 's' : '-' }}</span>
+            </div>
+            <div class="tu-field tu-field-full">
+              <span class="tu-lbl">时间</span>
+              <span>{{ row.created_at }}</span>
+            </div>
+          </div>
+        </div>
+        <el-empty v-if="recentCalls.length === 0" description="暂无调用记录" />
+      </div>
     </el-card>
 
     <!-- 编辑预算对话框 -->
-    <el-dialog v-model="budgetDialogVisible" title="编辑日预算" width="min(400px, 92vw)">
+    <el-dialog v-model="budgetDialogVisible" title="编辑日预算" :fullscreen="isMobile" :width="isMobile ? '100%' : 'min(400px, 92vw)'">
       <el-form label-width="100px">
         <el-form-item label="功能">
           <span>{{ featureLabel(editingFeature.feature) }}</span>
@@ -141,6 +202,7 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
+import { useResponsive } from '@/composables/useResponsive'
 import {
   aiTokenSummary,
   aiTokenByModel,
@@ -158,6 +220,7 @@ const summary = ref<TokenSummary>({
   today_tokens: 0, today_calls: 0, month_tokens: 0,
   hour_calls: 0, hour_tokens: 0, hour_limit_calls: 60, hour_limit_tokens: 200000,
 })
+const { isMobile } = useResponsive()
 const featureList = ref<TokenFeatureStatus[]>([])
 const recentCalls = ref<TokenRecentCall[]>([])
 
@@ -309,5 +372,34 @@ onMounted(async () => {
 }
 .text-muted {
   color: #c0c4cc;
+}
+
+/* 移动端卡片视图 */
+.tu-card-list { display: flex; flex-direction: column; gap: 10px; }
+.tu-call-list { max-height: 420px; overflow-y: auto; }
+.tu-card {
+  background: #fff; border: 1px solid #ebeef5; border-radius: 6px; padding: 10px 12px;
+}
+.tu-card-head {
+  display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px dashed #ebeef5; padding-bottom: 6px; margin-bottom: 8px;
+}
+.tu-card-title { font-weight: 600; font-size: 14px; color: #303133; }
+.tu-card-body {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; font-size: 13px;
+}
+.tu-field { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0; }
+.tu-field-full { grid-column: 1 / -1; }
+.tu-lbl { color: #909399; white-space: nowrap; }
+.tu-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tu-card-ops {
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed #ebeef5;
+  display: flex; justify-content: flex-end; font-size: 13px;
+}
+.tu-op { color: #409eff; cursor: pointer; }
+.tu-op:hover { text-decoration: underline; }
+
+@media (max-width: 767.98px) {
+  .token-usage-page { padding: 10px; }
 }
 </style>

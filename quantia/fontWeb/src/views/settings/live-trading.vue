@@ -46,14 +46,14 @@
           <span v-if="lastStats.broker" style="margin-left:8px;color:#666">broker={{ lastStats.broker }}</span>
         </template>
         <el-row :gutter="12">
-          <el-col :span="4"><el-statistic title="processed" :value="lastStats.processed" /></el-col>
-          <el-col :span="4"><el-statistic title="executed" :value="lastStats.executed" :value-style="{ color: '#67c23a' }" /></el-col>
-          <el-col :span="4"><el-statistic title="rejected" :value="lastStats.rejected" :value-style="{ color: '#f56c6c' }" /></el-col>
-          <el-col :span="4"><el-statistic title="expired" :value="lastStats.expired" :value-style="{ color: '#e6a23c' }" /></el-col>
-          <el-col :span="4"><el-statistic title="failed" :value="lastStats.failed" :value-style="{ color: '#f56c6c' }" /></el-col>
+          <el-col :xs="8" :sm="4"><el-statistic title="processed" :value="lastStats.processed" /></el-col>
+          <el-col :xs="8" :sm="4"><el-statistic title="executed" :value="lastStats.executed" :value-style="{ color: '#67c23a' }" /></el-col>
+          <el-col :xs="8" :sm="4"><el-statistic title="rejected" :value="lastStats.rejected" :value-style="{ color: '#f56c6c' }" /></el-col>
+          <el-col :xs="8" :sm="4"><el-statistic title="expired" :value="lastStats.expired" :value-style="{ color: '#e6a23c' }" /></el-col>
+          <el-col :xs="8" :sm="4"><el-statistic title="failed" :value="lastStats.failed" :value-style="{ color: '#f56c6c' }" /></el-col>
         </el-row>
 
-        <el-table v-if="lastStats.details?.length" :data="lastStats.details" size="small" border style="margin-top:12px">
+        <el-table v-if="lastStats.details?.length && !isMobile" :data="lastStats.details" size="small" border style="margin-top:12px">
           <el-table-column prop="id" label="command_id" width="120" />
           <el-table-column label="状态" width="120">
             <template #default="{ row }">
@@ -63,9 +63,29 @@
           <el-table-column prop="order_id" label="order_id" width="220" />
           <el-table-column prop="error" label="错误" min-width="220" show-overflow-tooltip />
         </el-table>
+
+        <!-- 移动端卡片：执行明细 -->
+        <div v-if="lastStats.details?.length && isMobile" class="lt-card-list">
+          <div v-for="row in lastStats.details" :key="row.id" class="lt-card">
+            <div class="lt-card-head">
+              <span class="lt-cmd">#{{ row.id }}</span>
+              <el-tag :type="detailType(row.status)" size="small" style="margin-left:auto">{{ row.status }}</el-tag>
+            </div>
+            <div class="lt-card-body">
+              <div v-if="row.order_id" class="lt-field">
+                <span class="lt-lbl">order_id</span>
+                <span class="lt-oid">{{ row.order_id }}</span>
+              </div>
+              <div v-if="row.error" class="lt-field">
+                <span class="lt-lbl">错误</span>
+                <span class="lt-err">{{ row.error }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </el-card>
 
-      <el-descriptions :column="2" border size="small">
+      <el-descriptions :column="isMobile ? 1 : 2" border size="small">
         <el-descriptions-item label="主开关 (env)">{{ status?.enabled_env }}</el-descriptions-item>
         <el-descriptions-item label="启用状态">
           <el-tag :type="status?.enabled ? 'success' : 'info'" size="small">
@@ -84,7 +104,9 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { LiveStatus, LiveExecuteStats, getLiveStatus, executeLivePending } from '@/api/imLive'
+import { useResponsive } from '@/composables/useResponsive'
 
+const { isMobile } = useResponsive()
 const status = ref<LiveStatus | null>(null)
 const execLimit = ref(20)
 const executing = ref(false)
@@ -130,4 +152,25 @@ onMounted(loadStatus)
 <style scoped>
 .settings-page { padding: 12px; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
+
+/* 移动端卡片视图 */
+.lt-card-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.lt-card {
+  background: #fff; border: 1px solid #ebeef5; border-radius: 6px; padding: 8px 10px;
+}
+.lt-card-head {
+  display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px dashed #ebeef5; padding-bottom: 6px; margin-bottom: 6px;
+}
+.lt-cmd { font-weight: 600; font-size: 13px; color: #303133; }
+.lt-card-body { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.lt-field { display: flex; justify-content: space-between; gap: 8px; min-width: 0; }
+.lt-lbl { color: #909399; white-space: nowrap; }
+.lt-oid { font-family: Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lt-err { color: #f56c6c; text-align: right; word-break: break-all; }
+
+@media (max-width: 767.98px) {
+  .card-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .card-header > div { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
+}
 </style>
