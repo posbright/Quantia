@@ -1,0 +1,150 @@
+version: "3.9"
+
+name: quantia-single-8gb
+
+networks:
+  quantia_net:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  rabbitmq_data:
+
+services:
+  mysql:
+    image: mysql:8.0.33
+    container_name: quantia-mysql
+    restart: unless-stopped
+    networks: [quantia_net]
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-quantiadb}
+      MYSQL_USER: ${MYSQL_USER:-quantia}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max_connections=200
+      --innodb_buffer_pool_size=1G
+      --slow_query_log=ON
+      --long_query_time=2
+    volumes:
+      - mysql_data:/var/lib/mysql
+    mem_limit: 2g
+    cpus: "1.50"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.11-management-alpine
+    container_name: quantia-rabbitmq
+    restart: unless-stopped
+    networks: [quantia_net]
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-quantia}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit vm_memory_high_watermark.relative 0.5"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    mem_limit: 1g
+    cpus: "1.00"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+  notification-svc:
+    image: ${NOTIFICATION_IMAGE}
+    container_name: quantia-notification-svc
+    restart: unless-stopped
+    networks: [quantia_net]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "${NOTIFICATION_PORT:-8081}:8081"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8081
+      JAVA_TOOL_OPTIONS: "-Xms${JAVA_XMS:-256m} -Xmx${JAVA_XMX:-768m} -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-quantiadb}?useSSL=false&characterEncoding=utf8mb4&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-quantia}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USER:-quantia}
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,metrics,prometheus
+    mem_limit: 1g
+    cpus: "0.80"
+
+  im-gateway-svc:
+    image: ${IM_GATEWAY_IMAGE}
+    container_name: quantia-im-gateway-svc
+    restart: unless-stopped
+    networks: [quantia_net]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "${IM_GATEWAY_PORT:-8082}:8082"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8082
+      JAVA_TOOL_OPTIONS: "-Xms${JAVA_XMS:-256m} -Xmx${JAVA_XMX:-768m} -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-quantiadb}?useSSL=false&characterEncoding=utf8mb4&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-quantia}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_PORT: 5672
+      SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USER:-quantia}
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,metrics,prometheus
+    mem_limit: 1g
+    cpus: "0.80"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: quantia-prometheus-lite
+    restart: unless-stopped
+    networks: [quantia_net]
+    profiles: ["obs"]
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus.single8gb.yml:/etc/prometheus/prometheus.yml:ro
+    mem_limit: 512m
+    cpus: "0.30"
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: quantia-node-exporter
+    restart: unless-stopped
+    networks: [quantia_net]
+    profiles: ["obs"]
+    ports:
+      - "${NODE_EXPORTER_PORT:-9100}:9100"
+    command:
+      - --path.rootfs=/host
+    volumes:
+      - /:/host:ro,rslave
+    mem_limit: 128m
+    cpus: "0.20"

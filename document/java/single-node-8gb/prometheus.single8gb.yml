@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  - job_name: notification
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["notification-svc:8081"]
+
+  - job_name: im-gateway
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["im-gateway-svc:8082"]
+
+rule_files: []
