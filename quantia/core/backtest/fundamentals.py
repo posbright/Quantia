@@ -27,6 +27,9 @@ __date__ = '2026/03/16'
 _CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                           'cache', 'fundamental')
 
+# 基本面数据库查询超时（毫秒）：避免慢查询阻塞回测线程。
+_FUND_DB_QUERY_TIMEOUT_MS = max(int(os.getenv('QUANTIA_FUND_DB_QUERY_TIMEOUT_MS', '8000')), 0)
+
 
 # ── 聚宽风格查询 API 对象 ──
 
@@ -301,9 +304,13 @@ class FundamentalDataProvider:
         """从数据库 cn_stock_spot 表获取股票信息（主要方式）"""
         from quantia.lib.database import executeSqlFetch
         logging.info("[基本面] 正在从数据库获取全市场股票数据...")
+        timeout_ms = _FUND_DB_QUERY_TIMEOUT_MS
 
         # 先获取最新日期（避免慢子查询）
-        date_rows = executeSqlFetch('SELECT MAX(date) FROM cn_stock_spot')
+        date_rows = executeSqlFetch(
+            'SELECT MAX(date) FROM cn_stock_spot',
+            query_timeout_ms=timeout_ms,
+        )
         if not date_rows or date_rows[0][0] is None:
             logging.warning("[基本面] cn_stock_spot 表无数据")
             return
@@ -317,7 +324,7 @@ class FundamentalDataProvider:
               AND new_price > 0
               AND total_market_cap > 0
         """
-        rows = executeSqlFetch(sql, (max_date,))
+        rows = executeSqlFetch(sql, (max_date,), query_timeout_ms=timeout_ms)
         if not rows or len(rows) == 0:
             logging.warning("[基本面] cn_stock_spot 表无数据")
             return

@@ -532,15 +532,58 @@ def executeSql(sql, params=()):
                 raise
 
 
+# 为单条查询设置会话级超时（执行后重置），避免慢 SQL 长时间阻塞回测线程。
+def _apply_query_timeout(db, query_timeout_ms):
+    if query_timeout_ms is None:
+        return False
+    try:
+        timeout_ms = int(query_timeout_ms)
+    except Exception:
+        return False
+    if timeout_ms <= 0:
+        return False
+
+    # MySQL 5.7+/8.0: MAX_EXECUTION_TIME（单位毫秒）
+    try:
+        db.execute("SET SESSION MAX_EXECUTION_TIME = %s", (timeout_ms,))
+        return True
+    except Exception:
+        pass
+
+    # MariaDB: max_statement_time（单位秒）
+    try:
+        db.execute("SET SESSION max_statement_time = %s", (timeout_ms / 1000.0,))
+        return True
+    except Exception:
+        return False
+
+
+def _reset_query_timeout(db):
+    # 忽略重置失败，避免影响主查询结果返回。
+    try:
+        db.execute("SET SESSION MAX_EXECUTION_TIME = 0")
+    except Exception:
+        pass
+    try:
+        db.execute("SET SESSION max_statement_time = 0")
+    except Exception:
+        pass
+
+
 # 查询数据
-def executeSqlFetch(sql, params=()):
+def executeSqlFetch(sql, params=(), query_timeout_ms=None):
     max_retries = _DB_CONN_RETRIES
     for attempt in range(1, max_retries + 1):
         try:
             with get_connection() as conn:
                 with conn.cursor() as db:
-                    db.execute(sql, params)
-                    return db.fetchall()
+                    timeout_applied = _apply_query_timeout(db, query_timeout_ms)
+                    try:
+                        db.execute(sql, params)
+                        return db.fetchall()
+                    finally:
+                        if timeout_applied:
+                            _reset_query_timeout(db)
         except Exception as e:
             _invalidate_shared_conn()  # 废弃损坏连接，避免重试时雪崩
             if attempt < max_retries and _is_retryable_error(e):

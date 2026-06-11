@@ -145,11 +145,13 @@ def test_builtin_template_sync_updates_stale_db_code(monkeypatch):
 
     assert result == {'updated': 1, 'inserted': 0, 'unchanged': 0, 'skipped_user_modified': 0}
     assert len(executed) == 1
-    assert executed[0][1][:4] == ('new code with _aggregate_bars', 'new description', 'stock', 'BOLL带下轨价值低位策略')
+    assert executed[0][1][0].startswith('new code with _aggregate_bars')
+    assert '[Quantia Template Param Self-Heal v1]' in executed[0][1][0]
+    assert executed[0][1][1:4] == ('new description', 'stock', 'BOLL带下轨价值低位策略')
     assert executed[0][1][-2:] == (0, 90)
 
 
-def test_builtin_template_sync_skips_unchanged_db_code(monkeypatch):
+def test_builtin_template_sync_updates_code_missing_self_heal(monkeypatch):
     import quantia.web.portfolioBacktestHandler as handler
 
     template = {
@@ -174,7 +176,10 @@ def test_builtin_template_sync_skips_unchanged_db_code(monkeypatch):
 
     result = handler.sync_strategy_templates_to_db([template])
 
-    assert result == {'updated': 0, 'inserted': 0, 'unchanged': 1, 'skipped_user_modified': 0}
+    # Existing code without self-heal snippet is treated as stale and will be upgraded.
+    assert result == {'updated': 1, 'inserted': 0, 'unchanged': 0, 'skipped_user_modified': 0}
+    assert len(executed) == 1
+    assert '[Quantia Template Param Self-Heal v1]' in executed[0][1][0]
 
 
 def test_builtin_template_sync_skips_user_modified_template(monkeypatch):
@@ -235,6 +240,23 @@ def test_saving_builtin_template_with_code_change_is_user_modified(monkeypatch):
     }])
 
     assert handler._resolve_user_modified_flag(1, 'def initialize(context):\n    context.changed = True') == 1
+
+
+def test_saving_builtin_template_with_self_heal_snippet_is_not_user_modified(monkeypatch):
+    import quantia.web.portfolioBacktestHandler as handler
+
+    official_code = 'def initialize(context):\n    pass\n'
+    monkeypatch.setattr(handler, 'STRATEGY_TEMPLATES', [{
+        'id': 'demo_template',
+        'name': 'Demo',
+        'code': official_code,
+    }])
+    monkeypatch.setattr(handler.mdb, 'executeSqlFetch', lambda sql, params=(): [{
+        'template_id': 'demo_template',
+    }])
+
+    code_with_self_heal = official_code.strip() + handler._TEMPLATE_PARAM_SELF_HEAL_SNIPPET
+    assert handler._resolve_user_modified_flag(1, code_with_self_heal) == 0
 
 
 def test_boll_strategy_can_run_backtest_with_dynamic_selection(monkeypatch):

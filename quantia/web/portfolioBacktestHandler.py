@@ -1816,7 +1816,7 @@ class GetStrategyTemplatesHandler(webBase.BaseHandler, ABC):
         try:
             self.write(json.dumps({
                 'code': 0,
-                'data': STRATEGY_TEMPLATES
+                'data': _normalized_strategy_templates(STRATEGY_TEMPLATES)
             }, ensure_ascii=False))
         except Exception as e:
             self.write(json.dumps({'code': -1, 'msg': str(e)}))
@@ -2838,6 +2838,83 @@ def _row_get(row, key, index, default=None):
     return default
 
 
+_TEMPLATE_PARAM_SELF_HEAL_SNIPPET = r'''\
+
+# [Quantia Template Param Self-Heal v1]
+def _quantia_set_default(name, value):
+    try:
+        if not hasattr(g, name):
+            setattr(g, name, value)
+    except Exception:
+        pass
+
+
+def _quantia_param_self_heal():
+    _quantia_set_default('ma60_slope_min', -0.005)
+    _quantia_set_default('scan_interval', 1)
+    _quantia_set_default('_day', 0)
+    _quantia_set_default('_bars_cache', {})
+    _quantia_set_default('_bars_cache_day', None)
+    _quantia_set_default('flat_lookback', 5)
+    _quantia_set_default('slope_lookback', 3)
+    _quantia_set_default('high_window', 250)
+    _quantia_set_default('cross_lookback', 5)
+    _quantia_set_default('near_band', 0.10)
+    _quantia_set_default('stop_loss', 0.08)
+    _quantia_set_default('fund_bad', set())
+    _quantia_set_default('fund_month', None)
+
+
+try:
+    _quantia_orig_initialize = initialize
+except Exception:
+    _quantia_orig_initialize = None
+
+
+if _quantia_orig_initialize is not None:
+    def initialize(context):
+        _quantia_orig_initialize(context)
+        _quantia_param_self_heal()
+
+
+try:
+    _quantia_orig_handle_data = handle_data
+except Exception:
+    _quantia_orig_handle_data = None
+
+
+if _quantia_orig_handle_data is not None:
+    def handle_data(context, data):
+        _quantia_param_self_heal()
+        return _quantia_orig_handle_data(context, data)
+'''
+
+
+def _inject_template_param_self_heal(code):
+    code = (code or '').strip()
+    if not code:
+        return code
+    if '[Quantia Template Param Self-Heal v1]' in code:
+        return code
+    return code + _TEMPLATE_PARAM_SELF_HEAL_SNIPPET
+
+
+def _strip_template_param_self_heal(code):
+    code = code or ''
+    if '[Quantia Template Param Self-Heal v1]' not in code:
+        return code
+    return code.replace(_TEMPLATE_PARAM_SELF_HEAL_SNIPPET, '').strip()
+
+
+def _normalized_strategy_templates(templates):
+    normalized = []
+    for tpl in (templates or []):
+        item = dict(tpl)
+        item['code'] = _inject_template_param_self_heal(item.get('code', ''))
+        normalized.append(item)
+    return normalized
+
+
 def sync_strategy_templates_to_db(templates=None):
     """Upsert built-in strategy templates into the strategy table.
 
@@ -2849,7 +2926,7 @@ def sync_strategy_templates_to_db(templates=None):
     inserted = 0
     unchanged = 0
     skipped_user_modified = 0
-    target_templates = templates or STRATEGY_TEMPLATES
+    target_templates = _normalized_strategy_templates(templates or STRATEGY_TEMPLATES)
 
     for tpl in target_templates:
         template_id = tpl.get('id', tpl['name'])
@@ -2917,7 +2994,7 @@ def _template_hash(code):
 
 
 def _find_strategy_template(template_id):
-    for tpl in STRATEGY_TEMPLATES:
+    for tpl in _normalized_strategy_templates(STRATEGY_TEMPLATES):
         if tpl.get('id', tpl['name']) == template_id:
             return tpl
     return None
@@ -2934,7 +3011,9 @@ def _resolve_user_modified_flag(strategy_id, code):
     if not template_id:
         return 0
     tpl = _find_strategy_template(template_id)
-    if tpl and (code or '').strip() == (tpl.get('code') or '').strip():
+    current_code = _strip_template_param_self_heal(code)
+    template_code = _strip_template_param_self_heal((tpl or {}).get('code') or '')
+    if tpl and current_code.strip() == template_code.strip():
         return 0
     return 1
 
