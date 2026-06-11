@@ -274,27 +274,30 @@ TECHNICAL_STRATEGY_PARAMS = {
     },
     "climax_limitdown": {
         "name": "放量跌停",
-        "description": "检测恐慌性暴跌后的反弹机会。\n\n"
+        "description": "检测放量封死跌停板的恐慌性抛售。\n\n"
                        "选股条件：\n"
-                       "1. 当日跌幅 ≥ 跌停阈值\n"
-                       "2. 当日成交额 ≥ 设定金额\n"
-                       "3. 当日成交量 ≥ 5日均量的N倍\n\n"
-                       "适用场景：极端恐慌后的超跌反弹机会。\n"
+                       "1. 单日真实跌幅贴近所属板块跌停限制（主板±10%、创业板/科创板±20%、"
+                       "北交所±30%、主板ST±5%，自适应判定，并剔除除权/停牌复牌造成的价格伪跳变）\n"
+                       "2. 收盘价封死在当日最低价附近（封板确认）\n"
+                       "3. 当日成交量 ≥ 5日均量的N倍，且成交额 ≥ 设定金额（放量）\n\n"
+                       "适用场景：极端恐慌封板后的超跌反弹机会。\n"
                        "风险提示：极高风险策略，可能继续下跌。仅适合有经验的短线交易者。",
         "strategy_func": "cn_stock_strategy_climax_limitdown",
         "groups": [
             {
-                "group_name": "跌幅条件",
+                "group_name": "跌停条件",
                 "params": [
-                    {"key": "limit_down_pct", "label": "跌停阈值(%)", "description": "当日最低跌幅（取绝对值）",
-                     "type": "number", "value": 9.5, "min": 5, "max": 20, "step": 0.5, "unit": "%"},
+                    {"key": "near_limit_buffer", "label": "跌停容差(%)", "description": "距板块跌停限制的容差，跌幅≥(限制-容差)即视为触及跌停",
+                     "type": "number", "value": 0.8, "min": 0, "max": 3, "step": 0.1, "unit": "%"},
+                    {"key": "sealed_tol", "label": "封板容差(%)", "description": "收盘价 ≤ 当日最低价×(1+容差) 视为封死跌停",
+                     "type": "number", "value": 0.5, "min": 0, "max": 2, "step": 0.1, "unit": "%"},
                 ]
             },
             {
                 "group_name": "成交量条件",
                 "params": [
                     {"key": "vol_ratio", "label": "放量倍数", "description": "当日成交量需达到5日均量的N倍",
-                     "type": "number", "value": 4, "min": 2, "max": 10, "step": 0.5, "unit": "倍"},
+                     "type": "number", "value": 2, "min": 1.5, "max": 10, "step": 0.5, "unit": "倍"},
                     {"key": "min_turnover", "label": "最低成交额(亿)", "description": "过滤成交额过小的股票",
                      "type": "number", "value": 2, "min": 0.5, "max": 10, "step": 0.5, "unit": "亿"},
                 ]
