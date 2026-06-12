@@ -1365,44 +1365,65 @@ def read_index_hist_from_cache(code, date_start=None, date_end=None):
         return None
 
 
-def update_index_caches(index_codes=None, date_start=None, date_end=None):
+def update_index_caches(index_codes=None, date_start=None, date_end=None, index_spot_df=None):
     """
-    批量更新指数的 K 线缓存。
+    批量更新指数的 K 线缓存（数据驱动覆盖全市场指数）。
+
+    与旧版（硬编码 14 个主要指数）的区别：
+    - 默认从数据库 cn_index_spot 最新交易日读取全部指数代码（仅读 DB，无 API 调用），
+      覆盖全市场指数；DB 不可用时回退到硬编码主要指数列表。
+    - 每个指数走 index_hist_cache_incremental（东财指数 K线 API）增量更新；
+      meta 已最新则跳过。
+
+    设计说明（为何不做 Spot 快速追加）：
+        指数不同于股票/ETF —— 实测 cn_index_spot.volume 与指数 K线 API 成交量的单位
+        在不同指数间不一致（部分指数 100×，部分 1×，且历史日比值不稳定），
+        固定/推导系数都无法保证成交量正确，会在 K 线末端注入错误的成交量柱。
+        故指数始终走单一数据源的 API 增量，保证 OHLCV 内部自洽。
 
     参数：
-        index_codes: 指数代码列表。None 时使用默认的主要指数列表。
-        date_start: 起始日期 YYYYMMDD
-        date_end: 结束日期 YYYYMMDD
+        index_codes: 指数代码列表。None 时从 cn_index_spot 最新日动态获取。
+        date_start: 起始日期 YYYYMMDD，None 时取 HIST_DATA_DEFAULT_YEARS 年前
+        date_end:   结束日期 YYYYMMDD，None 时取今天
+        index_spot_df: 可选，已加载的指数实时行情 DataFrame（须含 code 列）；
+                       None 时从 cn_index_spot 最新交易日读取代码列表。
 
     返回：
         (success_count, fail_count)
     """
-    # 默认主要指数
-    if index_codes is None:
-        index_codes = [
-            '000001',  # 上证指数
-            '000002',  # 上证A股指数
-            '000003',  # 上证B股指数
-            '000016',  # 上证50
-            '000300',  # 沪深300
-            '000688',  # 科创50
-            '000852',  # 中证1000
-            '000905',  # 中证500
-            '399001',  # 深证成指
-            '399005',  # 中小板指
-            '399006',  # 创业板指
-            '399300',  # 沪深300（深交所）
-            '399673',  # 创业板50
-            '399951',  # 中证银行
-        ]
+    import quantia.lib.database as mdb
 
     if date_start is None:
-        # 默认获取 10 年数据
         _years = HIST_DATA_DEFAULT_YEARS
         start_dt = datetime.datetime.now() - datetime.timedelta(days=_years * 365)
         date_start = start_dt.strftime("%Y%m%d")
     if date_end is None:
         date_end = datetime.datetime.now().strftime("%Y%m%d")
+
+    # 硬编码主要指数（仅作 DB 读取失败时的兜底）
+    _HARDCODED = [
+        '000001', '000002', '000003', '000016', '000300', '000688',
+        '000852', '000905', '399001', '399005', '399006', '399300',
+        '399673', '399951',
+    ]
+
+    # 决定要更新的指数代码集合：优先 cn_index_spot 最新交易日全量（仅读 DB，无 API）
+    if index_codes is None:
+        if index_spot_df is None and mdb.checkTableIsExist('cn_index_spot'):
+            try:
+                sql = (
+                    "SELECT DISTINCT `code` FROM `cn_index_spot` "
+                    "WHERE `date` = (SELECT MAX(`date`) FROM `cn_index_spot`) "
+                    "AND `new_price` > 0 ORDER BY `code`"
+                )
+                index_spot_df = pd.read_sql(sql, mdb.engine())
+            except Exception as e:
+                logging.warning(f"update_index_caches：读取 cn_index_spot 失败，回退硬编码列表：{e}")
+                index_spot_df = None
+        if index_spot_df is not None and len(index_spot_df) > 0:
+            index_codes = index_spot_df['code'].astype(str).tolist()
+        else:
+            index_codes = _HARDCODED
 
     # 指数间请求延迟（可通过环境变量配置）
     idx_delay_min = _cfg.get_float('QUANTIA_INDEX_DELAY_MIN', 0.5)
@@ -1412,6 +1433,7 @@ def update_index_caches(index_codes=None, date_start=None, date_end=None):
     fail = 0
     skip = 0
     for code in index_codes:
+        code = str(code)
         try:
             # 预检查：meta 已最新则跳过（与股票缓存一致）
             meta_path = _get_index_cache_meta_path(code)
@@ -1419,7 +1441,7 @@ def update_index_caches(index_codes=None, date_start=None, date_end=None):
                 try:
                     with open(meta_path, 'r') as f:
                         meta_last_date = f.read().strip().split(',')[0]
-                    if meta_last_date >= date_end:
+                    if meta_last_date and meta_last_date >= date_end:
                         skip += 1
                         continue
                 except Exception:
@@ -1428,18 +1450,18 @@ def update_index_caches(index_codes=None, date_start=None, date_end=None):
             result = index_hist_cache_incremental(code, date_start, date_end)
             if result is not None and len(result) > 0:
                 success += 1
-                logging.info(f"指数 {code} K线缓存更新成功: {len(result)} 条")
             else:
                 fail += 1
                 logging.warning(f"指数 {code} K线缓存更新失败: 无数据")
-            # 每个指数之间添加延迟
+            # 实际发起 API 请求，添加延迟防限流
             time.sleep(random.uniform(idx_delay_min, idx_delay_max))
         except Exception as e:
             fail += 1
             logging.warning(f"指数 {code} K线缓存更新异常: {e}")
 
-    if skip > 0:
-        logging.info(f"指数缓存更新：成功={success}, 失败={fail}, 已最新跳过={skip}")
+    logging.info(
+        f"指数缓存更新：API成功={success}, 失败={fail}, 已最新跳过={skip}"
+    )
     return success + skip, fail
 # 当此版本号与 .meta 中的 filtered_version 匹配时，读取缓存可跳过 _filter_ohlc_outliers
 _FILTER_VERSION = 2
