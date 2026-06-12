@@ -144,6 +144,16 @@ def extract_patent_counts(text: str) -> Dict[str, Optional[int]]:
             _to_int(_first_match(
                 r'专利\s*总数.{0,5}?' + _NUM + r'\s*[项件个]', text
             )),
+            # 表格式表述: "报告期末专利证书数量 281" / "专利证书数量：281"
+            # （数量在关键词之后, 单位另起"单位：个", 数字后无量词）。
+            # 优先报告期末/期末, 避免误取"去年同期"列。
+            _to_int(_first_match(
+                r'(?:报告期末|期末)\s*专利\s*(?:证书)?\s*(?:数量|总数|总量)\s*[:：]?\s*' + _NUM,
+                text,
+            )),
+            _to_int(_first_match(
+                r'专利\s*(?:证书)?\s*(?:数量|总数|总量)\s*[:：]?\s*' + _NUM, text
+            )),
         ),
         'invention_patents': _to_int(_first_match(
             r'发明专利\s*' + _NUM + r'\s*[项件个]', text
@@ -267,8 +277,12 @@ def parse_annual_report(
     section_text = locate_rd_section(text)
 
     result: Dict[str, Any] = {'code': code, 'year': year}
-    result.update(extract_patent_counts(section_text))
-    result.update(extract_rd_staff(section_text))
+    # 专利数量 / 研发人员：用全文匹配。专利统计表常位于"知识产权"等章节，
+    # 可能落在 locate_rd_section 单一锚点窗口之外（见 300406 年报）；这些字段
+    # 的正则前导词足够特异（累计/拥有/专利证书数量/研发人员…），全文匹配不易误命中。
+    result.update(extract_patent_counts(text))
+    result.update(extract_rd_staff(text))
+    # IPC 分类 / 核心技术描述：仍限定在研发章节窗口，降低全文噪声。
     result.update(extract_ipc_info(section_text))
     result['key_tech_desc'] = extract_key_tech_desc(section_text)
 

@@ -154,6 +154,21 @@ class TestRegressionFixes:
         r = arp.parse_annual_report(long_text, code='000003', year=2024)
         assert r['total_patents'] == 100
 
+    def test_total_patents_table_style_certificate_count(self):
+        # 表格式表述: "报告期末专利证书数量 281"（数量在关键词后, 单位另起）
+        # 应识别为 total_patents, 且优先报告期末列而非"去年同期"列。
+        text = ('1）报告期专利数量统计 单位：个 '
+                '报告期末专利证书数量 281 去年同期专利证书数量 228')
+        r = arp.extract_patent_counts(text)
+        assert r['total_patents'] == 281
+
+    def test_patent_counts_extracted_outside_rd_section_window(self):
+        # 专利统计表位于研发章节锚点窗口之外（>4000 字）时, 仍应被全文匹配命中。
+        filler = '无关内容。' * 1000  # 约 5000 字, 超过 locate_rd_section 窗口
+        text = '四、研发投入情况\n' + filler + '报告期末专利证书数量 281'
+        r = arp.parse_annual_report(text, code='000004', year=2025)
+        assert r['total_patents'] == 281
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
