@@ -171,7 +171,7 @@ class TestStockFinancialDataModule(unittest.TestCase):
         mock_mdb.engine.return_value = MagicMock()
         mock_mdb.checkTableIsExist.return_value = True
 
-        result = fetch_single_stock('000001', incremental=False)
+        result = fetch_single_stock('000001')
         self.assertEqual(result, 2)  # 2 rows
 
     @patch('quantia.job.stock_financial_data.ak')

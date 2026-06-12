@@ -338,17 +338,6 @@ def get_stock_list():
         return []
 
 
-def get_existing_report_dates(code):
-    """获取指定股票已有的报告期日期集合"""
-    rows = mdb.executeSqlFetch(
-        "SELECT `report_date` FROM `cn_stock_financial` WHERE `code` = %s",
-        (code,)
-    )
-    if rows:
-        return {str(r[0]) for r in rows}
-    return set()
-
-
 def _latest_expected_report_date(today=None):
     """按A股法定披露截止日，返回'此刻应已披露'的最近报告期（保守取值，宁可多抓不漏抓）。
 
@@ -397,12 +386,13 @@ def _get_caught_up_codes(field='revenue'):
         return set()
 
 
-def fetch_single_stock(code, incremental=False, min_date=None):
-    """采集单只股票的财务数据
+def fetch_single_stock(code, min_date=None):
+    """采集单只股票的财务数据（总是 upsert 全部报告期，回填历史 NULL 并捕获修订）。
+
+    增量模式的跳过在 fetch_all_stocks 层按"整只股票"进行（详见 _get_caught_up_codes）。
 
     Args:
         code: 6位股票代码
-        incremental: 增量模式，跳过已有报告期
         min_date: 最早报告期日期（date对象），早于此日期的记录将被过滤
 
     Returns:
@@ -752,7 +742,7 @@ def main():
     parser.add_argument("--test", type=int, default=0,
                         help="测试模式：仅采集前N只股票")
     parser.add_argument("--incremental", action="store_true",
-                        help="增量模式：仅采集新报告期数据")
+                        help="增量模式：跳过最新报告期已达应披露期且字段非空的股票（不发API）")
     parser.add_argument("--years", type=int, default=0,
                         help="仅采集最近N年的数据（0=不限制）")
     parser.add_argument("--expenses", action="store_true",
