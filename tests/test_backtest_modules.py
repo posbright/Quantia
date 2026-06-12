@@ -1211,6 +1211,9 @@ class TestFundamentalDataProvider(unittest.TestCase):
         provider = FundamentalDataProvider(engine)
         # Manually set internal state to skip _init_data
         provider._initialized = True
+        # K 线已由下方手工填充，标记为已加载，避免 get_fundamentals 触发
+        # _batch_load_klines 用真实缓存覆盖测试桩数据。
+        provider._klines_loaded = True
         # total_shares chosen so that mcap = total_shares * close / 1e8
         # matches current_mcap at current_price
         provider._stock_info = pd.DataFrame({
@@ -1297,6 +1300,62 @@ class TestFundamentalDataProvider(unittest.TestCase):
         provider = self._make_provider()
         provider._volume_lookup['000001']['2025-03-12'] = 0
         self.assertTrue(provider.is_paused('000001', datetime.date(2025, 3, 12)))
+
+    def test_in_filter_skips_full_market_kline_load(self):
+        """in_ 限定股票池的查询不得触发全市场 K 线批量加载（避免 OOM）。
+
+        当策略以 valuation.code.in_(股票池) 限定查询范围时，应仅按需加载
+        这些股票（_ensure_stocks_loaded），而不调用 _batch_load_klines
+        把约 5000 只候选股票 K 线全部读入内存。
+        """
+        engine = MagicMock()
+        engine.context = Context()
+        engine.context.current_dt = datetime.date(2025, 3, 10)
+        provider = FundamentalDataProvider(engine)
+        provider._fetch_stock_info = MagicMock(side_effect=lambda: setattr(
+            provider, '_stock_info', pd.DataFrame({
+                'code': ['000001', '600036'],
+                'name': ['平安银行', '招商银行'],
+                'total_shares': [2e8, 2e8],
+                'current_mcap': [30, 60],
+                'current_pb': [1.2, 1.5],
+                'current_price': [15.0, 30.0],
+            })))
+        provider._load_fundamental_cache = MagicMock(return_value=False)
+        provider._batch_load_klines = MagicMock()
+        provider._ensure_stocks_loaded = MagicMock()
+
+        q = query(valuation.market_cap).filter(
+            valuation.code.in_(['000001', '600036'])
+        )
+        provider.get_fundamentals(q, datetime.date(2025, 3, 10))
+
+        provider._batch_load_klines.assert_not_called()
+        provider._ensure_stocks_loaded.assert_called_once()
+
+    def test_no_filter_loads_full_market_klines(self):
+        """无 in_ 过滤的全市场扫描查询仍需批量加载候选 K 线。"""
+        engine = MagicMock()
+        engine.context = Context()
+        engine.context.current_dt = datetime.date(2025, 3, 10)
+        provider = FundamentalDataProvider(engine)
+        provider._fetch_stock_info = MagicMock(side_effect=lambda: setattr(
+            provider, '_stock_info', pd.DataFrame({
+                'code': ['000001', '600036'],
+                'name': ['平安银行', '招商银行'],
+                'total_shares': [2e8, 2e8],
+                'current_mcap': [30, 60],
+                'current_pb': [1.2, 1.5],
+                'current_price': [15.0, 30.0],
+            })))
+        provider._load_fundamental_cache = MagicMock(return_value=False)
+        provider._batch_load_klines = MagicMock()
+        provider._save_fundamental_cache = MagicMock()
+
+        q = query(valuation.market_cap)
+        provider.get_fundamentals(q, datetime.date(2025, 3, 10))
+
+        provider._batch_load_klines.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -241,8 +241,11 @@ class FundamentalDataProvider:
             return
         self._initialized = True
 
-        # 尝试加载缓存
-        if self._load_fundamental_cache():
+        # 尝试加载缓存（仅重量模式）。基本面缓存内含全市场 price_lookup/
+        # volume_lookup，体积可达数百 MB；轻量模式（load_klines=False，如
+        # in_ 限定股票池查询或 get_all_securities）若加载会把全市场 K 线读入
+        # 内存，造成 OOM。因此轻量模式跳过缓存，仅拉取股票信息与候选代码。
+        if load_klines and self._load_fundamental_cache():
             self._klines_loaded = True
             return
 
@@ -590,18 +593,21 @@ class FundamentalDataProvider:
         对于 valuation 字段（market_cap, pb_ratio），使用真实K线数据估算。
         对于 indicator/balance/cash_flow 字段，使用基于股票代码的确定性合成值。
         """
-        self._init_data()
-
-        if date is None:
-            date = self._engine.context.current_dt
-        date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)[:10]
-
-        # 提取 in_ code 列表
+        # 提取 in_ code 列表（须先于 _init_data，用以决定是否需要全市场 K 线）
         in_codes = None
         for f in q._filters:
             if isinstance(f, tuple) and len(f) >= 3 and f[0] == 'in_' and f[1] == 'code':
                 in_codes = set(f[2])
                 break
+
+        # 当查询已用 in_ 限定具体股票池时，仅需按需加载这些股票的 K 线，
+        # 不批量加载全市场候选（约 5000 只）K 线 → 避免内存暴涨 / OOM。
+        # 仅当全市场扫描（无 in_ 过滤）时才加载全部候选 K 线。
+        self._init_data(load_klines=(in_codes is None))
+
+        if date is None:
+            date = self._engine.context.current_dt
+        date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)[:10]
 
         if in_codes:
             self._ensure_stocks_loaded(in_codes)
