@@ -140,6 +140,38 @@ def _sort_sources_by_health(data_sources):
     return healthy + degraded
 
 
+def _apply_source_priority(data_sources):
+    """按环境变量 QUANTIA_SPOT_SOURCE_PRIORITY 重排实时行情数据源优先级。
+
+    适用场景：当某个数据源在当前服务器长期不可用（如东方财富 push2 接口
+    被机房 IP 限流），可通过配置把它降为兜底，避免每次任务都先试先败。
+
+    - 配置为以逗号分隔的数据源名称，例如：腾讯财经,新浪财经,东方财富
+    - 仅对在配置中出现的数据源生效；配置中出现、但本次列表里没有的名称忽略；
+      未在配置中出现的数据源按原始相对顺序追加到末尾（保证不会丢源）。
+    - 未配置或配置为空时，保持调用方传入的原始顺序（行为不变）。
+    """
+    priority_raw = _cfg.get_str('QUANTIA_SPOT_SOURCE_PRIORITY', '')
+    priority = [name.strip() for name in priority_raw.split(',') if name.strip()]
+    if not priority:
+        return data_sources
+
+    by_name = {item[0]: item for item in data_sources}
+    ordered = []
+    seen = set()
+    for name in priority:
+        item = by_name.get(name)
+        if item is not None and name not in seen:
+            ordered.append(item)
+            seen.add(name)
+    # 追加未在配置中列出的数据源，保持原始相对顺序
+    for item in data_sources:
+        if item[0] not in seen:
+            ordered.append(item)
+            seen.add(item[0])
+    return ordered
+
+
 # ══════════════════════════════════════════════
 # 日志聚合（避免重复的代理失败日志刷屏）
 # ══════════════════════════════════════════════
@@ -337,6 +369,7 @@ def fetch_etfs(date):
         ("腾讯财经", etc.fund_etf_spot_tencent),
         ("新浪财经", esa.fund_etf_spot_sina),
     ]
+    data_sources = _apply_source_priority(data_sources)
     data_sources = _sort_sources_by_health(data_sources)
 
     for source_name, fetch_func in data_sources:
@@ -428,6 +461,7 @@ def fetch_index_spots(date):
         ("腾讯财经", itc.index_spot_tencent),
         ("新浪财经", isa.index_spot_sina),
     ]
+    data_sources = _apply_source_priority(data_sources)
     data_sources = _sort_sources_by_health(data_sources)
 
     for source_name, fetch_func in data_sources:
@@ -474,6 +508,7 @@ def fetch_stocks(date):
         ("腾讯财经", stc.stock_zh_a_spot_tencent),
         ("新浪财经", ssa.stock_zh_a_spot_sina),
     ]
+    data_sources = _apply_source_priority(data_sources)
     data_sources = _sort_sources_by_health(data_sources)
 
     for source_name, fetch_func in data_sources:
