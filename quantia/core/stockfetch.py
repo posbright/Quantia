@@ -1375,11 +1375,21 @@ def update_index_caches(index_codes=None, date_start=None, date_end=None, index_
     - 每个指数走 index_hist_cache_incremental（东财指数 K线 API）增量更新；
       meta 已最新则跳过。
 
-    设计说明（为何不做 Spot 快速追加）：
-        指数不同于股票/ETF —— 实测 cn_index_spot.volume 与指数 K线 API 成交量的单位
-        在不同指数间不一致（部分指数 100×，部分 1×，且历史日比值不稳定），
-        固定/推导系数都无法保证成交量正确，会在 K 线末端注入错误的成交量柱。
-        故指数始终走单一数据源的 API 增量，保证 OHLCV 内部自洽。
+    设计说明（为何不用 Spot 快速追加，而坚持 API 增量）：
+        实测 cn_index_spot 与指数 K线 API（同日对齐 480 样本）成交量关系
+        以「整 100×」为主（spot=股，hist=手），但 cn_index_spot 存在三类
+        数据质量问题，使得直接用 spot 行追加最后一根 K 线不安全：
+          1) 单位漂移：少数交易日 spot.volume 被按「手」入库（vol_ratio=1.0），
+             固定 /100 在这些日会算错。
+          2) 盘中半日快照：部分日 spot 行是收盘前抓取的累计值
+             （amt_ratio≈0.47，成交量/额按同比例缩小），与「清淡的整日」
+             无法仅凭量/额区分 —— 误追加会注入一根偏小的错误 K 线。
+          3) 个别指数源差异：如 399006（创业板指）spot 与 hist 量/额
+             长期不一致（vol_ratio≈96.8）。
+        指数 K线 API（stock_index_hist_em）始终返回结算后的整日柱、单一来源、
+        内部自洽；而 spot 半日快照与整日清淡日不可区分，是不可消除的风险点。
+        故指数坚持 API 增量。成本：约 535 次/晚、~1 req/s（实测单请求中位
+        653ms、零延迟连发 20 次无限流），首日全量 ~13 分钟，之后仅 1 日 tail。
 
     参数：
         index_codes: 指数代码列表。None 时从 cn_index_spot 最新日动态获取。

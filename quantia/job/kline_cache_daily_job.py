@@ -189,7 +189,7 @@ def fetch_all_data(date):
         logging.error(f"历史K线缓存更新异常", exc_info=True)
         record_task_end(_JOB_NAME, 'update_kline_cache', date, t3, success=False, message=str(e))
 
-    # Step 4: 指数K线缓存更新（~15个主要指数）
+    # Step 4: 指数K线缓存更新（数据驱动：cn_index_spot 最新交易日全量指数，~535个）
     t4 = record_task_start(_JOB_NAME, 'update_index_cache', date)
     try:
         logging.info("Step 4/5: 更新指数K线缓存...")
