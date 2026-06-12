@@ -46,7 +46,7 @@ const kpis = ref<KpiCard[]>([
   },
   {
     key: 'selection',
-    title: '综合选股',
+    title: '综合评分榜',
     value: '--',
     delta: '--',
     trend: 'flat',
@@ -126,7 +126,7 @@ let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 // ---------- 功能矩阵 ----------
 const features = [
-  { icon: 'Monitor', title: '综合选股', desc: '200+ 维度自由组合，覆盖基本面/技术面/消息面', color: '#667eea', to: '/selection/all' },
+  { icon: 'Monitor', title: '综合评分榜', desc: '200+ 维度自由组合，覆盖基本面/技术面/消息面', color: '#667eea', to: '/selection/all' },
   { icon: 'TrendCharts', title: '技术指标', desc: '32 种 TA-Lib 指标，与同花顺/通达信结果一致', color: '#11998e', to: '/indicator/list' },
   { icon: 'PriceTag', title: 'K 线形态', desc: '精准识别 61 种经典 K 线形态', color: '#f5576c', to: '/kline/pattern' },
   { icon: 'Aim', title: '策略选股', desc: '14 种内置选股策略，每日自动跑批', color: '#fa8c16', to: '/strategy/enter' },

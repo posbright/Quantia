@@ -45,13 +45,13 @@ const routes: RouteRecordRaw[] = [
     path: '/selection',
     component: Layout,
     redirect: '/selection/all',
-    meta: { title: '综合选股', icon: 'Monitor' },
+    meta: { title: '选股中心', icon: 'Monitor' },
     children: [
       {
         path: 'all',
         name: 'StockSelection',
         component: () => import('@/views/selection/all.vue'),
-        meta: { title: '综合选股', tableName: 'cn_stock_selection', isRealtime: false }
+        meta: { title: '综合评分榜', tableName: 'cn_stock_selection', isRealtime: false }
       },
       {
         path: 'industry/:name',
