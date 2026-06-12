@@ -2447,6 +2447,71 @@ def update_all_caches(stocks, date_start, date_end, workers=2, spot_df=None):
     return success + skip + spot_appended + suspended_skip, fail
 
 
+def update_all_etf_caches(date_start=None, date_end=None, etf_spot_df=None):
+    """
+    批量更新所有 ETF 的历史 K 线缓存（复用 update_all_caches 的限流/熔断/增量逻辑）。
+
+    与股票缓存的区别：
+    - 股票列表来自实时行情 API（stock_data 单例）；
+      ETF 列表/行情读取自数据库 cn_etf_spot 的最新交易日（fetch_daily_job 已入库），
+      避免额外 API 调用，并保持 Fetch/Analysis 管道分离。
+    - ETF 代码以 1/5 开头，三个数据源(东财/腾讯/新浪)的 secid 路由均已支持，
+      逐 ETF 走 stock_hist_cache_incremental 与股票一致。
+    - cn_etf_spot 含 _try_spot_append 所需全部列（new_price/open_price/high_price/
+      low_price/volume/deal_amount/change_rate/ups_downs/turnoverrate/pre_close_price），
+      仅缺 amplitude（_try_spot_append 已对缺失列默认 0），故 Spot 快速追加同样可用。
+
+    参数：
+        date_start: 起始日期 YYYYMMDD，None 时取 HIST_DATA_DEFAULT_YEARS 年前
+        date_end:   结束日期 YYYYMMDD，None 时取今天
+        etf_spot_df: 可选，已加载的 ETF 实时行情 DataFrame（须含 code 及 OHLCV 列）。
+                     None 时从 cn_etf_spot 最新交易日读取。
+
+    返回：
+        (success_count, fail_count)
+    """
+    import quantia.lib.database as mdb
+
+    if date_end is None:
+        date_end = datetime.datetime.now().strftime("%Y%m%d")
+    if date_start is None:
+        _years = HIST_DATA_DEFAULT_YEARS
+        start_dt = datetime.datetime.now() - datetime.timedelta(days=_years * 365)
+        date_start = start_dt.strftime("%Y%m%d")
+
+    # 从数据库读取最新交易日的 ETF 行情（仅读 DB，无 API 调用）
+    if etf_spot_df is None:
+        if not mdb.checkTableIsExist('cn_etf_spot'):
+            logging.warning("update_all_etf_caches：cn_etf_spot 表不存在，跳过 ETF 缓存更新")
+            return 0, 0
+        try:
+            sql = (
+                "SELECT `date`, `code`, `new_price`, `open_price`, `high_price`, "
+                "`low_price`, `volume`, `deal_amount`, `change_rate`, `ups_downs`, "
+                "`turnoverrate`, `pre_close_price` "
+                "FROM `cn_etf_spot` "
+                "WHERE `date` = (SELECT MAX(`date`) FROM `cn_etf_spot`) "
+                "AND `new_price` > 0 "
+                "ORDER BY `code`"
+            )
+            etf_spot_df = pd.read_sql(sql, mdb.engine())
+        except Exception as e:
+            logging.error(f"update_all_etf_caches：读取 cn_etf_spot 失败：{e}", exc_info=True)
+            return 0, 0
+
+    if etf_spot_df is None or len(etf_spot_df) == 0:
+        logging.warning("update_all_etf_caches：cn_etf_spot 无可用数据，跳过 ETF 缓存更新")
+        return 0, 0
+
+    # 构造 (date, code) 列表，复用股票缓存批处理逻辑
+    etf_stocks = [(date_end, str(code)) for code in etf_spot_df['code'].tolist()]
+    logging.info(f"update_all_etf_caches：开始更新 {len(etf_stocks)} 只 ETF 的 K 线缓存")
+
+    return update_all_caches(etf_stocks, date_start, date_end,
+                             workers=_cfg.get_int('QUANTIA_KLINE_CACHE_WORKERS', 2),
+                             spot_df=etf_spot_df)
+
+
 def read_hist_from_cache(data_base, years=None):
     """
     从缓存读取历史数据（Web层专用，零API调用）。

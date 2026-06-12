@@ -85,6 +85,7 @@ def fetch_all_data(date):
     3. 预加载实时行情（stock_data 单例）
     4. 批量更新历史K线缓存（仅更新磁盘缓存，不保留在内存中）
     5. 更新指数K线缓存（~15个主要指数）
+    6. 更新ETF K线缓存（读取 cn_etf_spot 最新交易日列表）
 
     参数：
         date: 交易日期
@@ -101,7 +102,7 @@ def fetch_all_data(date):
     # Step 1: 清理过期缓存
     t1 = record_task_start(_JOB_NAME, 'clean_cache', date)
     try:
-        logging.info("Step 1/4: 清理过期缓存...")
+        logging.info("Step 1/5: 清理过期缓存...")
         cleaned = stf.clean_expired_cache()
         logging.info(f"缓存清理完成，清理了 {cleaned} 个文件")
         record_task_end(_JOB_NAME, 'clean_cache', date, t1, success=True,
@@ -113,7 +114,7 @@ def fetch_all_data(date):
     # Step 2: 预加载实时行情（stock_data 单例）
     t2 = record_task_start(_JOB_NAME, 'load_spot', date)
     try:
-        logging.info("Step 2/4: 预加载实时行情数据...")
+        logging.info("Step 2/5: 预加载实时行情数据...")
         spot_start = time.time()
         spot = stock_data(date).get_data()
         if spot is not None and len(spot) > 0:
@@ -157,7 +158,7 @@ def fetch_all_data(date):
     # Step 3: 批量更新历史K线缓存（自动检测本地/服务器模式）
     t3 = record_task_start(_JOB_NAME, 'update_kline_cache', date)
     try:
-        logging.info("Step 3/4: 批量更新历史K线缓存...")
+        logging.info("Step 3/5: 批量更新历史K线缓存...")
         hist_start = time.time()
 
         _subset = spot[list(tbs.TABLE_CN_STOCK_FOREIGN_KEY['columns'])]
@@ -191,7 +192,7 @@ def fetch_all_data(date):
     # Step 4: 指数K线缓存更新（~15个主要指数）
     t4 = record_task_start(_JOB_NAME, 'update_index_cache', date)
     try:
-        logging.info("Step 4/4: 更新指数K线缓存...")
+        logging.info("Step 4/5: 更新指数K线缓存...")
         idx_start = time.time()
         idx_ok, idx_fail = stf.update_index_caches(date_start=date_start, date_end=date_end)
         elapsed_idx = time.time() - idx_start
@@ -202,6 +203,21 @@ def fetch_all_data(date):
     except Exception as e:
         logging.error(f"指数K线缓存更新异常", exc_info=True)
         record_task_end(_JOB_NAME, 'update_index_cache', date, t4, success=False, message=str(e))
+
+    # Step 5: ETF K线缓存更新（读取 cn_etf_spot 最新交易日列表，复用增量/限流逻辑）
+    t5 = record_task_start(_JOB_NAME, 'update_etf_cache', date)
+    try:
+        logging.info("Step 5/5: 更新ETF K线缓存...")
+        etf_start = time.time()
+        etf_ok, etf_fail = stf.update_all_etf_caches(date_start=date_start, date_end=date_end)
+        elapsed_etf = time.time() - etf_start
+        logging.info(f"ETF K线缓存更新完成：成功 {etf_ok}，失败 {etf_fail}，耗时 {elapsed_etf:.1f}秒")
+        record_task_end(_JOB_NAME, 'update_etf_cache', date, t5, success=True,
+                        rows_affected=etf_ok,
+                        message=f"成功 {etf_ok}，失败 {etf_fail}")
+    except Exception as e:
+        logging.error(f"ETF K线缓存更新异常", exc_info=True)
+        record_task_end(_JOB_NAME, 'update_etf_cache', date, t5, success=False, message=str(e))
 
     elapsed = time.time() - start_time
     record_task_end(_JOB_NAME, '__overall__', date, overall_start, success=True,
