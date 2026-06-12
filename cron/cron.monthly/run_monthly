@@ -24,7 +24,18 @@ clean_expired_cache()
 fi
 
 # ── 月度财务数据更新 ──
-log_info "开始月度财务数据增量更新（含费用明细）"
+# 披露季后(5/9/11月)做全量采集，捕获新披露报告期与财报修订；
+# 其余月份增量（按整只跳过已追平股票，分钟级完成），避免重复抓取。
 cd "$PROJECT_ROOT"
-"$PYTHON_BIN" -m quantia.job.stock_financial_data --incremental --expenses >> "$LOG_FILE" 2>&1
+MONTH=$((10#$(date +%m)))
+case "$MONTH" in
+    5|9|11) FIN_MODE="" ;;
+    *)      FIN_MODE="--incremental" ;;
+esac
+if [ -z "$FIN_MODE" ]; then
+    log_info "开始月度财务数据全量采集（披露季，含费用明细）"
+else
+    log_info "开始月度财务数据增量更新（含费用明细）"
+fi
+"$PYTHON_BIN" -m quantia.job.stock_financial_data $FIN_MODE --expenses >> "$LOG_FILE" 2>&1
 log_info "月度财务数据更新完成"

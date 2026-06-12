@@ -206,6 +206,76 @@ class TestStockFinancialDataModule(unittest.TestCase):
         self.assertEqual(result, {})
 
 
+class TestIncrementalSkipLogic(unittest.TestCase):
+    """验证增量模式的整只股票级跳过逻辑（日历+完整性感知）"""
+
+    def test_latest_expected_report_date_by_month(self):
+        """披露日历应保守返回'已确定披露'的最近报告期"""
+        from quantia.job.stock_financial_data import _latest_expected_report_date
+        # 1-4月 -> 上年三季报(9/30)
+        self.assertEqual(_latest_expected_report_date(date(2026, 2, 15)), date(2025, 9, 30))
+        self.assertEqual(_latest_expected_report_date(date(2026, 4, 30)), date(2025, 9, 30))
+        # 5-8月 -> 当年一季报(3/31)
+        self.assertEqual(_latest_expected_report_date(date(2026, 5, 1)), date(2026, 3, 31))
+        self.assertEqual(_latest_expected_report_date(date(2026, 8, 31)), date(2026, 3, 31))
+        # 9-10月 -> 当年半年报(6/30)
+        self.assertEqual(_latest_expected_report_date(date(2026, 9, 1)), date(2026, 6, 30))
+        self.assertEqual(_latest_expected_report_date(date(2026, 10, 31)), date(2026, 6, 30))
+        # 11-12月 -> 当年三季报(9/30)
+        self.assertEqual(_latest_expected_report_date(date(2026, 11, 1)), date(2026, 9, 30))
+        self.assertEqual(_latest_expected_report_date(date(2026, 12, 31)), date(2026, 9, 30))
+
+    @patch('quantia.job.stock_financial_data.mdb')
+    def test_get_caught_up_codes_returns_set(self, mock_mdb):
+        """已追平股票集合应来自 report_date>=目标 且字段非空的查询结果"""
+        from quantia.job.stock_financial_data import _get_caught_up_codes
+        mock_mdb.checkTableIsExist.return_value = True
+        mock_mdb.executeSqlFetch.return_value = [('000001',), ('600000',)]
+        codes = _get_caught_up_codes('revenue')
+        self.assertEqual(codes, {'000001', '600000'})
+
+    @patch('quantia.job.stock_financial_data.mdb')
+    def test_get_caught_up_codes_no_table(self, mock_mdb):
+        """表不存在时应返回空集合（即全量采集）"""
+        from quantia.job.stock_financial_data import _get_caught_up_codes
+        mock_mdb.checkTableIsExist.return_value = False
+        self.assertEqual(_get_caught_up_codes('revenue'), set())
+
+    def test_get_caught_up_codes_rejects_unknown_field(self):
+        """field 应做白名单校验，拒绝非法输入"""
+        from quantia.job.stock_financial_data import _get_caught_up_codes
+        with self.assertRaises(ValueError):
+            _get_caught_up_codes('revenue; DROP TABLE x')
+
+    @patch('quantia.job.stock_financial_data.time.sleep')
+    @patch('quantia.job.stock_financial_data.fetch_single_stock')
+    @patch('quantia.job.stock_financial_data._get_caught_up_codes')
+    def test_fetch_all_stocks_skips_caught_up(self, mock_caught, mock_fetch, mock_sleep):
+        """增量模式应跳过已追平股票，且不对其调用API/休眠"""
+        from quantia.job.stock_financial_data import fetch_all_stocks
+        mock_caught.return_value = {'000001'}
+        mock_fetch.return_value = 5
+        success, fail, skip, rows = fetch_all_stocks(
+            ['000001', '600000'], incremental=True)
+        # 000001 被跳过（无API、无sleep），仅 600000 被采集
+        mock_fetch.assert_called_once_with('600000', min_date=None)
+        self.assertEqual(mock_sleep.call_count, 1)
+        self.assertEqual(skip, 1)
+        self.assertEqual(success, 1)
+        self.assertEqual(rows, 5)
+
+    @patch('quantia.job.stock_financial_data.time.sleep')
+    @patch('quantia.job.stock_financial_data.fetch_single_stock')
+    @patch('quantia.job.stock_financial_data._get_caught_up_codes')
+    def test_fetch_all_stocks_full_mode_no_skip(self, mock_caught, mock_fetch, mock_sleep):
+        """全量模式不应查询/跳过任何股票"""
+        from quantia.job.stock_financial_data import fetch_all_stocks
+        mock_fetch.return_value = 3
+        fetch_all_stocks(['000001', '600000'], incremental=False)
+        mock_caught.assert_not_called()
+        self.assertEqual(mock_fetch.call_count, 2)
+
+
 class TestFundamentalsIntegration(unittest.TestCase):
     """验证 fundamentals.py 真实数据加载与合成数据降级逻辑"""
 

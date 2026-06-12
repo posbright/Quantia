@@ -349,6 +349,54 @@ def get_existing_report_dates(code):
     return set()
 
 
+def _latest_expected_report_date(today=None):
+    """按A股法定披露截止日，返回'此刻应已披露'的最近报告期（保守取值，宁可多抓不漏抓）。
+
+    披露截止：年报(12/31)与一季报(3/31) -> 4/30；半年报(6/30) -> 8/31；三季报(9/30) -> 10/31。
+    采用月份粒度并在截止月之后才推进目标，避免在披露窗口内误判已追平。
+    """
+    from datetime import date as _date
+    d = today or _date.today()
+    y, m = d.year, d.month
+    if m <= 4:        # 1-4月：上年三季报已确定披露（年报/一季报尚在披露期）
+        return _date(y - 1, 9, 30)
+    elif m <= 8:      # 5-8月：年报+一季报已披露
+        return _date(y, 3, 31)
+    elif m <= 10:     # 9-10月：半年报已披露
+        return _date(y, 6, 30)
+    else:             # 11-12月：三季报已披露
+        return _date(y, 9, 30)
+
+
+def _get_caught_up_codes(field='revenue'):
+    """返回'最新报告期已达应披露期且 field 非空'的股票集合。
+
+    增量模式据此按整只股票跳过 API 调用，避免重复抓取已是最新且字段完整的股票。
+    判据取「每只股票的最新报告期」本身：最新期 < 应披露期、或最新期 field 为空者
+    均不纳入（会被照常采集），从而既不漏抓新披露/修订，又能自愈历史 NULL。
+
+    field 为内部常量（白名单校验），非外部输入。
+    """
+    if field not in ('revenue', 'rd_expense'):
+        raise ValueError(f"unsupported field: {field}")
+    target = _latest_expected_report_date()
+    table = TABLE_CN_STOCK_FINANCIAL['name']
+    if not mdb.checkTableIsExist(table):
+        return set()
+    try:
+        rows = mdb.executeSqlFetch(
+            f"SELECT t.`code` FROM "
+            f"(SELECT `code`, MAX(`report_date`) md FROM `{table}` GROUP BY `code`) t "
+            f"JOIN `{table}` f ON f.`code` = t.`code` AND f.`report_date` = t.md "
+            f"WHERE t.md >= %s AND f.`{field}` IS NOT NULL",
+            (target,)
+        )
+        return {r[0] for r in rows} if rows else set()
+    except Exception as e:
+        log.warning(f"查询已追平股票集合失败，将全量采集: {e}")
+        return set()
+
+
 def fetch_single_stock(code, incremental=False, min_date=None):
     """采集单只股票的财务数据
 
@@ -401,14 +449,8 @@ def fetch_single_stock(code, incremental=False, min_date=None):
         if c in _NUMERIC_FIELDS:
             df[c] = pd.to_numeric(df[c], errors='coerce')
 
-    # 增量模式：过滤掉已有报告期
-    if incremental:
-        existing = get_existing_report_dates(code)
-        if existing:
-            df = df[~df['report_date'].astype(str).isin(existing)]
-            if df.empty:
-                return 0
-
+    # 注：增量跳过在 fetch_all_stocks 层按"整只股票"进行（省去 API 调用）。
+    # 单只采集时总是 upsert 全部报告期，以回填历史 NULL 核心字段并捕获财报修订。
     rows = _clean_nan(df.to_dict(orient='records'))
     _upsert_batch(rows)
     return len(rows)
@@ -514,8 +556,10 @@ def _upsert_expense_batch(rows):
         raise
 
 
-def fetch_all_expenses(stock_codes, min_date=None):
-    """批量采集所有股票的费用明细数据
+def fetch_all_expenses(stock_codes, min_date=None, incremental=False):
+    """批量采集所有股票的费用明细数据（THS利润表）
+
+    增量模式：跳过"已追平至最近应披露报告期且研发费用非空"的股票（不发 API）。
 
     Returns:
         tuple: (成功数, 失败数, 跳过数, 更新总行数)
@@ -523,9 +567,20 @@ def fetch_all_expenses(stock_codes, min_date=None):
     total = len(stock_codes)
     success, fail, skip, total_rows = 0, 0, 0, 0
 
-    log.info(f"开始采集费用明细数据（THS利润表），共 {total} 只股票")
+    caught_up = _get_caught_up_codes('rd_expense') if incremental else set()
+    suffix = (f"（增量：已追平 {len(caught_up)} 只至 {_latest_expected_report_date()}，将跳过）"
+              if incremental else "")
+    log.info(f"开始采集费用明细数据（THS利润表），共 {total} 只股票{suffix}")
 
     for i, code in enumerate(stock_codes):
+        done = i + 1
+        if incremental and code in caught_up:
+            skip += 1
+            if done % 100 == 0 or done == total:
+                log.info(f"费用采集进度: {done}/{total} "
+                         f"(成功={success}, 跳过={skip}, 失败={fail}, 更新={total_rows}行)")
+            continue
+
         result = fetch_expense_data(code, min_date=min_date)
         if result < 0:
             fail += 1
@@ -535,7 +590,6 @@ def fetch_all_expenses(stock_codes, min_date=None):
             success += 1
             total_rows += result
 
-        done = i + 1
         if done % 100 == 0 or done == total:
             log.info(f"费用采集进度: {done}/{total} "
                      f"(成功={success}, 跳过={skip}, 失败={fail}, 更新={total_rows}行)")
@@ -550,17 +604,33 @@ def fetch_all_expenses(stock_codes, min_date=None):
 def fetch_all_stocks(stock_codes, incremental=False, min_date=None):
     """批量采集所有股票的财务数据
 
+    增量模式：仅跳过"已追平至最近应披露报告期且核心字段(营收)非空"的股票（不发 API），
+    其余股票照常采集；被采集的股票一律 upsert 全部报告期（回填历史 NULL、捕获修订）。
+
     Returns:
         tuple: (成功数, 失败数, 跳过数, 入库总行数)
     """
     total = len(stock_codes)
     success, fail, skip, total_rows = 0, 0, 0, 0
 
-    mode = '增量模式' if incremental else ('全量模式' if min_date is None else f'近{min_date}起')
+    caught_up = _get_caught_up_codes('revenue') if incremental else set()
+    if incremental:
+        mode = f'增量模式(已追平 {len(caught_up)} 只至 {_latest_expected_report_date()}，将跳过)'
+    else:
+        mode = '全量模式' if min_date is None else f'近{min_date}起'
     log.info(f"开始采集财务数据，共 {total} 只股票（{mode}）")
 
     for i, code in enumerate(stock_codes):
-        result = fetch_single_stock(code, incremental=incremental, min_date=min_date)
+        done = i + 1
+        # 整只跳过：已追平的股票不再发起 API 请求（也不 sleep）
+        if incremental and code in caught_up:
+            skip += 1
+            if done % 100 == 0 or done == total:
+                log.info(f"采集进度: {done}/{total} "
+                         f"(成功={success}, 跳过={skip}, 失败={fail}, 入库={total_rows}行)")
+            continue
+
+        result = fetch_single_stock(code, min_date=min_date)
         if result < 0:
             fail += 1
         elif result == 0:
@@ -570,12 +640,11 @@ def fetch_all_stocks(stock_codes, incremental=False, min_date=None):
             total_rows += result
 
         # 进度日志
-        done = i + 1
         if done % 100 == 0 or done == total:
             log.info(f"采集进度: {done}/{total} "
                      f"(成功={success}, 跳过={skip}, 失败={fail}, 入库={total_rows}行)")
 
-        # 每次API调用后休眠（即使失败/跳过，也已发起了请求）
+        # 每次API调用后休眠（已发起请求）
         time.sleep(SLEEP_PER_STOCK)
 
     log.info(f"财务数据采集完成: 成功={success}, 跳过={skip}, 失败={fail}, "
@@ -738,7 +807,7 @@ def main():
     # 4. 采集费用明细（THS利润表）
     if args.expenses or args.expenses_only:
         e_success, e_fail, e_skip, e_rows = fetch_all_expenses(
-            stock_codes, min_date=min_date)
+            stock_codes, min_date=min_date, incremental=args.incremental)
 
         log.info("=" * 60)
         log.info("费用明细采集完成:")
