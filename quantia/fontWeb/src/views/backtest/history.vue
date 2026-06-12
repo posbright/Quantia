@@ -121,10 +121,11 @@ const getRateClass = (val: any) => {
   if (val === null || val === undefined) return ''
   return Number(val) >= 0 ? 'text-up' : 'text-down'
 }
-// 出场模式文案：fixed=固定持仓 / rule_exit=规则退出 / 其他=策略卖点
+// 出场模式文案：fixed=固定持仓 / rule_exit=规则退出 / custom=自定义策略 / 其他=策略卖点
 const exitModeText = (row: any) => {
   if (row?.exit_mode === 'fixed') return `固定 ${row.hold_days} 日`
   if (row?.exit_mode === 'rule_exit') return '规则退出'
+  if (row?.exit_mode === 'custom') return '自定义策略'
   return '策略卖点'
 }
 

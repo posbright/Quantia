@@ -68,13 +68,39 @@ STRATEGY_LIST.append({
 })
 
 
+def _list_custom_strategies():
+    """读取用户自定义策略（cn_stock_strategy_code，非归档）→ 单股回测可选项。
+
+    返回 [{'name': 'custom_<id>', 'cn': <名称>, 'type': 'custom'}, ...]。
+    仅读 MySQL；表不存在 / 读取失败时返回空列表（不影响内置策略可用性）。
+    """
+    out = []
+    try:
+        if not mdb.checkTableIsExist('cn_stock_strategy_code'):
+            return out
+        rows = mdb.executeSqlFetch(
+            "SELECT id, name FROM cn_stock_strategy_code "
+            "WHERE (status IS NULL OR status != 'archived') ORDER BY id DESC")
+    except Exception:
+        logging.debug("读取自定义策略列表异常", exc_info=True)
+        return out
+    for r in rows or []:
+        sid = r[0]
+        name = (r[1] or '').strip() or f'自定义策略#{sid}'
+        out.append({'name': f'custom_{sid}', 'cn': name, 'type': 'custom'})
+    return out
+
+
 class GetBacktestConfigHandler(webBase.BaseHandler, ABC):
     """获取回测配置（可选周期、策略列表）"""
     def get(self):
         self.set_header('Content-Type', 'application/json;charset=UTF-8')
+        # 内置策略 + 用户自定义策略（custom_<id>）。自定义部分动态查询，
+        # 保证新建/归档后即时生效；查询失败时仅退化为内置列表。
+        strategies = list(STRATEGY_LIST) + _list_custom_strategies()
         response = {
             'periods': [{'value': k, 'label': v['label'], 'days': v['days']} for k, v in BACKTEST_PERIODS.items()],
-            'strategies': STRATEGY_LIST,
+            'strategies': strategies,
             'default_horizons': DEFAULT_HORIZONS,
             'max_table_horizon': MAX_TABLE_HORIZON,
         }
@@ -769,6 +795,27 @@ def _resolve_single_strategy(strategy_name):
     return None, None
 
 
+def _resolve_custom_strategy(strategy_key):
+    """解析自定义策略 custom_<id> → (strategy_id:int, name:str) 或 (None, None)。
+
+    仅读 cn_stock_strategy_code（非归档）。不存在 / 已归档 / 读取失败 → (None, None)。
+    """
+    try:
+        sid = int(str(strategy_key).replace('custom_', ''))
+    except (TypeError, ValueError):
+        return None, None
+    try:
+        rows = mdb.executeSqlFetch(
+            "SELECT name FROM cn_stock_strategy_code WHERE id=%s AND "
+            "(status IS NULL OR status != 'archived')", (sid,))
+    except Exception:
+        logging.debug("读取自定义策略名异常: id=%s", sid, exc_info=True)
+        return None, None
+    if not rows:
+        return None, None
+    return sid, ((rows[0][0] or '').strip() or f'自定义策略#{sid}')
+
+
 def _strategy_hit(strategy_func, stock, hist, d):
     """在日期 d 调用策略函数，命中返回 True。兼容需要 istop 的策略。"""
     try:
@@ -887,12 +934,86 @@ def _compute_single_sharpe(closed_trades):
     return round(sharpe, 2)
 
 
+def _load_single_hist(code, start_date_str, end_date_str):
+    """读取个股完整历史：缓存优先 + cn_stock_spot 兜底补全（修复 C）。
+
+    返回按日期升序的 DataFrame（date 为 datetime），无数据返回 None。
+    仅读 MySQL + cache/hist/，不发起外部 API（AGENTS.md 规则 1）。
+    内置路径与自定义路径共用，避免补全逻辑分叉。
+    """
+    hist = stf.read_stock_hist_from_cache(code, '19900101', '20991231')
+    # read_stock_hist_from_cache 仅在缓存文件"完全不存在"时才回退 spot，
+    # 文件存在但只有少量行（本地/新股/同步中断）时会静默产出空结果 → 这里主动补全。
+    if hist is None or len(hist) == 0 or not _cache_covers_range(hist, start_date_str, end_date_str):
+        spot_hist = stf._fallback_kline_from_spot(code, '19900101', '20991231')
+        if spot_hist is not None and len(spot_hist) > 0:
+            if hist is None or len(hist) == 0:
+                hist = spot_hist
+            else:
+                # 合并缓存与 spot，按日期去重（缓存为前复权优先，spot 补缺日）
+                hist = pd.concat([hist, spot_hist], ignore_index=True)
+                if not pd.api.types.is_datetime64_any_dtype(hist['date']):
+                    hist['date'] = pd.to_datetime(hist['date'])
+                hist = hist.drop_duplicates(subset=['date'], keep='first')
+    if hist is None or len(hist) == 0:
+        return None
+    hist = hist.copy()
+    if not pd.api.types.is_datetime64_any_dtype(hist['date']):
+        hist['date'] = pd.to_datetime(hist['date'])
+    hist = hist.sort_values('date').reset_index(drop=True)
+    return hist
+
+
+def _summarize_single_trades(trades):
+    """单股回测交易列表 → 汇总统计 dict（内置 / 自定义路径共用，保证口径一致）。
+
+    胜率/复利累计/夏普仅基于已平仓交易；rate 已含双边成本。
+    """
+    closed = [t for t in trades if t['status'] == 'closed']
+    open_trades = [t for t in trades if t['status'] == 'open']
+    win = [t for t in closed if t['rate'] > 0]
+    lose = [t for t in closed if t['rate'] <= 0]
+    closed_count = len(closed)
+    win_rate = round(100.0 * len(win) / closed_count, 2) if closed_count > 0 else None
+    # 复利累计收益
+    if closed:
+        comp = 1.0
+        for t in closed:
+            comp *= (1.0 + t['rate'] / 100.0)
+        cum_return = round((comp - 1.0) * 100.0, 2)
+        avg_return = round(sum(t['rate'] for t in closed) / closed_count, 2)
+        max_trade_return = round(max(t['rate'] for t in closed), 2)
+        max_trade_drawdown = round(min(t['rate'] for t in closed), 2)
+    else:
+        cum_return = None
+        avg_return = None
+        max_trade_return = None
+        max_trade_drawdown = None
+    sharpe = _compute_single_sharpe(closed)
+    return {
+        'trade_count': len(trades),
+        'closed_count': closed_count,
+        'open_count': len(open_trades),
+        'win_count': len(win),
+        'lose_count': len(lose),
+        'win_rate': win_rate,
+        'cum_return': cum_return,
+        'avg_return': avg_return,
+        'sharpe': sharpe,
+        'max_trade_return': max_trade_return,
+        'max_trade_drawdown': max_trade_drawdown,
+    }
+
+
 def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days=None, allow_overlap=False):
     """单股区间买卖点回测。返回含 kline / indicators / trades / summary 的 dict。"""
     if not code:
         return {"error": "缺少股票代码参数"}
     if not strategy:
         return {"error": "缺少策略参数"}
+    # 自定义策略（custom_<id>）走组合回测交易过滤法（方案 2），与内置 check() 路径解耦。
+    if str(strategy).startswith('custom_'):
+        return _run_single_custom_backtest(code, strategy, start_date_str, end_date_str)
     if _is_index_code(code):
         return {"error": "暂不支持指数回测，请输入个股代码"}
     if not start_date_str or not end_date_str:
@@ -920,28 +1041,10 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
         if strategy in _EVENT_STRATEGIES:
             exit_mode = 'rule_exit'
 
-    # 读取完整历史缓存（含区间前预热，供 MA250/长周期指标）
-    hist = stf.read_stock_hist_from_cache(code, '19900101', '20991231')
-    # 修复 C：缓存缺失或过薄时，从 cn_stock_spot 日线快照补全（仅读 MySQL，不发起外部 API）。
-    # read_stock_hist_from_cache 仅在缓存文件"完全不存在"时才回退 spot，
-    # 文件存在但只有少量行（本地/新股/同步中断）时会静默产出空结果。
-    if hist is None or len(hist) == 0 or not _cache_covers_range(hist, start_date_str, end_date_str):
-        spot_hist = stf._fallback_kline_from_spot(code, '19900101', '20991231')
-        if spot_hist is not None and len(spot_hist) > 0:
-            if hist is None or len(hist) == 0:
-                hist = spot_hist
-            else:
-                # 合并缓存与 spot，按日期去重（缓存为前复权优先，spot 补缺日）
-                hist = pd.concat([hist, spot_hist], ignore_index=True)
-                if not pd.api.types.is_datetime64_any_dtype(hist['date']):
-                    hist['date'] = pd.to_datetime(hist['date'])
-                hist = hist.drop_duplicates(subset=['date'], keep='first')
-    if hist is None or len(hist) == 0:
+    # 读取完整历史缓存（含区间前预热，供 MA250/长周期指标）+ spot 兜底补全（修复 C）
+    hist = _load_single_hist(code, start_date_str, end_date_str)
+    if hist is None:
         return {"error": f"股票 {code} 无缓存数据，请先执行数据获取"}
-    hist = hist.copy()
-    if not pd.api.types.is_datetime64_any_dtype(hist['date']):
-        hist['date'] = pd.to_datetime(hist['date'])
-    hist = hist.sort_values('date').reset_index(drop=True)
 
     stock_name = _get_stock_name(code)
     limit_ratio = _price_limit_ratio(code, stock_name)
@@ -1062,41 +1165,7 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
             held_until = n - 1
 
     # 汇总统计
-    closed = [t for t in trades if t['status'] == 'closed']
-    open_trades = [t for t in trades if t['status'] == 'open']
-    win = [t for t in closed if t['rate'] > 0]
-    lose = [t for t in closed if t['rate'] <= 0]
-    closed_count = len(closed)
-    win_rate = round(100.0 * len(win) / closed_count, 2) if closed_count > 0 else None
-    # 复利累计收益
-    if closed:
-        comp = 1.0
-        for t in closed:
-            comp *= (1.0 + t['rate'] / 100.0)
-        cum_return = round((comp - 1.0) * 100.0, 2)
-        avg_return = round(sum(t['rate'] for t in closed) / closed_count, 2)
-        max_trade_return = round(max(t['rate'] for t in closed), 2)
-        max_trade_drawdown = round(min(t['rate'] for t in closed), 2)
-    else:
-        cum_return = None
-        avg_return = None
-        max_trade_return = None
-        max_trade_drawdown = None
-    sharpe = _compute_single_sharpe(closed)
-
-    summary = {
-        'trade_count': len(trades),
-        'closed_count': closed_count,
-        'open_count': len(open_trades),
-        'win_count': len(win),
-        'lose_count': len(lose),
-        'win_rate': win_rate,
-        'cum_return': cum_return,
-        'avg_return': avg_return,
-        'sharpe': sharpe,
-        'max_trade_return': max_trade_return,
-        'max_trade_drawdown': max_trade_drawdown,
-    }
+    summary = _summarize_single_trades(trades)
 
     recommended = STRATEGY_OVERLAY_MAP.get(strategy, list(_DEFAULT_OVERLAY))
     kline, indicators = _build_kline_and_indicators(hist, recommended, list(_ALL_OVERLAYS))
@@ -1115,6 +1184,169 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
         'trades': trades,
         'summary': summary,
     }
+
+
+def _custom_code_match(trade_code, target_code):
+    """组合引擎交易 code 与目标股票代码比对（兼容带交易所前/后缀的写法）。"""
+    tc = str(trade_code or '').strip()
+    if not tc:
+        return False
+    if tc == target_code:
+        return True
+    # 提取 6 位数字部分（600000.XSHG / sh600000 / 600000 → 600000）
+    digits = ''.join(ch for ch in tc if ch.isdigit())
+    tgt_digits = ''.join(ch for ch in str(target_code) if ch.isdigit())
+    return bool(digits) and digits[-6:] == tgt_digits[-6:]
+
+
+def _run_single_custom_backtest(code, strategy, start_date_str, end_date_str, benchmark='000300'):
+    """自定义策略单股回测（方案 2：组合回测交易过滤法）。
+
+    复用 verify-center 的组合回测设施（_load_cached_custom_backtest /
+    _auto_run_custom_backtest），将该策略在区间内的真实组合交易过滤到目标股票，
+    按时间顺序配对成 round-trip 渲染到单股 K 线上。语义：
+    "这只股票在该组合策略下的真实买卖点"。仅读 MySQL + cache/hist/（规则 1），
+    不发起外部 API。该股在区间内未被策略选中时返回空交易 + 友好提示（非错误）。
+    """
+    if _is_index_code(code):
+        return {"error": "暂不支持指数回测，请输入个股代码"}
+    if not start_date_str or not end_date_str:
+        return {"error": "缺少回测区间参数"}
+
+    strategy_id, strategy_cn = _resolve_custom_strategy(strategy)
+    if strategy_id is None:
+        return {"error": f"自定义策略 {strategy} 不存在或已归档"}
+
+    # 区间规范化为 YYYY-MM-DD（组合回测缓存以该格式存储/比对）
+    def _fmt(d):
+        s = str(d).strip()
+        return s if '-' in s else f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    s_date, e_date = _fmt(start_date_str), _fmt(end_date_str)
+
+    # 获取组合回测全量交易（buy + sell）：优先缓存，缺失时自动跑一次再读
+    from quantia.web import verifyOptimizeHandler as voh
+    result, _src = voh._load_cached_custom_backtest(strategy_id, s_date, e_date, benchmark)
+    if result is None:
+        _, auto_err = voh._auto_run_custom_backtest(strategy_id, s_date, e_date, benchmark)
+        if auto_err:
+            return {"error": f"自定义策略回测失败：{auto_err}"}
+        result, _src = voh._load_cached_custom_backtest(strategy_id, s_date, e_date, benchmark)
+    all_trades = (result or {}).get('trades', []) or []
+
+    # 读取目标股票完整历史（缓存 + spot 兜底）并裁剪到区间末，供 K 线/指标 + 区间末持仓估值
+    hist = _load_single_hist(code, s_date, e_date)
+    if hist is None:
+        return {"error": f"股票 {code} 无缓存数据，请先执行数据获取"}
+    stock_name = _get_stock_name(code)
+    end_ts = pd.Timestamp(e_date)
+    start_ts = pd.Timestamp(s_date)
+    hist = hist[hist['date'] <= end_ts].reset_index(drop=True)
+    if hist.empty:
+        return {"error": "回测区间内无交易数据"}
+    dates_str = hist['date'].dt.strftime('%Y-%m-%d').tolist()
+    date_to_idx = {ds: i for i, ds in enumerate(dates_str)}
+
+    def _idx_for(dstr):
+        """交易日期 → hist 行号；精确命中优先，否则取首个 >= 的交易日。"""
+        i = date_to_idx.get(dstr)
+        if i is not None:
+            return i
+        for k, ds in enumerate(dates_str):
+            if ds >= dstr:
+                return k
+        return None
+
+    # 过滤目标股票交易，按日期升序，状态机配对 round-trip
+    code_trades = [t for t in all_trades if _custom_code_match(t.get('code'), code)]
+    code_trades.sort(key=lambda x: str(x.get('date', '')))
+
+    trades = []
+    no = 0
+    pos = None  # (buy_idx, buy_date_str, buy_price)
+    for t in code_trades:
+        direction = str(t.get('direction', '') or '')
+        dstr = str(t.get('date', '') or '')
+        if not dstr or dstr < s_date or dstr > e_date:
+            continue
+        try:
+            price = float(t.get('price', 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0:
+            continue
+        if direction == 'buy':
+            if pos is None:  # 已持仓时的加仓忽略，仅以首笔买入计入场
+                bi = _idx_for(dstr)
+                if bi is None:
+                    continue
+                pos = (bi, dates_str[bi], price)
+        elif direction == 'sell':
+            if pos is not None:  # 空仓时的卖出忽略
+                si = _idx_for(dstr)
+                if si is None:
+                    continue
+                bi, bdate, bprice = pos
+                raw_rate = round(100.0 * (price - bprice) / bprice, 2)
+                rate = round(raw_rate - ROUND_TRIP_COST_PCT, 2)
+                no += 1
+                trades.append({
+                    'no': no,
+                    'buy_date': bdate,
+                    'buy_price': round(bprice, 2),
+                    'sell_date': dates_str[si],
+                    'sell_price': round(price, 2),
+                    'hold_days': si - bi,
+                    'exit_reason': 'strategy_sell',
+                    'rate': rate,
+                    'raw_rate': raw_rate,
+                    'status': 'closed',
+                    'win': rate > 0,
+                })
+                pos = None
+    # 区间末仍持仓
+    if pos is not None:
+        bi, bdate, bprice = pos
+        last_close = float(hist.iloc[-1]['close'])
+        raw_rate = round(100.0 * (last_close - bprice) / bprice, 2)
+        rate = round(raw_rate - ROUND_TRIP_COST_PCT, 2)
+        no += 1
+        trades.append({
+            'no': no,
+            'buy_date': bdate,
+            'buy_price': round(bprice, 2),
+            'sell_date': None,
+            'sell_price': None,
+            'hold_days': (len(dates_str) - 1) - bi,
+            'exit_reason': 'interval_end',
+            'rate': rate,
+            'raw_rate': raw_rate,
+            'status': 'open',
+            'win': None,
+        })
+
+    summary = _summarize_single_trades(trades)
+    kline, indicators = _build_kline_and_indicators(hist, list(_DEFAULT_OVERLAY), list(_ALL_OVERLAYS))
+
+    payload = {
+        'code': code,
+        'name': stock_name,
+        'strategy': strategy,
+        'strategy_cn': strategy_cn,
+        'start_date': start_ts.strftime('%Y-%m-%d'),
+        'end_date': end_ts.strftime('%Y-%m-%d'),
+        'hold_days': None,
+        'exit_mode': 'custom',
+        'kline': kline,
+        'indicators': indicators,
+        'trades': trades,
+        'summary': summary,
+    }
+    if not trades:
+        payload['message'] = (
+            f'股票 {code} 在 {s_date} ~ {e_date} 区间内未被自定义策略「{strategy_cn}」'
+            f'选中买卖（该策略按其自身股票池/选股逻辑运作，可能从未持有此股）。'
+        )
+    return payload
 
 
 def _ensure_single_history_table():

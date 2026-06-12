@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onActivated, nextTick } from 'vue'
+import { ref, computed, onMounted, onActivated, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { QuestionFilled } from '@element-plus/icons-vue'
@@ -16,6 +16,12 @@ const strategies = ref<any[]>([])
 const loading = ref(false)
 const result = ref<any>(null)
 const chartRef = ref<InstanceType<typeof KlineBacktestChart> | null>(null)
+
+// 内置策略 / 用户自定义策略分组（下拉用 option-group 区分）
+const builtinStrategies = computed(() => strategies.value.filter((s: any) => s.type !== 'custom'))
+const customStrategies = computed(() => strategies.value.filter((s: any) => s.type === 'custom'))
+// 自定义策略走组合回测交易过滤法，不支持固定持仓 / 重叠开仓参数
+const isCustomStrategy = computed(() => String(form.value.strategy || '').startsWith('custom_'))
 
 const form = ref({
   code: '',
@@ -132,12 +138,14 @@ const exitReasonText = (r: string) => {
     stop_loss: '触发止损',
     take_profit: '触发止盈',
     max_hold: '最大持仓到期',
+    strategy_sell: '策略卖出',
   } as any)[r] || r || '—'
 }
-// 退出模式文案：fixed=固定持仓 / rule_exit=规则退出（止损止盈）/ strategy_signal=策略卖点
+// 退出模式文案：fixed=固定持仓 / rule_exit=规则退出（止损止盈）/ custom=自定义策略买卖点 / strategy_signal=策略卖点
 const exitModeText = (m: string, holdDays: any) => {
   if (m === 'fixed') return `固定持仓 ${holdDays} 日`
   if (m === 'rule_exit') return '规则退出（止损/止盈/最大持仓）'
+  if (m === 'custom') return '自定义策略买卖点（组合回测）'
   return '策略卖点出场'
 }
 
@@ -158,6 +166,7 @@ const avgSubText = () => {
   if (!result.value) return ''
   if (result.value.exit_mode === 'fixed') return `已平仓·持仓${result.value.hold_days}个交易日`
   if (result.value.exit_mode === 'rule_exit') return '已平仓·规则退出（止损/止盈）'
+  if (result.value.exit_mode === 'custom') return '已平仓·自定义策略买卖点'
   return '已平仓·策略卖点出场'
 }
 
@@ -192,7 +201,12 @@ const goHistory = () => {
         </el-form-item>
         <el-form-item label="选择策略">
           <el-select v-model="form.strategy" placeholder="请选择策略" filterable style="width: 220px">
-            <el-option v-for="s in strategies" :key="s.name" :label="s.cn" :value="s.name" />
+            <el-option-group label="内置策略">
+              <el-option v-for="s in builtinStrategies" :key="s.name" :label="s.cn" :value="s.name" />
+            </el-option-group>
+            <el-option-group v-if="customStrategies.length" label="用户自定义">
+              <el-option v-for="s in customStrategies" :key="s.name" :label="s.cn" :value="s.name" />
+            </el-option-group>
           </el-select>
         </el-form-item>
         <el-form-item label="回测区间">
@@ -204,13 +218,13 @@ const goHistory = () => {
         </el-form-item>
         <el-form-item label="持仓周期">
           <el-input-number v-model="form.hold_days" :min="1" :max="250" placeholder="留空=策略卖点"
-            controls-position="right" style="width: 160px" />
-          <span class="hint">留空按策略卖点出场</span>
+            controls-position="right" style="width: 160px" :disabled="isCustomStrategy" />
+          <span class="hint">{{ isCustomStrategy ? '自定义策略按组合回测买卖点' : '留空按策略卖点出场' }}</span>
         </el-form-item>
         <el-form-item label="允许重叠">
-          <el-switch v-model="form.allow_overlap" />
+          <el-switch v-model="form.allow_overlap" :disabled="isCustomStrategy" />
           <el-tooltip placement="top"
-            content="开启后：持仓尚未了结时若再次出现买入信号，会另开一笔新仓位（可同时持有多笔重叠仓位）。关闭（默认）：持仓期内的买入信号将被忽略，避免在同一波行情里重复开仓。">
+            content="开启后：持仓尚未了结时若再次出现买入信号，会另开一笔新仓位（可同时持有多笔重叠仓位）。关闭（默认）：持仓期内的买入信号将被忽略，避免在同一波行情里重复开仓。自定义策略由其自身买卖逻辑决定，此选项不适用。">
             <el-icon class="tip-icon"><QuestionFilled /></el-icon>
           </el-tooltip>
         </el-form-item>
@@ -227,6 +241,9 @@ const goHistory = () => {
     </el-card>
 
     <template v-if="result">
+      <!-- 自定义策略未选中该股的友好提示 -->
+      <el-alert v-if="result.message" :title="result.message" type="info" show-icon :closable="false"
+        style="margin-bottom: 12px" />
       <!-- 指标卡（对齐原型：7 张带副文案） -->
       <div class="metric-grid">
         <div class="metric-card">

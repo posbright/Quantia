@@ -374,6 +374,143 @@ class CacheFallbackTests(unittest.TestCase):
         self.assertEqual(len(res['kline']), 80)
 
 
+class CustomStrategyBacktestTests(unittest.TestCase):
+    """自定义策略单股回测（方案 2：组合回测交易过滤法）。仅 custom_* 走新分支，内置路径零回归。"""
+
+    def setUp(self):
+        self.full = _make_hist([10.0 + i * 0.1 for i in range(80)], start='2026-01-01')
+        self.end = self.full['date'].iloc[-1].strftime('%Y-%m-%d')
+        self.buy_date = self.full['date'].iloc[10].strftime('%Y-%m-%d')
+        self.sell_date = self.full['date'].iloc[20].strftime('%Y-%m-%d')
+        self.buy_price = float(self.full['close'].iloc[10])
+        self.sell_price = float(self.full['close'].iloc[20])
+
+    # ── code 匹配 ──────────────────────────────────────────────────────────
+    def test_custom_code_match_variants(self):
+        self.assertTrue(bh._custom_code_match('000001', '000001'))
+        self.assertTrue(bh._custom_code_match('000001.XSHE', '000001'))
+        self.assertTrue(bh._custom_code_match('sz000001', '000001'))
+        self.assertFalse(bh._custom_code_match('600519', '000001'))
+        self.assertFalse(bh._custom_code_match('', '000001'))
+        self.assertFalse(bh._custom_code_match(None, '000001'))
+
+    # ── 路由：custom_* 走自定义分支 ──────────────────────────────────────────
+    def test_custom_prefix_routes_to_custom_backtest(self):
+        with mock.patch.object(bh, '_run_single_custom_backtest',
+                               return_value={'exit_mode': 'custom', 'trades': []}) as m:
+            res = bh._run_single_backtest('000001', 'custom_5', '2026-01-01', '2026-05-30')
+        m.assert_called_once_with('000001', 'custom_5', '2026-01-01', '2026-05-30')
+        self.assertEqual(res['exit_mode'], 'custom')
+
+    def test_unknown_custom_strategy_returns_error(self):
+        with mock.patch.object(bh, '_resolve_custom_strategy', return_value=(None, None)):
+            res = bh._run_single_custom_backtest('000001', 'custom_999', '2026-01-01', self.end)
+        self.assertIn('error', res)
+        self.assertIn('不存在', res['error'])
+
+    # ── round-trip 配对 ─────────────────────────────────────────────────────
+    def _patch_custom(self, cached_result):
+        """patch 自定义路径依赖：策略解析 / 历史 / 指标 / 组合回测缓存。"""
+        return mock.patch.multiple(
+            bh,
+            _resolve_custom_strategy=mock.DEFAULT,
+            _load_single_hist=mock.DEFAULT,
+            _get_stock_name=mock.DEFAULT,
+        ), mock.patch('quantia.web.verifyOptimizeHandler._load_cached_custom_backtest',
+                      return_value=(cached_result, 'cache:1'))
+
+    def test_custom_pairs_buy_sell_round_trip(self):
+        result = {'status': 'completed', 'trades': [
+            {'direction': 'buy', 'date': self.buy_date, 'code': '000001', 'price': self.buy_price},
+            {'direction': 'sell', 'date': self.sell_date, 'code': '000001', 'price': self.sell_price},
+            # 其它股票的交易应被过滤
+            {'direction': 'buy', 'date': self.buy_date, 'code': '600519', 'price': 100.0},
+        ]}
+        m_multi, m_cache = self._patch_custom(result)
+        with m_multi as mocks, m_cache, \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=self.full):
+            mocks['_resolve_custom_strategy'].return_value = (5, '我的策略')
+            mocks['_load_single_hist'].return_value = self.full
+            mocks['_get_stock_name'].return_value = '平安银行'
+            res = bh._run_single_custom_backtest('000001', 'custom_5', '2026-01-01', self.end)
+        self.assertNotIn('error', res)
+        self.assertEqual(res['exit_mode'], 'custom')
+        self.assertEqual(res['strategy_cn'], '我的策略')
+        self.assertEqual(len(res['trades']), 1)
+        t = res['trades'][0]
+        self.assertEqual(t['status'], 'closed')
+        self.assertEqual(t['buy_date'], self.buy_date)
+        self.assertEqual(t['sell_date'], self.sell_date)
+        self.assertEqual(t['hold_days'], 10)
+        self.assertEqual(t['exit_reason'], 'strategy_sell')
+        self.assertGreater(t['rate'], 0)  # 上涨行情，扣费后仍盈利
+        self.assertEqual(len(res['kline']), 80)
+
+    def test_custom_open_position_at_interval_end(self):
+        result = {'status': 'completed', 'trades': [
+            {'direction': 'buy', 'date': self.buy_date, 'code': '000001', 'price': self.buy_price},
+        ]}
+        m_multi, m_cache = self._patch_custom(result)
+        with m_multi as mocks, m_cache, \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=self.full):
+            mocks['_resolve_custom_strategy'].return_value = (5, '我的策略')
+            mocks['_load_single_hist'].return_value = self.full
+            mocks['_get_stock_name'].return_value = '平安银行'
+            res = bh._run_single_custom_backtest('000001', 'custom_5', '2026-01-01', self.end)
+        self.assertEqual(len(res['trades']), 1)
+        t = res['trades'][0]
+        self.assertEqual(t['status'], 'open')
+        self.assertIsNone(t['sell_date'])
+        self.assertEqual(t['exit_reason'], 'interval_end')
+
+    def test_custom_no_trades_for_stock_returns_message(self):
+        result = {'status': 'completed', 'trades': [
+            {'direction': 'buy', 'date': self.buy_date, 'code': '600519', 'price': 100.0},
+        ]}
+        m_multi, m_cache = self._patch_custom(result)
+        with m_multi as mocks, m_cache, \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=self.full):
+            mocks['_resolve_custom_strategy'].return_value = (5, '我的策略')
+            mocks['_load_single_hist'].return_value = self.full
+            mocks['_get_stock_name'].return_value = '平安银行'
+            res = bh._run_single_custom_backtest('000001', 'custom_5', '2026-01-01', self.end)
+        self.assertNotIn('error', res)
+        self.assertEqual(res['trades'], [])
+        self.assertIn('message', res)
+        self.assertIn('未被', res['message'])
+        # 即使无交易，仍返回 K 线供前端展示
+        self.assertEqual(len(res['kline']), 80)
+
+    def test_custom_auto_run_when_cache_missing(self):
+        result = {'status': 'completed', 'trades': [
+            {'direction': 'buy', 'date': self.buy_date, 'code': '000001', 'price': self.buy_price},
+            {'direction': 'sell', 'date': self.sell_date, 'code': '000001', 'price': self.sell_price},
+        ]}
+        with mock.patch.object(bh, '_resolve_custom_strategy', return_value=(5, '我的策略')), \
+             mock.patch.object(bh, '_load_single_hist', return_value=self.full), \
+             mock.patch.object(bh, '_get_stock_name', return_value='平安银行'), \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=self.full), \
+             mock.patch('quantia.web.verifyOptimizeHandler._load_cached_custom_backtest',
+                        side_effect=[(None, None), (result, 'cache:1')]) as m_cache, \
+             mock.patch('quantia.web.verifyOptimizeHandler._auto_run_custom_backtest',
+                        return_value=([], None)) as m_auto:
+            res = bh._run_single_custom_backtest('000001', 'custom_5', '2026-01-01', self.end)
+        m_auto.assert_called_once()
+        self.assertEqual(m_cache.call_count, 2)
+        self.assertEqual(len(res['trades']), 1)
+        self.assertEqual(res['trades'][0]['status'], 'closed')
+
+    def test_custom_auto_run_failure_returns_error(self):
+        with mock.patch.object(bh, '_resolve_custom_strategy', return_value=(5, '我的策略')), \
+             mock.patch('quantia.web.verifyOptimizeHandler._load_cached_custom_backtest',
+                        return_value=(None, None)), \
+             mock.patch('quantia.web.verifyOptimizeHandler._auto_run_custom_backtest',
+                        return_value=([], '引擎编译失败')):
+            res = bh._run_single_custom_backtest('000001', 'custom_5', '2026-01-01', self.end)
+        self.assertIn('error', res)
+        self.assertIn('引擎编译失败', res['error'])
+
+
 class SingleBacktestHandlerTests(AsyncHTTPTestCase):
     def get_app(self):
         return Application([
