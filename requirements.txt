@@ -32,6 +32,7 @@ Logbook>=1.5.0
 # 数据解析
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
+pdfplumber>=0.11.0  # 年报 PDF 解析（专利/护城河数据采集依赖，缺失会导致 fetch_patent_data 全部失败）
 
 # JavaScript引擎（用于筹码计算）
 py_mini_racer>=0.6.0

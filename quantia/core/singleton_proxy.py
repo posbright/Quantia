@@ -50,6 +50,10 @@ PROXY_STALE_SECONDS = _cfg.get_int('QUANTIA_PROXY_STALE_SECONDS', 600)          
 PROXY_CACHE_MAX_AGE = _cfg.get_int('QUANTIA_PROXY_CACHE_MAX_AGE', 86400)         # 磁盘缓存有效期（秒）
 PROXY_TARGET_POOL_SIZE = _cfg.get_int('QUANTIA_PROXY_TARGET_POOL_SIZE', 15)      # 代理池目标保有量
 PROXY_EMERGENCY_COOLDOWN = _cfg.get_int('QUANTIA_PROXY_EMERGENCY_COOLDOWN', 30)  # 紧急补充冷却时间（秒）
+# ── 代理源质量评估 / 轮换（按"活跃度 + 存活率"动态择优，定期更换数据源） ──
+PROXY_SOURCE_EXPLORE_RATIO = _cfg.get_float('QUANTIA_PROXY_SOURCE_EXPLORE_RATIO', 0.3)  # 探索比例：每次抓取中用于"重新尝试/更换"数据源的占比
+PROXY_SOURCE_DECAY = _cfg.get_float('QUANTIA_PROXY_SOURCE_DECAY', 0.8)                   # 每次刷新对历史统计的衰减系数（越小遗忘越快，越易轮换）
+PROXY_SOURCE_MIN_SAMPLES = _cfg.get_int('QUANTIA_PROXY_SOURCE_MIN_SAMPLES', 20)         # 低于该验证样本数的源视为"待探索"，优先重新尝试
 
 
 class proxys(metaclass=singleton_type):
@@ -72,6 +76,13 @@ class proxys(metaclass=singleton_type):
         self._running = False
         self._refresh_thread = None
         self._initialized = False
+
+        # 代理源质量统计：{source_name: {"candidates", "validated", "passed", "attempts", "last_active"}}
+        #   candidates：累计抓到的候选数（活跃度）；validated：累计验证数；passed：累计验证通过数（存活率）
+        # 用于"按活跃度 + 存活率动态择优 / 定期更换免费代理数据源"
+        self._source_stats = {}
+        # 最近一次抓取的 候选代理 -> 来源 映射，用于把验证结果归因到具体数据源
+        self._fetch_source_map = {}
 
         # 同步加载（瞬间完成）：手动代理 + 磁盘缓存
         self._load_manual_proxies()
@@ -142,6 +153,19 @@ class proxys(metaclass=singleton_type):
                 return 0
             now = time.time()
             loaded = 0
+            # 恢复代理源质量统计（跨进程持久化：cron 每次新进程也能延续择优 / 轮换）
+            stats = cache.get('source_stats')
+            if isinstance(stats, dict):
+                self._source_stats = {
+                    name: {
+                        "candidates": float(s.get("candidates", 0) or 0),
+                        "validated": float(s.get("validated", 0) or 0),
+                        "passed": float(s.get("passed", 0) or 0),
+                        "attempts": int(s.get("attempts", 0) or 0),
+                        "last_active": float(s.get("last_active", 0) or 0),
+                    }
+                    for name, s in stats.items() if isinstance(s, dict)
+                }
             for proxy_url, info in cache.get('proxies', {}).items():
                 # 跳过过期缓存
                 last_verified = info.get('last_verified', 0)
@@ -173,13 +197,14 @@ class proxys(metaclass=singleton_type):
                     for p, info in self._pool.items()
                     if info["fail_count"] < PROXY_MAX_FAIL_COUNT and not info.get("manual", False)
                 }
-            if not available:
+                source_stats = {k: dict(v) for k, v in self._source_stats.items()}
+            if not available and not source_stats:
                 return
             os.makedirs(os.path.dirname(_PROXY_CACHE_FILE), exist_ok=True)
-            cache = {"saved_at": time.time(), "proxies": available}
+            cache = {"saved_at": time.time(), "proxies": available, "source_stats": source_stats}
             with open(_PROXY_CACHE_FILE, 'w', encoding='utf-8') as f:
                 json.dump(cache, f, indent=2)
-            logging.debug(f"代理池：已缓存 {len(available)} 个代理到磁盘")
+            logging.debug(f"代理池：已缓存 {len(available)} 个代理 / {len(source_stats)} 个源统计到磁盘")
         except Exception:
             logging.debug("代理池：保存磁盘缓存异常", exc_info=True)
 
@@ -313,6 +338,31 @@ class proxys(metaclass=singleton_type):
 
         return None
 
+    def get_https_proxy(self):
+        """返回一个支持 HTTPS 隧道的代理 URL（字符串），无可用时返回 None（直连）。
+
+        用于 HTTPS 接口（如东方财富 datacenter / 同花顺 / Google Patents），
+        这些接口经 HTTP-only 代理无法隧道转发，必须使用 https_ok 代理。
+        与 get_proxies 一样保留一定直连概率以分散来源、降低单一 IP 被限流的风险。
+        """
+        with self._lock:
+            https_proxies = [(p, info) for p, info in self._pool.items()
+                             if info["fail_count"] < PROXY_MAX_FAIL_COUNT and info.get("https_ok")]
+
+        if not https_proxies:
+            # 没有 HTTPS 代理可用：若池子整体也空了，触发紧急补充
+            if self.pool_size() == 0:
+                self._trigger_emergency_refresh()
+            return None
+
+        # 动态直连概率：HTTPS 代理较稀缺，池子越大越可放心使用代理
+        count = len(https_proxies)
+        direct_probability = 0.3 if count >= 5 else (0.5 if count >= PROXY_MIN_POOL_SIZE else 0.7)
+        if random.random() < direct_probability:
+            return None
+
+        return self._freshness_weighted_choice(https_proxies, time.time())
+
     def _freshness_weighted_choice(self, available_with_info, now):
         """加权随机选择：失败次数越少 + 验证时间越新 → 权重越高
 
@@ -423,32 +473,140 @@ class proxys(metaclass=singleton_type):
         ]
         return tier1, tier2
 
-    def _fetch_from_sources(self, num_sources=None):
-        """从代理源中随机选取 num_sources 个并发抓取，返回去重列表
+    def _source_score(self, name):
+        """计算代理源的"择优分数" = 平滑存活率 × 活跃度。
 
-        选取策略：
-        - num_sources=None: 全部源（仅在定时全量刷新时使用）
-        - num_sources=N: 先选满 Tier1，不足部分从 Tier2 随机补
-        - 早停机制：已获取足够候选时不再等未完成的慢源
+        - 平滑存活率：(passed + 1) / (validated + 2)（贝叶斯平滑，避免小样本极端值）
+        - 活跃度：最近仍能抓到候选（last_active 近、candidates>0）→ 1.0，否则衰减
+        样本不足（validated < PROXY_SOURCE_MIN_SAMPLES）的源返回 None，按"待探索"处理。
+        """
+        s = self._source_stats.get(name)
+        if not s:
+            return None
+        validated = s.get("validated", 0)
+        if validated < PROXY_SOURCE_MIN_SAMPLES:
+            return None
+        passed = s.get("passed", 0)
+        survival = (passed + 1.0) / (validated + 2.0)
+        # 活跃度：近 24h 有产出权重高；越久没产出权重越低
+        age = time.time() - s.get("last_active", 0)
+        if age < 6 * 3600:
+            activity = 1.0
+        elif age < 24 * 3600:
+            activity = 0.7
+        else:
+            activity = 0.4
+        if s.get("candidates", 0) <= 0:
+            activity *= 0.5
+        return survival * activity
 
-        每个代理源独立抓取，单个源失败不影响其他源。
+    def _select_sources_by_quality(self, num_sources):
+        """按"活跃度 + 存活率"动态择优选取数据源，并保留探索/轮换名额。
+
+        机制（实现"每隔一段时间重新更换免费代理数据源"）：
+        - 利用（exploitation）：选取历史存活率高、近期活跃的源（占大头）
+        - 探索（exploration）：按 PROXY_SOURCE_EXPLORE_RATIO 比例随机选取
+          "样本不足/久未尝试/低分"的源重新试探，使数据源持续轮换、择优更新
+        - 配合 _refresh_cycle 中对统计的指数衰减（PROXY_SOURCE_DECAY），
+          旧的优胜源分数会随时间回落，从而被定期重新评估、替换。
         """
         tier1, tier2 = self._get_all_fetchers()
         all_fetchers = tier1 + tier2
+        if num_sources is None or num_sources >= len(all_fetchers):
+            return all_fetchers
 
-        if num_sources is not None and num_sources < len(all_fetchers):
-            # 优先选 Tier1，不足部分从 Tier2 随机补充
-            selected = list(tier1)
-            if num_sources > len(tier1):
-                remaining = num_sources - len(tier1)
-                selected += random.sample(tier2, min(remaining, len(tier2)))
-            else:
-                selected = random.sample(tier1, num_sources)
-            fetchers = selected
+        with self._lock:
+            scored = []      # [(score, name, fetcher)] 已有足够样本的源
+            unscored = []    # [(name, fetcher)] 待探索的源（样本不足/从未尝试）
+            last_active = {}
+            for name, fn in all_fetchers:
+                sc = self._source_score(name)
+                if sc is None:
+                    unscored.append((name, fn))
+                else:
+                    scored.append((sc, name, fn))
+                last_active[name] = self._source_stats.get(name, {}).get("last_active", 0)
+
+        explore_n = max(1, int(round(num_sources * PROXY_SOURCE_EXPLORE_RATIO)))
+        exploit_n = max(0, num_sources - explore_n)
+
+        # 利用：取历史分数最高的源
+        scored.sort(key=lambda x: x[0], reverse=True)
+        selected = [(name, fn) for _, name, fn in scored[:exploit_n]]
+
+        # 探索池：优先"待探索"源，其次"近期最久未尝试"的低分源（实现轮换）
+        explore_pool = list(unscored)
+        leftover_scored = [(name, fn) for _, name, fn in scored[exploit_n:]]
+        leftover_scored.sort(key=lambda nf: last_active.get(nf[0], 0))  # 越久没尝试越靠前
+        random.shuffle(explore_pool)
+        explore_pool += leftover_scored
+
+        for item in explore_pool:
+            if len(selected) >= num_sources:
+                break
+            if item not in selected:
+                selected.append(item)
+
+        # 兜底：仍不足则从全部源随机补齐
+        if len(selected) < num_sources:
+            remaining = [f for f in all_fetchers if f not in selected]
+            random.shuffle(remaining)
+            selected += remaining[:num_sources - len(selected)]
+
+        return selected[:num_sources]
+
+    def _credit_source_validation(self, batch, verified):
+        """把一批候选的验证结果归因到其来源，更新 validated / passed 统计（存活率）。"""
+        if not batch:
+            return
+        fmap = self._fetch_source_map
+        if not fmap:
+            return
+        verified_set = set(verified or [])
+        with self._lock:
+            for proxy in batch:
+                name = fmap.get(proxy)
+                if not name:
+                    continue
+                st = self._source_stats.setdefault(
+                    name, {"candidates": 0.0, "validated": 0.0, "passed": 0.0,
+                           "attempts": 0, "last_active": 0.0})
+                st["validated"] = st.get("validated", 0) + 1
+                if proxy in verified_set:
+                    st["passed"] = st.get("passed", 0) + 1
+
+    def _decay_source_stats(self):
+        """对代理源累计统计做指数衰减，使评分随时间"遗忘"，便于定期重新评估/轮换数据源。"""
+        if PROXY_SOURCE_DECAY >= 1.0:
+            return
+        with self._lock:
+            for st in self._source_stats.values():
+                for k in ("candidates", "validated", "passed"):
+                    st[k] = st.get(k, 0) * PROXY_SOURCE_DECAY
+                    if st[k] < 0.01:
+                        st[k] = 0.0
+
+    def _fetch_from_sources(self, num_sources=None):
+        """从代理源中选取 num_sources 个并发抓取，返回去重列表。
+
+        选取策略：
+        - num_sources=None: 全部源（仅在定时全量刷新时使用）
+        - num_sources=N: 按"活跃度 + 存活率"动态择优 + 探索轮换（见 _select_sources_by_quality）
+        - 早停机制：已获取足够候选时不再等未完成的慢源
+
+        同时记录 候选->来源 映射与每源抓取量（活跃度），供后续验证结果归因。
+        每个代理源独立抓取，单个源失败不影响其他源。
+        """
+        if num_sources is not None:
+            fetchers = self._select_sources_by_quality(num_sources)
         else:
-            fetchers = all_fetchers
+            tier1, tier2 = self._get_all_fetchers()
+            fetchers = tier1 + tier2
 
         candidates = set()
+        fetch_source_map = {}   # proxy -> 首个贡献它的来源
+        per_source_new = {}     # name -> 本次新增候选数
+        selected_names = [name for name, _ in fetchers]
         # 排除已在池中的代理（避免重复验证）
         with self._lock:
             existing = set(self._pool.keys())
@@ -463,8 +621,11 @@ class proxys(metaclass=singleton_type):
                 try:
                     proxies = future.result()
                     if proxies:
-                        new_proxies = [p for p in proxies if p not in existing]
+                        new_proxies = [p for p in proxies if p not in existing and p not in candidates]
                         candidates.update(new_proxies)
+                        for p in new_proxies:
+                            fetch_source_map.setdefault(p, name)
+                        per_source_new[name] = per_source_new.get(name, 0) + len(new_proxies)
                         logging.debug(f"代理池：从 {name} 获取 {len(proxies)} 个候选（新 {len(new_proxies)} 个）")
                 except Exception as e:
                     logging.debug(f"代理池：从 {name} 获取失败: {e}")
@@ -475,6 +636,20 @@ class proxys(metaclass=singleton_type):
                     for f in future_to_name:
                         f.cancel()
                     break
+
+        # 更新来源活跃度统计（candidates / attempts / last_active），并记录归因映射
+        now = time.time()
+        with self._lock:
+            self._fetch_source_map = fetch_source_map
+            for name in selected_names:
+                st = self._source_stats.setdefault(
+                    name, {"candidates": 0.0, "validated": 0.0, "passed": 0.0,
+                           "attempts": 0, "last_active": 0.0})
+                st["attempts"] = st.get("attempts", 0) + 1
+                new_n = per_source_new.get(name, 0)
+                if new_n > 0:
+                    st["candidates"] = st.get("candidates", 0) + new_n
+                    st["last_active"] = now
 
         logging.info(f"代理池：从 {len(fetchers)} 个来源获取 {len(candidates)} 个候选代理")
         return list(candidates)
@@ -817,6 +992,9 @@ class proxys(metaclass=singleton_type):
                 except Exception:
                     logging.debug(f"代理池：验证代理线程异常：{proxy}", exc_info=True)
 
+        # 把验证结果归因到数据源（更新各源存活率统计）
+        self._credit_source_validation(new_candidates, verified)
+
         if https_count > 0:
             logging.info(f"代理池：其中 {https_count} 个支持 HTTPS 隧道")
         return verified
@@ -889,6 +1067,10 @@ class proxys(metaclass=singleton_type):
         - pool_size < PROXY_TARGET_POOL_SIZE (15): 常规，选4个源适量补充
         - pool_size >= PROXY_TARGET_POOL_SIZE: 健康，不补充
         """
+        # Step 0: 对代理源历史统计做指数衰减（实现"定期重新评估 / 更换数据源"）
+        #   旧的优胜源分数随时间回落，配合 _select_sources_by_quality 的探索名额被重新评估、替换
+        self._decay_source_stats()
+
         # Step 1: 重新验证现有代理
         self._revalidate_existing()
 
@@ -937,3 +1119,48 @@ class proxys(metaclass=singleton_type):
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
         ]
         return {"User-Agent": random.choice(uas)}
+
+
+# ══════════════════════════════════════════════════════════════
+# 通用代理请求封装：供各采集器（巨潮 / Google Patents 等）复用
+# ══════════════════════════════════════════════════════════════
+
+def proxied_request(method, url, *, max_attempts=3, **kwargs):
+    """通过代理池发起 HTTP(S) 请求，失败自动更换代理重试，最终回退直连。
+
+    - 自动从代理池取代理：HTTPS URL 取 https_ok 代理（get_https_proxy），
+      HTTP URL 用 get_proxies（HTTP-only 代理即可）。两者均保留一定直连概率，
+      以分散来源、降低单一出口 IP 被限流的风险。
+    - 请求传输异常（连接/超时等）时上报 report_failure 并更换代理重试；
+      成功则 report_success。注意：HTTP 状态码（如 429）由调用方判断，
+      本函数仅在抛出传输异常时才轮换。
+    - 重试耗尽后做一次直连兜底，尽量不因代理问题导致整体失败。
+
+    返回 requests.Response；全部失败则抛出最后一次异常。
+    用法：proxied_request('get', url, headers=..., timeout=..., stream=True)
+    """
+    pool = proxys()
+    is_https = str(url).lower().startswith('https')
+    last_exc = None
+    for _ in range(max(1, max_attempts)):
+        if is_https:
+            p = pool.get_https_proxy()
+            current = {"http": p, "https": p} if p else None
+        else:
+            current = pool.get_proxies()
+        proxy_url = current.get("http") if current else None
+        try:
+            resp = requests.request(method, url, proxies=current, **kwargs)
+            if proxy_url:
+                pool.report_success(proxy_url)
+            return resp
+        except Exception as exc:  # 传输层异常：换代理重试
+            last_exc = exc
+            if proxy_url:
+                pool.report_failure(proxy_url)
+            continue
+    # 兜底：直连再试一次
+    try:
+        return requests.request(method, url, **kwargs)
+    except Exception as exc:
+        raise last_exc or exc

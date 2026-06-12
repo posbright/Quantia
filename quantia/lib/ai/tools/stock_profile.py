@@ -290,24 +290,33 @@ def _query_kline_30d(code: str) -> List[Dict[str, Any]]:
 
 
 def _query_financials(code: str) -> Dict[str, Any]:
-    """最新一期财务数据：费用明细 + 关键增长率。"""
+    """最新一期财务数据：费用明细 + 关键增长率。
+
+    健壮性：部分股票的最新报告期可能仅有费用明细（核心字段为空，
+    源于费用源与核心源采集进度不一致），此时优先回退到最近一期
+    “含核心财务字段（营收/净利/EPS/ROE）”的报告期，避免整份财务
+    分析因最新一行核心字段缺失而显示为空；若确无任何含核心字段的
+    报告期，再回退到最新一行（至少展示已有的费用数据）。
+    """
     from quantia.lib.database import executeSqlFetch
-    # 先尝试带费用列的查询，若列不存在则降级
-    sql_full = """
-        SELECT report_date, revenue, net_profit, revenue_yoy, net_profit_yoy,
-               roe, roa, gross_margin, net_profit_margin, asset_liability_ratio,
-               rd_expense, admin_expense, selling_expense, financial_expense, rd_ratio
-        FROM cn_stock_financial
-        WHERE code = %s
-        ORDER BY report_date DESC LIMIT 1
-    """
-    sql_basic = """
-        SELECT report_date, revenue, net_profit, revenue_yoy, net_profit_yoy,
-               roe, roa, gross_margin, net_profit_margin, asset_liability_ratio
-        FROM cn_stock_financial
-        WHERE code = %s
-        ORDER BY report_date DESC LIMIT 1
-    """
+    # 核心字段过滤：优先取含 营收/净利/ROE 的报告期
+    core_cond = '(revenue IS NOT NULL OR net_profit IS NOT NULL OR roe IS NOT NULL)'
+    cols_full = (
+        'report_date, revenue, net_profit, revenue_yoy, net_profit_yoy, '
+        'roe, roa, gross_margin, net_profit_margin, asset_liability_ratio, '
+        'rd_expense, admin_expense, selling_expense, financial_expense, rd_ratio'
+    )
+    cols_basic = (
+        'report_date, revenue, net_profit, revenue_yoy, net_profit_yoy, '
+        'roe, roa, gross_margin, net_profit_margin, asset_liability_ratio'
+    )
+
+    def _sql(cols: str, cond: str) -> str:
+        return (
+            f'SELECT {cols} FROM cn_stock_financial '
+            f'WHERE code = %s{cond} ORDER BY report_date DESC LIMIT 1'
+        )
+
     keys_full = ['report_date', 'revenue', 'net_profit', 'revenue_yoy', 'net_profit_yoy',
                  'roe', 'roa', 'gross_margin', 'net_profit_margin', 'asset_liability_ratio',
                  'rd_expense', 'admin_expense', 'selling_expense', 'financial_expense', 'rd_ratio']
@@ -333,17 +342,21 @@ def _query_financials(code: str) -> Dict[str, Any]:
         'rd_ratio': '研发费用率',
     }
 
-    rows = executeSqlFetch(sql_full, (code,))
-    if rows:
-        d = _row_to_dict(rows[0], keys_full)
-        d['_字段说明'] = {k: v for k, v in _FIELD_CN.items() if k in d}
-        return d
-    # 降级：可能是列不存在（1054错误）或无数据
-    rows = executeSqlFetch(sql_basic, (code,))
-    if rows:
-        d = _row_to_dict(rows[0], keys_basic)
-        d['_字段说明'] = {k: v for k, v in _FIELD_CN.items() if k in d}
-        return d
+    # 依次尝试：完整列(含核心) → 完整列(最新任意) → 基础列(含核心) → 基础列(最新任意)。
+    # 含费用列的查询若因列不存在抛错（旧表结构 1054），executeSqlFetch 返回空，
+    # 自动降级到基础列查询。
+    attempts = [
+        (_sql(cols_full, f' AND {core_cond}'), keys_full),
+        (_sql(cols_full, ''), keys_full),
+        (_sql(cols_basic, f' AND {core_cond}'), keys_basic),
+        (_sql(cols_basic, ''), keys_basic),
+    ]
+    for sql, keys in attempts:
+        rows = executeSqlFetch(sql, (code,))
+        if rows:
+            d = _row_to_dict(rows[0], keys)
+            d['_字段说明'] = {k: v for k, v in _FIELD_CN.items() if k in d}
+            return d
     return {}
 
 

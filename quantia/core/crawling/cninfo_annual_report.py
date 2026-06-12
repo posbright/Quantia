@@ -28,6 +28,8 @@ from typing import Dict, List, Optional
 
 import requests
 
+from quantia.core.singleton_proxy import proxied_request
+
 _logger = logging.getLogger(__name__)
 
 _QUERY_URL = 'http://www.cninfo.com.cn/new/hisAnnouncement/query'
@@ -80,7 +82,7 @@ def _load_orgid_map() -> Dict[str, str]:
 
     for market, url in _STOCK_LIST_URLS.items():
         try:
-            resp = requests.get(url, headers=_HEADERS, timeout=15)
+            resp = proxied_request('get', url, headers=_HEADERS, timeout=15)
             if resp.status_code != 200:
                 _logger.warning('[cninfo] 获取 %s 股票列表失败: HTTP %s', market, resp.status_code)
                 continue
@@ -163,7 +165,7 @@ def search_annual_reports(
             'isHLtitle': 'true',
         }
         try:
-            resp = requests.post(_QUERY_URL, data=params, headers=_HEADERS, timeout=15)
+            resp = proxied_request('post', _QUERY_URL, data=params, headers=_HEADERS, timeout=15)
             if resp.status_code != 200:
                 _logger.warning('[cninfo] 公告查询 HTTP %s code=%s', resp.status_code, code)
                 break
@@ -258,7 +260,7 @@ def download_annual_report(
     pdf_url = _STATIC_BASE + chosen['adjunct_url'].lstrip('/')
     try:
         time.sleep(_REQUEST_INTERVAL)
-        resp = requests.get(pdf_url, headers=_HEADERS, timeout=60, stream=True)
+        resp = proxied_request('get', pdf_url, headers=_HEADERS, timeout=60, stream=True)
         if resp.status_code != 200:
             _logger.warning('[cninfo] 下载 PDF HTTP %s url=%s', resp.status_code, pdf_url)
             return None

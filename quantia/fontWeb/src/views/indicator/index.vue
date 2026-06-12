@@ -1027,7 +1027,12 @@ onUnmounted(() => {
 
     <!-- 财务分析 -->
     <div class="section-card" v-loading="financialLoading">
-      <div class="section-title">财务分析</div>
+      <div class="section-title">
+        财务分析
+        <span v-if="financialData?.latest?.report_name || financialData?.latest?.report_date" class="report-period-badge">
+          报告期：{{ financialData.latest.report_name || financialData.latest.report_date }}
+        </span>
+      </div>
       <div v-if="financialData?.latest || financialData?.valuation" class="financial-content">
         <!-- 估值与核心指标网格 -->
         <div class="financial-grid">
@@ -1283,6 +1288,15 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+.report-period-badge {
+  font-size: 12px;
+  font-weight: 500;
+  color: #409eff;
+  background: #ecf5ff;
+  border: 1px solid #d9ecff;
+  border-radius: 4px;
+  padding: 2px 8px;
 }
 .financial-grid {
   display: grid;

@@ -193,6 +193,7 @@ def search_patents(
 
     try:
         import requests  # 懒加载
+        from quantia.core.singleton_proxy import proxied_request  # 懒加载：经代理池请求，降低限流风险
     except ImportError:  # pragma: no cover
         _logger.warning('[gpatents] requests 不可用, 跳过')
         return []
@@ -201,7 +202,7 @@ def search_patents(
     params = {'url': f'q={query}&num=100', 'exp': ''}
     patents: List[Dict[str, Any]] = []
     try:
-        resp = requests.get(_XHR_URL, params=params, headers=_HEADERS, timeout=20)
+        resp = proxied_request('get', _XHR_URL, params=params, headers=_HEADERS, timeout=20)
         if resp.status_code != 200:
             _logger.warning('[gpatents] %s HTTP %s', assignee, resp.status_code)
             return []

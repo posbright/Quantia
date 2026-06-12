@@ -150,6 +150,49 @@ def _retry_call(fn, name="", retries=RETRY_TIMES, sleep=RETRY_SLEEP):
                 raise
 
 
+def _ak_proxied(fn):
+    """通过代理池执行一次 akshare 调用，降低东方财富/同花顺限流风险。
+
+    akshare 的财务接口内部用裸 requests.get（HTTPS），不读取 ak.set_proxies，
+    但 requests 默认 trust_env=True，会读取环境变量 HTTP(S)_PROXY。
+    因此这里临时设置环境变量代理，调用结束后恢复。
+
+    - 从代理池取一个支持 HTTPS 隧道的代理（无可用则直连）；
+    - 调用成功/失败分别上报 report_success / report_failure，供代理池择优；
+    - 异常向上抛出，交由 _retry_call 重试（每次重试会换新代理）。
+
+    注意：环境变量代理是进程级、非线程安全的。本采集任务为独立单进程、
+    单只股票串行执行，故安全；勿在多线程并发抓取中复用本函数。
+    """
+    try:
+        from quantia.core.singleton_proxy import proxys
+    except Exception:
+        return fn()
+
+    pool = proxys()
+    proxy_url = pool.get_https_proxy()
+    if not proxy_url:
+        return fn()  # 无 HTTPS 代理可用 → 直连
+
+    _saved = {k: os.environ.get(k) for k in
+              ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")}
+    try:
+        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            os.environ[k] = proxy_url
+        result = fn()
+        pool.report_success(proxy_url)
+        return result
+    except Exception:
+        pool.report_failure(proxy_url)
+        raise
+    finally:
+        for k, v in _saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def _clean_nan(rows):
     """将 dict 列表中的 float('nan') 替换为 None（MySQL 不接受 NaN）"""
     cleaned = []
@@ -320,8 +363,9 @@ def fetch_single_stock(code, incremental=False, min_date=None):
     secucode = _code_to_secucode(code)
     try:
         df = _retry_call(
-            lambda: ak.stock_financial_analysis_indicator_em(
-                symbol=secucode, indicator="按报告期"),
+            lambda: _ak_proxied(
+                lambda: ak.stock_financial_analysis_indicator_em(
+                    symbol=secucode, indicator="按报告期")),
             name=f"em_{secucode}"
         )
         if df is None or df.empty:
@@ -382,7 +426,8 @@ def fetch_expense_data(code, min_date=None):
     """
     try:
         df = _retry_call(
-            lambda: ak.stock_financial_benefit_ths(symbol=code, indicator="按报告期"),
+            lambda: _ak_proxied(
+                lambda: ak.stock_financial_benefit_ths(symbol=code, indicator="按报告期")),
             name=f"ths_benefit_{code}"
         )
         if df is None or df.empty:
