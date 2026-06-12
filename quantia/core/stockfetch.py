@@ -2715,32 +2715,55 @@ def _backfill_from_spot(code, date_end_yyyymmdd):
 
 def _fallback_kline_from_spot(code, date_start, date_end):
     """
-    当缓存文件不存在时，从 cn_stock_spot 表读取全部日线行情构建 K线 DataFrame。
+    当缓存文件不存在时，从已入库的每日快照表读取日线行情构建 K线 DataFrame。
 
-    不发起外部 API 请求，仅从已入库的 cn_stock_spot 数据中提取。
-    列名映射与 _backfill_from_spot 一致。
+    不发起外部 API 请求，仅从已入库数据中提取。优先读 cn_stock_spot（A股）；
+    若无数据（如 ETF 代码 159xxx/51xxx 不在 cn_stock_spot），回退读 cn_etf_spot。
+    两表 volume 均为"股"，统一 /100 后由 _normalize_volume_to_shares 按
+    amount/(close*volume) 比值还原为股（与 cn_stock_spot 路径一致）。
+    cn_etf_spot 无 amplitude 列，故 ETF 分支不取该列。
     """
     try:
         import quantia.lib.database as mdb
-        if not mdb.checkTableIsExist('cn_stock_spot'):
-            return None
         date_start_dash = _to_dash_date(date_start) if len(date_start) == 8 else date_start
         date_end_dash = _to_dash_date(date_end) if len(date_end) == 8 else date_end
-        sql = (
-            "SELECT `date`, `new_price` AS `close`, `open_price` AS `open`, "
-            "`high_price` AS `high`, `low_price` AS `low`, "
-            "`volume` / 100 AS `volume`, `deal_amount` AS `amount`, "
-            "`amplitude`, `change_rate` AS `quote_change`, "
-            "`ups_downs`, `turnoverrate` AS `turnover` "
-            "FROM `cn_stock_spot` WHERE `code` = %s AND `date` >= %s AND `date` <= %s "
-            "ORDER BY `date`"
-        )
-        df = pd.read_sql(sql, mdb.engine(), params=(code, date_start_dash, date_end_dash))
-        if df is not None and len(df) > 0:
-            df['date'] = pd.to_datetime(df['date'])
-            logging.debug(f"_fallback_kline_from_spot: {code} 从 cn_stock_spot 读取 {len(df)} 行 "
-                          f"({date_start_dash}~{date_end_dash})")
-            return df
+
+        # 1) A股快照
+        if mdb.checkTableIsExist('cn_stock_spot'):
+            sql = (
+                "SELECT `date`, `new_price` AS `close`, `open_price` AS `open`, "
+                "`high_price` AS `high`, `low_price` AS `low`, "
+                "`volume` / 100 AS `volume`, `deal_amount` AS `amount`, "
+                "`amplitude`, `change_rate` AS `quote_change`, "
+                "`ups_downs`, `turnoverrate` AS `turnover` "
+                "FROM `cn_stock_spot` WHERE `code` = %s AND `date` >= %s AND `date` <= %s "
+                "ORDER BY `date`"
+            )
+            df = pd.read_sql(sql, mdb.engine(), params=(code, date_start_dash, date_end_dash))
+            if df is not None and len(df) > 0:
+                df['date'] = pd.to_datetime(df['date'])
+                logging.debug(f"_fallback_kline_from_spot: {code} 从 cn_stock_spot 读取 {len(df)} 行 "
+                              f"({date_start_dash}~{date_end_dash})")
+                return df
+
+        # 2) ETF 快照（cn_etf_spot 无 amplitude 列）
+        if mdb.checkTableIsExist('cn_etf_spot'):
+            sql_etf = (
+                "SELECT `date`, `new_price` AS `close`, `open_price` AS `open`, "
+                "`high_price` AS `high`, `low_price` AS `low`, "
+                "`volume` / 100 AS `volume`, `deal_amount` AS `amount`, "
+                "`change_rate` AS `quote_change`, "
+                "`ups_downs`, `turnoverrate` AS `turnover` "
+                "FROM `cn_etf_spot` WHERE `code` = %s AND `date` >= %s AND `date` <= %s "
+                "AND `new_price` > 0 "
+                "ORDER BY `date`"
+            )
+            df_etf = pd.read_sql(sql_etf, mdb.engine(), params=(code, date_start_dash, date_end_dash))
+            if df_etf is not None and len(df_etf) > 0:
+                df_etf['date'] = pd.to_datetime(df_etf['date'])
+                logging.debug(f"_fallback_kline_from_spot: {code} 从 cn_etf_spot 读取 {len(df_etf)} 行 "
+                              f"({date_start_dash}~{date_end_dash})")
+                return df_etf
     except Exception as e:
         logging.debug(f"_fallback_kline_from_spot 异常：{code} - {e}")
     return None
