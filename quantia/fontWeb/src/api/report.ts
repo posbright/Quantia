@@ -105,6 +105,8 @@ export interface StockFallbackData {
     revenue?: number
     roe?: number
     gross_margin?: number
+    // 逐字段回退时，记录非最新报告期取值的字段及其实际所属报告期
+    value_periods?: Record<string, string>
   }
 }
 

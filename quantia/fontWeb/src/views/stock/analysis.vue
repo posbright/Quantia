@@ -186,6 +186,42 @@
             </span>
           </div>
         </div>
+        <div v-if="fallbackData.financials" class="fallback-section">
+          <h4>
+            📋 财务面
+            <span v-if="fallbackData.financials.report_date" class="fin-period">报告期 {{ fallbackData.financials.report_date }}</span>
+          </h4>
+          <div class="fallback-metrics">
+            <div v-if="fallbackData.financials.revenue != null" class="metric-item">
+              <span class="metric-label">营业收入 <em v-if="fieldAsOf('revenue')" class="as-of">{{ fieldAsOf('revenue') }}</em></span>
+              <span class="metric-value">{{ formatAmount(fallbackData.financials.revenue) }}</span>
+            </div>
+            <div v-if="fallbackData.financials.roe != null" class="metric-item">
+              <span class="metric-label">ROE <em v-if="fieldAsOf('roe')" class="as-of">{{ fieldAsOf('roe') }}</em></span>
+              <span class="metric-value">{{ fallbackData.financials.roe.toFixed(2) }}%</span>
+            </div>
+            <div v-if="fallbackData.financials.gross_margin != null" class="metric-item">
+              <span class="metric-label">毛利率 <em v-if="fieldAsOf('gross_margin')" class="as-of">{{ fieldAsOf('gross_margin') }}</em></span>
+              <span class="metric-value">{{ fallbackData.financials.gross_margin.toFixed(2) }}%</span>
+            </div>
+            <div v-if="fallbackData.financials.rd_expense != null" class="metric-item">
+              <span class="metric-label">研发费用 <em v-if="fieldAsOf('rd_expense')" class="as-of">{{ fieldAsOf('rd_expense') }}</em></span>
+              <span class="metric-value">{{ formatAmount(fallbackData.financials.rd_expense) }}</span>
+            </div>
+            <div v-if="fallbackData.financials.admin_expense != null" class="metric-item">
+              <span class="metric-label">管理费用 <em v-if="fieldAsOf('admin_expense')" class="as-of">{{ fieldAsOf('admin_expense') }}</em></span>
+              <span class="metric-value">{{ formatAmount(fallbackData.financials.admin_expense) }}</span>
+            </div>
+            <div v-if="fallbackData.financials.selling_expense != null" class="metric-item">
+              <span class="metric-label">销售费用 <em v-if="fieldAsOf('selling_expense')" class="as-of">{{ fieldAsOf('selling_expense') }}</em></span>
+              <span class="metric-value">{{ formatAmount(fallbackData.financials.selling_expense) }}</span>
+            </div>
+            <div v-if="fallbackData.financials.financial_expense != null" class="metric-item">
+              <span class="metric-label">财务费用 <em v-if="fieldAsOf('financial_expense')" class="as-of">{{ fieldAsOf('financial_expense') }}</em></span>
+              <span class="metric-value">{{ formatAmount(fallbackData.financials.financial_expense) }}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -973,6 +1009,22 @@ function formatCap(v: number | undefined | null): string {
   return String(v)
 }
 
+// 金额（元）格式化为亿/万元，用于财务面展示
+function formatAmount(v: number | undefined | null): string {
+  if (v === undefined || v === null) return '-'
+  const abs = Math.abs(v)
+  if (abs >= 100000000) return (v / 100000000).toFixed(2) + '亿'
+  if (abs >= 10000) return (v / 10000).toFixed(1) + '万'
+  return v.toFixed(0)
+}
+
+// 若某字段取自非最新报告期（逐字段回退），返回"截至YYYY-MM-DD"标注，否则空串
+function fieldAsOf(field: string): string {
+  const vp = fallbackData.value?.financials?.value_periods
+  const d = vp?.[field]
+  return d ? `截至${d}` : ''
+}
+
 // ---- Batch Analysis ----
 async function loadAttentionList() {
   try {
@@ -1657,6 +1709,20 @@ watch(klineCollapsed, (collapsed) => {
 
 .flow-tag.up { color: #f56c6c; background: #fef0f0; }
 .flow-tag.down { color: #67c23a; background: #f0f9eb; }
+
+.fin-period {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: normal;
+  color: var(--el-text-color-secondary);
+}
+
+.as-of {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--el-color-warning);
+  margin-left: 2px;
+}
 
 /* ---- Feedback Bar ---- */
 .feedback-bar {
