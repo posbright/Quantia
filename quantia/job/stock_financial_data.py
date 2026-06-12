@@ -52,6 +52,9 @@ RETRY_TIMES = _cfg.get_int('QUANTIA_FINANCIAL_RETRIES', 2)
 RETRY_SLEEP = _cfg.get_int('QUANTIA_FINANCIAL_RETRY_SLEEP', 5)
 DB_RETRY_TIMES = _cfg.get_int('QUANTIA_FINANCIAL_DB_RETRIES', 3)
 DB_RETRY_SLEEP = _cfg.get_int('QUANTIA_FINANCIAL_DB_RETRY_SLEEP', 3)
+# 连续失败熔断：连续 N 只股票失败即判定系统性故障（如DB持续宕机），主动中止，
+# 避免在持续故障下对数千只股票逐一空转重试（设为 0 可禁用）。
+MAX_CONSECUTIVE_FAILS = _cfg.get_int('QUANTIA_FINANCIAL_MAX_CONSECUTIVE_FAILS', 30)
 
 # 东方财富 API 字段到数据库字段的映射
 _EM_COL_MAP = {
@@ -620,6 +623,7 @@ def fetch_all_expenses(stock_codes, min_date=None, incremental=False):
               if incremental else "")
     log.info(f"开始采集费用明细数据（THS利润表），共 {total} 只股票{suffix}")
 
+    consecutive_fail = 0
     for i, code in enumerate(stock_codes):
         done = i + 1
         if incremental and code in caught_up:
@@ -632,15 +636,22 @@ def fetch_all_expenses(stock_codes, min_date=None, incremental=False):
         result = fetch_expense_data(code, min_date=min_date)
         if result < 0:
             fail += 1
-        elif result == 0:
-            skip += 1
+            consecutive_fail += 1
         else:
-            success += 1
-            total_rows += result
+            consecutive_fail = 0
+            if result == 0:
+                skip += 1
+            else:
+                success += 1
+                total_rows += result
 
         if done % 100 == 0 or done == total:
             log.info(f"费用采集进度: {done}/{total} "
                      f"(成功={success}, 跳过={skip}, 失败={fail}, 更新={total_rows}行)")
+
+        if MAX_CONSECUTIVE_FAILS > 0 and consecutive_fail >= MAX_CONSECUTIVE_FAILS:
+            log.error(f"费用采集连续失败 {consecutive_fail} 只，疑似系统性故障（DB/网络），中止本次任务")
+            break
 
         time.sleep(SLEEP_PER_STOCK)
 
@@ -668,6 +679,7 @@ def fetch_all_stocks(stock_codes, incremental=False, min_date=None):
         mode = '全量模式' if min_date is None else f'近{min_date}起'
     log.info(f"开始采集财务数据，共 {total} 只股票（{mode}）")
 
+    consecutive_fail = 0
     for i, code in enumerate(stock_codes):
         done = i + 1
         # 整只跳过：已追平的股票不再发起 API 请求（也不 sleep）
@@ -681,16 +693,23 @@ def fetch_all_stocks(stock_codes, incremental=False, min_date=None):
         result = fetch_single_stock(code, min_date=min_date)
         if result < 0:
             fail += 1
-        elif result == 0:
-            skip += 1
+            consecutive_fail += 1
         else:
-            success += 1
-            total_rows += result
+            consecutive_fail = 0
+            if result == 0:
+                skip += 1
+            else:
+                success += 1
+                total_rows += result
 
         # 进度日志
         if done % 100 == 0 or done == total:
             log.info(f"采集进度: {done}/{total} "
                      f"(成功={success}, 跳过={skip}, 失败={fail}, 入库={total_rows}行)")
+
+        if MAX_CONSECUTIVE_FAILS > 0 and consecutive_fail >= MAX_CONSECUTIVE_FAILS:
+            log.error(f"财务采集连续失败 {consecutive_fail} 只，疑似系统性故障（DB/网络），中止本次任务")
+            break
 
         # 每次API调用后休眠（已发起请求）
         time.sleep(SLEEP_PER_STOCK)
