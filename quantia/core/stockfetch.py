@@ -2769,6 +2769,22 @@ def _backfill_from_spot(code, date_end_yyyymmdd):
         )
         df = pd.read_sql(sql, mdb.engine(), params=(code, date_dash))
         if df is not None and len(df) > 0:
+            # 过滤无效OHLC，避免注入异常末根（如 open/high/low 为 0 的脏数据）
+            for c in ('open', 'close', 'high', 'low'):
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors='coerce')
+            valid = (
+                (df['open'] > 0) &
+                (df['close'] > 0) &
+                (df['high'] > 0) &
+                (df['low'] > 0)
+            )
+            if not bool(valid.all()):
+                invalid_cnt = int((~valid).sum())
+                logging.debug(f"_backfill_from_spot: 过滤 {code} 无效OHLC行 {invalid_cnt} 条")
+            df = df.loc[valid].copy()
+            if len(df) == 0:
+                return None
             # 统一 date 列类型为 Timestamp（与缓存 pickle 中的 datetime64 一致）
             if 'date' in df.columns:
                 df['date'] = pd.to_datetime(df['date'])
@@ -2793,6 +2809,24 @@ def _fallback_kline_from_spot(code, date_start, date_end):
         date_start_dash = _to_dash_date(date_start) if len(date_start) == 8 else date_start
         date_end_dash = _to_dash_date(date_end) if len(date_end) == 8 else date_end
 
+        def _filter_valid_ohlc(df, source_name):
+            if df is None or len(df) == 0:
+                return None
+            for c in ('open', 'close', 'high', 'low'):
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors='coerce')
+            valid = (
+                (df['open'] > 0) &
+                (df['close'] > 0) &
+                (df['high'] > 0) &
+                (df['low'] > 0)
+            )
+            if not bool(valid.all()):
+                invalid_cnt = int((~valid).sum())
+                logging.debug(f"_fallback_kline_from_spot: {source_name} 过滤 {code} 无效OHLC行 {invalid_cnt} 条")
+            df = df.loc[valid].copy()
+            return df if len(df) > 0 else None
+
         # 1) A股快照
         if mdb.checkTableIsExist('cn_stock_spot'):
             sql = (
@@ -2805,7 +2839,8 @@ def _fallback_kline_from_spot(code, date_start, date_end):
                 "ORDER BY `date`"
             )
             df = pd.read_sql(sql, mdb.engine(), params=(code, date_start_dash, date_end_dash))
-            if df is not None and len(df) > 0:
+            df = _filter_valid_ohlc(df, 'cn_stock_spot')
+            if df is not None:
                 df['date'] = pd.to_datetime(df['date'])
                 logging.debug(f"_fallback_kline_from_spot: {code} 从 cn_stock_spot 读取 {len(df)} 行 "
                               f"({date_start_dash}~{date_end_dash})")
@@ -2824,7 +2859,8 @@ def _fallback_kline_from_spot(code, date_start, date_end):
                 "ORDER BY `date`"
             )
             df_etf = pd.read_sql(sql_etf, mdb.engine(), params=(code, date_start_dash, date_end_dash))
-            if df_etf is not None and len(df_etf) > 0:
+            df_etf = _filter_valid_ohlc(df_etf, 'cn_etf_spot')
+            if df_etf is not None:
                 df_etf['date'] = pd.to_datetime(df_etf['date'])
                 logging.debug(f"_fallback_kline_from_spot: {code} 从 cn_etf_spot 读取 {len(df_etf)} 行 "
                               f"({date_start_dash}~{date_end_dash})")

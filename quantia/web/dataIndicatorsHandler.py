@@ -4,6 +4,7 @@
 from abc import ABC
 from tornado import gen
 import logging
+import datetime
 import quantia.core.stockfetch as stf
 import quantia.core.kline.visualization as vis
 import quantia.web.base as webBase
@@ -19,11 +20,25 @@ class GetDataIndicatorsHandler(webBase.BaseHandler, ABC):
         code = self.get_argument("code", default=None, strip=False)
         date = self.get_argument("date", default=None, strip=False)
         name = self.get_argument("name", default=None, strip=False)
+        strategy = self.get_argument("strategy", default='', strip=True)
         comp_list = []
         try:
             if code is not None:
-                # 仅从本地缓存读取历史数据，不发起外部API请求
-                stock = stf.read_hist_from_cache((date, code))
+                req_date = date or datetime.datetime.now().strftime('%Y-%m-%d')
+                # 指数页必须读取指数缓存，不能回退到同代码股票K线（如 000004）。
+                if 'index' in (strategy or '').lower():
+                    stock = stf.read_index_hist_from_cache(code)
+                    if stock is None or stock.empty:
+                        # 指数缓存缺失时，按需补当前指数缓存后重试。
+                        end_ymd = datetime.datetime.now().strftime('%Y%m%d')
+                        start_ymd = (datetime.datetime.now() - datetime.timedelta(
+                            days=stf.HIST_DATA_DEFAULT_YEARS * 365)).strftime('%Y%m%d')
+                        stf.index_hist_cache_incremental(code, start_ymd, end_ymd)
+                        stock = stf.read_index_hist_from_cache(code)
+                else:
+                    # 股票/ETF：仅从股票缓存读取
+                    stock = stf.read_hist_from_cache((req_date, code))
+
                 if stock is not None:
                     pk = vis.get_plot_kline(code, stock, date, name)
                     if pk is not None:
@@ -31,7 +46,7 @@ class GetDataIndicatorsHandler(webBase.BaseHandler, ABC):
                     else:
                         logging.warning(f"指标页面：{code} K线图生成失败")
                 else:
-                    logging.warning(f"指标页面：{code} 缓存无数据，请确认数据采集任务已运行")
+                    logging.warning(f"指标页面：{code} 缓存无数据（strategy={strategy}），请确认数据采集任务已运行")
         except Exception as e:
             logging.error(f"dataIndicatorsHandler.GetDataIndicatorsHandler处理异常", exc_info=True)
 

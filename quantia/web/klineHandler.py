@@ -322,7 +322,22 @@ class GetKlineDataHandler(webBase.BaseHandler, ABC):
             if data_type == 'index':
                 stock = stf.read_index_hist_from_cache(code)
                 if stock is None or stock.empty:
-                    stock = stf.read_hist_from_cache((today, code), years=50)
+                    # 指数缓存缺失时，按需仅补当前指数缓存，避免错误回退到同代码股票K线。
+                    try:
+                        end_ymd = datetime.datetime.now().strftime('%Y%m%d')
+                        start_ymd = (datetime.datetime.now() - datetime.timedelta(
+                            days=stf.HIST_DATA_DEFAULT_YEARS * 365)).strftime('%Y%m%d')
+                        stf.index_hist_cache_incremental(code, start_ymd, end_ymd)
+                        stock = stf.read_index_hist_from_cache(code)
+                    except Exception as e:
+                        logging.warning(f"指数缓存按需更新失败: {code} - {e}")
+                if stock is None or stock.empty:
+                    self.write(json.dumps({
+                        "error": "无指数K线数据（指数缓存未命中或更新失败）",
+                        "code": code,
+                        "type": "index"
+                    }, ensure_ascii=False))
+                    return
             else:
                 stock = stf.read_hist_from_cache((today, code), years=50)
                 if stock is None or stock.empty:
