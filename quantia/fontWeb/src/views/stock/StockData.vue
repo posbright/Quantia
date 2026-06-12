@@ -298,8 +298,9 @@ const goSampleStock = (nameOrCode: string) => {
 
 // 点击"主力净流入最大股"名称 → 进入个股详情页。
 // 数据中仅存名称，需先按名称解析出股票代码（查个股资金流向表），解析成功跳指标详情，失败则降级为个股资金流向搜索。
+// 注意：名称可能含内部空格（如 "红 宝 丽"），DB 也以相同格式存储，只能去首尾空格、保留内部空格才能 LIKE 命中。
 const goStockDetailByName = async (stockName: string) => {
-  const name = String(stockName || '').replace(/\s+/g, '').trim()
+  const name = String(stockName || '').trim()
   if (!name) return
   try {
     const r: any = await getStockData({
