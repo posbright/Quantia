@@ -496,6 +496,95 @@ def fetch_index_spots(date):
     return None
 
 
+def _load_latest_shares_from_db():
+    """从 cn_stock_spot 读取每只股票最近一次有效的总股本/流通股本。
+
+    股本属于缓变量（除增发/配股/回购/转增/解禁外长期不变），可用于在
+    新浪等不提供股本/市值/换手率的数据源降级时回算这些派生列。
+
+    返回: dict { code: (total_shares, free_shares) }，仅包含 total_shares>0 的记录。
+    查询失败时返回空 dict（调用方据此跳过回算）。
+    """
+    import quantia.lib.database as mdb
+    try:
+        # 取每只股票最近一个有股本数据的快照日的股本
+        rows = mdb.executeSqlFetch(
+            "SELECT s.code, s.total_shares, s.free_shares "
+            "FROM cn_stock_spot s "
+            "INNER JOIN ("
+            "  SELECT code, MAX(date) AS max_date FROM cn_stock_spot "
+            "  WHERE total_shares > 0 GROUP BY code"
+            ") t ON s.code = t.code AND s.date = t.max_date",
+            query_timeout_ms=_cfg.get_int('QUANTIA_FUND_DB_QUERY_TIMEOUT_MS', 8000),
+        )
+    except Exception as e:
+        logging.warning(f"读取历史股本失败，跳过新浪市值/换手率回算：{e}")
+        return {}
+
+    shares_map = {}
+    for row in (rows or []):
+        try:
+            code = row[0] if not isinstance(row, dict) else row.get('code')
+            total_shares = row[1] if not isinstance(row, dict) else row.get('total_shares')
+            free_shares = row[2] if not isinstance(row, dict) else row.get('free_shares')
+            total_shares = int(total_shares or 0)
+            free_shares = int(free_shares or 0)
+            if code and total_shares > 0:
+                shares_map[str(code)] = (total_shares, free_shares)
+        except Exception:
+            continue
+    return shares_map
+
+
+def _backfill_shares_derived_columns(data, shares_map):
+    """用历史股本回算缺失的总市值/流通市值/换手率（就地修改 data）。
+
+    仅回算当前为 0/缺失的单元格，公式：
+    - total_market_cap = round(new_price * total_shares)
+    - free_cap         = round(new_price * free_shares)
+    - turnoverrate     = round(volume / free_shares * 100, 4)   # volume 与 free_shares 同为“股”
+
+    新浪未提供股本的个股（DB 无历史，如新上市股）保持为 0。
+    返回回算到市值的行数（用于日志统计）。
+    """
+    if data is None or len(data.index) == 0 or not shares_map:
+        return 0
+
+    codes = data['code'].astype(str)
+    total_shares = codes.map(lambda c: shares_map.get(c, (0, 0))[0]).astype('float64')
+    free_shares = codes.map(lambda c: shares_map.get(c, (0, 0))[1]).astype('float64')
+    new_price = pd.to_numeric(data['new_price'], errors='coerce').fillna(0.0)
+    volume = pd.to_numeric(data['volume'], errors='coerce').fillna(0.0)
+
+    # 统一目标列 dtype，避免向 int 列写入小数（如换手率）触发 pandas dtype 错误
+    data['total_market_cap'] = pd.to_numeric(data['total_market_cap'], errors='coerce').fillna(0).astype('int64')
+    data['free_cap'] = pd.to_numeric(data['free_cap'], errors='coerce').fillna(0).astype('int64')
+    data['turnoverrate'] = pd.to_numeric(data['turnoverrate'], errors='coerce').fillna(0.0).astype('float64')
+    data['total_shares'] = pd.to_numeric(data['total_shares'], errors='coerce').fillna(0).astype('int64')
+    data['free_shares'] = pd.to_numeric(data['free_shares'], errors='coerce').fillna(0).astype('int64')
+
+    cur_total_cap = data['total_market_cap']
+    cur_free_cap = data['free_cap']
+    cur_turnover = data['turnoverrate']
+
+    # 仅在原值为 0 且有可用股本时回算
+    total_cap_mask = (cur_total_cap <= 0) & (total_shares > 0) & (new_price > 0)
+    free_cap_mask = (cur_free_cap <= 0) & (free_shares > 0) & (new_price > 0)
+    turnover_mask = (cur_turnover <= 0) & (free_shares > 0) & (volume > 0)
+
+    data.loc[total_cap_mask, 'total_market_cap'] = (new_price * total_shares)[total_cap_mask].round().astype('int64')
+    data.loc[free_cap_mask, 'free_cap'] = (new_price * free_shares)[free_cap_mask].round().astype('int64')
+    data.loc[turnover_mask, 'turnoverrate'] = (volume / free_shares * 100)[turnover_mask].round(4)
+
+    # 顺带补回股本列本身（便于下游使用）
+    ts_mask = (data['total_shares'] <= 0) & (total_shares > 0)
+    fs_mask = (data['free_shares'] <= 0) & (free_shares > 0)
+    data.loc[ts_mask, 'total_shares'] = total_shares[ts_mask].astype('int64')
+    data.loc[fs_mask, 'free_shares'] = free_shares[fs_mask].astype('int64')
+
+    return int(total_cap_mask.sum())
+
+
 # 读取当天股票数据（支持多数据源自动切换）
 # 优先级: 东方财富 -> 腾讯财经 -> 新浪财经
 def fetch_stocks(date):
@@ -537,6 +626,21 @@ def fetch_stocks(date):
             data.insert(0, 'date', date.strftime("%Y-%m-%d"))
         data.columns = list(tbs.TABLE_CN_STOCK_SPOT['columns'])
         data = data.loc[data['code'].apply(is_a_stock)].loc[data['new_price'].apply(is_open)]
+
+        # 新浪财经不提供股本/市值/换手率（这些列为 0），用历史股本回算弥补，
+        # 避免市值为 0 导致下游按市值阈值过滤时被错误剔除。
+        if source == '新浪财经':
+            try:
+                shares_map = _load_latest_shares_from_db()
+                if shares_map:
+                    filled = _backfill_shares_derived_columns(data, shares_map)
+                    logging.info(
+                        f"新浪数据缺市值/换手率，已用历史股本回算 {filled} 只"
+                        f"（缺历史股本 {max(len(data.index) - filled, 0)} 只保持为空）"
+                    )
+            except Exception:
+                logging.warning("新浪市值/换手率回算异常，保持原值", exc_info=True)
+
         return data
     except Exception as e:
         logging.error(f"stockfetch.fetch_stocks处理异常", exc_info=True)
