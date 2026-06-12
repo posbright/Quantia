@@ -26,6 +26,7 @@ import time
 import argparse
 import os
 import sys
+import json
 from datetime import datetime
 
 import akshare as ak
@@ -55,6 +56,10 @@ DB_RETRY_SLEEP = _cfg.get_int('QUANTIA_FINANCIAL_DB_RETRY_SLEEP', 3)
 # 连续失败熔断：连续 N 只股票失败即判定系统性故障（如DB持续宕机），主动中止，
 # 避免在持续故障下对数千只股票逐一空转重试（设为 0 可禁用）。
 MAX_CONSECUTIVE_FAILS = _cfg.get_int('QUANTIA_FINANCIAL_MAX_CONSECUTIVE_FAILS', 30)
+# 断点续跑：将已处理股票落盘，进程意外退出后可从上次位置继续（设 0 可禁用）。
+CKPT_ENABLED = _cfg.get_int('QUANTIA_FINANCIAL_CKPT', 1)
+CKPT_SAVE_EVERY = _cfg.get_int('QUANTIA_FINANCIAL_CKPT_EVERY', 20)
+_CKPT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'log'))
 
 # 东方财富 API 字段到数据库字段的映射
 _EM_COL_MAP = {
@@ -140,6 +145,70 @@ def _parse_cn_amount(val) -> float | None:
             return result
     except (ValueError, TypeError):
         return None
+
+
+def _ckpt_path(phase):
+    """断点文件路径（按阶段区分：em / expense）。"""
+    return os.path.join(_CKPT_DIR, f'financial_ckpt_{phase}.json')
+
+
+def _load_checkpoint(phase, signature):
+    """加载断点。
+
+    Returns:
+        tuple(set, dict): (已处理代码集合, 累计统计)。签名不匹配/损坏/禁用时返回空。
+    """
+    if not CKPT_ENABLED:
+        return set(), {}
+    p = _ckpt_path(phase)
+    try:
+        if not os.path.exists(p):
+            return set(), {}
+        with open(p, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('signature') != signature:
+            log.info(f"[{phase}] 断点签名与本次任务不一致（参数或股票数已变），忽略旧断点，从头开始")
+            return set(), {}
+        done = set(data.get('done', []))
+        stats = data.get('stats', {}) or {}
+        if done:
+            log.info(f"[{phase}] 命中断点：已处理 {len(done)} 只（{data.get('updated_at', '?')}），续跑剩余股票")
+        return done, stats
+    except Exception as e:
+        log.warning(f"[{phase}] 读取断点失败，将从头开始: {e}")
+        return set(), {}
+
+
+def _save_checkpoint(phase, signature, done_codes, stats):
+    """原子写入断点（写临时文件后 rename，避免写一半被中断导致损坏）。"""
+    if not CKPT_ENABLED:
+        return
+    p = _ckpt_path(phase)
+    tmp = p + '.tmp'
+    try:
+        os.makedirs(_CKPT_DIR, exist_ok=True)
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump({
+                'signature': signature,
+                'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'done': sorted(done_codes),
+                'stats': stats,
+            }, f, ensure_ascii=False)
+        os.replace(tmp, p)
+    except Exception as e:
+        log.warning(f"[{phase}] 写断点失败（忽略，继续运行）: {e}")
+
+
+def _clear_checkpoint(phase):
+    """任务正常跑完后清理断点文件。"""
+    if not CKPT_ENABLED:
+        return
+    p = _ckpt_path(phase)
+    try:
+        if os.path.exists(p):
+            os.remove(p)
+    except Exception as e:
+        log.warning(f"[{phase}] 清理断点失败（忽略）: {e}")
 
 
 def _retry_call(fn, name="", retries=RETRY_TIMES, sleep=RETRY_SLEEP):
@@ -623,11 +692,22 @@ def fetch_all_expenses(stock_codes, min_date=None, incremental=False):
               if incremental else "")
     log.info(f"开始采集费用明细数据（THS利润表），共 {total} 只股票{suffix}")
 
+    signature = f"expense|inc={incremental}|min={min_date}|n={total}"
+    done_codes, _stats = _load_checkpoint('expense', signature)
+    success = _stats.get('success', 0)
+    skip = _stats.get('skip', 0)
+    total_rows = _stats.get('total_rows', 0)
+
     consecutive_fail = 0
+    aborted = False
+    since_save = 0
     for i, code in enumerate(stock_codes):
         done = i + 1
+        if code in done_codes:
+            continue
         if incremental and code in caught_up:
             skip += 1
+            done_codes.add(code)
             if done % 100 == 0 or done == total:
                 log.info(f"费用采集进度: {done}/{total} "
                          f"(成功={success}, 跳过={skip}, 失败={fail}, 更新={total_rows}行)")
@@ -639,11 +719,18 @@ def fetch_all_expenses(stock_codes, min_date=None, incremental=False):
             consecutive_fail += 1
         else:
             consecutive_fail = 0
+            done_codes.add(code)
             if result == 0:
                 skip += 1
             else:
                 success += 1
                 total_rows += result
+
+        since_save += 1
+        if since_save >= CKPT_SAVE_EVERY:
+            _save_checkpoint('expense', signature, done_codes,
+                             {'success': success, 'skip': skip, 'total_rows': total_rows})
+            since_save = 0
 
         if done % 100 == 0 or done == total:
             log.info(f"费用采集进度: {done}/{total} "
@@ -651,9 +738,17 @@ def fetch_all_expenses(stock_codes, min_date=None, incremental=False):
 
         if MAX_CONSECUTIVE_FAILS > 0 and consecutive_fail >= MAX_CONSECUTIVE_FAILS:
             log.error(f"费用采集连续失败 {consecutive_fail} 只，疑似系统性故障（DB/网络），中止本次任务")
+            aborted = True
             break
 
         time.sleep(SLEEP_PER_STOCK)
+
+    if aborted:
+        _save_checkpoint('expense', signature, done_codes,
+                         {'success': success, 'skip': skip, 'total_rows': total_rows})
+        log.warning(f"费用采集已中止，断点已落盘（已处理 {len(done_codes)} 只），重跑同一命令可续跑")
+    else:
+        _clear_checkpoint('expense')
 
     log.info(f"费用数据采集完成: 成功={success}, 跳过={skip}, 失败={fail}, "
              f"更新={total_rows}行")
@@ -679,12 +774,23 @@ def fetch_all_stocks(stock_codes, incremental=False, min_date=None):
         mode = '全量模式' if min_date is None else f'近{min_date}起'
     log.info(f"开始采集财务数据，共 {total} 只股票（{mode}）")
 
+    signature = f"em|inc={incremental}|min={min_date}|n={total}"
+    done_codes, _stats = _load_checkpoint('em', signature)
+    success = _stats.get('success', 0)
+    skip = _stats.get('skip', 0)
+    total_rows = _stats.get('total_rows', 0)
+
     consecutive_fail = 0
+    aborted = False
+    since_save = 0
     for i, code in enumerate(stock_codes):
         done = i + 1
+        if code in done_codes:
+            continue
         # 整只跳过：已追平的股票不再发起 API 请求（也不 sleep）
         if incremental and code in caught_up:
             skip += 1
+            done_codes.add(code)
             if done % 100 == 0 or done == total:
                 log.info(f"采集进度: {done}/{total} "
                          f"(成功={success}, 跳过={skip}, 失败={fail}, 入库={total_rows}行)")
@@ -696,11 +802,18 @@ def fetch_all_stocks(stock_codes, incremental=False, min_date=None):
             consecutive_fail += 1
         else:
             consecutive_fail = 0
+            done_codes.add(code)
             if result == 0:
                 skip += 1
             else:
                 success += 1
                 total_rows += result
+
+        since_save += 1
+        if since_save >= CKPT_SAVE_EVERY:
+            _save_checkpoint('em', signature, done_codes,
+                             {'success': success, 'skip': skip, 'total_rows': total_rows})
+            since_save = 0
 
         # 进度日志
         if done % 100 == 0 or done == total:
@@ -709,10 +822,18 @@ def fetch_all_stocks(stock_codes, incremental=False, min_date=None):
 
         if MAX_CONSECUTIVE_FAILS > 0 and consecutive_fail >= MAX_CONSECUTIVE_FAILS:
             log.error(f"财务采集连续失败 {consecutive_fail} 只，疑似系统性故障（DB/网络），中止本次任务")
+            aborted = True
             break
 
         # 每次API调用后休眠（已发起请求）
         time.sleep(SLEEP_PER_STOCK)
+
+    if aborted:
+        _save_checkpoint('em', signature, done_codes,
+                         {'success': success, 'skip': skip, 'total_rows': total_rows})
+        log.warning(f"财务采集已中止，断点已落盘（已处理 {len(done_codes)} 只），重跑同一命令可续跑")
+    else:
+        _clear_checkpoint('em')
 
     log.info(f"财务数据采集完成: 成功={success}, 跳过={skip}, 失败={fail}, "
              f"入库={total_rows}行")

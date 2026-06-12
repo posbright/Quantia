@@ -275,6 +275,51 @@ class TestIncrementalSkipLogic(unittest.TestCase):
         mock_caught.assert_not_called()
         self.assertEqual(mock_fetch.call_count, 2)
 
+    @patch('quantia.job.stock_financial_data._clear_checkpoint')
+    @patch('quantia.job.stock_financial_data._save_checkpoint')
+    @patch('quantia.job.stock_financial_data._load_checkpoint')
+    @patch('quantia.job.stock_financial_data.time.sleep')
+    @patch('quantia.job.stock_financial_data.fetch_single_stock')
+    @patch('quantia.job.stock_financial_data._get_caught_up_codes')
+    def test_fetch_all_stocks_resumes_from_checkpoint(
+            self, mock_caught, mock_fetch, mock_sleep, mock_load, mock_save, mock_clear):
+        """命中断点时应跳过已处理股票（不重复发API），并累计历史统计"""
+        from quantia.job.stock_financial_data import fetch_all_stocks
+        mock_caught.return_value = set()
+        # 断点：000001 已处理，历史 success=1, rows=5
+        mock_load.return_value = ({'000001'}, {'success': 1, 'skip': 0, 'total_rows': 5})
+        mock_fetch.return_value = 3
+        success, fail, skip, rows = fetch_all_stocks(
+            ['000001', '600000'], incremental=True)
+        # 000001 在断点中 -> 不再发起API；仅 600000 被采集
+        mock_fetch.assert_called_once_with('600000', min_date=None)
+        self.assertEqual(success, 2)   # 1(历史) + 1(本次)
+        self.assertEqual(rows, 8)      # 5(历史) + 3(本次)
+        # 正常跑完 -> 清理断点，不落盘中止断点
+        mock_clear.assert_called_once()
+
+    @patch('quantia.job.stock_financial_data._clear_checkpoint')
+    @patch('quantia.job.stock_financial_data._save_checkpoint')
+    @patch('quantia.job.stock_financial_data._load_checkpoint')
+    @patch('quantia.job.stock_financial_data.time.sleep')
+    @patch('quantia.job.stock_financial_data.fetch_single_stock')
+    @patch('quantia.job.stock_financial_data._get_caught_up_codes')
+    def test_fetch_all_stocks_saves_checkpoint_on_abort(
+            self, mock_caught, mock_fetch, mock_sleep, mock_load, mock_save, mock_clear):
+        """连续失败触发熔断中止时，应落盘断点供续跑，且不清理断点"""
+        from quantia.job import stock_financial_data as m
+        mock_caught.return_value = set()
+        mock_load.return_value = (set(), {})
+        mock_fetch.return_value = -1  # 全部失败
+        with patch.object(m, 'MAX_CONSECUTIVE_FAILS', 2):
+            success, fail, skip, rows = m.fetch_all_stocks(
+                ['000001', '600000', '300001', '600519'], incremental=False)
+        self.assertEqual(fail, 2)              # 连续2只失败即中止
+        self.assertEqual(mock_fetch.call_count, 2)
+        mock_save.assert_called()              # 中止时落盘断点
+        mock_clear.assert_not_called()         # 未正常跑完，不清理
+
+
 
 class TestFundamentalsIntegration(unittest.TestCase):
     """验证 fundamentals.py 真实数据加载与合成数据降级逻辑"""
