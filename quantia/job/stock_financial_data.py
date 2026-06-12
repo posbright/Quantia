@@ -50,6 +50,8 @@ log = logging.getLogger(__name__)
 SLEEP_PER_STOCK = _cfg.get_float('QUANTIA_FINANCIAL_SLEEP', 2.0)
 RETRY_TIMES = _cfg.get_int('QUANTIA_FINANCIAL_RETRIES', 2)
 RETRY_SLEEP = _cfg.get_int('QUANTIA_FINANCIAL_RETRY_SLEEP', 5)
+DB_RETRY_TIMES = _cfg.get_int('QUANTIA_FINANCIAL_DB_RETRIES', 3)
+DB_RETRY_SLEEP = _cfg.get_int('QUANTIA_FINANCIAL_DB_RETRY_SLEEP', 3)
 
 # 东方财富 API 字段到数据库字段的映射
 _EM_COL_MAP = {
@@ -148,6 +150,56 @@ def _retry_call(fn, name="", retries=RETRY_TIMES, sleep=RETRY_SLEEP):
                 time.sleep(sleep)
             else:
                 raise
+
+
+def _is_retryable_db_error(e):
+    """判断数据库异常是否可重试（网络抖动/连接丢失/死锁等）。"""
+    try:
+        checker = getattr(mdb, '_is_retryable_error', None)
+        if callable(checker) and checker(e):
+            return True
+    except Exception:
+        pass
+
+    s = str(e).lower()
+    retry_signals = (
+        'lost connection', 'gone away', "can't connect", 'connection refused',
+        'timed out', 'timeout', 'deadlock', 'lock wait timeout', 'server has gone',
+        'packet sequence', 'read of closed file', 'broken pipe', '(2003,', '(2013,'
+    )
+    return any(sig in s for sig in retry_signals)
+
+
+def _execute_upsert_with_retry(sql, rows, label='upsert'):
+    """执行 upsert，遇到可重试数据库异常时重试并重建连接池。"""
+    last_err = None
+    for attempt in range(DB_RETRY_TIMES + 1):
+        try:
+            eng = mdb.engine()
+            with eng.connect() as conn:
+                conn.execute(sql, rows)
+                conn.commit()
+            return
+        except Exception as e:
+            last_err = e
+            retryable = _is_retryable_db_error(e)
+            if retryable and attempt < DB_RETRY_TIMES:
+                wait_s = DB_RETRY_SLEEP * (attempt + 1)
+                log.warning(
+                    f"{label} 数据库连接瞬态异常，准备重试 {attempt + 1}/{DB_RETRY_TIMES}，"
+                    f"{wait_s}s后继续: {e}"
+                )
+                try:
+                    # 丢弃旧连接池，强制下次拿新连接
+                    mdb.engine().dispose()
+                except Exception:
+                    pass
+                time.sleep(wait_s)
+                continue
+            raise
+
+    if last_err is not None:
+        raise last_err
 
 
 def _ak_proxied(fn):
@@ -300,9 +352,7 @@ def _upsert_batch(rows):
         ON DUPLICATE KEY UPDATE {updates}, `updated_at`=CURRENT_TIMESTAMP
     """)
     try:
-        with mdb.engine().connect() as conn:
-            conn.execute(sql, rows)
-            conn.commit()
+        _execute_upsert_with_retry(sql, rows, label='EM财务upsert')
     except Exception as e:
         log.error(f"批量写入财务数据失败: {e}")
         raise
@@ -442,7 +492,12 @@ def fetch_single_stock(code, min_date=None):
     # 注：增量跳过在 fetch_all_stocks 层按"整只股票"进行（省去 API 调用）。
     # 单只采集时总是 upsert 全部报告期，以回填历史 NULL 核心字段并捕获财报修订。
     rows = _clean_nan(df.to_dict(orient='records'))
-    _upsert_batch(rows)
+    try:
+        _upsert_batch(rows)
+    except Exception as e:
+        # 单只股票入库失败不应中断全量任务
+        log.warning(f"[{code}] 财务数据入库失败，已记失败并继续: {e}")
+        return -1
     return len(rows)
 
 
@@ -511,7 +566,12 @@ def fetch_expense_data(code, min_date=None):
         return 0
 
     # 批量更新费用字段（UPDATE 已有行，INSERT 新行时仅填费用）
-    _upsert_expense_batch(rows)
+    try:
+        _upsert_expense_batch(rows)
+    except Exception as e:
+        # 单只股票入库失败不应中断全量任务
+        log.warning(f"[{code}] 费用明细入库失败，已记失败并继续: {e}")
+        return -1
     return len(rows)
 
 
@@ -538,9 +598,7 @@ def _upsert_expense_batch(rows):
     clean_rows = [{**defaults, **{k: v for k, v in r.items() if k in expense_fields}}
                   for r in clean_rows]
     try:
-        with mdb.engine().connect() as conn:
-            conn.execute(sql, clean_rows)
-            conn.commit()
+        _execute_upsert_with_retry(sql, clean_rows, label='THS费用upsert')
     except Exception as e:
         log.error(f"批量写入费用数据失败: {e}")
         raise
