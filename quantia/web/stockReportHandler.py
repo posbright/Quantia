@@ -525,6 +525,42 @@ def _pick_pe(pe_ttm, pe_dyn):
     return None
 
 
+def _coalesce_financials(rows, keys):
+    """将多期财务行（按 report_date 倒序）合并为一份"逐字段最近非空值"摘要。
+
+    背景：最新报告期（如季报）可能因上游尚未披露而核心指标(营收/ROE等)为 NULL，
+    若仅取最新一行会出现整片空白。此处对每个字段回退到最近一个非空值，
+    并用 value_periods 记录该值实际所属报告期（与最新锚点期不同才记录），
+    供前端标注"截至xxxx"，既保证有意义的展示又不误导。
+
+    Args:
+        rows: 序列，每行可索引，row[0] 为 report_date，其余按 keys 顺序。
+        keys: 字段名列表，keys[0] 应为 'report_date'。
+
+    Returns:
+        dict 或 None：包含 report_date(最新锚点) + 各字段最近非空值；
+        可能含 value_periods={字段: 所属报告期}。无任何指标值时返回 None。
+    """
+    if not rows:
+        return None
+    latest_date = str(rows[0][0])
+    financials: Dict[str, Any] = {'report_date': latest_date}
+    value_periods: Dict[str, str] = {}
+    for ci in range(1, len(keys)):
+        for r in rows:
+            if r[ci] is not None:
+                financials[keys[ci]] = r[ci]
+                if str(r[0]) != latest_date:
+                    value_periods[keys[ci]] = str(r[0])
+                break
+    if value_periods:
+        financials['value_periods'] = value_periods
+    # 仅含 report_date（无任何指标）时视为无有效数据
+    if len(financials) <= 1:
+        return None
+    return financials
+
+
 def _get_previous_report_summary(code: str) -> Optional[str]:
     """获取上一次报告的摘要（用于增量对比提示），仅取前600字。"""
     try:
@@ -1546,19 +1582,17 @@ class StockDataFallbackHandler(webBase.BaseHandler, ABC):
                        financial_expense, rd_ratio, revenue, roe, gross_margin
                 FROM cn_stock_financial
                 WHERE code = %s
-                ORDER BY report_date DESC LIMIT 1
+                ORDER BY report_date DESC LIMIT 6
             """
             rows = mdb.executeSqlFetch(sql, (code,))
-            if rows:
-                r = rows[0]
-                financials = {}
-                keys = ['report_date', 'rd_expense', 'admin_expense', 'selling_expense',
-                        'financial_expense', 'rd_ratio', 'revenue', 'roe', 'gross_margin']
-                for i, k in enumerate(keys):
-                    if r[i] is not None:
-                        financials[k] = str(r[i]) if k == 'report_date' else r[i]
-                if financials:
-                    result['financials'] = financials
+            keys = ['report_date', 'rd_expense', 'admin_expense', 'selling_expense',
+                    'financial_expense', 'rd_ratio', 'revenue', 'roe', 'gross_margin']
+            # 逐字段回退到"最近非空值"：最新报告期核心指标(营收/ROE等)可能因季报
+            # 尚未披露而为 NULL，此时取上一披露期的值，避免整片空白；value_periods
+            # 记录回退值的实际报告期，供前端标注"截至xxxx"。
+            financials = _coalesce_financials(rows, keys)
+            if financials:
+                result['financials'] = financials
         except Exception as exc:
             _logger.debug(f'[stockReport] fallback financials 查询异常: {exc}')
 
