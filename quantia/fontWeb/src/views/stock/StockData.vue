@@ -60,6 +60,17 @@ const noDateFilter = computed(() => route.meta.noDateFilter as boolean ?? false)
 const isBacktestSummary = computed(() => tableName.value === 'cn_stock_backtest')
 const isFundFlowIndustry = computed(() => tableName.value === 'cn_stock_fund_flow_industry')
 
+// 资金流向系列页面（个股/行业/概念）统一交互：默认按今日主力净流入-净额降序、列可排序、最大股可点击
+const FUND_FLOW_TABLES = ['cn_stock_fund_flow', 'cn_stock_fund_flow_industry', 'cn_stock_fund_flow_concept']
+const isFundFlow = computed(() => FUND_FLOW_TABLES.includes(tableName.value))
+// 行业/概念资金流向中代表"主力净流入最大股"的列，点击可进入个股详情
+const stockNameFields = new Set(['stock_name', 'stock_name_5', 'stock_name_10'])
+const isStockNameCol = (colValue: string) => stockNameFields.has(colValue)
+
+// 排序状态（服务端排序）。资金流向默认：今日主力净流入-净额（fund_amount）由高到低
+const sortField = ref<string>('fund_amount')
+const sortOrder = ref<'asc' | 'desc'>('desc')
+
 const industryDialogVisible = ref(false)
 const activeIndustry = ref<FundFlowRow | null>(null)
 
@@ -158,6 +169,11 @@ const loadData = async () => {
     if (searchKeyword.value) {
       params.keyword = searchKeyword.value
     }
+    // 资金流向系列：服务端排序（默认今日主力净流入-净额降序）
+    if (isFundFlow.value && sortField.value) {
+      params.sort = sortField.value
+      params.order = sortOrder.value
+    }
     const res: any = await getStockData(params)
     // 新的响应格式包含 columns、data 和 total
     if (res && res.columns && res.data) {
@@ -198,10 +214,14 @@ const applyRouteQueryFilters = () => {
   }
   if (typeof q.date === 'string' && q.date.trim()) {
     selectedDate.value = q.date.trim()
-  } else if (typeof q.keyword === 'string' && q.keyword.trim()) {
-    // 行业/个股关键词跳转若不带日期，放开日期过滤，避免落到无数据交易日
+  } else if (typeof q.keyword === 'string' && q.keyword.trim() && !isFundFlow.value) {
+    // 非资金流向页：行业/个股关键词跳转若不带日期，放开日期过滤，避免落到无数据交易日
+    // 资金流向页保持"默认最新日期"语义（后端无数据时会自动回退到最近日期），不清空日期
     selectedDate.value = ''
   }
+  // 进入页面时重置为默认排序：今日主力净流入-净额由高到低
+  sortField.value = 'fund_amount'
+  sortOrder.value = 'desc'
 }
 
 // 查看指标详情
@@ -274,6 +294,49 @@ const goSampleStock = (nameOrCode: string) => {
     path: '/fund-flow/individual',
     query: { keyword: nameOrCode }
   })
+}
+
+// 点击"主力净流入最大股"名称 → 进入个股详情页。
+// 数据中仅存名称，需先按名称解析出股票代码（查个股资金流向表），解析成功跳指标详情，失败则降级为个股资金流向搜索。
+const goStockDetailByName = async (stockName: string) => {
+  const name = String(stockName || '').replace(/\s+/g, '').trim()
+  if (!name) return
+  try {
+    const r: any = await getStockData({
+      name: 'cn_stock_fund_flow',
+      keyword: name,
+      page: 1,
+      page_size: 1
+    })
+    const row = (r?.data || [])[0]
+    const code = row && row.code ? String(row.code) : ''
+    if (code) {
+      router.push({
+        path: '/indicator/detail',
+        query: { code, name: row.name || name, date: row.date || selectedDate.value, strategy: 'cn_stock_fund_flow' }
+      })
+      return
+    }
+  } catch {
+    // 忽略解析失败，走降级
+  }
+  // 降级：跳转个股资金流向并按名称搜索
+  router.push({ path: '/fund-flow/individual', query: { keyword: name } })
+}
+
+// 资金流向列排序变更（服务端排序）
+const handleSortChange = ({ prop, order }: { prop: string; order: string | null }) => {
+  if (!isFundFlow.value) return
+  if (prop && order) {
+    sortField.value = prop
+    sortOrder.value = order === 'ascending' ? 'asc' : 'desc'
+  } else {
+    // 取消排序 → 回到默认（今日主力净流入-净额降序）
+    sortField.value = 'fund_amount'
+    sortOrder.value = 'desc'
+  }
+  currentPage.value = 1
+  loadData()
 }
 
 const goSampleKline = (s: IndustrySampleStock) => {
@@ -591,7 +654,9 @@ onMounted(async () => {
         border
         :height="isMobile ? 'calc(100dvh - 340px)' : 'calc(100dvh - 280px)'"
         :row-class-name="getRowClassName"
+        :default-sort="isFundFlow ? { prop: sortField, order: sortOrder === 'asc' ? 'ascending' : 'descending' } : undefined"
         @row-click="handleIndustryRowClick"
+        @sort-change="handleSortChange"
       >
         <el-table-column type="index" label="#" width="50" fixed="left" />
         
@@ -718,6 +783,7 @@ onMounted(async () => {
             :min-width="getColumnWidth(col)"
             :align="col.dataType === 'string' ? 'left' : 'right'"
             :show-overflow-tooltip="true"
+            :sortable="isFundFlow && col.dataType !== 'string' ? 'custom' : false"
           >
             <template #header>
               <el-tooltip
@@ -734,7 +800,15 @@ onMounted(async () => {
               <span v-else>{{ col.caption }}</span>
             </template>
             <template #default="{ row }">
-              <span :class="getCellClass(row[col.value], col)">
+              <el-link
+                v-if="isStockNameCol(col.value) && row[col.value]"
+                type="primary"
+                :underline="false"
+                @click.stop="goStockDetailByName(row[col.value])"
+              >
+                {{ row[col.value] }}
+              </el-link>
+              <span v-else :class="getCellClass(row[col.value], col)">
                 {{ formatCellValue(row[col.value], col) }}
               </span>
             </template>
@@ -833,7 +907,16 @@ onMounted(async () => {
               :class="{ 'is-indicator': col.group === 'ind', 'is-rate': col.value.startsWith('rate_') }"
             >
               <span class="card-lbl">{{ col.caption }}</span>
-              <span class="card-val" :class="getCellClass(row[col.value], col)">
+              <el-link
+                v-if="isStockNameCol(col.value) && row[col.value]"
+                type="primary"
+                :underline="false"
+                class="card-val"
+                @click.stop="goStockDetailByName(row[col.value])"
+              >
+                {{ row[col.value] }}
+              </el-link>
+              <span v-else class="card-val" :class="getCellClass(row[col.value], col)">
                 {{ formatCellValue(row[col.value], col) }}
               </span>
             </div>

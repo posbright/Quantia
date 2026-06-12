@@ -62,6 +62,8 @@ class GetStockDataHandler(webBase.BaseHandler, ABC):
         page = self.get_argument("page", default=None, strip=True)
         page_size = self.get_argument("page_size", default=None, strip=True)
         keyword = self.get_argument("keyword", default=None, strip=True)
+        sort = self.get_argument("sort", default=None, strip=True)
+        order = self.get_argument("order", default=None, strip=True)
         self.set_header('Content-Type', 'application/json;charset=UTF-8')
 
         # 参数验证
@@ -110,8 +112,13 @@ class GetStockDataHandler(webBase.BaseHandler, ABC):
         if conditions:
             where = " WHERE " + " AND ".join(conditions)
 
+        # 自定义排序：sort 必须是该表的合法列（白名单 + 标识符校验），防止 SQL 注入；
+        # order 仅允许 asc/desc。提供合法 sort 时覆盖默认排序，否则沿用配置的 order_by。
         order_by = ""
-        if web_module_data.order_by is not None:
+        if sort is not None and sort in web_module_data.columns and _SAFE_IDENTIFIER_RE.match(sort):
+            direction = "ASC" if (order or "").lower() == "asc" else "DESC"
+            order_by = f" ORDER BY `{sort}` {direction}"
+        elif web_module_data.order_by is not None:
             order_by = f" ORDER BY {web_module_data.order_by}"
 
         order_columns = ""

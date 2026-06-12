@@ -6,6 +6,8 @@ export interface StockDataParams {
   page?: number
   page_size?: number
   keyword?: string
+  sort?: string
+  order?: 'asc' | 'desc'
 }
 
 export interface AttentionParams {

@@ -134,10 +134,18 @@ def stock_sector_fund_flow_rank_sina(
     注意：新浪只返回"今日"数据（不区分5日/10日），
     且不提供超大单/大单/中单/小单分类明细。
 
-    :param indicator: choice of {"今日", "5日", "10日"}（实际都返回今日数据）
+    :param indicator: choice of {"今日", "5日", "10日"}
     :param sector_type: choice of {"行业资金流", "概念资金流"}
     :return: 板块资金流向数据
     """
+    # 新浪接口只提供"今日"板块资金流，不区分 5 日/10 日。
+    # 若对 5 日/10 日也返回今日数据，会被上层误标成 5 日/10 日列，
+    # 导致 cn_stock_fund_flow_industry/concept 三个时间窗口数值完全相同（数据失真）。
+    # 因此非"今日"指标直接返回空，让上层将对应列留空(NULL)而非写入错误数据。
+    if indicator != "今日":
+        logging.info(f"新浪不支持板块资金流 {indicator} 数据，跳过（仅东方财富提供多周期）")
+        return pd.DataFrame()
+
     sector_type_map = {"行业资金流": 1, "概念资金流": 2}
     fenlei = sector_type_map.get(sector_type, 1)
 
