@@ -173,6 +173,7 @@ class RunSingleBacktestTests(unittest.TestCase):
         # 买入 T+1 = idx 6；条件在 idx 11 破 → 卖点
         self.assertEqual(t['exit_reason'], 'sell_signal')
 
+
     def test_sharpe_null_when_insufficient(self):
         self.assertIsNone(bh._compute_single_sharpe([]))
         self.assertIsNone(bh._compute_single_sharpe([{'rate': 5.0, 'hold_days': 5}]))
@@ -214,6 +215,163 @@ class RunSingleBacktestTests(unittest.TestCase):
         self.assertIsNotNone(ind['ma']['5'][4])
         # 推荐指标按策略映射
         self.assertEqual(ind['recommended'], bh.STRATEGY_OVERLAY_MAP['cn_stock_strategy_keep_increasing'])
+
+
+class EventStrategyExitTests(unittest.TestCase):
+    """修复 A：事件型策略入场/退出解耦——默认走规则退出（止损/止盈/最大持仓）。"""
+
+    def _patch(self, hist, hit_dates):
+        def fake_strategy(stock, h, date=None, **kw):
+            ts = pd.Timestamp(date)
+            idx = hist.index[hist['date'] == ts]
+            if len(idx) == 0:
+                return False
+            return int(idx[0]) in hit_dates
+
+        @contextmanager
+        def _ctx():
+            with mock.patch.object(bh, '_resolve_single_strategy',
+                                   return_value=(fake_strategy, '事件策略')), \
+                 mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
+                 mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=hist), \
+                 mock.patch.object(bh.idr, 'get_indicators', return_value=hist):
+                yield
+        return _ctx()
+
+    def test_event_strategy_uses_rule_exit_mode(self):
+        # 事件型策略不指定 hold_days → exit_mode 应为 rule_exit（而非 strategy_signal）
+        hist = _make_hist([10.0] * 40)
+        with self._patch(hist, {5}):
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_enter',
+                                          '2026-01-01', '2026-12-30', hold_days=None)
+        self.assertNotIn('error', res)
+        self.assertEqual(res['exit_mode'], 'rule_exit')
+
+    def test_event_strategy_take_profit(self):
+        # 买入价 10，涨过 +15% → 止盈离场
+        prices = [10.0] * 7 + [11.6] * 33  # idx7 收盘 11.6 ≥ 11.5
+        hist = _make_hist(prices)
+        with self._patch(hist, {5}):  # 信号 idx5 → 买入 idx6 开盘=10.0
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_enter',
+                                          '2026-01-01', '2026-12-30', hold_days=None)
+        self.assertEqual(len(res['trades']), 1)
+        t = res['trades'][0]
+        self.assertEqual(t['exit_reason'], 'take_profit')
+        self.assertEqual(t['status'], 'closed')
+        self.assertEqual(t['sell_date'], hist['date'].iloc[7].strftime('%Y-%m-%d'))
+
+    def test_event_strategy_stop_loss(self):
+        # 买入价 10，跌破 -8% → 止损离场
+        prices = [10.0] * 7 + [9.0] * 33  # idx7 收盘 9.0 ≤ 9.2
+        hist = _make_hist(prices)
+        with self._patch(hist, {5}):
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_enter',
+                                          '2026-01-01', '2026-12-30', hold_days=None)
+        self.assertEqual(len(res['trades']), 1)
+        t = res['trades'][0]
+        self.assertEqual(t['exit_reason'], 'stop_loss')
+        self.assertEqual(t['status'], 'closed')
+        self.assertLess(t['rate'], 0)
+
+    def test_event_strategy_max_hold(self):
+        # 价格平稳不触发止损/止盈 → 持满 20 交易日离场
+        hist = _make_hist([10.0] * 40)
+        with self._patch(hist, {5}):  # 买入 idx6，max_hold 卖点 idx 26
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_enter',
+                                          '2026-01-01', '2026-12-30', hold_days=None)
+        self.assertEqual(len(res['trades']), 1)
+        t = res['trades'][0]
+        self.assertEqual(t['exit_reason'], 'max_hold')
+        self.assertEqual(t['hold_days'], bh._EVENT_EXIT_MAX_HOLD)
+        self.assertEqual(t['sell_date'], hist['date'].iloc[26].strftime('%Y-%m-%d'))
+
+    def test_event_strategy_not_one_day_trap(self):
+        # 回归核心 bug：事件型策略不再退化成"买入次日即卖"的一日交易。
+        # 平稳行情下应持满 max_hold，而非 hold_days==1。
+        hist = _make_hist([10.0] * 40)
+        with self._patch(hist, {5}):
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_enter',
+                                          '2026-01-01', '2026-12-30', hold_days=None)
+        t = res['trades'][0]
+        self.assertGreater(t['hold_days'], 1)
+
+
+class CacheFallbackTests(unittest.TestCase):
+    """修复 C：缓存缺失或过薄时从 cn_stock_spot 补全（仅读 MySQL，不发外部 API）。"""
+
+    def test_cache_covers_range_true_when_recent(self):
+        hist = _make_hist([10.0] * 80, start='2026-01-01')
+        end = hist['date'].iloc[-1].strftime('%Y-%m-%d')
+        self.assertTrue(bh._cache_covers_range(hist, '2026-01-01', end))
+
+    def test_cache_covers_range_false_when_stale(self):
+        hist = _make_hist([10.0] * 5, start='2026-01-01')  # 截止 ~2026-01-07
+        self.assertFalse(bh._cache_covers_range(hist, '2026-01-01', '2026-05-30'))
+
+    def test_cache_covers_range_false_when_empty(self):
+        self.assertFalse(bh._cache_covers_range(None, '2026-01-01', '2026-05-30'))
+        self.assertFalse(bh._cache_covers_range(pd.DataFrame(), '2026-01-01', '2026-05-30'))
+
+    def test_thin_cache_augmented_from_spot(self):
+        # 缓存只有 5 行（截止 2026-01-07），spot 提供完整 80 行覆盖区间末。
+        thin = _make_hist([10.0] * 5, start='2026-01-01')
+        full = _make_hist([10.0 + i * 0.1 for i in range(80)], start='2026-01-01')
+        end = full['date'].iloc[-1].strftime('%Y-%m-%d')
+
+        def fake_strategy(stock, h, date=None, **kw):
+            return pd.Timestamp(date) == full['date'].iloc[5]
+
+        with mock.patch.object(bh, '_resolve_single_strategy',
+                               return_value=(fake_strategy, '测试策略')), \
+             mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
+             mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=thin), \
+             mock.patch.object(bh.stf, '_fallback_kline_from_spot', return_value=full) as m_spot, \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=full):
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_keep_increasing',
+                                          '2026-01-01', end, hold_days=5)
+        # 触发了 spot 补全，且 K 线扩展到完整 80 根（薄缓存不会再静默产出空结果）
+        m_spot.assert_called_once()
+        self.assertNotIn('error', res)
+        self.assertEqual(len(res['kline']), 80)
+        self.assertTrue(len(res['trades']) >= 1)
+
+    def test_full_cache_not_augmented(self):
+        # 缓存已覆盖区间末 → 不应调用 spot 补全
+        full = _make_hist([10.0 + i * 0.1 for i in range(80)], start='2026-01-01')
+        end = full['date'].iloc[-1].strftime('%Y-%m-%d')
+
+        def fake_strategy(stock, h, date=None, **kw):
+            return pd.Timestamp(date) == full['date'].iloc[5]
+
+        with mock.patch.object(bh, '_resolve_single_strategy',
+                               return_value=(fake_strategy, '测试策略')), \
+             mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
+             mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=full), \
+             mock.patch.object(bh.stf, '_fallback_kline_from_spot', return_value=None) as m_spot, \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=full):
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_keep_increasing',
+                                          '2026-01-01', end, hold_days=5)
+        m_spot.assert_not_called()
+        self.assertNotIn('error', res)
+
+    def test_no_cache_uses_spot_only(self):
+        # 缓存完全缺失 → 全量使用 spot 数据
+        full = _make_hist([10.0 + i * 0.1 for i in range(80)], start='2026-01-01')
+        end = full['date'].iloc[-1].strftime('%Y-%m-%d')
+
+        def fake_strategy(stock, h, date=None, **kw):
+            return pd.Timestamp(date) == full['date'].iloc[5]
+
+        with mock.patch.object(bh, '_resolve_single_strategy',
+                               return_value=(fake_strategy, '测试策略')), \
+             mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
+             mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=None), \
+             mock.patch.object(bh.stf, '_fallback_kline_from_spot', return_value=full), \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=full):
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_keep_increasing',
+                                          '2026-01-01', end, hold_days=5)
+        self.assertNotIn('error', res)
+        self.assertEqual(len(res['kline']), 80)
 
 
 class SingleBacktestHandlerTests(AsyncHTTPTestCase):

@@ -121,6 +121,12 @@ const getRateClass = (val: any) => {
   if (val === null || val === undefined) return ''
   return Number(val) >= 0 ? 'text-up' : 'text-down'
 }
+// 出场模式文案：fixed=固定持仓 / rule_exit=规则退出 / 其他=策略卖点
+const exitModeText = (row: any) => {
+  if (row?.exit_mode === 'fixed') return `固定 ${row.hold_days} 日`
+  if (row?.exit_mode === 'rule_exit') return '规则退出'
+  return '策略卖点'
+}
 
 // 跳转单股回测，携带当前筛选的股票代码进行回填
 const goSingleBacktest = () => {
@@ -173,7 +179,7 @@ const goSingleBacktest = () => {
           <template #default="{ row }">{{ row.start_date }} ~ {{ row.end_date }}</template>
         </el-table-column>
         <el-table-column label="出场模式" width="120" align="center">
-          <template #default="{ row }">{{ row.exit_mode === 'fixed' ? `固定 ${row.hold_days} 日` : '策略卖点' }}</template>
+          <template #default="{ row }">{{ exitModeText(row) }}</template>
         </el-table-column>
         <el-table-column prop="trade_count" label="笔数" width="70" align="center" />
         <el-table-column label="胜率" width="90" align="right">
@@ -209,7 +215,7 @@ const goSingleBacktest = () => {
             </div>
             <div class="bh-card-field">
               <span class="bh-lbl">出场模式</span>
-              <span>{{ row.exit_mode === 'fixed' ? `固定 ${row.hold_days} 日` : '策略卖点' }}</span>
+              <span>{{ exitModeText(row) }}</span>
             </div>
             <div class="bh-card-field">
               <span class="bh-lbl">笔数</span>

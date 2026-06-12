@@ -125,7 +125,20 @@ const fmtNum = (val: any, digits = 2) => {
   return Number(val).toFixed(digits)
 }
 const exitReasonText = (r: string) => {
-  return ({ hold_expired: '持仓到期', sell_signal: '策略卖点', interval_end: '区间末持仓' } as any)[r] || r || '—'
+  return ({
+    hold_expired: '持仓到期',
+    sell_signal: '策略卖点',
+    interval_end: '区间末持仓',
+    stop_loss: '触发止损',
+    take_profit: '触发止盈',
+    max_hold: '最大持仓到期',
+  } as any)[r] || r || '—'
+}
+// 退出模式文案：fixed=固定持仓 / rule_exit=规则退出（止损止盈）/ strategy_signal=策略卖点
+const exitModeText = (m: string, holdDays: any) => {
+  if (m === 'fixed') return `固定持仓 ${holdDays} 日`
+  if (m === 'rule_exit') return '规则退出（止损/止盈/最大持仓）'
+  return '策略卖点出场'
 }
 
 // 最大盈利 / 最大回撤对应的交易（用于指标卡副文案显示入场日）
@@ -143,9 +156,9 @@ const maxDrawdownTrade = () => {
 // 平均每笔收益副文案：固定持仓显示周期，策略卖点显示出场方式
 const avgSubText = () => {
   if (!result.value) return ''
-  return result.value.exit_mode === 'fixed'
-    ? `已平仓·持仓${result.value.hold_days}个交易日`
-    : '已平仓·策略卖点出场'
+  if (result.value.exit_mode === 'fixed') return `已平仓·持仓${result.value.hold_days}个交易日`
+  if (result.value.exit_mode === 'rule_exit') return '已平仓·规则退出（止损/止盈）'
+  return '已平仓·策略卖点出场'
 }
 
 // 定位到 K 线上的某笔交易
@@ -258,7 +271,7 @@ const goHistory = () => {
         <template #header>
           <div class="header-row">
             <span class="card-title">{{ result.name }}（{{ result.code }}）· {{ result.strategy_cn }}</span>
-            <span class="sub-info">{{ result.start_date }} ~ {{ result.end_date }} · {{ result.exit_mode === 'fixed' ? `固定持仓 ${result.hold_days} 日` : '策略卖点出场' }}</span>
+            <span class="sub-info">{{ result.start_date }} ~ {{ result.end_date }} · {{ exitModeText(result.exit_mode, result.hold_days) }}</span>
           </div>
         </template>
         <KlineBacktestChart ref="chartRef" :kline="result.kline" :indicators="result.indicators" :trades="result.trades" />

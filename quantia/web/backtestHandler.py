@@ -688,6 +688,29 @@ _DEFAULT_OVERLAY = ['ma20']
 
 _RISK_FREE_RATE = 0.03  # 年化无风险利率
 
+# ── 单股回测退出逻辑分类（修复 A：入场/退出解耦）─────────────────────────────
+# 事件型策略：入场信号仅在特定交易日成立（放量、突破、反弹、跌停当天等），
+# 其入场条件**不可**复用为"持仓条件"——否则买入次日条件必然不成立，
+# 会把回测退化成 T+1 一日交易，胜率/收益失真。这类策略默认走规则退出
+# （止损 / 止盈 / 最大持仓），与入场条件解耦。
+_EVENT_STRATEGIES = frozenset({
+    'cn_stock_strategy_enter',                 # 放量上涨
+    'cn_stock_strategy_parking_apron',         # 停机坪
+    'cn_stock_strategy_breakthrough_platform', # 突破平台
+    'cn_stock_strategy_high_tight_flag',       # 高而窄的旗形
+    'cn_stock_strategy_climax_limitdown',      # 放量跌停
+    'cn_stock_strategy_trend_pullback',        # 趋势回调
+    'cn_stock_strategy_oversold_rebound',      # 超跌反弹
+    'cn_stock_strategy_breakout_confirm',      # 突破确认
+})
+# 状态型策略（均线多头、海龟、低ATR、回踩年线、无大幅回撤）入场条件可连续多日
+# 成立，复用入场条件做持仓判断是合理的（条件消失即离场），仍走 strategy_signal。
+
+# 事件型策略的默认规则退出参数（按收盘价逐日判定）
+_EVENT_EXIT_STOP_LOSS = 0.08    # 止损：跌破买入价 8%
+_EVENT_EXIT_TAKE_PROFIT = 0.15  # 止盈：涨过买入价 15%
+_EVENT_EXIT_MAX_HOLD = 20       # 最大持仓交易日
+
 
 def _is_index_code(code):
     """指数代码识别：6 位指数（000300/399xxx 等）须走 load_benchmark_data，本功能仅支持个股。"""
@@ -715,6 +738,27 @@ def _price_limit_ratio(code, name):
     if code.startswith('300') or code.startswith('301') or code.startswith('688') or code.startswith('689'):
         return 0.20
     return 0.10
+
+
+def _cache_covers_range(hist, start_date_str, end_date_str):
+    """缓存历史是否覆盖回测区间末（修复 C：判断是否需要 spot 补全）。
+
+    只要缓存最新日期 < 区间末，就视为不足，触发 cn_stock_spot 补全。
+    缓存为空也视为不足。
+    """
+    if hist is None or len(hist) == 0 or 'date' not in getattr(hist, 'columns', []):
+        return False
+    try:
+        h = hist['date']
+        if not pd.api.types.is_datetime64_any_dtype(h):
+            h = pd.to_datetime(h)
+        cache_max = h.max()
+        end_ts = pd.Timestamp(str(end_date_str).replace('-', '')) \
+            if '-' not in str(end_date_str) else pd.Timestamp(end_date_str)
+        # 允许 3 个自然日宽松度（周末/节假日缓存可能停在周五）
+        return cache_max >= (end_ts - pd.Timedelta(days=3))
+    except Exception:
+        return True  # 判断异常时不强制补全，沿用缓存
 
 
 def _resolve_single_strategy(strategy_name):
@@ -858,7 +902,10 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
     if strategy_func is None:
         return {"error": f"策略 {strategy} 暂不支持单股区间回测（仅支持内置选股策略）"}
 
-    # 解析持仓周期
+    # 解析持仓周期 / 退出模式
+    #   - 显式 hold_days  → 固定持仓（fixed）
+    #   - 事件型策略       → 规则退出（rule_exit，止损/止盈/最大持仓）
+    #   - 状态型策略       → 入场条件消失即离场（strategy_signal）
     exit_mode = 'strategy_signal'
     if hold_days is not None and str(hold_days).strip() != '':
         try:
@@ -870,9 +917,25 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
         exit_mode = 'fixed'
     else:
         hold_days = None
+        if strategy in _EVENT_STRATEGIES:
+            exit_mode = 'rule_exit'
 
     # 读取完整历史缓存（含区间前预热，供 MA250/长周期指标）
     hist = stf.read_stock_hist_from_cache(code, '19900101', '20991231')
+    # 修复 C：缓存缺失或过薄时，从 cn_stock_spot 日线快照补全（仅读 MySQL，不发起外部 API）。
+    # read_stock_hist_from_cache 仅在缓存文件"完全不存在"时才回退 spot，
+    # 文件存在但只有少量行（本地/新股/同步中断）时会静默产出空结果。
+    if hist is None or len(hist) == 0 or not _cache_covers_range(hist, start_date_str, end_date_str):
+        spot_hist = stf._fallback_kline_from_spot(code, '19900101', '20991231')
+        if spot_hist is not None and len(spot_hist) > 0:
+            if hist is None or len(hist) == 0:
+                hist = spot_hist
+            else:
+                # 合并缓存与 spot，按日期去重（缓存为前复权优先，spot 补缺日）
+                hist = pd.concat([hist, spot_hist], ignore_index=True)
+                if not pd.api.types.is_datetime64_any_dtype(hist['date']):
+                    hist['date'] = pd.to_datetime(hist['date'])
+                hist = hist.drop_duplicates(subset=['date'], keep='first')
     if hist is None or len(hist) == 0:
         return {"error": f"股票 {code} 无缓存数据，请先执行数据获取"}
     hist = hist.copy()
@@ -934,7 +997,24 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
             if target < n:
                 sell_i = target
                 exit_reason = 'hold_expired'
-        else:  # strategy_signal：买入后首个策略条件不再成立日离场
+        elif exit_mode == 'rule_exit':
+            # 事件型策略：入场信号仅当日成立，不能复用入场条件做持仓判断。
+            # 改用与入场解耦的规则退出（按收盘价逐日判定）：
+            #   止损 -8% / 止盈 +15% / 最大持仓 20 交易日，三者先到先离场。
+            stop_price = buy_price * (1 - _EVENT_EXIT_STOP_LOSS)
+            target_price = buy_price * (1 + _EVENT_EXIT_TAKE_PROFIT)
+            for j in range(buy_i + 1, n):
+                c_j = float(hist.iloc[j]['close'])
+                if c_j <= stop_price:
+                    sell_i, exit_reason = j, 'stop_loss'
+                    break
+                if c_j >= target_price:
+                    sell_i, exit_reason = j, 'take_profit'
+                    break
+                if (j - buy_i) >= _EVENT_EXIT_MAX_HOLD:
+                    sell_i, exit_reason = j, 'max_hold'
+                    break
+        else:  # strategy_signal：状态型策略，买入后首个入场条件不再成立日离场
             for j in range(buy_i + 1, n):
                 if not _strategy_hit(strategy_func, stock, hist, dates_all[j].to_pydatetime()):
                     sell_i = j
