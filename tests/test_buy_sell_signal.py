@@ -88,6 +88,16 @@ class TestPeakDrawdownGate(unittest.TestCase):
         with patch.object(bss.stf, 'read_stock_hist_from_cache', return_value=hist):
             self.assertTrue(bss._peak_drawdown_ok('000001', TEST_DATE_STR, 'buy', RATIO))
 
+    def test_non_unique_index_does_not_break(self):
+        # 缓存索引非唯一（重复 0,1,2）：idxmax + .loc 仍应取到正确现价，不应因返回 Series 而静默失败。
+        hist = pd.DataFrame({
+            'date': ['2024-01-02', '2024-06-03', TEST_DATE_STR],
+            'high': [50.0, 100.0, 16.0],
+            'close': [40.0, 90.0, 15.0],
+        }, index=[0, 1, 0])
+        with patch.object(bss.stf, 'read_stock_hist_from_cache', return_value=hist):
+            self.assertTrue(bss._peak_drawdown_ok('000001', TEST_DATE_STR, 'buy', RATIO))
+
 
 class TestLoadParams(unittest.TestCase):
     def test_no_table_returns_defaults(self):

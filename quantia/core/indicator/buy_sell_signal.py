@@ -131,6 +131,9 @@ def _peak_drawdown_ok(code, date_str, mode, ratio):
             return False
         if 'high' not in hist.columns or 'close' not in hist.columns or 'date' not in hist.columns:
             return False
+        # 规范化为唯一 RangeIndex：下方用 idxmax + .loc 定位现价，依赖索引唯一，
+        # 而缓存读取路径不保证索引唯一/连续。
+        hist = hist.reset_index(drop=True)
 
         # 只看 <= date_str 的历史（防止用到未来数据）：历史最高与现价都基于该截面，
         # 否则对历史日期 recompute 时会用未来高点判定回撤，产生前视偏差（look-ahead bias）。
@@ -138,8 +141,8 @@ def _peak_drawdown_ok(code, date_str, mode, ratio):
         target = pd.to_datetime(str(date_str)[:10], errors='coerce')
         mask = (d <= target) if not pd.isna(target) else d.notna()
         sub = hist[mask]
-        sub_dates = d[mask]
-        if len(sub) == 0:
+        sub_dates = d[mask].dropna()
+        if len(sub) == 0 or len(sub_dates) == 0:
             return False
 
         peak = pd.to_numeric(sub['high'], errors='coerce').max()
