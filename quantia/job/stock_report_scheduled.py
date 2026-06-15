@@ -325,7 +325,7 @@ def scheduled_report_analysis(max_stocks: Optional[int] = None,
             _logger.info('[定时分析] 关注列表为空，跳过')
         return {'generated': 0, 'skipped': 0, 'failed': 0, 'total': 0}
 
-    stats = {'generated': 0, 'skipped': 0, 'failed': 0, 'total': len(codes)}
+    stats = {'generated': 0, 'skipped': 0, 'failed': 0, 'failover': 0, 'total': len(codes)}
 
     for code in codes:
         # 复用窗口内已有较完整报告则跳过（reuse_hours<=0 表示每次都重新分析）
@@ -347,11 +347,20 @@ def scheduled_report_analysis(max_stocks: Optional[int] = None,
 
         # 生成报告
         try:
-            from quantia.lib.ai import run_agent
+            from quantia.lib.ai.failover import run_agent_with_failover
             from quantia.lib.ai.feature_switch import check_feature
             check_feature('stock_report')
 
-            result = run_agent(
+            def _on_failover(failed_ov, next_ov, exc, _code=code):
+                stats['failover'] = stats.get('failover', 0) + 1
+                _logger.warning(
+                    f'[定时分析] {_code} 默认模型 {failed_ov.get("provider") or "<default>"} '
+                    f'不可用({type(exc).__name__})，切换到 '
+                    f'{next_ov.get("provider") or "<default>"} 重试'
+                )
+
+            result = run_agent_with_failover(
+                on_failover=_on_failover,
                 user_message=(
                     f"请为 A 股 {code} 生成一份完整的投资分析报告。"
                     f"包含：技术面、基本面、资金面、事件面综合分析，"
@@ -707,7 +716,7 @@ def pregenerate_hot_stocks(top_n: int = 50,
         return {'generated': 0, 'skipped': 0, 'failed': 0}
 
     today = datetime.date.today().isoformat()
-    stats = {'generated': 0, 'skipped': 0, 'failed': 0, 'total': len(rows)}
+    stats = {'generated': 0, 'skipped': 0, 'failed': 0, 'failover': 0, 'total': len(rows)}
 
     for code, name in rows:
         if not code or len(code) != 6:
@@ -725,8 +734,18 @@ def pregenerate_hot_stocks(top_n: int = 50,
             pass
 
         try:
-            from quantia.lib.ai import run_agent
-            result = run_agent(
+            from quantia.lib.ai.failover import run_agent_with_failover
+
+            def _on_failover(failed_ov, next_ov, exc, _code=code):
+                stats['failover'] = stats.get('failover', 0) + 1
+                _logger.warning(
+                    f'[热门预生成] {_code} 默认模型 {failed_ov.get("provider") or "<default>"} '
+                    f'不可用({type(exc).__name__})，切换到 '
+                    f'{next_ov.get("provider") or "<default>"} 重试'
+                )
+
+            result = run_agent_with_failover(
+                on_failover=_on_failover,
                 user_message=f"请为 A 股 {code} 生成分析报告。",
                 scene='report_cron',
                 agent='stock_analyst',
