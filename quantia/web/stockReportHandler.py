@@ -182,6 +182,12 @@ def _to_user_friendly_error(exc: Exception) -> str:
         return raw
     if '已被管理员禁用' in raw or '预算已耗尽' in raw:
         return raw
+    # HTTP 402 Payment Required：上游 AI 服务商账户欠费/余额不足/额度用尽。
+    # 非代码问题，需充值或更换可用的 API Key，给出可操作提示而非裸 "HTTP 402"。
+    status_code = getattr(exc, 'status_code', 0)
+    if status_code == 402 or 'http 402' in lower or '欠费' in raw or '余额不足' in raw \
+            or 'insufficient' in lower or 'arrear' in lower or 'balance' in lower:
+        return 'AI 服务账户余额不足或已欠费，请充值或联系管理员检查 API Key 额度'
     if 'timeout' in lower or 'timed out' in lower or '超时' in raw:
         return 'AI 服务响应超时，请稍后重试'
     if '未注册的 provider' in raw or 'provider' in lower or 'api_key' in lower or 'authentication' in lower:
@@ -682,7 +688,14 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
             }))
 
     except Exception as exc:
-        _logger.exception(f'[stockReport] Agent 报告生成失败: {exc}')
+        # ProviderError 携带上游 status_code/body —— 一并记录，便于定位
+        # HTTP 402(账户欠费/余额不足) 等仅凭 "HTTP 402" 无法判断的上游错误。
+        detail = ''
+        status_code = getattr(exc, 'status_code', 0)
+        body = getattr(exc, 'body', '')
+        if status_code or body:
+            detail = f' [status={status_code} body={body}]'
+        _logger.exception(f'[stockReport] Agent 报告生成失败: {exc}{detail}')
         q.put(('error', {'msg': _to_user_friendly_error(exc)}))
     finally:
         q.put((_STREAM_SENTINEL, None))
