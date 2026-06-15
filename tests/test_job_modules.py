@@ -893,7 +893,8 @@ class TestIndicatorsDataDailyJob(unittest.TestCase):
     def test_guess_buy_inserts(self, mock_engine, mock_exist, mock_exec, mock_insert):
         m = self._mod()
         df = pd.DataFrame({'date': [TEST_DATE_STR], 'code': ['000001'], 'name': ['T']})
-        with patch('pandas.read_sql', return_value=df):
+        with patch('pandas.read_sql', return_value=df), \
+             patch('quantia.core.indicator.buy_sell_signal._peak_drawdown_ok', return_value=True):
             m.guess_buy(TEST_DATE)
         mock_insert.assert_called_once()
 
@@ -913,7 +914,8 @@ class TestIndicatorsDataDailyJob(unittest.TestCase):
     def test_guess_sell_inserts(self, mock_engine, mock_exist, mock_exec, mock_insert):
         m = self._mod()
         df = pd.DataFrame({'date': [TEST_DATE_STR], 'code': ['000001'], 'name': ['T']})
-        with patch('pandas.read_sql', return_value=df):
+        with patch('pandas.read_sql', return_value=df), \
+             patch('quantia.core.indicator.buy_sell_signal._peak_drawdown_ok', return_value=True):
             m.guess_sell(TEST_DATE)
         mock_insert.assert_called_once()
 

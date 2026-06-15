@@ -36,6 +36,7 @@ import quantia.lib.version as version
 import quantia.web.dataTableHandler as dataTableHandler
 import quantia.web.dataIndicatorsHandler as dataIndicatorsHandler
 import quantia.web.strategyParamsHandler as strategyParamsHandler
+import quantia.web.indicatorParamsHandler as indicatorParamsHandler
 import quantia.web.backtestHandler as backtestHandler
 import quantia.web.backtestDashboardHandler as backtestDashboardHandler
 import quantia.web.klineHandler as klineHandler
@@ -97,6 +98,9 @@ class Application(tornado.web.Application):
             (r"/quantia/api/strategy/params/diff", strategyParamsHandler.GetParamsDiffHandler),
             (r"/quantia/api/strategy/filter", strategyParamsHandler.FilterStocksHandler),
             (r"/quantia/api/strategy/history", strategyParamsHandler.GetStrategyHistoryHandler),
+            # 指标买卖信号：立即重算 + AI 参数顾问
+            (r"/quantia/api/indicator/signal_recompute", indicatorParamsHandler.RecomputeIndicatorSignalsHandler),
+            (r"/quantia/api/indicator/advisor", indicatorParamsHandler.IndicatorAdvisorHandler),
             # K线数据JSON API
             (r"/quantia/api/kline", klineHandler.GetKlineDataHandler),
             # 股票财务数据

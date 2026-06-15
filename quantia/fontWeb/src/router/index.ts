@@ -196,6 +196,12 @@ const routes: RouteRecordRaw[] = [
         name: 'IndicatorDetail',
         component: () => import('@/views/indicator/index.vue'),
         meta: { title: '指标详情', hidden: true }
+      },
+      {
+        path: 'params',
+        name: 'IndicatorParams',
+        component: () => import('@/views/settings/indicator-params.vue'),
+        meta: { title: '指标参数设置', hidden: true }
       }
     ]
   },

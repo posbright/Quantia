@@ -59,6 +59,10 @@ const pageTitle = computed(() => route.meta.title as string || '股票数据')
 const noDateFilter = computed(() => route.meta.noDateFilter as boolean ?? false)
 const isBacktestSummary = computed(() => tableName.value === 'cn_stock_backtest')
 const isFundFlowIndustry = computed(() => tableName.value === 'cn_stock_fund_flow_industry')
+// 指标买/卖信号榜单：提供「指标设置」入口
+const isIndicatorSignalTable = computed(
+  () => tableName.value === 'cn_stock_indicators_buy' || tableName.value === 'cn_stock_indicators_sell'
+)
 
 // 资金流向系列页面（个股/行业/概念）统一交互：默认按今日主力净流入-净额降序、列可排序、最大股可点击
 const FUND_FLOW_TABLES = ['cn_stock_fund_flow', 'cn_stock_fund_flow_industry', 'cn_stock_fund_flow_concept']
@@ -381,6 +385,11 @@ const goAnalysis = (row: any) => {
   })
 }
 
+// 跳转到指标参数设置页（仅指标买/卖榜单工具栏可见）
+const goIndicatorParams = () => {
+  router.push('/indicator/params')
+}
+
 // 关注/取消关注
 const handleAttention = async (row: any) => {
   const isCurrentlyAttention = !!row.cdatetime
@@ -633,6 +642,10 @@ onMounted(async () => {
           </el-input>
         </div>
         <div class="toolbar-right">
+          <el-button v-if="isIndicatorSignalTable" type="warning" plain @click="goIndicatorParams">
+            <el-icon><Setting /></el-icon>
+            {{ isMobile ? '' : '指标设置' }}
+          </el-button>
           <el-button @click="loadData">
             <el-icon><Refresh /></el-icon>
             {{ isMobile ? '' : '刷新' }}

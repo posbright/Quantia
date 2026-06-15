@@ -15,6 +15,7 @@ import quantia.lib.run_template as runt
 import quantia.core.tablestructure as tbs
 import quantia.lib.database as mdb
 import quantia.core.indicator.calculate_indicator as idr
+import quantia.core.indicator.buy_sell_signal as bss
 from quantia.core.singleton_stock import stock_hist_data
 import quantia.lib.envconfig as _cfg
 
@@ -90,24 +91,12 @@ def run_check(stocks, date=None, workers=_INDICATOR_WORKERS):
         return data
 
 
-# 对每日指标数据，进行筛选。将符合条件的。二次筛选出来。
-# 只是做简单筛选
+# 对每日指标数据进行二次筛选：超卖深跌抄底（限定基本面范围 + 排除 ST）。
+# 选股逻辑集中在 quantia.core.indicator.buy_sell_signal，两个 job 共用。
 def guess_buy(date):
     try:
-        _table_name = tbs.TABLE_CN_STOCK_INDICATORS['name']
-        if not mdb.checkTableIsExist(_table_name):
-            return
-
-        _columns = tuple(tbs.TABLE_CN_STOCK_FOREIGN_KEY['columns'])
-        _selcol = '`,`'.join(_columns)
-        sql = f'''SELECT `{_selcol}` FROM `{_table_name}` WHERE `date` = %s and
-                `kdjk` >= 80 and `kdjd` >= 70 and `kdjj` >= 100 and `rsi_6` >= 80 and
-                `cci` >= 100 and `cr` >= 300 and `wr_6` >= -20 and `vr` >= 160'''
-        data = pd.read_sql(sql=sql, con=mdb.engine(), params=(date,))
-        data = data.drop_duplicates(subset="code", keep="last")
-        # data.set_index('code', inplace=True)
-
-        if len(data.index) == 0:
+        data = bss.select_buy_signals(date)
+        if data is None or len(data.index) == 0:
             return
 
         table_name = tbs.TABLE_CN_STOCK_INDICATORS_BUY['name']
@@ -126,22 +115,11 @@ def guess_buy(date):
         logging.error(f"indicators_data_daily_job.guess_buy处理异常", exc_info=True)
 
 
-# 设置卖出数据。
+# 设置卖出数据：超买见顶派发（贴近历史峰值 + 排除 ST，不限基本面范围）。
 def guess_sell(date):
     try:
-        _table_name = tbs.TABLE_CN_STOCK_INDICATORS['name']
-        if not mdb.checkTableIsExist(_table_name):
-            return
-
-        _columns = tuple(tbs.TABLE_CN_STOCK_FOREIGN_KEY['columns'])
-        _selcol = '`,`'.join(_columns)
-        sql = f'''SELECT `{_selcol}` FROM `{_table_name}` WHERE `date` = %s and
-                `kdjk` < 20 and `kdjd` < 30 and `kdjj` < 10 and `rsi_6` < 20 and
-                `cci` < -100 and `cr` < 40 and `wr_6` < -80 and `vr` < 40'''
-        data = pd.read_sql(sql=sql, con=mdb.engine(), params=(date,))
-        data = data.drop_duplicates(subset="code", keep="last")
-        # data.set_index('code', inplace=True)
-        if len(data.index) == 0:
+        data = bss.select_sell_signals(date)
+        if data is None or len(data.index) == 0:
             return
 
         table_name = tbs.TABLE_CN_STOCK_INDICATORS_SELL['name']

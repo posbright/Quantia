@@ -8,7 +8,7 @@ export interface StrategyParam {
   key: string
   label: string
   description: string
-  type: 'number' | 'text' | 'password' | 'select'
+  type: 'number' | 'text' | 'password' | 'select' | 'switch'
   value: any
   min?: number
   max?: number
