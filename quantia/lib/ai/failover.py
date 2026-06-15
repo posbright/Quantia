@@ -27,24 +27,12 @@ import os
 from typing import Any, Callable, Dict, List, Optional
 
 from quantia.lib.ai.config import list_provider_profiles
-from quantia.lib.ai.exceptions import (
-    AIError,
-    ProviderError,
-    RateLimitError,
-    ValidationError,
-)
+from quantia.lib.ai.exceptions import AIError, ValidationError
 
 __author__ = 'Quantia'
 __date__ = '2026/05/15'
 
 _logger = logging.getLogger('quantia.ai.failover')
-
-# 欠费 / 配额 / 不可用 类错误的关键字（用于兜底匹配 body / message）
-_FAILOVER_KEYWORDS = (
-    'insufficient', 'balance', 'quota', 'arrears', 'payment required',
-    'expired', 'exceeded', 'billing', 'unavailable', 'not found',
-    '欠费', '余额', '额度', '配额', '过期', '不可用',
-)
 
 
 def should_failover(exc: BaseException) -> bool:
@@ -53,19 +41,18 @@ def should_failover(exc: BaseException) -> bool:
     可转移（返回 True）：
         - RateLimitError：上游 429（配额耗尽 / 过载）—— 换一家通常可恢复；
         - ProviderError：上游 401/402/403（鉴权/欠费）、404（模型不存在）、
-          5xx（服务端故障）、status_code==0（网络错误）等 —— 均换一家重试；
-        - 其它 AIError（非 ValidationError）兜底转移。
+          5xx（服务端故障）、网络错误（已被 provider 层包装）等 —— 均换一家重试；
+        - 其它 AIError：如 provider 解析失败 —— 兜底转移。
     不可转移（返回 False）：
         - ValidationError：模型输出/沙箱校验失败，换 provider 也无济于事；
-          应立即抛出由调用方按失败处理。
+        - 非 AIError（TypeError/KeyError 等程序/配置 bug）：provider 层已把所有
+          上游与网络错误包装成 ProviderError/RateLimitError，故裸异常必然是真实
+          bug，重试其它 provider 无意义且会掩盖问题 —— 立即抛出。
     """
     if isinstance(exc, ValidationError):
         return False
-    if isinstance(exc, (RateLimitError, ProviderError, AIError)):
-        return True
-    # 非 AIError（如底层网络异常未被包装）兜底：尝试下一个
-    text = str(exc).lower()
-    return any(k in text for k in _FAILOVER_KEYWORDS) or True
+    return isinstance(exc, AIError)
+
 
 
 def build_fallback_chain(

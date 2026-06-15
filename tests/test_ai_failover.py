@@ -54,6 +54,14 @@ class ShouldFailoverTests(unittest.TestCase):
     def test_validation_error_not_failover(self):
         self.assertFalse(fo.should_failover(ValidationError('bad output')))
 
+    def test_other_ai_error_failover(self):
+        self.assertTrue(fo.should_failover(AIError('未知 provider')))
+
+    def test_raw_exception_not_failover(self):
+        # provider 层已包装所有上游/网络错误为 AIError，裸异常视为真实 bug，不转移
+        self.assertFalse(fo.should_failover(KeyError('boom')))
+        self.assertFalse(fo.should_failover(TypeError('bad call')))
+
 
 class BuildChainTests(unittest.TestCase):
     def setUp(self):
@@ -134,6 +142,11 @@ class RunWithFailoverTests(unittest.TestCase):
     def test_validation_error_no_failover(self):
         with self.assertRaises(ValidationError):
             self._run([ValidationError('bad'), 'OK2'])
+
+    def test_raw_exception_no_failover(self):
+        # 裸 KeyError 视为真实 bug，立即抛出，不尝试其它 provider
+        with self.assertRaises(KeyError):
+            self._run([KeyError('boom'), 'OK2'])
 
     def test_all_fail_raises_last(self):
         with self.assertRaises(ProviderError) as ctx:
