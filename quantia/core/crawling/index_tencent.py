@@ -222,3 +222,78 @@ def index_spot_tencent() -> pd.DataFrame:
     temp_df = temp_df.drop_duplicates(subset=['代码'], keep='first').reset_index(drop=True)
 
     return temp_df
+
+
+def _fmt_dash_date(yyyymmdd):
+    """将 YYYYMMDD 转为腾讯 K线接口所需的 YYYY-MM-DD；非法输入返回空串。"""
+    s = str(yyyymmdd or '').strip()
+    if len(s) == 8 and s.isdigit():
+        return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+    # 已是带分隔符的日期则原样返回
+    return s
+
+
+def index_hist_tencent(symbol="000300", start_date="19700101",
+                       end_date="20500101", timeout=30) -> pd.DataFrame:
+    """
+    腾讯财经-指数历史日 K 线（东方财富指数 K线 API 的备选源）。
+
+    使用腾讯 fqkline 日线接口（指数无需复权）：
+        https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh000001,day,2024-01-01,2024-12-31,640,
+
+    返回 DataFrame 列名与 stock_index_hist_em 对齐（中文列名），
+    便于上层 _normalize_index_hist 直接复用；腾讯仅提供
+    日期/开盘/收盘/最高/最低/成交量，其余列缺省为 NaN。
+
+    :param symbol: 指数代码（如 '000300'）
+    :param start_date: 起始日期 YYYYMMDD
+    :param end_date: 结束日期 YYYYMMDD
+    :return: 指数历史 K 线 DataFrame（失败/无数据时为空 DataFrame）
+    """
+    tx_code = _code_to_tencent(symbol)
+    beg = _fmt_dash_date(start_date)
+    end = _fmt_dash_date(end_date)
+    # 腾讯 fqkline 接口 count 上限为 2000（实测 >2000 返回 param error）。
+    # count 为「返回的最近 N 根」上限，且仍受 [beg, end] 区间二次约束；
+    # 区间内不足 2000 根时只返回区间内的数据，故固定取 2000 安全且足够：
+    #   - 增量 tail：区间窄，仅返回区间内寥寥数根；
+    #   - 兜底全量：返回最近 2000 根（约 8 年），满足备用源需求。
+    url = (
+        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+        f"?param={tx_code},day,{beg},{end},2000,"
+    )
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://gu.qq.com/',
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=timeout)
+        if response.status_code != 200 or not (response.text and response.text.strip()):
+            return pd.DataFrame()
+        data_json = response.json()
+    except Exception as e:
+        logging.debug(f"指数腾讯历史K线获取异常 {symbol}: {e}")
+        return pd.DataFrame()
+
+    node = (data_json.get('data') or {}).get(tx_code) or {}
+    # 优先取未复权日线（day），兼容个别接口返回 qfqday
+    klines = node.get('day') or node.get('qfqday') or []
+    if not klines:
+        return pd.DataFrame()
+
+    rows = []
+    for item in klines:
+        # 每行至少 [日期, 开盘, 收盘, 最高, 最低, 成交量]
+        if not item or len(item) < 6:
+            continue
+        rows.append(item[:6])
+    if not rows:
+        return pd.DataFrame()
+
+    temp_df = pd.DataFrame(rows, columns=["日期", "开盘", "收盘", "最高", "最低", "成交量"])
+    temp_df.index = pd.to_datetime(temp_df["日期"])
+    temp_df.reset_index(inplace=True, drop=True)
+    for col in ["开盘", "收盘", "最高", "最低", "成交量"]:
+        temp_df[col] = pd.to_numeric(temp_df[col], errors="coerce")
+    return temp_df
+

@@ -175,7 +175,17 @@ def stock_index_hist_em(
     if _CRAWL_DELAY_ENABLED:
         time.sleep(random.uniform(_CRAWL_DELAY_INDEX_MIN, _CRAWL_DELAY_INDEX_MAX))
     r = fetcher.make_request(url, params=params)
-    data_json = r.json()
+    # 空响应体守卫：东方财富在软限流时常返回 HTTP 200 + 空 body，
+    # 直接 r.json() 会抛 "Expecting value: line 1 column 1 (char 0)"。
+    # 这里显式识别为「无数据」返回空 DataFrame，让上层多源降级正常切换。
+    if not (r.text and r.text.strip()):
+        logging.warning(f"指数 {symbol} 东方财富返回空响应体（疑似限流）")
+        return pd.DataFrame()
+    try:
+        data_json = r.json()
+    except ValueError as e:
+        logging.warning(f"指数 {symbol} 东方财富响应非 JSON（疑似限流）：{e}")
+        return pd.DataFrame()
     if not (data_json.get("data") and data_json["data"].get("klines")):
         return pd.DataFrame()
 

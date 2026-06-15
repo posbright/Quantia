@@ -1168,6 +1168,38 @@ def _get_index_cache_meta_path(code):
     return os.path.join(index_hist_cache_path, f"{code}.meta")
 
 
+def _fetch_index_hist_multi(code, start_date, end_date):
+    """获取指数历史 K 线（多源自动降级：东方财富 → 腾讯 → 新浪）。
+
+    与 fetch_index_spots 一致，复用数据源健康度追踪：东方财富在软限流
+    （空响应体 / RemoteDisconnected）时返回空 DataFrame，自动切到腾讯，
+    腾讯再失败切新浪。三源均返回中文列名 DataFrame，供 _normalize_index_hist 统一解析。
+
+    返回：原始（未标准化）DataFrame，或 None（全部失败/无数据）。
+    """
+    data_sources = [
+        ("东方财富", sie.stock_index_hist_em),
+        ("腾讯财经", itc.index_hist_tencent),
+        ("新浪财经", isa.index_hist_sina),
+    ]
+    data_sources = _sort_sources_by_health(data_sources)
+
+    for source_name, fetch_func in data_sources:
+        try:
+            raw = fetch_func(symbol=code, start_date=start_date, end_date=end_date)
+            if raw is not None and len(raw) > 0:
+                _report_source_success(source_name)
+                return raw
+            # 空结果：可能是该区间确无交易日（合法），也可能是软限流空响应。
+            # 与 fetch_index_spots 一致——不惩罚数据源健康度（健康度为全局共享，
+            # 误降级会影响实时行情等其他调用方），直接尝试下一个源。
+        except Exception as e:
+            logging.debug(f"指数 {code} 从 {source_name} 获取历史K线失败：{e}")
+            _report_source_failure(source_name)
+
+    return None
+
+
 def index_hist_cache_incremental(code, date_start, date_end):
     """
     增量更新指数历史 K 线缓存。
@@ -1231,10 +1263,7 @@ def index_hist_cache_incremental(code, date_start, date_end):
         new_parts = []
         if need_tail:
             try:
-                raw = sie.stock_index_hist_em(
-                    symbol=code, period='daily',
-                    start_date=tail_start, end_date=date_end
-                )
+                raw = _fetch_index_hist_multi(code, tail_start, date_end)
                 if raw is not None and len(raw) > 0:
                     _df = _normalize_index_hist(raw, _standard_columns)
                     if _df is not None:
@@ -1245,10 +1274,7 @@ def index_hist_cache_incremental(code, date_start, date_end):
 
         if need_head:
             try:
-                raw = sie.stock_index_hist_em(
-                    symbol=code, period='daily',
-                    start_date=date_start, end_date=head_end
-                )
+                raw = _fetch_index_hist_multi(code, date_start, head_end)
                 if raw is not None and len(raw) > 0:
                     _df = _normalize_index_hist(raw, _standard_columns)
                     if _df is not None:
@@ -1291,6 +1317,16 @@ def index_hist_cache_incremental(code, date_start, date_end):
 
             return merged
 
+        # 需要拉取（tail/head）但未取得任何新数据 → 本次未能推进缓存。
+        # 返回 None 让上层据此计为失败（用于熔断判断）；磁盘上的旧缓存保持
+        # 不变，下次任务会重试。注意：真正的非交易日（确无新 K 线）也会走到
+        # 这里，此时熔断提前结束本轮无害（本就无数据可取）。
+        # 若直接返回 stale cached_data（len>0），上层会误判为成功，导致缓存
+        # 建立后熔断永久失效（每个指数都有旧缓存兜底）。
+        if need_tail or need_head:
+            return None
+
+        # 无需拉取（缓存已完整覆盖请求区间）→ 返回现有缓存，视为成功。
         return cached_data
 
     except Exception as e:
@@ -1439,10 +1475,19 @@ def update_index_caches(index_codes=None, date_start=None, date_end=None, index_
     idx_delay_min = _cfg.get_float('QUANTIA_INDEX_DELAY_MIN', 0.5)
     idx_delay_max = _cfg.get_float('QUANTIA_INDEX_DELAY_MAX', 1.5)
 
+    # 连续失败熔断阈值：当多源（东财/腾讯/新浪）连续全部失败达到该数量时，
+    # 判定数据源整体不可用（如机房 IP 被全网限流），提前中止剩余指数，
+    # 避免在已确认不可用的情况下空转数百次请求（每次还要走三源重试）。
+    # 0 或负数表示禁用熔断（保持旧行为，把整张列表跑完）。
+    fail_breaker = _cfg.get_int('QUANTIA_INDEX_FAIL_BREAKER', 12)
+
     success = 0
     fail = 0
     skip = 0
-    for code in index_codes:
+    consecutive_fails = 0
+    aborted = False
+    total = len(index_codes)
+    for idx, code in enumerate(index_codes):
         code = str(code)
         try:
             # 预检查：meta 已最新则跳过（与股票缓存一致）
@@ -1460,17 +1505,32 @@ def update_index_caches(index_codes=None, date_start=None, date_end=None, index_
             result = index_hist_cache_incremental(code, date_start, date_end)
             if result is not None and len(result) > 0:
                 success += 1
+                consecutive_fails = 0
             else:
                 fail += 1
+                consecutive_fails += 1
                 logging.warning(f"指数 {code} K线缓存更新失败: 无数据")
             # 实际发起 API 请求，添加延迟防限流
             time.sleep(random.uniform(idx_delay_min, idx_delay_max))
         except Exception as e:
             fail += 1
+            consecutive_fails += 1
             logging.warning(f"指数 {code} K线缓存更新异常: {e}")
+
+        # 熔断：连续失败超阈值，判定数据源整体不可用（或当日非交易日无新数据），中止剩余指数
+        if fail_breaker > 0 and consecutive_fails >= fail_breaker:
+            remaining = total - (idx + 1)
+            aborted = True
+            logging.warning(
+                f"指数缓存熔断：连续 {consecutive_fails} 个指数未取得新数据"
+                f"（数据源整体不可用，或当日为非交易日），提前中止剩余 {remaining} 个指数"
+                f"（本次未处理，留待下次任务补全）"
+            )
+            break
 
     logging.info(
         f"指数缓存更新：API成功={success}, 失败={fail}, 已最新跳过={skip}"
+        + ("，已熔断中止" if aborted else "")
     )
     return success + skip, fail
 # 当此版本号与 .meta 中的 filtered_version 匹配时，读取缓存可跳过 _filter_ohlc_outliers

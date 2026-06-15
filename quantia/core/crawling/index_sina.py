@@ -234,3 +234,87 @@ def index_spot_sina() -> pd.DataFrame:
     temp_df = temp_df.drop_duplicates(subset=['代码'], keep='first').reset_index(drop=True)
 
     return temp_df
+
+
+def index_hist_sina(symbol="000300", start_date="19700101",
+                    end_date="20500101", timeout=30) -> pd.DataFrame:
+    """
+    新浪财经-指数历史日 K 线（东方财富 / 腾讯之后的最后兜底源）。
+
+    使用新浪日 K 线接口（scale=240 即日线，指数无需复权）：
+        http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/
+        CN_MarketData.getKLineData?symbol=sh000001&scale=240&ma=no&datalen=1023
+
+    新浪不支持服务端日期区间过滤，故拉取最近 datalen 根后在本地按
+    [start_date, end_date] 裁剪。返回列名与 stock_index_hist_em 对齐
+    （中文列名），仅提供 日期/开盘/收盘/最高/最低/成交量。
+
+    :param symbol: 指数代码（如 '000300'）
+    :param start_date: 起始日期 YYYYMMDD
+    :param end_date: 结束日期 YYYYMMDD
+    :return: 指数历史 K 线 DataFrame（失败/无数据时为空 DataFrame）
+    """
+    sina_code = _code_to_sina(symbol)
+    url = (
+        "http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+        f"CN_MarketData.getKLineData?symbol={sina_code}&scale=240&ma=no&datalen=1023"
+    )
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://finance.sina.com.cn/',
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=timeout)
+        if response.status_code != 200 or not (response.text and response.text.strip()):
+            return pd.DataFrame()
+        data_json = response.json()
+    except Exception as e:
+        logging.debug(f"指数新浪历史K线获取异常 {symbol}: {e}")
+        return pd.DataFrame()
+
+    if not isinstance(data_json, list) or not data_json:
+        return pd.DataFrame()
+
+    rows = []
+    for item in data_json:
+        try:
+            rows.append([
+                item.get('day'), item.get('open'), item.get('close'),
+                item.get('high'), item.get('low'), item.get('volume'),
+            ])
+        except AttributeError:
+            continue
+    if not rows:
+        return pd.DataFrame()
+
+    temp_df = pd.DataFrame(rows, columns=["日期", "开盘", "收盘", "最高", "最低", "成交量"])
+    temp_df["日期"] = pd.to_datetime(temp_df["日期"], errors="coerce")
+    temp_df = temp_df.dropna(subset=["日期"]).reset_index(drop=True)
+
+    # 本地按日期区间裁剪（YYYYMMDD → 时间戳）
+    def _to_ts(s):
+        s = str(s or '').strip()
+        if len(s) == 8 and s.isdigit():
+            return pd.Timestamp(f"{s[0:4]}-{s[4:6]}-{s[6:8]}")
+        return None
+
+    ts_start = _to_ts(start_date)
+    ts_end = _to_ts(end_date)
+    if ts_start is not None:
+        temp_df = temp_df[temp_df["日期"] >= ts_start]
+    if ts_end is not None:
+        temp_df = temp_df[temp_df["日期"] <= ts_end]
+    temp_df = temp_df.reset_index(drop=True)
+    if len(temp_df) == 0:
+        return pd.DataFrame()
+
+    for col in ["开盘", "收盘", "最高", "最低", "成交量"]:
+        temp_df[col] = pd.to_numeric(temp_df[col], errors="coerce")
+
+    # 量纲对齐：新浪指数成交量单位为「股」，而东方财富 / 腾讯指数 K 线
+    # 成交量单位为「手」(=100 股)。指数缓存历史数据以「手」为基准入库，
+    # 故新浪作为兜底源时成交量需 /100，避免多源合并后同一指数的成交量序列
+    # 出现 100 倍跳变。
+    temp_df["成交量"] = temp_df["成交量"] / 100.0
+    return temp_df
+
