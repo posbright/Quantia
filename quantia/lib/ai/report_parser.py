@@ -44,9 +44,18 @@ def extract_structured_fields(report_md: str) -> Dict[str, Any]:
 
 
 def _extract_rating(text: str) -> Optional[str]:
-    section = _extract_section(text, '六、') or text[:1200]
-    rating_lines = [line for line in section.splitlines() if '评级' in line]
-    haystacks = rating_lines if rating_lines else [section[:600]]
+    # 结论/评级往往位于"综合评级 / 综合判断 / 投资评级"小节，且小节序号不固定
+    # （五、六、七…），可能带 emoji 前缀（"## 🏆 六、"），最终结论行也可能是一个
+    # 独立的 ### 子标题（"### 综合评级：强烈看空"）。因此从结论小节标题处起向后取
+    # 全部正文（不在子标题处截断），再优先匹配形如"评级：xxx"的结论行。
+    section = _conclusion_tail(text)
+    lines = section.splitlines()
+    # 结论行优先：形如 "**评级**：观望" / "综合评级：看多"
+    verdict_lines = [line for line in lines if re.search(r'(?:综合)?评级\s*[:：]', line)]
+    other_rating_lines = [
+        line for line in lines if '评级' in line and line not in verdict_lines
+    ]
+    haystacks = verdict_lines or other_rating_lines or [section]
     for haystack in haystacks:
         if _is_rating_option_line(haystack):
             continue
@@ -54,6 +63,27 @@ def _extract_rating(text: str) -> Optional[str]:
             if any(keyword in haystack for keyword in keywords):
                 return value
     return None
+
+
+def _conclusion_tail(text: str) -> str:
+    """定位结论小节并返回从其标题处到文末的正文。
+
+    结论小节标题按语义（综合评级/综合判断…）匹配，序号无关；找不到时回退到旧的
+    "六、"序号标题，再回退到全文。不在子标题处截断，确保独立成行的结论标题
+    （如 "### 综合评级：强烈看空"）也被纳入扫描范围。
+    """
+    hint_pattern = re.compile(
+        r'(?m)^\s*#{1,6}\s*[^\n]*'
+        r'(?:综合评级|综合判断|投资评级|综合结论|综合评价|评级与操作|评级与建议)'
+        r'[^\n]*$'
+    )
+    match = hint_pattern.search(text)
+    if match:
+        return text[match.start():]
+    legacy = re.search(r'(?m)^\s*#{1,6}\s*[^\n]*六、[^\n]*$', text)
+    if legacy:
+        return text[legacy.start():]
+    return text
 
 
 def _is_rating_option_line(text: str) -> bool:
