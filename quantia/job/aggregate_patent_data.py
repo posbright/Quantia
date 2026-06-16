@@ -223,6 +223,7 @@ def aggregate_patent_data(code: Optional[str] = None) -> Dict[str, int]:
                 'trend_direction': trend_result['trend_direction'],
                 'rd_staff_ratio': rd_ratio,
                 'confidence_score': 70,
+                'data_source': 'announcement',
             }
 
             is_valid, reason = validate_patent_data(record)
@@ -254,7 +255,7 @@ def _upsert_records(records: List[Dict[str, Any]]) -> int:
         values = []
         params = []
         for r in chunk:
-            values.append('(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)')
+            values.append('(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)')
             params.extend([
                 r['code'], r['year'],
                 r['total_patents'], r['invention_patents'],
@@ -262,6 +263,7 @@ def _upsert_records(records: List[Dict[str, Any]]) -> int:
                 r['invention_ratio'], r['patent_yoy'], r['patent_quality_score'],
                 r['trend_5y_cagr'], r['trend_direction'],
                 r['rd_staff_ratio'], r['confidence_score'],
+                r.get('data_source', 'announcement'),
             ])
 
         # IF(confidence_score > 70, 旧值, 新值): 保护更高可信度的年报/Google 数据
@@ -270,7 +272,7 @@ def _upsert_records(records: List[Dict[str, Any]]) -> int:
                 (code, year, total_patents, invention_patents,
                  utility_patents, design_patents, invention_ratio, patent_yoy,
                  patent_quality_score, trend_5y_cagr, trend_direction,
-                 rd_staff_ratio, confidence_score)
+                 rd_staff_ratio, confidence_score, data_source)
             VALUES {', '.join(values)}
             ON DUPLICATE KEY UPDATE
                 total_patents = IF(confidence_score > 70, total_patents, VALUES(total_patents)),
@@ -283,6 +285,7 @@ def _upsert_records(records: List[Dict[str, Any]]) -> int:
                 trend_5y_cagr = IF(confidence_score > 70, trend_5y_cagr, VALUES(trend_5y_cagr)),
                 trend_direction = IF(confidence_score > 70, trend_direction, VALUES(trend_direction)),
                 rd_staff_ratio = IF(confidence_score > 70, rd_staff_ratio, VALUES(rd_staff_ratio)),
+                data_source = IF(confidence_score > 70, data_source, VALUES(data_source)),
                 confidence_score = IF(confidence_score > 70, confidence_score, VALUES(confidence_score))
         """
         try:

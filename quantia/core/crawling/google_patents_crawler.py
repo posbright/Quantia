@@ -201,10 +201,28 @@ def search_patents(
     query = f'assignee:"{assignee}"' + (f' country:{country}' if country else '')
     params = {'url': f'q={query}&num=100', 'exp': ''}
     patents: List[Dict[str, Any]] = []
+    # Google Patents 的 xhr/query 对高频/无 cookie 请求常返回 503/429。
+    # proxied_request 每次调用会轮换出口 IP, 这里对限流状态码做指数退避重试,
+    # 用换 IP + 等待换取更高成功率; 传输异常仍由 proxied_request 内部处理。
+    _RETRY_STATUS = (429, 503, 502, 500)
+    max_retries = 3
+    resp = None
     try:
-        resp = proxied_request('get', _XHR_URL, params=params, headers=_HEADERS, timeout=20)
-        if resp.status_code != 200:
-            _logger.warning('[gpatents] %s HTTP %s', assignee, resp.status_code)
+        for attempt in range(max_retries):
+            resp = proxied_request('get', _XHR_URL, params=params,
+                                   headers=_HEADERS, timeout=20)
+            if resp.status_code == 200:
+                break
+            if resp.status_code in _RETRY_STATUS and attempt < max_retries - 1:
+                backoff = _REQUEST_INTERVAL * (2 ** attempt)
+                _logger.info('[gpatents] %s HTTP %s, 第 %d 次退避 %.1fs 后换 IP 重试',
+                             assignee, resp.status_code, attempt + 1, backoff)
+                time.sleep(backoff)
+                continue
+            break
+        if resp is None or resp.status_code != 200:
+            _logger.warning('[gpatents] %s HTTP %s (重试 %d 次仍失败)',
+                            assignee, resp.status_code if resp else 'N/A', max_retries)
             return []
         text = resp.text.lstrip(")]}'\n")  # 去除可能的 XSSI 前缀
         payload = json.loads(text)

@@ -299,6 +299,10 @@ export interface PatentData {
   data_source: string | null
   confidence_score: number | null
   updated_at: string | null
+  // IPC 分布缺失时按行业经验映射的保底估算（非真实采集）
+  ipc_estimated?: boolean
+  ipc_source?: string | null
+  ipc_estimate_industry?: string | null
 }
 
 export interface PatentLatestResp {

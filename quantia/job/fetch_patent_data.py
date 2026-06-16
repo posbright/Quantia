@@ -36,6 +36,7 @@ from quantia.core import patent_analytics as pa
 from quantia.core.crawling import cninfo_annual_report as cninfo
 from quantia.core.crawling import annual_report_parser as parser
 from quantia.core.crawling import google_patents_crawler as gpatents
+from quantia.core.crawling import epo_ops_crawler as epo
 
 _logger = logging.getLogger(__name__)
 
@@ -203,6 +204,51 @@ def process_google_patents(code: str, year: int) -> Dict[str, Any]:
     return {'code': code, 'year': year, 'status': 'ok'}
 
 
+def process_epo_ops(code: str, year: int) -> Dict[str, Any]:
+    """EPO OPS 增量采集: 申请人检索→聚合 IPC→与年报合并→入库。
+
+    与 Google 路径同构, 只补充 IPC/趋势/PCT 等结构化维度, 不覆盖年报权威数量。
+    缺凭证 (QUANTIA_EPO_OPS_KEY/SECRET) 时 fetch_and_aggregate 返回 {} → skipped。
+    """
+    if not epo.is_enabled():
+        return {'code': code, 'year': year, 'status': 'skipped', 'reason': 'EPO 未配置凭证'}
+
+    names = get_company_names(code)
+    if not names:
+        return {'code': code, 'year': year, 'status': 'skipped', 'reason': '无公司名'}
+
+    ops = epo.fetch_and_aggregate(names, years=5)
+    if not ops:
+        return {'code': code, 'year': year, 'status': 'skipped', 'reason': 'EPO 无结果'}
+
+    annual = _fetch_annual_row(code, year)
+    merged = pa.merge_patent_data(annual, ops)
+    merged['code'] = code
+    merged['year'] = year
+
+    if merged.get('invention_ratio') is None:
+        merged['invention_ratio'] = pa.calculate_invention_ratio(merged)
+    trend = pa.calculate_trend_metrics(ops.get('trend_5y') or [])
+    merged['trend_5y'] = trend['trend_5y']
+    merged['trend_5y_cagr'] = trend['trend_5y_cagr']
+    merged['trend_direction'] = trend['trend_direction']
+    merged['patent_quality_score'] = pa.calculate_patent_quality_score(merged)
+    today = datetime.date.today()
+    quarter_label = f'{today.year}-Q{(today.month - 1) // 3 + 1}'
+    merged['source_detail'] = {
+        'epo_ops': quarter_label,
+        **({'annual_report': str(year)} if annual else {}),
+    }
+
+    ok, reason = pa.validate_patent_data(merged)
+    if not ok:
+        _logger.warning('[fetch_patent] EPO 校验失败 %s/%s: %s', code, year, reason)
+        return {'code': code, 'year': year, 'status': 'failed', 'reason': reason}
+
+    upsert_patents(merged)
+    return {'code': code, 'year': year, 'status': 'ok'}
+
+
 _UPSERT_FIELDS = (
     'code', 'year',
     'invention_patents', 'utility_patents', 'design_patents', 'total_patents',
@@ -258,7 +304,8 @@ def run(
     """主流程。
 
     Args:
-        source: 'annual_report' (主源/默认) 或 'google_patents' (季度增量备份)。
+        source: 'annual_report' (主源/默认) / 'google_patents' (季度增量) /
+                'epo_ops' (EPO 官方 IPC 主备源, 需配置凭证)。
     """
     pa.ensure_patents_table()
 
@@ -279,6 +326,8 @@ def run(
         for year in years:
             if source == 'google_patents':
                 r = process_google_patents(code, year)
+            elif source == 'epo_ops':
+                r = process_epo_ops(code, year)
             else:
                 r = process_stock_year(code, year, force=force)
             stats[r['status']] = stats.get(r['status'], 0) + 1
@@ -297,9 +346,11 @@ def main():
     ap.add_argument('--years', help='年份, 逗号分隔, e.g. 2024,2023')
     ap.add_argument('--limit', type=int, default=None, help='测试: 只跑前 N 只股票')
     ap.add_argument('--force', action='store_true', help='强制重新下载年报')
-    ap.add_argument('--source', choices=['annual_report', 'google_patents'],
+    ap.add_argument('--source',
+                    choices=['annual_report', 'google_patents', 'epo_ops'],
                     default='annual_report',
-                    help='数据源: annual_report(主源,默认) 或 google_patents(季度增量)')
+                    help='数据源: annual_report(主源,默认) / google_patents(季度增量) / '
+                         'epo_ops(EPO 官方 IPC 主备源, 需 QUANTIA_EPO_OPS_KEY/SECRET)')
     args = ap.parse_args()
 
     codes = [c.strip() for c in args.code.split(',')] if args.code else None

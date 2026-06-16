@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 import types
 from unittest import mock
@@ -183,6 +184,37 @@ class TestGooglePatentsAggregation:
         with mock.patch.object(g, '_load_cache', return_value=None), \
                 mock.patch.dict(sys.modules, {'requests': fake_requests}):
             assert g.search_patents('某公司') == []
+
+    def test_search_patents_retries_on_503_then_succeeds(self):
+        # 503 限流时应换 IP 退避重试; 第二次 200 则解析成功。
+        from quantia.core.crawling import google_patents_crawler as g
+        payload = {'results': {'cluster': [
+            {'result': [{'patent': {'publication_number': 'CN1A', 'ipc': 'H04L',
+                                    'filing_date': '2023-01-01'}}]}
+        ]}}
+        resp_503 = mock.MagicMock(status_code=503)
+        resp_200 = mock.MagicMock(status_code=200, text=json.dumps(payload))
+        pr = mock.MagicMock(side_effect=[resp_503, resp_200])
+        with mock.patch.object(g, '_load_cache', return_value=None), \
+                mock.patch.object(g, '_save_cache'), \
+                mock.patch('quantia.core.singleton_proxy.proxied_request', pr), \
+                mock.patch.object(g.time, 'sleep'):
+            res = g.search_patents('某公司', use_cache=False)
+        assert pr.call_count == 2
+        assert len(res) == 1
+        assert res[0]['id'] == 'CN1A'
+
+    def test_search_patents_gives_up_after_max_retries(self):
+        # 持续 503 时应在重试上限后优雅返回 []。
+        from quantia.core.crawling import google_patents_crawler as g
+        resp_503 = mock.MagicMock(status_code=503)
+        pr = mock.MagicMock(return_value=resp_503)
+        with mock.patch.object(g, '_load_cache', return_value=None), \
+                mock.patch('quantia.core.singleton_proxy.proxied_request', pr), \
+                mock.patch.object(g.time, 'sleep'):
+            res = g.search_patents('某公司', use_cache=False)
+        assert res == []
+        assert pr.call_count == 3
 
     def test_parse_xhr_results(self):
         from quantia.core.crawling import google_patents_crawler as g

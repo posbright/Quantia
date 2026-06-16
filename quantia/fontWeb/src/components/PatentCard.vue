@@ -237,7 +237,12 @@ onBeforeUnmount(() => {
           <div ref="trendChartRef" class="patent-chart"></div>
         </div>
         <div class="chart-block" v-if="data.ipc_distribution && Object.keys(data.ipc_distribution).length">
-          <div class="chart-subtitle">IPC 技术分布</div>
+          <div class="chart-subtitle">
+            IPC 技术分布
+            <el-tag v-if="data.ipc_estimated" size="small" type="warning" effect="plain" class="ipc-est-tag">
+              按行业估算{{ data.ipc_estimate_industry ? '·' + data.ipc_estimate_industry : '' }}
+            </el-tag>
+          </div>
           <div ref="ipcChartRef" class="patent-chart"></div>
         </div>
       </div>
@@ -340,6 +345,10 @@ onBeforeUnmount(() => {
     color: #606266;
     margin: 8px 0 4px;
     font-weight: 500;
+  }
+  .ipc-est-tag {
+    margin-left: 6px;
+    vertical-align: middle;
   }
   .patent-desc {
     margin-top: 12px;

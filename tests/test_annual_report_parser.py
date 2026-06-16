@@ -169,6 +169,24 @@ class TestRegressionFixes:
         r = arp.parse_annual_report(text, code='000004', year=2025)
         assert r['total_patents'] == 281
 
+    def test_total_patents_combined_patent_and_application_format(self):
+        # 大型公司表述: "拥有专利及专利申请合计达 43,354 项"(宁德时代年报)。
+        # 旧正则要求"专利"后紧跟数字, 被"及专利申请合计达"截断而漏匹配。
+        text = '公司拥有专利及专利申请合计达 43,354 项，其中境内拥有专利及专利申请25,439项。'
+        r = arp.extract_patent_counts(text)
+        assert r['total_patents'] == 43354
+
+    def test_total_patents_combined_format_without_heji(self):
+        text = '截至报告期末，公司持有专利及专利申请 1,280 项。'
+        r = arp.extract_patent_counts(text)
+        assert r['total_patents'] == 1280
+
+    def test_total_patents_cumulative_application_format(self):
+        # "累计申请专利 N 件"(格力年报口径为累计申请量)。
+        text = '截至2024年底，公司累计申请专利 12,524 件，其中发明专利申请 7,884 件。'
+        r = arp.extract_patent_counts(text)
+        assert r['total_patents'] == 12524
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

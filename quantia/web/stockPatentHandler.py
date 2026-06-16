@@ -19,8 +19,56 @@ from tornado import gen
 import quantia.lib.database as mdb
 import quantia.web.base as webBase
 from quantia.core.patent_analytics import PATENTS_TABLE, percentiles_from_values
+from quantia.core.patent_industry_ipc import estimate_ipc_distribution
 
 _logger = logging.getLogger(__name__)
+
+
+def _lookup_industry(code: str) -> Optional[str]:
+    """读取股票所属行业（纯 DB 读，无外部请求）。
+
+    优先 cn_stock_selection（东财 F10 行业，覆盖最全），回退 cn_stock_spot。
+    """
+    for table, where_date in (
+        ('cn_stock_selection', 'date=(SELECT MAX(date) FROM cn_stock_selection)'),
+        ('cn_stock_spot', 'date=(SELECT MAX(date) FROM cn_stock_spot)'),
+    ):
+        try:
+            rows = mdb.executeSqlFetch(
+                f"SELECT industry FROM `{table}` WHERE code=%s AND {where_date} LIMIT 1",
+                (code,),
+            ) or []
+        except Exception:  # pragma: no cover - depends on live DB
+            continue
+        if rows and rows[0] and rows[0][0] and str(rows[0][0]).strip():
+            return str(rows[0][0]).strip()
+    return None
+
+
+def _fill_estimated_ipc(code: str, result: Dict[str, Any]) -> None:
+    """真实数据缺 IPC 分布时，按行业经验映射保底填充（标注 estimated）。
+
+    仅当已有真实 total_patents 且 ipc_distribution 为空时触发；
+    估算结果带 ipc_estimated=True / ipc_source='industry'，前端需提示"按行业估算"。
+    """
+    dist = result.get('ipc_distribution')
+    has_dist = isinstance(dist, dict) and len(dist) > 0
+    if has_dist or not result.get('total_patents'):
+        return
+    industry = _lookup_industry(code)
+    est = estimate_ipc_distribution(industry, result.get('total_patents'))
+    if not est:
+        return
+    result['ipc_distribution'] = est['ipc_distribution']
+    if not result.get('ipc_primary'):
+        result['ipc_primary'] = est['ipc_primary']
+    if not result.get('ipc_primary_desc'):
+        result['ipc_primary_desc'] = est['ipc_primary_desc']
+    if not result.get('tech_domain'):
+        result['tech_domain'] = est['tech_domain']
+    result['ipc_estimated'] = True
+    result['ipc_source'] = 'industry'
+    result['ipc_estimate_industry'] = industry
 
 
 _LIST_COLUMNS = (
@@ -66,9 +114,12 @@ def _table_exists() -> bool:
 def _fetch_latest(code: str) -> Optional[Dict[str, Any]]:
     cols = ', '.join(f'`{c}`' for c in _LIST_COLUMNS)
     try:
+        # 优先返回最权威/最丰富的年份：先按 confidence_score 降序（年报/Google
+        # 解析 95 > 公告聚合 70），同可信度再取最新年份。避免最新一年的薄公告聚合
+        # 行盖住更早但真实的年报解析数据。
         rows = mdb.executeSqlFetch(
             f"SELECT {cols} FROM `{PATENTS_TABLE}` WHERE code=%s "
-            f"ORDER BY year DESC LIMIT 1",
+            f"ORDER BY confidence_score DESC, year DESC LIMIT 1",
             (code,),
         )
     except Exception as exc:  # pragma: no cover - depends on live DB
@@ -76,7 +127,9 @@ def _fetch_latest(code: str) -> Optional[Dict[str, Any]]:
         return None
     if not rows:
         return None
-    return _row_to_dict(rows[0])
+    result = _row_to_dict(rows[0])
+    _fill_estimated_ipc(code, result)
+    return result
 
 
 def _fetch_history(code: str, limit: int = 10) -> List[Dict[str, Any]]:
