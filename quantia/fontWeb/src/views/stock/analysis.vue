@@ -38,6 +38,15 @@
           </el-button>
         </el-tooltip>
         <el-button
+          v-if="currentCode"
+          :type="isWatched ? 'warning' : 'default'"
+          :loading="watchLoading"
+          @click="toggleAttention"
+        >
+          <el-icon><Star v-if="!isWatched" /><StarFilled v-else /></el-icon>
+          {{ isWatched ? '已关注' : '关注' }}
+        </el-button>
+        <el-button
           v-if="attentionCount > 0"
           :loading="batchGenerating"
           @click="handleBatchAnalysis"
@@ -277,6 +286,21 @@
       <div class="report-header">
         <el-tag v-if="fromCache" type="info" size="small">历史复用</el-tag>
         <el-tag v-else-if="reportContent && !generating" type="success" size="small">全新分析</el-tag>
+        <el-tag
+          v-if="reportMeta.rating"
+          :type="reportRatingType(reportMeta.rating)"
+          size="small"
+          effect="dark"
+        >
+          AI评级：{{ reportRatingLabel(reportMeta.rating) }}
+        </el-tag>
+        <el-tag
+          v-if="reportMeta.rating_score != null"
+          :type="reportRatingType(reportMeta.rating)"
+          size="small"
+        >
+          AI评分：{{ Number(reportMeta.rating_score).toFixed(0) }}
+        </el-tag>
         <span class="report-meta" v-if="reportMeta.model">
           模型：{{ reportMeta.model }}
         </span>
@@ -379,10 +403,10 @@
 import { ref, computed, onMounted, onActivated, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  VideoPlay, CopyDocument, Loading, CircleCheckFilled, Clock, DataAnalysis, ArrowDown
+  VideoPlay, CopyDocument, Loading, CircleCheckFilled, Clock, DataAnalysis, ArrowDown, Star, StarFilled
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData, getAttentionList, batchSummaryStream, getScoreHistory, getReportTimeline, getReportDetail, createShareLink, translateReport, getSpeechText, getReportPreference, getIndustryPercentile } from '@/api/report'
+import { searchStock, generateReportStream, followupReportStream, submitReportFeedback, getStockFallbackData, getAttentionList, setAttention, batchSummaryStream, getScoreHistory, getReportTimeline, getReportDetail, createShareLink, translateReport, getSpeechText, getReportPreference, getIndustryPercentile } from '@/api/report'
 import { getKlineData } from '@/api/stock'
 import type { ReportStreamEvent, StockSearchItem, FollowupStreamEvent, StockFallbackData, BatchSummaryEvent, ScoreHistoryItem, ReportTimelineItem, IndustryPercentileResult } from '@/api/report'
 import AiModelPicker from '@/components/AiModelPicker.vue'
@@ -461,8 +485,22 @@ interface ReportMeta {
   tokens_used?: number
   latency_ms?: number
   model?: string
+  rating?: string | null
+  rating_score?: number | null
 }
 const reportMeta = ref<ReportMeta>({})
+
+// AI 评级中文标签与配色（buy=买入/绿，hold=观望/黄，avoid=回避/红）
+function reportRatingLabel(rating?: string | null): string {
+  const map: Record<string, string> = { buy: '买入', hold: '观望', avoid: '回避' }
+  return rating ? (map[rating] || rating) : ''
+}
+function reportRatingType(rating?: string | null): 'success' | 'warning' | 'danger' | 'info' {
+  if (rating === 'buy') return 'success'
+  if (rating === 'avoid') return 'danger'
+  if (rating === 'hold') return 'warning'
+  return 'info'
+}
 
 const generateElapsedSec = computed(() => Math.max(0, Math.floor(generateElapsedMs.value / 1000)))
 const runStageText = computed(() => {
@@ -531,6 +569,9 @@ const fallbackData = ref<StockFallbackData | null>(null)
 // ---- Batch Analysis State ----
 const attentionCount = ref(0)
 const attentionCodes = ref<string[]>([])
+const watchLoading = ref(false)
+// 当前股票是否已在关注列表中
+const isWatched = computed(() => !!currentCode.value && attentionCodes.value.includes(currentCode.value))
 const batchGenerating = ref(false)
 const batchTotal = ref(0)
 interface BatchItem { code: string; name: string; summary: string; rating?: string; error?: boolean; latency_ms?: number }
@@ -741,6 +782,8 @@ function handleStreamEvent(ev: ReportStreamEvent) {
           tokens_used: ev.report.tokens_used,
           latency_ms: ev.report.latency_ms,
           model: ev.report.model,
+          rating: ev.report.rating ?? null,
+          rating_score: ev.report.rating_score ?? null,
         }
         // 数据已更新提示
         if (ev.report.data_updated) {
@@ -761,6 +804,8 @@ function handleStreamEvent(ev: ReportStreamEvent) {
       if (ev.latency_ms) reportMeta.value.latency_ms = ev.latency_ms
       if (ev.report_id) reportMeta.value.report_id = ev.report_id
       if (ev.model) reportMeta.value.model = ev.model
+      if (ev.rating !== undefined) reportMeta.value.rating = ev.rating
+      if (ev.rating_score !== undefined) reportMeta.value.rating_score = ev.rating_score
       if (!reportMeta.value.created_at) {
         reportMeta.value.created_at = new Date().toLocaleString()
       }
@@ -1038,6 +1083,25 @@ async function loadAttentionList() {
   }
 }
 
+// 关注 / 取消关注当前个股
+async function toggleAttention() {
+  if (!currentCode.value) {
+    ElMessage.warning('请先选择股票')
+    return
+  }
+  const willWatch = !isWatched.value
+  watchLoading.value = true
+  try {
+    await setAttention(currentCode.value, willWatch)
+    await loadAttentionList()
+    ElMessage.success(willWatch ? '已加入关注' : '已取消关注')
+  } catch {
+    ElMessage.error('操作失败，请稍后重试')
+  } finally {
+    watchLoading.value = false
+  }
+}
+
 async function handleBatchAnalysis() {
   if (!attentionCodes.value.length) {
     ElMessage.warning('关注列表为空')
@@ -1288,6 +1352,8 @@ async function loadTimelineReport(id: number) {
         tokens_used: res.tokens_used,
         latency_ms: res.latency_ms,
         model: res.model,
+        rating: res.rating ?? null,
+        rating_score: res.rating_score ?? null,
       }
     }
   } catch {

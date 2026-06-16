@@ -873,6 +873,18 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
             except Exception as exc:
                 _logger.warning(f'[stockReport] 保存报告失败: {exc}', exc_info=True)
 
+        # 解析结构化评级/评分，随 done 事件下发，使个股分析页可即时展示 AI 评级与评分。
+        rating = None
+        rating_score = None
+        if full_text:
+            try:
+                from quantia.lib.ai.report_parser import extract_structured_fields
+                _structured = extract_structured_fields(full_text)
+                rating = _structured.get('rating')
+                rating_score = _structured.get('rating_score')
+            except Exception as exc:
+                _logger.debug(f'[stockReport] 解析评级失败: {exc}')
+
         # 发送 done (best effort — client may already be gone)
         try:
             self.write('data: ' + json.dumps({
@@ -881,6 +893,8 @@ class StockReportGenerateHandler(webBase.BaseHandler, ABC):
                 'tokens_used': meta_info.get('tokens_used', 0),
                 'latency_ms': meta_info.get('latency_ms', 0),
                 'model': meta_info.get('model', ''),
+                'rating': rating,
+                'rating_score': rating_score,
             }, ensure_ascii=False) + '\n\n')
             yield self.flush()
         except Exception as exc:

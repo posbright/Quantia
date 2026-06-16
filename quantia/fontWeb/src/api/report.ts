@@ -62,6 +62,8 @@ export interface ReportStreamEvent {
   tokens_used?: number
   latency_ms?: number
   model?: string
+  rating?: ReportRating | null
+  rating_score?: number | null
   msg?: string
 }
 
@@ -358,6 +360,17 @@ export function getAttentionList() {
   return request.get<{ items: AttentionListItem[]; count: number }>(
     '/api/ai/report/attention_list'
   )
+}
+
+/**
+ * 关注 / 取消关注股票
+ * @param code 股票代码
+ * @param watched true=添加关注，false=取消关注
+ */
+export function setAttention(code: string, watched: boolean) {
+  return request.get('/control/attention', {
+    params: { code, otype: watched ? '0' : '1' },
+  })
 }
 
 /**
