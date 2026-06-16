@@ -24,6 +24,7 @@ import time
 import uuid
 from abc import ABC
 from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 
 from tornado import gen
@@ -529,6 +530,38 @@ def _pick_pe(pe_ttm, pe_dyn):
         if cand is not None and cand != 0:
             return cand
     return None
+
+
+def _calc_price_limit(code: str, name: Optional[str], pre_close):
+    """根据板块与是否 ST 估算涨停/跌停价。
+
+    A股涨跌幅限制：主板 ±10%，ST/*ST ±5%，创业板(300/301)/科创板(688) ±20%，
+    北交所(8/4 开头) ±30%。涨跌停价按交易所规则四舍五入到 0.01 元。
+    数据库未直接存储涨跌停价，故由昨收价派生。
+    """
+    try:
+        pc = float(pre_close)
+    except (TypeError, ValueError):
+        return None, None
+    if pc <= 0:
+        return None, None
+
+    nm = (name or '').upper()
+    is_st = 'ST' in nm
+    if is_st:
+        ratio = 0.05
+    elif code[:3] in ('688', '300', '301'):
+        ratio = 0.20
+    elif code[:1] in ('8', '4') or code[:3] == '920':
+        ratio = 0.30
+    else:
+        ratio = 0.10
+
+    # 四舍五入到分（ROUND_HALF_UP），避免银行家舍入导致与行情终端不一致
+    def _round2(x: float) -> float:
+        return float(Decimal(str(x)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+    return _round2(pc * (1 + ratio)), _round2(pc * (1 - ratio))
 
 
 def _coalesce_financials(rows, keys):
@@ -1624,6 +1657,102 @@ class StockDataFallbackHandler(webBase.BaseHandler, ABC):
             _logger.debug(f'[stockReport] fallback financials 查询异常: {exc}')
 
         _write_json(self, result)
+
+
+class StockQuoteHandler(webBase.BaseHandler, ABC):
+    """GET /quantia/api/ai/report/quote — 个股实时行情快照（详情页默认展示）。
+
+    单表查询 cn_stock_spot，返回价格/涨跌/量额/市值/估值等行情字段，
+    并派生涨停/跌停价、总股本/流通股（spot 表 total_shares/free_shares 常为 0，
+    由市值 ÷ 现价回算）。市盈率(动)优先取 cn_stock_selection（更可靠）。
+    """
+
+    @gen.coroutine
+    def get(self):
+        code = (self.get_argument('code', '') or '').strip()
+        if not code or len(code) != 6 or not code.isdigit():
+            _write_json(self, {'error': 'code 必须是6位数字'}, 400)
+            return
+
+        try:
+            sql = """
+                SELECT name, new_price, change_rate, ups_downs,
+                       open_price, high_price, low_price, pre_close_price,
+                       volume, deal_amount, amplitude, turnoverrate,
+                       total_market_cap, free_cap, pbnewmrq, pe9, dtsyl,
+                       total_shares, free_shares, date
+                FROM cn_stock_spot
+                WHERE code = %s
+                ORDER BY date DESC LIMIT 1
+            """
+            rows = mdb.executeSqlFetch(sql, (code,))
+        except Exception as exc:
+            _logger.debug(f'[stockReport] quote 查询异常: {exc}')
+            _write_json(self, {'error': '行情查询失败'}, 500)
+            return
+
+        if not rows:
+            _write_json(self, {'error': '未找到该股票行情'}, 404)
+            return
+
+        r = rows[0]
+        name = r[0]
+        new_price = r[1]
+        pre_close = r[7]
+
+        # 市盈率(动)：spot pe9 → spot dtsyl → selection 兜底
+        pe_val = _pick_pe(r[15], r[16])
+        try:
+            sel = mdb.executeSqlFetch(
+                """SELECT pe9, dtsyl FROM cn_stock_selection
+                   WHERE code = %s ORDER BY date DESC LIMIT 1""", (code,))
+            if sel:
+                sel_pe = _pick_pe(sel[0][0], sel[0][1])
+                if sel_pe is not None:
+                    pe_val = sel_pe
+        except Exception as sel_exc:
+            _logger.debug(f'[stockReport] quote selection 查询异常: {sel_exc}')
+
+        # 总市值/流通值单位为万元；total_shares/free_shares 常为 0，用市值回算（股）
+        total_cap_wan = r[12]
+        free_cap_wan = r[13]
+        total_shares = r[17]
+        free_shares = r[18]
+        try:
+            price_f = float(new_price) if new_price else 0.0
+            if (not total_shares) and total_cap_wan and price_f > 0:
+                total_shares = total_cap_wan * 10000.0 / price_f
+            if (not free_shares) and free_cap_wan and price_f > 0:
+                free_shares = free_cap_wan * 10000.0 / price_f
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+
+        limit_up, limit_down = _calc_price_limit(code, name, pre_close)
+
+        _write_json(self, {
+            'code': code,
+            'name': name,
+            'date': str(r[19]) if r[19] is not None else None,
+            'price': new_price,
+            'change_pct': r[2],
+            'change_amount': r[3],
+            'open': r[4],
+            'high': r[5],
+            'low': r[6],
+            'pre_close': pre_close,
+            'limit_up': limit_up,
+            'limit_down': limit_down,
+            'volume': r[8],            # 股
+            'amount': r[9],            # 元
+            'amplitude': r[10],        # %
+            'turnover_rate': r[11],    # %
+            'total_market_cap': total_cap_wan,   # 万元
+            'free_market_cap': free_cap_wan,     # 万元
+            'pb': r[14],
+            'pe': pe_val,
+            'total_shares': total_shares,        # 股
+            'free_shares': free_shares,          # 股
+        })
 
 
 class StockScoreHistoryHandler(webBase.BaseHandler, ABC):

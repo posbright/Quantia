@@ -372,6 +372,17 @@ class GetKlineDataHandler(webBase.BaseHandler, ABC):
             for o, c, l, h in zip(opens, closes, lows, highs):
                 ohlc.append([o, c, l, h])
 
+            # 每日明细字段（供 tooltip 展示）：换手率/振幅/涨跌幅。
+            # 历史缓存含这些列；指数或重采样后可能缺失，故按列存在性兜底。
+            def _col_or_none(col_name):
+                if col_name in stock.columns:
+                    return [_safe_float(v) for v in stock[col_name].tolist()]
+                return None
+
+            turnover = _col_or_none('turnoverrate')
+            amplitude = _col_or_none('amplitude')
+            change_pct = _col_or_none('quote_change')
+
             # 用于计算指标的 close/high/low 数组（None->0）
             closes_clean = [c if c is not None else 0 for c in closes]
             highs_clean = [h if h is not None else 0 for h in highs]
@@ -401,6 +412,9 @@ class GetKlineDataHandler(webBase.BaseHandler, ABC):
                 "dates": dates,
                 "ohlc": ohlc,
                 "volumes": volumes,
+                "turnover": turnover,
+                "amplitude": amplitude,
+                "change_pct": change_pct,
                 "ma": {
                     "ma5": ma5,
                     "ma10": ma10,

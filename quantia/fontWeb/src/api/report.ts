@@ -269,6 +269,37 @@ export function getStockFallbackData(code: string) {
   return request.get<StockFallbackData>('/api/ai/report/stock_data', { params: { code } })
 }
 
+/** 个股实时行情快照（详情页默认展示） */
+export interface StockQuote {
+  code: string
+  name?: string
+  date?: string | null
+  price?: number | null
+  change_pct?: number | null
+  change_amount?: number | null
+  open?: number | null
+  high?: number | null
+  low?: number | null
+  pre_close?: number | null
+  limit_up?: number | null
+  limit_down?: number | null
+  volume?: number | null            // 股
+  amount?: number | null            // 元
+  amplitude?: number | null         // %
+  turnover_rate?: number | null     // %
+  total_market_cap?: number | null  // 万元
+  free_market_cap?: number | null   // 万元
+  pb?: number | null
+  pe?: number | null
+  total_shares?: number | null      // 股
+  free_shares?: number | null       // 股
+}
+
+/** 获取个股实时行情快照 */
+export function getStockQuote(code: string) {
+  return request.get<StockQuote>('/api/ai/report/quote', { params: { code } })
+}
+
 // ---- Score History & Timeline (Phase 3) ----
 
 export interface ScoreHistoryItem {

@@ -201,6 +201,7 @@ class Application(tornado.web.Application):
             (r"/quantia/api/ai/report/detail", stockReportHandler.StockReportDetailHandler),
             (r"/quantia/api/ai/report/search_stock", stockReportHandler.StockSearchHandler),
             (r"/quantia/api/ai/report/stock_data", stockReportHandler.StockDataFallbackHandler),
+            (r"/quantia/api/ai/report/quote", stockReportHandler.StockQuoteHandler),
             (r"/quantia/api/ai/report/attention_list", stockReportHandler.StockReportAttentionListHandler),
             (r"/quantia/api/ai/report/batch_summary", stockReportHandler.StockReportBatchHandler),
             (r"/quantia/api/ai/report/score_history", stockReportHandler.StockScoreHistoryHandler),
