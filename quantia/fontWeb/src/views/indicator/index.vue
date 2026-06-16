@@ -4,9 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { getKlineData, getFinancialSummary, getBacktestHistory, type KlineParams, type FinancialSummaryResult } from '@/api/stock'
-import { getReportHistory, type ReportHistoryItem } from '@/api/report'
+import { getReportHistory, getStockQuote, type ReportHistoryItem, type StockQuote } from '@/api/report'
 import { getStrategyHistory } from '@/api/strategy'
-import { ChatDotRound } from '@element-plus/icons-vue'
+import { ChatDotRound, ArrowDown } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverlay'
 import CustomIndicatorOverlayBar from '@/components/CustomIndicatorOverlayBar.vue'
@@ -88,6 +88,13 @@ const loadStrategyMarks = async () => {
     strategyMarkName.value = ''
   }
 }
+
+// === 行情快照（实时盘口）===
+// 复用个股分析页(stock/analysis.vue)的 /api/ai/report/quote 接口，在 K 线上方
+// 展示现价/涨跌/今开高低收/量额/振幅换手/市值估值/股本，提升详情页信息密度与体验。
+const quoteData = ref<StockQuote | null>(null)
+const quoteLoading = ref(false)
+const quoteCollapsed = ref(false)  // 折叠盘口指标网格（保留现价行）
 
 // === 财务分析数据 ===
 const financialData = ref<FinancialSummaryResult | null>(null)
@@ -221,6 +228,10 @@ const renderChart = () => {
   const dates: string[] = d.dates
   const ohlc: number[][] = d.ohlc
   const volumes: number[] = d.volumes
+  // 逐日 换手率/振幅/涨跌幅（K线接口扩展字段，缺列时为空数组，tooltip 内做兜底）
+  const turnoverArr: (number | null)[] = d.turnover || []
+  const amplitudeArr: (number | null)[] = d.amplitude || []
+  const changeArr: (number | null)[] = d.change_pct || []
   const ma = d.ma || {}
   const volMa = d.vol_ma || {}
   const boll = d.boll || {}
@@ -562,6 +573,55 @@ const renderChart = () => {
     style: { stroke: '#dcdfe6', lineWidth: 1, lineDash: [4, 4] },
   }))
 
+  // === K线悬浮 tooltip：当日 开/高/低/收（含相对昨收涨跌幅 + 红绿着色）+ 成交/换手/振幅 ===
+  // 同时保留东方财富式的多指标读数：把当前 hover 处的 MA/BOLL/副图(MACD/KDJ/...) 数值
+  // 追加在盘口块下方，既增强了 K 线信息密度，又不丢失原有指标数值展示。
+  const fmtTipVal = (v: any): string => (v == null || !isFinite(Number(v))) ? '--' : Number(v).toFixed(2)
+  const klineTooltipFormatter = (params: any): string => {
+    const arr = Array.isArray(params) ? params : [params]
+    const idx = arr[0]?.dataIndex
+    if (idx == null || idx < 0 || !ohlc[idx]) return ''
+    const [open, close, low, high] = ohlc[idx]
+    const prevClose = idx > 0 && ohlc[idx - 1] ? Number(ohlc[idx - 1][1]) : null
+    const pct = (v: number): string => {
+      if (prevClose == null || !(prevClose > 0)) return ''
+      const p = ((v - prevClose) / prevClose) * 100
+      return `<span class="${p >= 0 ? 'kt-up' : 'kt-down'}">${p >= 0 ? '+' : ''}${p.toFixed(2)}%</span>`
+    }
+    const cls = (v: number): string => prevClose == null ? '' : (v >= prevClose ? 'kt-up' : 'kt-down')
+    const closePct = changeArr[idx]
+    const closePctStr = closePct != null
+      ? `<span class="${closePct >= 0 ? 'kt-up' : 'kt-down'}">${closePct >= 0 ? '+' : ''}${Number(closePct).toFixed(2)}%</span>`
+      : pct(close)
+    const amp = amplitudeArr[idx]
+    const ampStr = amp != null
+      ? `${Number(amp).toFixed(2)}%`
+      : (prevClose && prevClose > 0 ? `${(((high - low) / prevClose) * 100).toFixed(2)}%` : '--')
+    const turn = turnoverArr[idx]
+    const turnStr = turn != null ? `${Number(turn).toFixed(2)}%` : '--'
+    // 指标线数值（过滤掉 K线本体、成交量、成交量均线、策略选中标记）
+    const indRows = arr
+      .filter((p: any) => p.seriesType === 'line'
+        && !String(p.seriesName).startsWith('VOL')
+        && isFinite(Number(Array.isArray(p.value) ? p.value[1] : p.value)))
+      .map((p: any) => {
+        const val = Array.isArray(p.value) ? p.value[1] : p.value
+        return `<div class="kt-row"><span class="kt-label">${p.marker}${p.seriesName}</span><span class="kt-val">${fmtTipVal(val)}</span></div>`
+      }).join('')
+    return `
+      <div class="kline-tip">
+        <div class="kt-date">${dates[idx] || ''}</div>
+        <div class="kt-row"><span class="kt-label">开盘</span><span class="kt-val ${cls(open)}">${open?.toFixed(2)}</span>${pct(open)}</div>
+        <div class="kt-row"><span class="kt-label">最高</span><span class="kt-val ${cls(high)}">${high?.toFixed(2)}</span>${pct(high)}</div>
+        <div class="kt-row"><span class="kt-label">最低</span><span class="kt-val ${cls(low)}">${low?.toFixed(2)}</span>${pct(low)}</div>
+        <div class="kt-row"><span class="kt-label">收盘</span><span class="kt-val ${cls(close)}">${close?.toFixed(2)}</span>${closePctStr}</div>
+        <div class="kt-row"><span class="kt-label">成交</span><span class="kt-val">${fmtVolHands(volumes[idx])}</span></div>
+        <div class="kt-row"><span class="kt-label">换手</span><span class="kt-val">${turnStr}</span></div>
+        <div class="kt-row"><span class="kt-label">振幅</span><span class="kt-val">${ampStr}</span></div>
+        ${indRows ? `<div class="kt-sep"></div>${indRows}` : ''}
+      </div>`
+  }
+
   const option: echarts.EChartsOption = {
     animation: false,
     title: titleItems,
@@ -569,9 +629,13 @@ const renderChart = () => {
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'cross' },
-      backgroundColor: 'rgba(255,255,255,0.96)',
-      borderColor: '#ddd',
+      backgroundColor: 'rgba(255,255,255,0.97)',
+      borderColor: '#e4e7ed',
+      borderWidth: 1,
+      padding: 0,
       textStyle: { fontSize: 12, color: '#333' },
+      extraCssText: 'box-shadow:0 4px 16px rgba(0,0,0,0.12);border-radius:8px;',
+      formatter: klineTooltipFormatter,
     },
     legend: {
       data: legendData,
@@ -868,6 +932,76 @@ const fmtPct = (val: number | undefined | null): string => {
   return val.toFixed(2) + '%'
 }
 
+// === 行情快照专用格式化（与个股分析页口径一致）===
+// 注意：本页已有 fmtNum（带亿/万后缀，用于财务大数），故价格类单独用 fmtPrice 避免误加后缀。
+/** 价格：固定保留 2 位小数 */
+const fmtPrice = (v: number | null | undefined, digits = 2): string => {
+  if (v == null || !isFinite(Number(v))) return '--'
+  return Number(v).toFixed(digits)
+}
+/** 带正负号的百分比 */
+const fmtSignedPct = (v: number | null | undefined): string => {
+  if (v == null || !isFinite(Number(v))) return '--'
+  const n = Number(v)
+  return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
+}
+/** 成交量：后端单位为股，展示为手（1手=100股），自动选用万手 */
+const fmtVolHands = (v: number | null | undefined): string => {
+  if (v == null || !isFinite(Number(v))) return '--'
+  const hands = Number(v) / 100
+  if (hands >= 1e4) return `${(hands / 1e4).toFixed(2)}万手`
+  return `${Math.round(hands).toLocaleString()}手`
+}
+/** 成交额：后端单位为元，自动选用亿/万 */
+const fmtAmt = (v: number | null | undefined): string => {
+  if (v == null || !isFinite(Number(v))) return '--'
+  const n = Number(v)
+  if (n >= 1e8) return `${(n / 1e8).toFixed(2)}亿`
+  if (n >= 1e4) return `${(n / 1e4).toFixed(2)}万`
+  return n.toLocaleString()
+}
+/** 股本：后端单位为股，自动选用亿/万股 */
+const fmtShares = (v: number | null | undefined): string => {
+  if (v == null || !isFinite(Number(v))) return '--'
+  const n = Number(v)
+  if (n >= 1e8) return `${(n / 1e8).toFixed(2)}亿`
+  if (n >= 1e4) return `${(n / 1e4).toFixed(2)}万`
+  return Math.round(n).toLocaleString()
+}
+/** 涨跌方向：1 涨 / -1 跌 / 0 平（用于整条快照栏的红绿基调） */
+const quoteDir = computed(() => {
+  const p = quoteData.value?.change_pct
+  if (p == null) return 0
+  if (p > 0) return 1
+  if (p < 0) return -1
+  return 0
+})
+/** 价格相对昨收的涨跌着色类（用于今开/最高/最低） */
+const priceCls = (v: number | null | undefined): string => {
+  const pc = quoteData.value?.pre_close
+  if (v == null || pc == null) return ''
+  if (Number(v) > Number(pc)) return 'qv-up'
+  if (Number(v) < Number(pc)) return 'qv-down'
+  return ''
+}
+
+// 加载行情快照（与 K 线/财务并行；带防抖式 stale 守卫，避免切股票时旧响应覆盖）
+const loadStockQuote = async () => {
+  if (!code.value) { quoteData.value = null; return }
+  const reqCode = code.value
+  quoteLoading.value = true
+  try {
+    const res = await getStockQuote(reqCode) as unknown as StockQuote
+    if (code.value !== reqCode) return  // 用户已切换股票，丢弃旧响应
+    quoteData.value = (res && !(res as { error?: string }).error) ? res : null
+  } catch (e) {
+    console.warn('[indicator] 行情快照加载失败:', e)
+    quoteData.value = null
+  } finally {
+    quoteLoading.value = false
+  }
+}
+
 const handleResize = () => {
   if (resizeDebounceTimer !== null) window.clearTimeout(resizeDebounceTimer)
   resizeDebounceTimer = window.setTimeout(() => {
@@ -887,6 +1021,7 @@ watch(() => route.query.code, (newCode, oldCode) => {
     currentPeriod.value = 'daily'
     lastLoadedCode = newCode as string
     loadKlineData()
+    loadStockQuote()
     loadFinancialData()
     loadLatestReport()
     loadStrategyMarks()
@@ -911,6 +1046,7 @@ watch(breakpoint, () => {
 onMounted(() => {
   lastLoadedCode = code.value || ''
   loadKlineData()
+  loadStockQuote()
   loadFinancialData()
   loadLatestReport()
   loadStrategyMarks()
@@ -924,6 +1060,7 @@ onActivated(() => {
     lastLoadedCode = code.value
     currentPeriod.value = 'daily'
     loadKlineData()
+    loadStockQuote()
     loadFinancialData()
     loadLatestReport()
     loadStrategyMarks()
@@ -973,6 +1110,42 @@ onUnmounted(() => {
           <el-icon><ChatDotRound /></el-icon>&nbsp;AI 分析
         </el-button>
         <el-button type="primary" size="small" @click="goBacktest">查看回测</el-button>
+      </div>
+    </div>
+
+    <!-- 行情快照（实时盘口）：紧贴信息栏，东方财富详情页风格 -->
+    <!-- 左侧大字现价 + 涨跌；右侧密排盘口指标网格（可折叠）。整体红绿基调随涨跌方向。 -->
+    <div v-if="quoteData" class="quote-bar" :class="`qdir-${quoteDir}`" v-loading="quoteLoading">
+      <div class="quote-main">
+        <span class="quote-price">{{ fmtPrice(quoteData.price) }}</span>
+        <div class="quote-chg">
+          <span class="chg-amt">{{ quoteData.change_amount != null && quoteData.change_amount >= 0 ? '+' : '' }}{{ fmtPrice(quoteData.change_amount) }}</span>
+          <span class="chg-pct">{{ fmtSignedPct(quoteData.change_pct) }}</span>
+        </div>
+        <div class="quote-limit">
+          <span class="lim-up">涨停&nbsp;{{ fmtPrice(quoteData.limit_up) }}</span>
+          <span class="lim-down">跌停&nbsp;{{ fmtPrice(quoteData.limit_down) }}</span>
+        </div>
+        <span class="quote-toggle" @click="quoteCollapsed = !quoteCollapsed">
+          {{ quoteCollapsed ? '展开盘口' : '收起盘口' }}
+          <el-icon :class="{ collapsed: quoteCollapsed }"><ArrowDown /></el-icon>
+        </span>
+      </div>
+      <div v-show="!quoteCollapsed" class="quote-metrics">
+        <div class="qm"><span class="qm-l">今开</span><span class="qm-v" :class="priceCls(quoteData.open)">{{ fmtPrice(quoteData.open) }}</span></div>
+        <div class="qm"><span class="qm-l">最高</span><span class="qm-v" :class="priceCls(quoteData.high)">{{ fmtPrice(quoteData.high) }}</span></div>
+        <div class="qm"><span class="qm-l">最低</span><span class="qm-v" :class="priceCls(quoteData.low)">{{ fmtPrice(quoteData.low) }}</span></div>
+        <div class="qm"><span class="qm-l">昨收</span><span class="qm-v">{{ fmtPrice(quoteData.pre_close) }}</span></div>
+        <div class="qm"><span class="qm-l">成交量</span><span class="qm-v">{{ fmtVolHands(quoteData.volume) }}</span></div>
+        <div class="qm"><span class="qm-l">成交额</span><span class="qm-v">{{ fmtAmt(quoteData.amount) }}</span></div>
+        <div class="qm"><span class="qm-l">振幅</span><span class="qm-v">{{ fmtPrice(quoteData.amplitude) }}%</span></div>
+        <div class="qm"><span class="qm-l">换手率</span><span class="qm-v">{{ fmtPrice(quoteData.turnover_rate) }}%</span></div>
+        <div class="qm"><span class="qm-l">总市值</span><span class="qm-v">{{ fmtWanToYi(quoteData.total_market_cap) }}</span></div>
+        <div class="qm"><span class="qm-l">流通值</span><span class="qm-v">{{ fmtWanToYi(quoteData.free_market_cap) }}</span></div>
+        <div class="qm"><span class="qm-l">市净率</span><span class="qm-v">{{ fmtPrice(quoteData.pb) }}</span></div>
+        <div class="qm"><span class="qm-l">市盈率(动)</span><span class="qm-v">{{ fmtPrice(quoteData.pe) }}</span></div>
+        <div class="qm"><span class="qm-l">总股本</span><span class="qm-v">{{ fmtShares(quoteData.total_shares) }}</span></div>
+        <div class="qm"><span class="qm-l">流通股</span><span class="qm-v">{{ fmtShares(quoteData.free_shares) }}</span></div>
       </div>
     </div>
 
@@ -1223,6 +1396,76 @@ onUnmounted(() => {
   .label { font-size: 12px; color: #999; }
 }
 
+/* 行情快照栏（实时盘口）—— 扁平、密排，贴合本页东方财富风格 */
+.quote-bar {
+  border-bottom: 1px solid #f0f0f0;
+  background: #fff;
+  /* 涨/跌/平 三态基调：通过 CSS 变量驱动现价与涨跌字色 */
+  --q-color: #909399;
+}
+.quote-bar.qdir-1 { --q-color: #ec0000; }   /* 涨：红 */
+.quote-bar.qdir--1 { --q-color: #00a838; }  /* 跌：绿 */
+.quote-main {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 8px 16px;
+}
+.quote-main .quote-price {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--q-color);
+}
+.quote-main .quote-chg {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--q-color);
+}
+.quote-main .quote-limit {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  .lim-up { color: #ec0000; }
+  .lim-down { color: #00a838; }
+}
+.quote-main .quote-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: #909399;
+  cursor: pointer;
+  user-select: none;
+  .el-icon { transition: transform .2s; }
+  .el-icon.collapsed { transform: rotate(-90deg); }
+  &:hover { color: #409eff; }
+}
+.quote-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 1px;
+  padding: 0 16px 10px;
+}
+.quote-metrics .qm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 8px;
+  background: #fafbfc;
+  border-radius: 4px;
+  .qm-l { font-size: 12px; color: #909399; white-space: nowrap; }
+  .qm-v { font-size: 13px; font-weight: 600; color: #303133; }
+  .qm-v.qv-up { color: #ec0000; }
+  .qm-v.qv-down { color: #00a838; }
+}
+
 /* Chart */
 .chart-wrapper {
   position: relative;
@@ -1257,6 +1500,12 @@ onUnmounted(() => {
   .period-tabs .period-tab { padding: 3px 8px; font-size: 12px; }
   .overlay-checks .label { display: none; }
   .sub-indicator-bar .sub-tab { padding: 6px 0; font-size: 11px; }
+  /* 移动端行情快照：现价缩小，盘口网格改为更窄列 */
+  .quote-main { gap: 10px; padding: 8px 12px; }
+  .quote-main .quote-price { font-size: 24px; }
+  .quote-main .quote-chg { font-size: 13px; }
+  .quote-metrics { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); padding: 0 12px 8px; }
+  .quote-metrics .qm { padding: 4px 6px; .qm-l { font-size: 11px; } .qm-v { font-size: 12px; } }
   .sub-indicator-segmented {
     width: 100%;
     padding: 4px 8px;
@@ -1267,7 +1516,7 @@ onUnmounted(() => {
 
 /* PR-09 C: 移动端横屏 —— 隐藏信息栏 / 工具栏，把整个高度让给图表 */
 @media (max-width: 991.98px) and (orientation: landscape) and (max-height: 540px) {
-  .top-bar, .toolbar { display: none; }
+  .top-bar, .toolbar, .quote-bar { display: none; }
   .chart-wrapper .chart-main { height: calc(100dvh - 40px) !important; }
   .sub-indicator-bar, .sub-indicator-segmented { padding: 2px 6px; }
 }
@@ -1359,5 +1608,26 @@ onUnmounted(() => {
 .report-time {
   font-size: 12px;
   color: #909399;
+}
+</style>
+
+<!-- 非 scoped：K线悬浮 tooltip 由 ECharts 渲染到组件外部 DOM，scoped 选择器无法命中，故单列全局样式 -->
+<style lang="scss">
+.kline-tip {
+  min-width: 168px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  .kt-date { font-weight: 700; color: #303133; margin-bottom: 4px; }
+  .kt-row {
+    display: flex; align-items: center; gap: 8px;
+    .kt-label { color: #909399; min-width: 36px; }
+    .kt-val { font-weight: 600; color: #303133; margin-left: auto; }
+    .kt-val.kt-up { color: #ec0000; }
+    .kt-val.kt-down { color: #00a838; }
+    .kt-up { color: #ec0000; }
+    .kt-down { color: #00a838; }
+  }
+  .kt-sep { height: 1px; background: #f0f0f0; margin: 5px 0; }
 }
 </style>
