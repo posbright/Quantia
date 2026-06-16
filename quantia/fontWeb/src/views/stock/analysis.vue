@@ -2376,8 +2376,14 @@ watch(klineCollapsed, (collapsed) => {
   }
   .stock-analysis .main-content {
     display: flex;
+    flex-wrap: wrap;          /* 允许换行：行情快照独占首行，K线与报告并排次行 */
     gap: 20px;
     align-items: flex-start;
+  }
+  /* 行情快照：独占整行（首行），避免与 K线/报告 抢占横向空间把 AI 结论挤出视口 */
+  .stock-analysis .main-content .quote-panel {
+    flex: 0 0 100%;
+    margin-bottom: 0;
   }
   .stock-analysis .main-content .kline-panel {
     flex: 0 0 45%;
@@ -2387,10 +2393,12 @@ watch(klineCollapsed, (collapsed) => {
   }
   .stock-analysis .main-content .report-container {
     flex: 1;
+    min-width: 0;            /* 允许 flex 子项收缩，防止长内容撑破布局 */
     max-height: 80vh;
   }
   .stock-analysis .main-content .fallback-panel {
     flex: 1;
+    min-width: 0;
   }
 }
 
