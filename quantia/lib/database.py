@@ -25,6 +25,12 @@ __date__ = '2026/02/14'
 # 默认 3 次：覆盖远程 MySQL 偶发超时（如 backtest 子进程抢占资源时）+ 失效连接重建。
 _DB_CONN_RETRIES = max(_cfg.get_int('QUANTIA_DB_CONN_RETRIES', 3), 1)
 
+# 线程本地连接最大闲置秒数：超过则在下次取用时主动回收重建，避免长期空闲的
+# 执行器线程（如 Tornado run_in_executor / 调度器）一直占着服务端连接槽。连接只增不减
+# 是 max_connections 打满、新连接握手永久挂起（stock_error.log 中 _get_server_information 超时）
+# 的诱因之一。0 表示禁用闲置回收。默认 300s。
+_DB_CONN_MAX_IDLE = max(_cfg.get_int('QUANTIA_DB_CONN_MAX_IDLE', 300), 0)
+
 # 批量写入分块大小（避免一次性构造巨大 SQL 语句导致 OOM）
 # 默认 500 行/批：4367 行会分 ~9 批执行，单批 SQL 约 10-30 MB
 _DB_INSERT_CHUNKSIZE = _cfg.get_int('QUANTIA_DB_INSERT_CHUNKSIZE', 500)
@@ -47,10 +53,12 @@ MYSQL_CONN_URL = "mysql+pymysql://%s:%s@%s:%s/%s?charset=%s" % (
     db_user, _encoded_password, db_host, db_port, db_database, db_charset)
 logging.info(f"数据库链接信息：mysql+pymysql://{db_user}:***@{db_host}:{db_port}/{db_database}?charset={db_charset}")
 
-# 超时配置（本地连远程时适当放宽）
-# 默认 30 秒：远端 MySQL 在 backtest 子进程并发期间，10s 默认值频繁触发
-# (2013, 'Lost connection to MySQL server during query (timed out)') —— 见 stock_error.log。
-_connect_timeout = _cfg.get_int('QUANTIA_DB_CONNECT_TIMEOUT', 30)
+# 超时配置
+# connect_timeout（建连/握手）默认 10 秒：服务端卡死时快速失败，避免调度线程在
+#   connect_timeout × _DB_CONN_RETRIES（旧 30s×3=90s）期间全部阻塞、反而制造更多并发
+#   连接火上浇油（见 stock_error.log：_get_server_information 握手读超时雪崩）。
+# read/write_timeout（查询读写）保持较宽：backtest 子进程并发期间长查询需要时间。
+_connect_timeout = _cfg.get_int('QUANTIA_DB_CONNECT_TIMEOUT', 10)
 _read_timeout = _cfg.get_int('QUANTIA_DB_READ_TIMEOUT', 30)
 _write_timeout = _cfg.get_int('QUANTIA_DB_WRITE_TIMEOUT', 60)
 
@@ -151,11 +159,24 @@ def close_thread_connection():
 def get_connection():
     """获取数据库连接。优先复用当前线程已有连接（ping 检测存活），失败则新建。
     返回 _ReusableConnection 包装器，with 语句不会关闭底层连接。
-    线程安全：每个线程有独立的连接实例（threading.local）。"""
+    线程安全：每个线程有独立的连接实例（threading.local）。
+    闲置回收：连接闲置超过 _DB_CONN_MAX_IDLE 秒则主动重建，避免长期占用服务端连接槽。"""
     conn = getattr(_thread_local, 'conn', None)
+    # 闲置过久主动回收：长期空闲的执行器线程不再占着服务端连接槽
+    if conn is not None and _DB_CONN_MAX_IDLE:
+        last_used = getattr(_thread_local, 'conn_last_used', 0.0)
+        if time.monotonic() - last_used > _DB_CONN_MAX_IDLE:
+            logging.debug("DB 连接闲置超过 %ds，主动回收重建", _DB_CONN_MAX_IDLE)
+            try:
+                conn.close()
+            except Exception:
+                logging.debug("关闭闲置连接异常", exc_info=True)
+            _thread_local.conn = None
+            conn = None
     if conn is not None:
         try:
             conn.ping(reconnect=True)
+            _thread_local.conn_last_used = time.monotonic()
             return _ReusableConnection(conn)
         except Exception:
             logging.debug("DB ping 失败，将重建连接", exc_info=True)
@@ -169,6 +190,7 @@ def get_connection():
     for attempt in range(1, max_retries + 1):
         try:
             _thread_local.conn = pymysql.connect(**MYSQL_CONN_DBAPI)
+            _thread_local.conn_last_used = time.monotonic()
             return _ReusableConnection(_thread_local.conn)
         except Exception as e:
             if attempt < max_retries and _is_retryable_error(e):

@@ -568,6 +568,15 @@ class TestCreateApi:
 class TestEnsureTables:
     """Tests for _ensure_paper_table, _ensure_trade_table, _ensure_position_table."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_paper_table_flag(self):
+        # _ensure_paper_table 现为进程内一次性建表（_paper_table_ensured 标记）。
+        # 每个用例显式重置，避免一次性标记跨用例泄漏导致后续用例被短路跳过。
+        import quantia.paper_trading.paper_engine as pe
+        pe._paper_table_ensured = False
+        yield
+        pe._paper_table_ensured = False
+
     @patch('quantia.lib.database.executeSqlFetch', return_value=[(4,)])
     @patch('quantia.lib.database.checkTableIsExist', return_value=True)
     @patch('quantia.lib.database.executeSql')

@@ -1723,10 +1723,20 @@ def _ensure_paper_columns():
     _add_paper_column_safe('last_run_at', '`last_run_at` DATETIME DEFAULT NULL AFTER `last_run_date`')
 
 
+# 进程内一次性建表标记：cn_stock_paper_trading 是静态 schema，建表/迁移只需检查一次。
+# 避免每次 run_all_paper_trading（交易时段每 30min）都触发 checkTableIsExist + 多次
+# SELECT COUNT 列检查的无谓 DB 往返（连接占用）。
+_paper_table_ensured = False
+
+
 def _ensure_paper_table():
+    global _paper_table_ensured
+    if _paper_table_ensured:
+        return
     import quantia.lib.database as mdb
     if mdb.checkTableIsExist('cn_stock_paper_trading'):
         _ensure_paper_columns()
+        _paper_table_ensured = True
         return
     mdb.executeSql('''
         CREATE TABLE IF NOT EXISTS `cn_stock_paper_trading` (
@@ -1749,6 +1759,7 @@ def _ensure_paper_table():
             INDEX `idx_status` (`status`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ''')
+    _paper_table_ensured = True
 
 
 def _ensure_trade_table():

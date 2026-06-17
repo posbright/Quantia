@@ -38,21 +38,21 @@ class TestSchedulerShouldRun:
 
     @patch('quantia.lib.trade_time.is_trade_date', return_value=True)
     def test_should_run_after_close(self, _mock_td):
-        """交易日收盘后 16:05 应该执行"""
+        """交易日收盘后 16:05 应该执行（当日首次）"""
         s = self._make_scheduler(run_after_hour=16, run_after_minute=0)
         now = datetime.datetime(2026, 4, 21, 16, 5, 0)
         should, reason = s._should_run(now)
         assert should is True
-        assert reason == 'ok'
+        assert reason == 'after_close'
 
     @patch('quantia.lib.trade_time.is_trade_date', return_value=True)
     def test_before_run_time(self, _mock_td):
-        """交易日内调度器保持触发，具体频率由模拟盘自身判断。"""
+        """交易时段内（14:30）按 30min 节流触发，首次触发为 trading_interval。"""
         s = self._make_scheduler(run_after_hour=16, run_after_minute=0)
         now = datetime.datetime(2026, 4, 21, 14, 30, 0)
         should, reason = s._should_run(now)
         assert should is True
-        assert reason == 'ok'
+        assert reason == 'trading_interval'
 
     @patch('quantia.lib.trade_time.is_trade_date', return_value=False)
     def test_not_trade_day(self, _mock_td):
@@ -65,13 +65,13 @@ class TestSchedulerShouldRun:
 
     @patch('quantia.lib.trade_time.is_trade_date', return_value=True)
     def test_already_run_today(self, _mock_td):
-        """旧的全局运行标记不阻止交易日内后续频率检查。"""
+        """旧的全局运行标记不阻止收盘后触发（_last_close_run_date 才是闸门）。"""
         s = self._make_scheduler()
         s._last_run_date = datetime.date(2026, 4, 21)
         now = datetime.datetime(2026, 4, 21, 17, 0, 0)
         should, reason = s._should_run(now)
         assert should is True
-        assert reason == 'ok'
+        assert reason == 'after_close'
 
     @patch('quantia.lib.trade_time.is_trade_date', return_value=True)
     def test_already_running(self, _mock_td):
@@ -85,13 +85,13 @@ class TestSchedulerShouldRun:
 
     @patch('quantia.lib.trade_time.is_trade_date', return_value=True)
     def test_different_day_can_run(self, _mock_td):
-        """上一个运行日是昨天，今天可以运行"""
+        """上一个运行日是昨天，今天收盘后可以运行"""
         s = self._make_scheduler(run_after_hour=16, run_after_minute=0)
         s._last_run_date = datetime.date(2026, 4, 20)
         now = datetime.datetime(2026, 4, 21, 16, 30, 0)
         should, reason = s._should_run(now)
         assert should is True
-        assert reason == 'ok'
+        assert reason == 'after_close'
 
     @patch('quantia.lib.trade_time.is_trade_date', return_value=True)
     def test_exact_run_time(self, _mock_td):
@@ -103,12 +103,34 @@ class TestSchedulerShouldRun:
 
     @patch('quantia.lib.trade_time.is_trade_date', return_value=True)
     def test_custom_run_time(self, _mock_td):
-        """自定义收盘后时间不再限制全局触发，日频模拟盘由引擎控制。"""
+        """自定义收盘后 17:30：17:29 落在 15:00~17:30 结算空档不触发，17:30 收盘后触发。"""
         s = self._make_scheduler(run_after_hour=17, run_after_minute=30)
-        should, _ = s._should_run(datetime.datetime(2026, 4, 21, 17, 29, 0))
+        should, reason = s._should_run(datetime.datetime(2026, 4, 21, 17, 29, 0))
+        assert should is False
+        assert reason == 'between_close_and_run'
+        should, reason = s._should_run(datetime.datetime(2026, 4, 21, 17, 30, 0))
         assert should is True
-        should, _ = s._should_run(datetime.datetime(2026, 4, 21, 17, 30, 0))
+        assert reason == 'after_close'
+
+    @patch('quantia.lib.trade_time.is_trade_date', return_value=True)
+    def test_trading_window_throttled(self, _mock_td):
+        """交易时段内 30min 节流：刚触发过则 10 分钟后不再触发，超过 30min 后可再次触发。"""
+        s = self._make_scheduler(run_after_hour=16, run_after_minute=0)
+        s._last_trigger_at = datetime.datetime(2026, 4, 21, 10, 0, 0)
+        should, reason = s._should_run(datetime.datetime(2026, 4, 21, 10, 10, 0))
+        assert should is False
+        assert reason == 'trading_throttled'
+        should, reason = s._should_run(datetime.datetime(2026, 4, 21, 10, 31, 0))
         assert should is True
+        assert reason == 'trading_interval'
+
+    @patch('quantia.lib.trade_time.is_trade_date', return_value=True)
+    def test_before_open(self, _mock_td):
+        """开盘前（09:00）不触发。"""
+        s = self._make_scheduler(run_after_hour=16, run_after_minute=0)
+        should, reason = s._should_run(datetime.datetime(2026, 4, 21, 9, 0, 0))
+        assert should is False
+        assert reason == 'before_open'
 
     @patch('quantia.lib.trade_time.is_trade_date', return_value=True)
     def test_late_night_still_runs(self, _mock_td):
@@ -170,6 +192,25 @@ class TestSchedulerExecution:
         assert s._running is False
         mock_save_log.assert_called_once()
         assert mock_save_log.call_args[0][3] == 'error'
+
+    @patch('quantia.lib.trade_time.is_trade_date', return_value=True)
+    @patch('quantia.paper_trading.scheduler._save_execution_log')
+    @patch('quantia.paper_trading.paper_engine.run_all_paper_trading',
+           side_effect=Exception('DB exploded'))
+    def test_after_close_error_allows_retry(self, mock_run_all, mock_save_log, _mock_td):
+        """收盘后那次执行失败后，清除 _last_close_run_date，允许当日重试。"""
+        s = self._make_scheduler()  # 默认 run_after_hour=16
+        trade_date = datetime.date(2026, 4, 21)
+        # 模拟 _check_and_run 收盘后触发已设置当日收盘标记
+        s._last_close_run_date = trade_date
+        s._execute_paper_trading(trade_date)
+
+        assert s._last_close_run_date is None  # 收盘标记已清除
+        assert s._last_trigger_at is None      # 节流标记已清除
+        # 现在 16:30 再次检查应允许重试（after_close）
+        should, reason = s._should_run(datetime.datetime(2026, 4, 21, 16, 30, 0))
+        assert should is True
+        assert reason == 'after_close'
 
     @patch('quantia.paper_trading.scheduler._ensure_execution_log_table')
     @patch('quantia.lib.database.executeSql')
