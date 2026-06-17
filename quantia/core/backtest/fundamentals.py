@@ -517,64 +517,32 @@ class FundamentalDataProvider:
             logging.info(f"[基本面] 从缓存推断到 {len(self._stock_info)} 只A股信息")
 
     def _batch_load_klines(self):
-        """批量加载候选股票K线数据（多线程并行，带重试）"""
-        from .data_feed import _load_from_cache, _fetch_stock_from_eastmoney, _save_cache
+        """批量加载候选股票K线数据（仅从本地缓存，不触发在线 API）。
+
+        回测引擎执行期间只读本地 gzip.pickle 缓存，缓存缺失的股票直接跳过。
+        这样可以彻底消除 EastMoney 500/akshare 降级导致的线程阻塞与 OOM。
+        在线补充只在 fetch 管道（kline_cache_daily_job）中进行，回测不负责拉取。
+        """
+        from .data_feed import _load_from_cache
 
         total = len(self._candidate_codes)
         loaded = 0
-        fetched = 0
-        failed = 0
+        skipped = 0
 
-        logging.info(f"[基本面] 正在加载 {total} 只候选股票K线数据...")
+        logging.info(f"[基本面] 正在从本地缓存加载 {total} 只候选股票K线数据（回测离线模式）...")
 
-        # Phase 1: 从缓存加载
-        need_fetch = []
         for code in self._candidate_codes:
             df = _load_from_cache(code)
             if df is not None and len(df) > 0:
                 self._build_price_lookup(code, df)
                 loaded += 1
             else:
-                need_fetch.append(code)
+                skipped += 1
 
-        logging.info(f"[基本面] 缓存命中: {loaded}, 需在线获取: {len(need_fetch)}")
-
-        # Phase 2: 从东方财富获取（多线程并行）
-        if need_fetch:
-            est_seconds = len(need_fetch) * 0.3
-            logging.info(f"[基本面] 正在从东方财富获取 {len(need_fetch)} 只股票K线..."
-                         f" (预计 {est_seconds:.0f} 秒)")
-
-            def _fetch_one(code):
-                for attempt in range(3):
-                    try:
-                        df = _fetch_stock_from_eastmoney(code, '20230101')
-                        if df is not None and len(df) > 0:
-                            _save_cache(code, df)
-                            return (code, df)
-                    except Exception:
-                        if attempt < 2:
-                            time.sleep(1 + attempt)
-                return (code, None)
-
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                futures = {executor.submit(_fetch_one, code): code for code in need_fetch}
-                done_count = 0
-                for future in as_completed(futures):
-                    code, df = future.result()
-                    done_count += 1
-                    if df is not None:
-                        self._build_price_lookup(code, df)
-                        fetched += 1
-                    else:
-                        failed += 1
-                    if done_count % 200 == 0:
-                        logging.info(f"[基本面] 进度: {done_count}/{len(need_fetch)} "
-                                     f"(成功={fetched}, 失败={failed})")
-
-        total_loaded = loaded + fetched
-        logging.info(f"[基本面] K线数据加载完成: {total_loaded}/{total} 只 "
-                     f"(缓存={loaded}, 在线={fetched}, 失败={failed})")
+        if skipped > 0:
+            logging.info(f"[基本面] K线缓存加载完成: {loaded}/{total} 只 (跳过无缓存 {skipped} 只)")
+        else:
+            logging.info(f"[基本面] K线缓存加载完成: {loaded}/{total} 只")
 
     def _build_price_lookup(self, code, df):
         """构建价格和成交量快速查找字典。
@@ -943,8 +911,12 @@ class FundamentalDataProvider:
             df[fname] = values
 
     def _ensure_stocks_loaded(self, codes):
-        """确保指定股票的 K 线数据已加载（用于 in_ 过滤的非候选股）"""
-        from .data_feed import _load_from_cache, _fetch_stock_from_eastmoney, _save_cache
+        """确保指定股票的 K 线数据已加载（用于 in_ 过滤的非候选股）。
+
+        回测离线模式：只读本地缓存，缓存缺失的股票静默跳过，
+        不调用 EastMoney/akshare 在线 API，避免阻塞回测线程。
+        """
+        from .data_feed import _load_from_cache
 
         need_load = [c for c in codes
                      if c not in self._price_lookup
@@ -953,26 +925,14 @@ class FundamentalDataProvider:
         if not need_load:
             return
 
-        logging.info(f"[基本面] 延迟加载 {len(need_load)} 只额外股票 K 线")
+        logging.debug(f"[基本面] 延迟加载 {len(need_load)} 只额外股票 K 线（仅本地缓存）")
         newly_loaded = False
         for code in need_load:
             df = _load_from_cache(code)
             if df is not None and len(df) > 0:
                 self._build_price_lookup(code, df)
                 newly_loaded = True
-                continue
-            for attempt in range(3):
-                try:
-                    df = _fetch_stock_from_eastmoney(code, '20230101')
-                    if df is not None and len(df) > 0:
-                        _save_cache(code, df)
-                        self._build_price_lookup(code, df)
-                        newly_loaded = True
-                        break
-                except Exception:
-                    if attempt < 2:
-                        time.sleep(1 + attempt)
-        # 把新加载的股票持久化到基本面缓存，避免下次重复请求 API
+        # 把新加载的股票持久化到基本面缓存，避免下次重复读取磁盘
         if newly_loaded:
             self._save_fundamental_cache()
 
