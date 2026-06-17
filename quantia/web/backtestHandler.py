@@ -820,15 +820,15 @@ def _normalize_backtest_date(value):
 
 
 def _load_single_indicator_signal_dates(strategy_name, code, start_date_str, end_date_str, hist=None):
-    """读取单股区间内的指标信号日期集合（供逐日 O(1) 匹配）。
+    """计算单股区间内的指标信号日期集合（供逐日 O(1) 匹配）。
 
-    信号来源两段式：
-      1. 横截面选股结果表（cn_stock_indicators_buy/sell）：个股若曾被选中，直接复用
-         已持久化的信号日。
-      2. 回退按个股自身指标序列重算：该结果表仅保留极少数被选中个股、且只覆盖近期
-         日期，对绝大多数个股（如蓝筹股 000001）查不到任何信号日，会导致单股区间
-         回测全空、K 线无买卖点标注。此时用该股自身完整 K 线的指标时间序列重算技术
-         信号（见 _compute_single_indicator_signal_dates）。
+    单股回测是“对指定个股按参数重新验证策略”，因此当个股 K 线（hist）可用时，
+    始终按该股自身完整指标序列重算技术买/卖信号（见 _compute_single_indicator_signal_dates），
+    而不是去读横截面选股结果表（cn_stock_indicators_buy/sell）——那只是“某日全市场
+    被选中个股”的快照，并非个股指标历史，对绝大多数个股（如蓝筹股 000001）查不到任何
+    记录，会导致单股回测全空、K 线无买卖点标注。
+
+    仅在 hist 不可用的异常路径下，才回退查选股结果表，避免完全失去信号来源。
     """
     mapping = _SINGLE_INDICATOR_TABLE_MAP.get(strategy_name)
     if not mapping:
@@ -837,8 +837,13 @@ def _load_single_indicator_signal_dates(strategy_name, code, start_date_str, end
     start_date_norm = _normalize_backtest_date(start_date_str)
     end_date_norm = _normalize_backtest_date(end_date_str)
 
+    # 主路径：按个股自身指标序列重算（基于用户在「指标设置」页持久化的阈值参数）。
+    if hist is not None:
+        return _compute_single_indicator_signal_dates(
+            strategy_name, hist, start_date_norm, end_date_norm)
+
+    # 回退路径（hist 不可用）：查横截面选股结果表。
     dates = set()
-    # 1) 横截面选股结果表（个股若曾被选中，直接复用持久化信号日）
     if mdb.checkTableIsExist(table_name) and start_date_norm and end_date_norm:
         try:
             rows = mdb.executeSqlFetch(
@@ -855,13 +860,6 @@ def _load_single_indicator_signal_dates(strategy_name, code, start_date_str, end
                     continue
         except Exception:
             logging.debug("读取指标信号日期异常: %s %s", strategy_name, code, exc_info=True)
-
-    # 2) 选股表查不到该股信号（绝大多数个股）→ 回退按个股自身指标序列重算
-    if not dates and hist is not None:
-        computed = _compute_single_indicator_signal_dates(
-            strategy_name, hist, start_date_norm, end_date_norm)
-        if computed:
-            dates = computed
     return dates
 
 

@@ -73,12 +73,18 @@ class RunSingleBacktestTests(unittest.TestCase):
         self.assertIn('error', res)
 
     def test_indicators_buy_supported(self):
-        signal_day = self.hist['date'].iloc[5].strftime('%Y-%m-%d')
+        # 单股回测按个股自身指标序列重算信号：第 5 根满足极度超卖。
+        ind = self.hist.copy()
+        ind['rsi_6'] = 50.0
+        ind['kdjj'] = 50.0
+        ind['wr_6'] = -50.0
+        ind['cci'] = 0.0
+        ind['mfi'] = 50.0
+        ind.loc[5, ['rsi_6', 'kdjj', 'wr_6', 'cci', 'mfi']] = [10.0, -5.0, -95.0, -200.0, 10.0]
         with mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
              mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=self.hist), \
-             mock.patch.object(bh.idr, 'get_indicators', return_value=self.hist), \
-             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=True), \
-             mock.patch.object(bh.mdb, 'executeSqlFetch', return_value=[{'date': signal_day}]):
+             mock.patch.object(bh.idr, 'get_indicators', return_value=ind), \
+             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False):
             res = bh._run_single_backtest('000001', 'indicators_buy',
                                           '2026-01-01', '2026-03-31', hold_days=5)
         self.assertNotIn('error', res)
@@ -87,12 +93,18 @@ class RunSingleBacktestTests(unittest.TestCase):
         self.assertTrue(len(res['trades']) >= 1)
 
     def test_indicators_sell_supported(self):
-        signal_day = self.hist['date'].iloc[8].strftime('%Y-%m-%d')
+        # 单股回测按个股自身指标序列重算信号：第 8 根满足极度超买。
+        ind = self.hist.copy()
+        ind['rsi_6'] = 50.0
+        ind['kdjj'] = 50.0
+        ind['wr_6'] = -50.0
+        ind['cci'] = 0.0
+        ind['mfi'] = 50.0
+        ind.loc[8, ['rsi_6', 'kdjj', 'wr_6', 'cci', 'mfi']] = [90.0, 105.0, -5.0, 200.0, 90.0]
         with mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
              mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=self.hist), \
-             mock.patch.object(bh.idr, 'get_indicators', return_value=self.hist), \
-             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=True), \
-             mock.patch.object(bh.mdb, 'executeSqlFetch', return_value=[{'date': signal_day}]):
+             mock.patch.object(bh.idr, 'get_indicators', return_value=ind), \
+             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False):
             res = bh._run_single_backtest('000001', 'indicators_sell',
                                           '2026-01-01', '2026-03-31', hold_days=3)
         self.assertNotIn('error', res)
@@ -154,8 +166,8 @@ class RunSingleBacktestTests(unittest.TestCase):
         expected = {hist['date'].iloc[i].date() for i in range(2, 6)}
         self.assertEqual(dates, expected)
 
-    def test_load_signal_dates_falls_back_to_own_series_when_table_empty(self):
-        """选股结果表存在但无该股记录 → 回退按个股指标序列重算（修复蓝筹股全空）。"""
+    def test_load_signal_dates_uses_own_series_when_hist_available(self):
+        """hist 可用时始终按个股指标序列重算，不读横截面选股结果表。"""
         hist = _make_hist([10.0 + i * 0.1 for i in range(10)])
         ind = hist.copy()
         ind['rsi_6'] = 50.0
@@ -165,13 +177,22 @@ class RunSingleBacktestTests(unittest.TestCase):
         ind['mfi'] = 50.0
         ind.loc[4, ['rsi_6', 'kdjj', 'wr_6', 'cci', 'mfi']] = [10.0, -5.0, -95.0, -200.0, 10.0]
 
-        with mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=True), \
-             mock.patch.object(bh.mdb, 'executeSqlFetch', return_value=[]), \
+        called = {'fetch': False}
+
+        def _fetch(*_a, **_k):
+            called['fetch'] = True
+            return []
+
+        with mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False), \
+             mock.patch.object(bh.mdb, 'executeSqlFetch', side_effect=_fetch), \
              mock.patch.object(bh.idr, 'get_indicators', return_value=ind):
             dates = bh._load_single_indicator_signal_dates(
                 'indicators_buy', '000001', '2026-01-01', '2026-03-31', hist=hist)
 
         self.assertEqual(dates, {hist['date'].iloc[4].date()})
+        # 选股结果表不应被查询（executeSqlFetch 仅可能被 load_params 调用，这里
+        # checkTableIsExist=False 使 load_params 不触发 fetch）。
+        self.assertFalse(called['fetch'])
 
     def test_indicators_buy_backtest_works_without_table_rows(self):
         """端到端：选股表无 000001 信号，单股回测仍按自身指标产生交易（不再全空）。"""
