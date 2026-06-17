@@ -209,6 +209,9 @@ class PortfolioBacktestEngine:
         logging.info(f"[回测引擎] 开始回测: {start_date} ~ {end_date}, 初始资金={initial_cash}")
         self._strategy_errors = []  # 收集策略运行时错误
         self._error_counts = {}  # 相同错误计数，用于抑制重复日志
+        # 记录回测区间（字符串），供基本面 price_lookup 仅保留区间内日期、抑制内存占用
+        self._bt_start_str = str(start_date)[:10]
+        self._bt_end_str = str(end_date)[:10]
         # 每次 run() 都重置订单遥测（同一引擎实例可能被多次复用）
         for _k in self._order_stats:
             self._order_stats[_k] = 0

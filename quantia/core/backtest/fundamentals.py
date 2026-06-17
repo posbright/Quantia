@@ -572,7 +572,16 @@ class FundamentalDataProvider:
                      f"(缓存={loaded}, 在线={fetched}, 失败={failed})")
 
     def _build_price_lookup(self, code, df):
-        """构建价格和成交量快速查找字典"""
+        """构建价格和成交量快速查找字典。
+
+        _price_lookup / _volume_lookup 仅在回测各调仓/交易日（区间内）被查询
+        （用于市值估算、pe 估算、停牌回退判断），不需要回测区间外的历史。
+        因此仅保留 [回测开始, 回测结束] 区间内的日期，可将整张表的内存占用从
+        “全历史×全市场”（约 1GB+）降到“区间×全市场”（数十 MB），从根因上抑制
+        全市场基本面筛选的常驻内存峰值。区间信息由引擎 run() 写入。
+        """
+        bt_start = getattr(self._engine, '_bt_start_str', None) if self._engine else None
+        bt_end = getattr(self._engine, '_bt_end_str', None) if self._engine else None
         prices = {}
         volumes = {}
         for _, row in df.iterrows():
@@ -581,6 +590,9 @@ class FundamentalDataProvider:
                 d_str = d.strftime('%Y-%m-%d')
             else:
                 d_str = str(d)[:10]
+            # 仅保留回测区间内日期（区间未知时退回全保留，保持向后兼容）
+            if bt_start and bt_end and not (bt_start <= d_str <= bt_end):
+                continue
             prices[d_str] = float(row['close'])
             volumes[d_str] = int(row.get('volume', 0))
         self._price_lookup[code] = prices
@@ -1015,9 +1027,25 @@ class FundamentalDataProvider:
             with open(cache_file, 'rb') as f:
                 data = pickle.load(f)
             self._stock_info = data['stock_info']
-            self._price_lookup = data['price_lookup']
-            self._volume_lookup = data['volume_lookup']
             self._candidate_codes = data['candidate_codes']
+            # price_lookup/volume_lookup 现仅保存某个回测区间内的日期；若当前回测
+            # 区间未被缓存区间覆盖，则丢弃这两张表（按需重建），避免跨区间复用导致
+            # 查不到当日价格而误判为停牌/无数据。stock_info/candidate_codes 与区间
+            # 无关，可直接复用。旧缓存（无 cache_start/end）为全历史，覆盖任意区间。
+            cache_start = data.get('cache_start')
+            cache_end = data.get('cache_end')
+            bt_start = getattr(self._engine, '_bt_start_str', None) if self._engine else None
+            bt_end = getattr(self._engine, '_bt_end_str', None) if self._engine else None
+            covered = True
+            if cache_start and cache_end and bt_start and bt_end:
+                covered = (cache_start <= bt_start and bt_end <= cache_end)
+            if covered:
+                self._price_lookup = data['price_lookup']
+                self._volume_lookup = data['volume_lookup']
+            else:
+                self._price_lookup = {}
+                self._volume_lookup = {}
+                logging.info("[基本面] 缓存区间未覆盖当前回测区间，price_lookup 将按需重建")
             logging.info(f"[基本面] 从缓存加载: {len(self._candidate_codes)} 只候选股票，"
                          f"{len(self._price_lookup)} 只有K线数据")
             return True
@@ -1036,6 +1064,9 @@ class FundamentalDataProvider:
                 'price_lookup': self._price_lookup,
                 'volume_lookup': self._volume_lookup,
                 'candidate_codes': self._candidate_codes,
+                # 记录本次构建 price_lookup 所用的回测区间，供加载时判断覆盖关系
+                'cache_start': getattr(self._engine, '_bt_start_str', None) if self._engine else None,
+                'cache_end': getattr(self._engine, '_bt_end_str', None) if self._engine else None,
             }
             with open(tmp_file, 'wb') as f:
                 pickle.dump(data, f)
@@ -1104,8 +1135,9 @@ class _CurrentStockInfo:
             if df is not None and len(df) > 0:
                 import pandas as _pd
                 current_dt = self._engine.context.current_dt
-                mask = df['date'] <= _pd.Timestamp(current_dt)
-                subset = df.loc[mask]
+                # 引擎 _stock_data 以日期为索引（set_index('date')），故按索引切片，
+                # 不能用 df['date']（无该列，会抛 KeyError 被策略 except 静默吞掉）。
+                subset = df.loc[:_pd.Timestamp(current_dt)]
                 if len(subset) > 0:
                     return float(subset['close'].iloc[-1])
         return 0.0
@@ -1118,8 +1150,8 @@ class _CurrentStockInfo:
             if df is not None and len(df) > 1:
                 import pandas as _pd
                 current_dt = self._engine.context.current_dt
-                mask = df['date'] <= _pd.Timestamp(current_dt)
-                subset = df.loc[mask]
+                # 按日期索引切片（_stock_data 以 date 为索引），避免 df['date'] KeyError。
+                subset = df.loc[:_pd.Timestamp(current_dt)]
                 if len(subset) >= 2:
                     prev_close = float(subset['close'].iloc[-2])
                     return round(prev_close * 1.1, 2)
@@ -1133,8 +1165,8 @@ class _CurrentStockInfo:
             if df is not None and len(df) > 1:
                 import pandas as _pd
                 current_dt = self._engine.context.current_dt
-                mask = df['date'] <= _pd.Timestamp(current_dt)
-                subset = df.loc[mask]
+                # 按日期索引切片（_stock_data 以 date 为索引），避免 df['date'] KeyError。
+                subset = df.loc[:_pd.Timestamp(current_dt)]
                 if len(subset) >= 2:
                     prev_close = float(subset['close'].iloc[-2])
                     return round(prev_close * 0.9, 2)
