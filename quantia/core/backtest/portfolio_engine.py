@@ -1855,14 +1855,20 @@ class PortfolioBacktestEngine:
                 logging.info(f"[回测引擎] 预加载 {len(stock_codes)} 只股票数据")
 
             # 重置为有界 LRU，分批拉取以降低加载峰值内存
+            # cache_only=True：回测只走本地缓存和 cn_stock_spot DB，
+            # 缓存不足的股票直接跳过，不触发 EastMoney/akshare 在线 API，
+            # 避免 API 500/限流导致整个回测线程长期阻塞。
             self._stock_data = _LRUStockData(cap)
             batch = max(1, self._PRELOAD_BATCH_SIZE)
             for start in range(0, len(preload_codes), batch):
                 chunk = preload_codes[start:start + batch]
-                raw_chunk = load_multiple_stocks(chunk, pre_start, end_date)
+                raw_chunk = load_multiple_stocks(chunk, pre_start, end_date, cache_only=True)
                 for code, df in raw_chunk.items():
                     self._stock_data[code] = self._to_indexed_df(df)
                 del raw_chunk  # 立即释放本批原始数据
+            skipped = len(preload_codes) - len(self._stock_data)
+            if skipped > 0:
+                logging.info(f"[回测引擎] 预加载跳过 {skipped} 只无本地缓存股票（离线模式）")
 
             # 指数数据始终全部加载并固定常驻（数量少、需全程可用）
             for code in index_codes:
@@ -1882,7 +1888,8 @@ class PortfolioBacktestEngine:
             self._load_stock_names_batch(codes)
 
     def _load_single_stock(self, code):
-        """延迟加载单只股票或指数（被 LRU 淘汰后会再次触发此重载，数据一致）"""
+        """延迟加载单只股票或指数（被 LRU 淘汰后会再次触发此重载，数据一致）。
+        回测模式下使用 cache_only=True，缓存缺失时直接返回而不发起在线 API 请求。"""
         if code in self._stock_data:
             return
         # 使用更早的开始日期来提供多周期 history() 数据
@@ -1890,11 +1897,11 @@ class PortfolioBacktestEngine:
         if self.context.current_dt:
             pre_start = (pd.Timestamp(self.context.current_dt) - pd.Timedelta(days=750)).strftime('%Y-%m-%d')
 
-        # 指数代码使用指数数据源
+        # 指数代码使用指数数据源（指数不受 cache_only 限制，始终可加载）
         if code in self._INDEX_CODES or code.startswith('399'):
             df = load_benchmark_data(code, start_date=pre_start)
         else:
-            df = load_stock_data(code, start_date=pre_start)
+            df = load_stock_data(code, start_date=pre_start, cache_only=True)
         if df is not None:
             self._stock_data[code] = self._to_indexed_df(df)
 

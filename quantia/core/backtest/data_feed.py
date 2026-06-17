@@ -254,7 +254,7 @@ def _batch_load_today_from_db(codes, date_str):
         return {}
 
 
-def load_stock_data(code, start_date=None, end_date=None):
+def load_stock_data(code, start_date=None, end_date=None, cache_only=False):
     """
     加载股票日 K 线数据。优先从缓存加载，缓存不足时从 EastMoney 补全。
 
@@ -262,6 +262,9 @@ def load_stock_data(code, start_date=None, end_date=None):
         code: 6位股票代码（如 '000001'）
         start_date: 开始日期（str 'YYYY-MM-DD' 或 date 对象）
         end_date: 结束日期
+        cache_only: True 时仅使用本地缓存和 cn_stock_spot 数据库，不调用任何在线 API。
+                    回测场景下应传 True，缓存不足的股票直接返回 None（由引擎跳过该股），
+                    彻底避免 EastMoney/akshare 网络请求阻塞回测线程。
 
     Returns:
         DataFrame: 包含 date/open/high/low/close/volume/pre_close 列，
@@ -281,17 +284,22 @@ def load_stock_data(code, start_date=None, end_date=None):
         cache_end = df['date'].max().date() if hasattr(df['date'].max(), 'date') else df['date'].max()
         req_end = pd.Timestamp(end_date).date()
         if cache_end < req_end - datetime.timedelta(days=3):
-            need_online = True
-            logging.info(f"{code} 缓存截止 {cache_end}，需要数据到 {req_end}，尝试在线获取")
+            if cache_only:
+                # 回测模式：缓存不足但不允许在线拉取 → 跳过该股（用已有缓存数据）
+                logging.debug(f"{code} 缓存截止 {cache_end} < 需求 {req_end}，回测离线模式跳过在线补全")
+                # 仍然使用已有缓存数据（可能只是缺最近几天），让引擎自行决定是否有足够数据点
+            else:
+                need_online = True
+                logging.info(f"{code} 缓存截止 {cache_end}，需要数据到 {req_end}，尝试在线获取")
         elif cache_end < req_end:
-            # 缓存只差1-3天（通常是今天的数据），尝试从 DB 补全
+            # 缓存只差1-3天（通常是今天的数据），尝试从 DB 补全（DB查询允许在 cache_only 模式下）
             end_str = req_end.strftime('%Y-%m-%d')
             db_row = _load_today_from_db(code, end_str)
             if db_row is not None:
                 df = pd.concat([df, db_row], ignore_index=True).drop_duplicates(
                     subset=['date'], keep='last').sort_values('date').reset_index(drop=True)
 
-    if need_online:
+    if need_online and not cache_only:
         # 完全缺失时也先尝试 DB
         if end_date:
             end_str = pd.Timestamp(end_date).strftime('%Y-%m-%d')
@@ -304,12 +312,17 @@ def load_stock_data(code, start_date=None, end_date=None):
                 # 只有今天的 DB 数据，仍需在线补历史
                 pass
 
-    if need_online:
+    if need_online and not cache_only:
         online_df = _fetch_stock_from_eastmoney(code, start_date, end_date)
         if online_df is not None and len(online_df) > 0:
             df = online_df
             # 更新缓存（保存完整获取范围）
             _save_cache(code, df)
+
+    if need_online and cache_only and (df is None or len(df) == 0):
+        # 回测离线模式：缓存完全缺失，直接返回 None，引擎将跳过该股票
+        logging.debug(f"{code} 无本地缓存，回测离线模式跳过")
+        return None
 
     if df is None or len(df) == 0:
         return None
@@ -487,7 +500,7 @@ def _normalize_cache_df(df):
     return df.sort_values('date').reset_index(drop=True)
 
 
-def load_multiple_stocks(codes, start_date=None, end_date=None):
+def load_multiple_stocks(codes, start_date=None, end_date=None, cache_only=False):
     """
     批量加载多只股票数据（多线程并行）。
 
@@ -495,6 +508,8 @@ def load_multiple_stocks(codes, start_date=None, end_date=None):
         codes: 股票代码列表
         start_date: 开始日期
         end_date: 结束日期
+        cache_only: True 时仅使用本地缓存和 DB，不调用在线 API。
+                    缓存不存在或不足的股票将被静默跳过。
 
     Returns:
         dict: {code: DataFrame}，无数据的股票不包含
@@ -504,7 +519,7 @@ def load_multiple_stocks(codes, start_date=None, end_date=None):
     max_workers = min(8, len(codes)) if codes else 1
 
     def _load_one(code):
-        return code, load_stock_data(code, start_date, end_date)
+        return code, load_stock_data(code, start_date, end_date, cache_only=cache_only)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_load_one, code): code for code in codes}
