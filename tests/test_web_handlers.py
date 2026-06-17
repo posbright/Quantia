@@ -1487,9 +1487,18 @@ class TestTechnicalStrategyParams(unittest.TestCase):
         self.assertIn('min_change', all_keys)
 
     def test_strategy_func_present(self):
-        """Most strategies have strategy_func."""
+        """Most strategies have strategy_func.
+
+        indicator_buy / indicator_sell 通过 FilterStocksHandler 的显式分支路由到
+        buy_sell_signal 真实策略逻辑，不走 strategy_func 表查询，故豁免该断言。
+        """
         from quantia.web.strategy_params_config import TECHNICAL_STRATEGY_PARAMS
+        _signal_views = {'indicator_buy', 'indicator_sell'}
         for key, val in TECHNICAL_STRATEGY_PARAMS.items():
+            if key in _signal_views:
+                self.assertEqual(val.get('storage_key'), 'indicator_signal',
+                                 f'{key} should map to indicator_signal storage')
+                continue
             self.assertIn('strategy_func', val, f'{key} missing strategy_func')
 
 

@@ -444,10 +444,6 @@ DEFAULT_STRATEGY_PARAMS = {
 # 合并技术策略参数定义
 DEFAULT_STRATEGY_PARAMS.update(TECHNICAL_STRATEGY_PARAMS)
 
-# 合并「指标买卖信号」参数定义（前端「指标设置」页复用通用 params 接口）
-from quantia.web.indicator_params_config import INDICATOR_SIGNAL_PARAMS
-DEFAULT_STRATEGY_PARAMS.update(INDICATOR_SIGNAL_PARAMS)
-
 
 # ========== 数据库操作 ==========
 
@@ -505,6 +501,27 @@ def _ensure_history_table():
         logging.error("创建策略参数历史表异常", exc_info=True)
 
 
+def _resolve_storage_key(strategy_key):
+    """解析参数实际存储 key。
+
+    某些视图（如 indicator_buy / indicator_sell）共享同一份底层参数
+    （indicator_signal），通过 config 的 storage_key 字段声明，保证
+    在「策略参数配置」页与「指标设置」页编辑的是同一份参数（保存即生效）。
+    """
+    cfg = DEFAULT_STRATEGY_PARAMS.get(strategy_key, {})
+    return cfg.get('storage_key', strategy_key)
+
+
+def _view_param_keys(strategy_key):
+    """返回某视图在其 groups 中定义的全部 param key 集合。"""
+    keys = set()
+    cfg = DEFAULT_STRATEGY_PARAMS.get(strategy_key, {})
+    for group in cfg.get('groups', []):
+        for p in group.get('params', []):
+            keys.add(p['key'])
+    return keys
+
+
 def _load_saved_params(strategy_key):
     """从数据库加载已保存的参数"""
     try:
@@ -559,6 +576,28 @@ def _delete_strategy_params(strategy_key):
         return True
     except Exception as e:
         logging.error(f"删除策略参数异常", exc_info=True)
+        return False
+
+
+def _delete_strategy_params_keys(storage_key, param_keys):
+    """仅删除存储 key 下指定的若干 param_key（用于共享存储的视图级重置）。
+
+    indicator_buy / indicator_sell 共用 indicator_signal 存储，重置买入视图时
+    不能整表删除 indicator_signal（会连带清空卖出阈值），只删本视图定义的 key。
+    """
+    param_keys = [k for k in param_keys]
+    if not param_keys:
+        return True
+    try:
+        placeholders = ', '.join(['%s'] * len(param_keys))
+        mdb.executeSql(
+            f"DELETE FROM `cn_strategy_params` WHERE `strategy_key` = %s "
+            f"AND `param_key` IN ({placeholders})",
+            tuple([storage_key] + param_keys)
+        )
+        return True
+    except Exception:
+        logging.error("按 key 删除策略参数异常", exc_info=True)
         return False
 
 
@@ -635,7 +674,7 @@ def get_strategy_params(strategy_key):
     _ensure_params_table()
     
     params_def = copy.deepcopy(DEFAULT_STRATEGY_PARAMS[strategy_key])
-    saved = _load_saved_params(strategy_key)
+    saved = _load_saved_params(_resolve_storage_key(strategy_key))
     
     # 将保存的值合并到参数定义中
     for group in params_def.get('groups', []):
@@ -733,21 +772,22 @@ class SaveStrategyParamsHandler(webBase.BaseHandler, ABC):
         _ensure_params_table()
         
         # 保存前记录旧值，用于检测实际变更
-        old_params = _load_saved_params(strategy_key)
+        storage_key = _resolve_storage_key(strategy_key)
+        old_params = _load_saved_params(storage_key)
         
         saved_count = 0
         changed_keys = []
         for key, value in params.items():
             old_val = old_params.get(key)
-            if _save_param(strategy_key, key, value):
+            if _save_param(storage_key, key, value):
                 saved_count += 1
                 if old_val != value:
                     changed_keys.append(key)
         
         # 记录参数变更历史（仅在有实际变更时记录）
         if changed_keys:
-            full_snapshot = _load_saved_params(strategy_key)
-            _record_params_history(strategy_key, full_snapshot, changed_keys, source='manual')
+            full_snapshot = _load_saved_params(storage_key)
+            _record_params_history(storage_key, full_snapshot, changed_keys, source='manual')
         
         # 参数变更后清除筛选结果缓存
         filter_result_cache.invalidate()
@@ -782,12 +822,23 @@ class ResetStrategyParamsHandler(webBase.BaseHandler, ABC):
         _ensure_params_table()
         
         # 记录重置前的参数快照
-        old_params = _load_saved_params(strategy_key)
+        storage_key = _resolve_storage_key(strategy_key)
+        old_params = _load_saved_params(storage_key)
         
-        if _delete_strategy_params(strategy_key):
+        # 共享存储的视图（如 indicator_buy/sell → indicator_signal）只重置本视图
+        # 定义的 key，避免误删另一视图的参数；独立存储则整表删除。
+        if storage_key != strategy_key:
+            view_keys = _view_param_keys(strategy_key)
+            reset_ok = _delete_strategy_params_keys(storage_key, view_keys)
+            changed = [k for k in old_params.keys() if k in view_keys]
+        else:
+            reset_ok = _delete_strategy_params(strategy_key)
+            changed = list(old_params.keys())
+        
+        if reset_ok:
             # 记录重置操作到历史（快照记录默认值）
-            if old_params:
-                _record_params_history(strategy_key, {}, list(old_params.keys()), source='reset')
+            if changed:
+                _record_params_history(storage_key, {}, changed, source='reset')
             # 参数重置后清除筛选结果缓存
             filter_result_cache.invalidate()
             self.write(json.dumps({
@@ -1023,53 +1074,89 @@ class FilterStocksHandler(webBase.BaseHandler, ABC):
             " ORDER BY `roe_weight` DESC")
     
     def _filter_indicator(self, strategy_key, date, page, page_size):
-        """指标买入/卖出信号筛选"""
-        params = self._get_strategy_values(strategy_key)
-        
-        limit_clause = self._build_limit(page, page_size)
-        conditions, sql_params = [], []
-        
-        table = "cn_stock_indicators"
-        if not mdb.checkTableIsExist(table):
-            self.write(json.dumps({"columns": [], "data": [], "total": 0, "warning": "指标表不存在"}, ensure_ascii=False))
+        """指标买入/卖出信号筛选 —— 复用真实策略逻辑。
+
+        买入 = 自历史最高深跌 + 多指标极度超卖；卖出 = 贴近历史峰值 + 多指标极度超买。
+        直接调用 buy_sell_signal.select_buy_signals / select_sell_signals，因此预览结果
+        与「指标买入/卖出」榜单、cron 计算完全一致（含回撤闸门、ST 排除、可选基本面过滤），
+        且使用的是共享的 indicator_signal 参数（保存即生效）。仅读 DB + K 线缓存，不发外部 API。
+        """
+        import quantia.core.indicator.buy_sell_signal as bss
+        import quantia.core.tablestructure as tbs
+
+        mode = "buy" if strategy_key == "indicator_buy" else "sell"
+
+        ind = tbs.TABLE_CN_STOCK_INDICATORS["name"]
+        columns = [
+            {"value": "date", "caption": "日期", "width": 110},
+            {"value": "code", "caption": "代码", "width": 90},
+            {"value": "name", "caption": "名称", "width": 100},
+            {"value": "rsi_6", "caption": "RSI(6)", "width": 80},
+            {"value": "kdjj", "caption": "KDJ-J", "width": 80},
+            {"value": "wr_6", "caption": "WR(6)", "width": 80},
+            {"value": "cci", "caption": "CCI", "width": 80},
+            {"value": "mfi", "caption": "MFI", "width": 80},
+        ]
+
+        if not mdb.checkTableIsExist(ind):
+            self.write(json.dumps(
+                {"columns": columns, "data": [], "total": 0, "warning": "指标表不存在"},
+                ensure_ascii=False))
             return
-        
-        if date:
-            conditions.append("`date` = %s")
-            sql_params.append(date)
-        
-        if strategy_key == "indicator_buy":
-            indicator_map = {
-                "kdjk_min": ("kdjk", ">="), "kdjd_min": ("kdjd", ">="), "kdjj_min": ("kdjj", ">="),
-                "rsi6_min": ("rsi_6", ">="), "cci_min": ("cci", ">="),
-                "cr_min": ("cr", ">="), "wr6_min": ("wr_6", ">="), "vr_min": ("vr", ">="),
-            }
-        else:
-            indicator_map = {
-                "kdjk_max": ("kdjk", "<"), "kdjd_max": ("kdjd", "<"), "kdjj_max": ("kdjj", "<"),
-                "rsi6_max": ("rsi_6", "<"), "cci_max": ("cci", "<"),
-                "cr_max": ("cr", "<"), "wr6_max": ("wr_6", "<"), "vr_max": ("vr", "<"),
-            }
-        
-        for param_key, (col, op) in indicator_map.items():
-            if param_key in params:
-                conditions.append(f"`{col}` {op} %s")
-                sql_params.append(params[param_key])
-        
-        where = " WHERE " + " AND ".join(conditions) if conditions else ""
-        self._exec_filter_query(table, where, sql_params, limit_clause, params,
-            "`date`, `code`, `name`, `kdjk`, `kdjd`, `kdjj`, `rsi_6`, `cci`, `cr`, `wr_6`, `vr`",
-            [{"value": "date", "caption": "日期", "width": 110},
-             {"value": "code", "caption": "代码", "width": 90},
-             {"value": "name", "caption": "名称", "width": 100},
-             {"value": "kdjk", "caption": "KDJ-K", "width": 70},
-             {"value": "kdjd", "caption": "KDJ-D", "width": 70},
-             {"value": "kdjj", "caption": "KDJ-J", "width": 70},
-             {"value": "rsi_6", "caption": "RSI(6)", "width": 70},
-             {"value": "cci", "caption": "CCI", "width": 70},
-             {"value": "cr", "caption": "CR", "width": 70},
-             {"value": "wr_6", "caption": "WR(6)", "width": 70},
-             {"value": "vr", "caption": "VR", "width": 70}])
+
+        # 日期：未指定时取最新交易日（与榜单/重算口径一致）
+        if not date:
+            rows = mdb.executeSqlFetch(f"SELECT MAX(`date`) FROM `{ind}`")
+            date = str(rows[0][0])[:10] if rows and rows[0][0] is not None else None
+        if not date:
+            self.write(json.dumps(
+                {"columns": columns, "data": [], "total": 0, "warning": "无可用交易日"},
+                ensure_ascii=False))
+            return
+
+        params_used = bss.load_params()
+        try:
+            sig = (bss.select_buy_signals(date, params_used) if mode == "buy"
+                   else bss.select_sell_signals(date, params_used))
+        except Exception:
+            logging.error("指标信号预览计算失败", exc_info=True)
+            self.write(json.dumps(
+                {"columns": columns, "data": [], "total": 0, "warning": "信号计算失败"},
+                ensure_ascii=False))
+            return
+
+        codes = [] if sig is None else [str(c) for c in sig["code"].tolist()]
+        if not codes:
+            self.write(json.dumps(
+                {"columns": columns, "data": [], "total": 0, "params_used": params_used},
+                ensure_ascii=False))
+            return
+
+        # 命中股票通常仅个位数；拉取指标展示列后在内存中分页。
+        placeholders = ", ".join(["%s"] * len(codes))
+        disp_rows = mdb.executeSqlFetch(
+            f"SELECT `date`, `code`, `name`, `rsi_6`, `kdjj`, `wr_6`, `cci`, `mfi` "
+            f"FROM `{ind}` WHERE `date` = %s AND `code` IN ({placeholders})",
+            tuple([date] + codes))
+        keys = ["date", "code", "name", "rsi_6", "kdjj", "wr_6", "cci", "mfi"]
+        data = [dict(zip(keys, r)) for r in (disp_rows or [])]
+        total = len(data)
+
+        # 内存分页
+        try:
+            if page is not None and page_size is not None:
+                p = max(1, int(page))
+                ps = max(1, min(500, int(page_size)))
+                data = data[(p - 1) * ps: (p - 1) * ps + ps]
+        except (ValueError, TypeError):
+            pass
+
+        from quantia.web.dataTableHandler import MyEncoder
+        result = json.loads(json.dumps(
+            {"columns": columns, "data": data, "total": total, "params_used": params_used},
+            cls=MyEncoder))
+        self.write(json.dumps(result, ensure_ascii=False))
+
     
     def _filter_kline_strategy(self, strategy_key, date, page, page_size):
         """K线技术策略 — 从已有策略表读取数据"""
@@ -1100,7 +1187,7 @@ class FilterStocksHandler(webBase.BaseHandler, ABC):
     def _get_strategy_values(self, strategy_key):
         """获取策略的参数值（合并默认+用户自定义）"""
         _ensure_params_table()
-        saved = _load_saved_params(strategy_key)
+        saved = _load_saved_params(_resolve_storage_key(strategy_key))
         result = {}
         strategy_def = DEFAULT_STRATEGY_PARAMS.get(strategy_key, {})
         for group in strategy_def.get('groups', []):
@@ -1251,7 +1338,7 @@ class GetParamsHistoryHandler(webBase.BaseHandler, ABC):
             return
 
         limit = min(100, max(1, int(self.get_argument("limit", "50"))))
-        history = _get_params_history(strategy_key, limit)
+        history = _get_params_history(_resolve_storage_key(strategy_key), limit)
 
         # 为每条记录附加参数标签映射
         label_map = _build_param_label_map(strategy_key)
@@ -1291,7 +1378,7 @@ class GetParamsDiffHandler(webBase.BaseHandler, ABC):
             """SELECT `version`, `params_snapshot`
                FROM `cn_strategy_params_history`
                WHERE `strategy_key` = %s AND `version` IN (%s, %s)""",
-            (strategy_key, v1_int, v2_int))
+            (_resolve_storage_key(strategy_key), v1_int, v2_int))
 
         snapshots = {}
         if rows:

@@ -27,16 +27,13 @@ const props = defineProps<{
 
 const isBuy = computed(() => props.strategyKey === 'indicator_buy')
 
-// 每个指标的值域与展示信息（base key 去掉 _min/_max 后缀）
+// 每个指标的值域与展示信息（base key 去掉 buy_/sell_ 前缀后）
 const META: Record<string, { label: string; domain: [number, number]; desc: string }> = {
-  kdjk: { label: 'KDJ-K', domain: [0, 100], desc: '随机指标快线' },
-  kdjd: { label: 'KDJ-D', domain: [0, 100], desc: '随机指标慢线' },
-  kdjj: { label: 'KDJ-J', domain: [0, 120], desc: 'KDJ 的 J 值，可超过 100' },
-  rsi6: { label: 'RSI(6)', domain: [0, 100], desc: '6 日相对强弱' },
+  rsi_6: { label: 'RSI(6)', domain: [0, 100], desc: '6 日相对强弱' },
+  kdjj: { label: 'KDJ-J', domain: [-50, 150], desc: 'KDJ 的 J 值，可超出 0~100' },
+  wr_6: { label: 'WR(6)', domain: [-100, 0], desc: '威廉指标，越接近 -100 越超卖' },
   cci: { label: 'CCI', domain: [-250, 250], desc: '顺势指标' },
-  cr: { label: 'CR', domain: [0, 500], desc: '人气能量指标' },
-  wr6: { label: 'WR(6)', domain: [-100, 0], desc: '威廉指标，越接近 0 越强' },
-  vr: { label: 'VR', domain: [0, 400], desc: '成交量比率' },
+  mfi: { label: 'MFI', domain: [0, 100], desc: '资金流量指标' },
 }
 
 interface Bar {
@@ -55,23 +52,24 @@ const bars = computed<Bar[]>(() => {
   const out: Bar[] = []
   for (const group of props.paramGroups || []) {
     for (const p of group.params || []) {
-      const base = p.key.replace(/_(min|max)$/, '')
+      // 仅处理技术指标阈值键（buy_xxx / sell_xxx）；跳过回撤比率、风险排除、基本面过滤等
+      const base = p.key.replace(/^(buy|sell)_/, '')
       const meta = META[base]
       if (!meta || typeof p.value !== 'number') continue
       const [lo, hi] = meta.domain
       const t = Math.min(Math.max(p.value, lo), hi)
       const pct = ((t - lo) / (hi - lo)) * 100
       const buy = isBuy.value
-      // 买入：触发区在阈值右侧（>= 阈值）；卖出：触发区在阈值左侧（< 阈值）
-      const zoneStart = buy ? pct : 0
-      const zoneWidth = buy ? 100 - pct : pct
+      // 买入(超卖)：触发区在阈值左侧（< 阈值）；卖出(超买)：触发区在阈值右侧（> 阈值）
+      const zoneStart = buy ? 0 : pct
+      const zoneWidth = buy ? pct : 100 - pct
       out.push({
         baseKey: base,
         label: meta.label,
         desc: meta.desc,
         domain: meta.domain,
         threshold: p.value,
-        op: buy ? '≥' : '<',
+        op: buy ? '<' : '>',
         thresholdPct: pct,
         zoneStart,
         zoneWidth,
@@ -97,18 +95,20 @@ const bars = computed<Bar[]>(() => {
 
     <!-- 机制说明 -->
     <el-alert
-      :type="isBuy ? 'warning' : 'info'"
+      :type="isBuy ? 'info' : 'warning'"
       :closable="false"
       class="viz-note"
     >
       <template #title>
         <span v-if="isBuy">
-          本信号在 <b>所有指标同时进入超买区</b> 时触发——本质是<b>强势股「追涨」/动量确认</b>，
-          <b>不是低位抄底</b>。超买不代表立即下跌，需结合趋势方向，注意短线回调风险。
+          本信号在 <b>所有指标同时进入超卖区</b>（RSI/KDJ-J/WR/CCI/MFI 均低于阈值）<b>且</b>
+          股价自历史最高点<b>深度回撤</b>时触发——本质是<b>超跌低位「抄底」</b>。
+          超卖可能长期持续，需结合趋势与基本面，不能机械买入。
         </span>
         <span v-else>
-          本信号在 <b>所有指标同时进入超卖区</b> 时触发，用于超跌反弹或底部确认。
-          超卖可能长期持续，不能机械买入。
+          本信号在 <b>所有指标同时进入超买区</b>（RSI/KDJ-J/WR/CCI/MFI 均高于阈值）<b>且</b>
+          股价<b>贴近历史峰值</b>时触发——用于<b>见顶「派发」</b>减仓。
+          超买不代表立即下跌，需结合趋势方向，注意逼空风险。
         </span>
       </template>
     </el-alert>

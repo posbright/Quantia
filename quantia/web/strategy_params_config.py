@@ -7,7 +7,28 @@
 - name: 中文名
 - description: 策略详细说明（包含原理、适用场景、风险提示）
 - groups: 参数分组，每组包含多个可调参数
+
+指标买入/卖出（indicator_buy / indicator_sell）的参数 schema 直接复用
+indicator_params_config.INDICATOR_SIGNAL_PARAMS（单一真源，引用
+buy_sell_signal.DEFAULT_PARAMS），并通过 storage_key='indicator_signal'
+与「指标设置」页共用同一份底层参数，避免双处漂移、保证保存即生效。
 """
+
+import copy
+
+from quantia.web.indicator_params_config import INDICATOR_SIGNAL_PARAMS as _ISP
+
+
+def _sig_groups(*group_names):
+    """从 INDICATOR_SIGNAL_PARAMS 中按 group_name 取出指定分组的深拷贝。
+
+    指标买入页只展示「买入 + 风险排除 + 基本面」分组，卖出页只展示
+    「卖出 + 风险排除」分组；底层仍是同一份 indicator_signal 参数。
+    """
+    src = _ISP['indicator_signal']['groups']
+    by_name = {g['group_name']: g for g in src}
+    return [copy.deepcopy(by_name[name]) for name in group_names if name in by_name]
+
 
 TECHNICAL_STRATEGY_PARAMS = {
     "enter": {
@@ -344,99 +365,39 @@ TECHNICAL_STRATEGY_PARAMS = {
     },
     "indicator_buy": {
         "name": "指标买入信号",
-        "description": "当多个技术指标同时进入超买区时发出买入信号。\n\n"
-                       "筛选逻辑：所有指标条件必须同时满足（AND逻辑）\n\n"
-                       "指标说明：\n"
-                       "• KDJ：超买区K≥80, D≥70, J≥100\n"
-                       "• RSI(6)：超买区 ≥80\n"
-                       "• CCI：强势 ≥100\n"
-                       "• CR：超强 ≥300\n"
-                       "• WR(6)：接近顶部 ≥-20\n"
-                       "• VR：活跃 ≥160\n\n"
-                       "适用场景：强势股追涨信号，适合短线交易。\n"
-                       "风险提示：超买不等于立即下跌，需结合趋势方向。",
-        "strategy_func": "indicators_buy",
-        "groups": [
-            {
-                "group_name": "KDJ指标",
-                "params": [
-                    {"key": "kdjk_min", "label": "KDJ-K下限", "description": "K值超买区阈值",
-                     "type": "number", "value": 80, "min": 50, "max": 95, "step": 5, "unit": ""},
-                    {"key": "kdjd_min", "label": "KDJ-D下限", "description": "D值超买区阈值",
-                     "type": "number", "value": 70, "min": 50, "max": 90, "step": 5, "unit": ""},
-                    {"key": "kdjj_min", "label": "KDJ-J下限", "description": "J值超买区阈值",
-                     "type": "number", "value": 100, "min": 80, "max": 120, "step": 5, "unit": ""},
-                ]
-            },
-            {
-                "group_name": "RSI / CCI",
-                "params": [
-                    {"key": "rsi6_min", "label": "RSI(6)下限", "description": "6日RSI超买区阈值",
-                     "type": "number", "value": 80, "min": 60, "max": 95, "step": 5, "unit": ""},
-                    {"key": "cci_min", "label": "CCI下限", "description": "CCI强势区阈值",
-                     "type": "number", "value": 100, "min": 50, "max": 200, "step": 10, "unit": ""},
-                ]
-            },
-            {
-                "group_name": "CR / WR / VR",
-                "params": [
-                    {"key": "cr_min", "label": "CR下限", "description": "CR能量指标超强阈值",
-                     "type": "number", "value": 300, "min": 100, "max": 500, "step": 20, "unit": ""},
-                    {"key": "wr6_min", "label": "WR(6)下限", "description": "威廉指标（值域-100~0，接近0为超买）",
-                     "type": "number", "value": -20, "min": -50, "max": 0, "step": 5, "unit": ""},
-                    {"key": "vr_min", "label": "VR下限", "description": "成交量比率阈值",
-                     "type": "number", "value": 160, "min": 100, "max": 300, "step": 10, "unit": ""},
-                ]
-            }
-        ]
+        "description": "「指标买入」榜单：自历史最高深跌（默认回撤≥80%）+ 多指标极度超卖 + 排除 ST/退市"
+                       "（可选叠加基本面区间）。\n\n"
+                       "筛选逻辑：技术超卖条件全部满足（AND）→ 回撤闸门 → 风险排除 →（可选）基本面过滤。\n\n"
+                       "指标含义（均为「低于阈值」触发）：\n"
+                       "• RSI(6)：<15 极度超卖\n"
+                       "• KDJ-J：<0 极度超卖\n"
+                       "• WR(6)：<-90 极度超卖（值域 -100~0）\n"
+                       "• CCI：<-150 极度超卖\n"
+                       "• MFI：<20 资金流出后的超卖\n\n"
+                       "适用场景：深跌标的的左侧抄底/超跌反弹。\n"
+                       "风险提示：超卖可能长期持续，须结合基本面与趋势确认，不能机械抄底。\n\n"
+                       "注：本参数与「指标设置」页共用底层 indicator_signal 参数，保存后下一次"
+                       "定时计算（或点击「立即重算」）生效。",
+        "storage_key": "indicator_signal",
+        "groups": _sig_groups(
+            "买入 · 技术超卖阈值", "买入 · 深跌回撤", "风险排除", "基本面可选过滤（默认关闭）"),
     },
     "indicator_sell": {
         "name": "指标卖出信号",
-        "description": "当多个技术指标同时进入超卖区时发出卖出信号。\n\n"
-                       "筛选逻辑：所有指标条件必须同时满足（AND逻辑）\n\n"
-                       "指标说明：\n"
-                       "• KDJ：超卖区K<20, D<30, J<10\n"
-                       "• RSI(6)：超卖区 <20\n"
-                       "• CCI：弱势 <-100\n"
-                       "• CR：超弱 <40\n"
-                       "• WR(6)：接近底部 <-80\n"
-                       "• VR：低迷 <40\n\n"
-                       "适用场景：超跌反弹信号，或确认底部区域。\n"
-                       "风险提示：超卖可能持续很长时间，不能机械买入。",
-        "strategy_func": "indicators_sell",
-        "groups": [
-            {
-                "group_name": "KDJ指标",
-                "params": [
-                    {"key": "kdjk_max", "label": "KDJ-K上限", "description": "K值超卖区阈值",
-                     "type": "number", "value": 20, "min": 5, "max": 40, "step": 5, "unit": ""},
-                    {"key": "kdjd_max", "label": "KDJ-D上限", "description": "D值超卖区阈值",
-                     "type": "number", "value": 30, "min": 10, "max": 50, "step": 5, "unit": ""},
-                    {"key": "kdjj_max", "label": "KDJ-J上限", "description": "J值超卖区阈值",
-                     "type": "number", "value": 10, "min": -10, "max": 30, "step": 5, "unit": ""},
-                ]
-            },
-            {
-                "group_name": "RSI / CCI",
-                "params": [
-                    {"key": "rsi6_max", "label": "RSI(6)上限", "description": "6日RSI超卖区阈值",
-                     "type": "number", "value": 20, "min": 5, "max": 40, "step": 5, "unit": ""},
-                    {"key": "cci_max", "label": "CCI上限", "description": "CCI弱势区阈值",
-                     "type": "number", "value": -100, "min": -300, "max": -50, "step": 10, "unit": ""},
-                ]
-            },
-            {
-                "group_name": "CR / WR / VR",
-                "params": [
-                    {"key": "cr_max", "label": "CR上限", "description": "CR能量指标超弱阈值",
-                     "type": "number", "value": 40, "min": 10, "max": 100, "step": 5, "unit": ""},
-                    {"key": "wr6_max", "label": "WR(6)上限", "description": "威廉指标超卖阈值",
-                     "type": "number", "value": -80, "min": -100, "max": -50, "step": 5, "unit": ""},
-                    {"key": "vr_max", "label": "VR上限", "description": "成交量比率阈值",
-                     "type": "number", "value": 40, "min": 10, "max": 80, "step": 5, "unit": ""},
-                ]
-            }
-        ]
+        "description": "「指标卖出」榜单：现价贴近历史最高（默认≥峰值80%）+ 多指标极度超买 + 排除 ST/退市。\n\n"
+                       "筛选逻辑：技术超买条件全部满足（AND）→ 贴近峰值闸门 → 风险排除。\n\n"
+                       "指标含义（均为「高于阈值」触发）：\n"
+                       "• RSI(6)：>85 极度超买\n"
+                       "• KDJ-J：>100 极度超买\n"
+                       "• WR(6)：>-10 极度超买（值域 -100~0）\n"
+                       "• CCI：>150 极度超买\n"
+                       "• MFI：>80 资金流入后的超买\n\n"
+                       "适用场景：高位见顶派发/止盈提示。\n"
+                       "风险提示：超买不代表立即下跌，强势股可能继续冲高。\n\n"
+                       "注：本参数与「指标设置」页共用底层 indicator_signal 参数，保存后下一次"
+                       "定时计算（或点击「立即重算」）生效。",
+        "storage_key": "indicator_signal",
+        "groups": _sig_groups("卖出 · 技术超买阈值", "卖出 · 贴近峰值", "风险排除"),
     },
     "fundamental_buy": {
         "name": "基本面选股",
