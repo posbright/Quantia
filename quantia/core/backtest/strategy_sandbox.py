@@ -84,6 +84,23 @@ def validate_code(code_str):
         if module not in _ALLOWED_IMPORTS:
             return False, f"不允许导入模块: {module}（允许的模块: {', '.join(sorted(_ALLOWED_IMPORTS))}）"
 
+    # 运行时死循环高发点：策略中的 while 循环。
+    # 回测引擎在同一线程执行用户函数，若 while 条件不收敛会卡死该任务线程，
+    # 前端表现为“一直 running，最终超时”。
+    # 这里前置拦截 while，要求用户改写为有界 for 循环或按交易日推进状态机。
+    try:
+        tree = ast.parse(code_str)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.While):
+                return False, (
+                    f"策略代码包含 while 循环（行 {getattr(node, 'lineno', '?')}），"
+                    "存在卡死风险；请改为有界 for 循环或基于交易日计数推进。"
+                )
+    except SyntaxError:
+        # 语法错误仍交给 compile_strategy 的 compile() 分支统一抛 SyntaxError，
+        # 保持历史行为与测试期望一致。
+        pass
+
     # 检查必要函数
     if 'def initialize' not in code_str:
         return False, "策略代码必须定义 initialize(context) 函数"

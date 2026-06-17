@@ -465,6 +465,11 @@ class TestValidateCode(unittest.TestCase):
         ok, _ = validate_code("def initialize(ctx): ctx.__builtins__")
         self.assertFalse(ok)
 
+    def test_block_while_loop(self):
+        ok, msg = validate_code("def initialize(ctx):\n    while True:\n        pass")
+        self.assertFalse(ok)
+        self.assertIn('while', msg)
+
     def test_block_unknown_import(self):
         ok, msg = validate_code("import socket\ndef initialize(ctx): pass")
         self.assertFalse(ok)
@@ -552,6 +557,15 @@ def after_trading_end(ctx): pass
 
     def test_compile_forbidden_code(self):
         code = "import os\ndef initialize(ctx): pass"
+        with self.assertRaises(ValueError):
+            compile_strategy(code)
+
+    def test_compile_reject_while_loop(self):
+        code = """
+def initialize(ctx):
+    while 1:
+        pass
+"""
         with self.assertRaises(ValueError):
             compile_strategy(code)
 
