@@ -804,6 +804,21 @@ def _resolve_single_strategy(strategy_name):
     return None, None
 
 
+def _normalize_backtest_date(value):
+    """将日期输入统一归一化成 YYYY-MM-DD，兼容 YYYYMMDD / datetime / Timestamp。"""
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.strftime('%Y-%m-%d')
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return pd.Timestamp(text).strftime('%Y-%m-%d')
+    except Exception:
+        return text
+
+
 def _load_single_indicator_signal_dates(strategy_name, code, start_date_str, end_date_str):
     """读取单股区间内的指标信号日期集合（一次查库，供逐日 O(1) 匹配）。"""
     mapping = _SINGLE_INDICATOR_TABLE_MAP.get(strategy_name)
@@ -812,12 +827,16 @@ def _load_single_indicator_signal_dates(strategy_name, code, start_date_str, end
     table_name, _ = mapping
     if not mdb.checkTableIsExist(table_name):
         return None
+    start_date_norm = _normalize_backtest_date(start_date_str)
+    end_date_norm = _normalize_backtest_date(end_date_str)
+    if not start_date_norm or not end_date_norm:
+        return None
     try:
         rows = mdb.executeSqlFetch(
             f"SELECT `date` FROM `{table_name}` "
             "WHERE `code`=%s AND `date` >= %s AND `date` <= %s "
             "ORDER BY `date` ASC",
-            (code, start_date_str, end_date_str),
+            (code, start_date_norm, end_date_norm),
         )
     except Exception:
         logging.debug("读取指标信号日期异常: %s %s", strategy_name, code, exc_info=True)

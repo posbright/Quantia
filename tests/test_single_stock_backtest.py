@@ -7,6 +7,7 @@ import os
 import sys
 import unittest
 from contextlib import contextmanager
+from datetime import date
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -98,6 +99,21 @@ class RunSingleBacktestTests(unittest.TestCase):
         self.assertEqual(res['strategy_cn'], '指标卖出信号')
         self.assertEqual(res['exit_mode'], 'fixed')
         self.assertTrue(len(res['trades']) >= 1)
+
+    def test_indicator_signal_dates_normalize_compact_date_strings(self):
+        captured = {}
+
+        def fake_execute_sql_fetch(sql, params=None):
+            captured['sql'] = sql
+            captured['params'] = params
+            return [{'date': '2026-01-02'}]
+
+        with mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=True), \
+             mock.patch.object(bh.mdb, 'executeSqlFetch', side_effect=fake_execute_sql_fetch):
+            result = bh._load_single_indicator_signal_dates('indicators_buy', '000001', '20260101', '20260331')
+
+        self.assertEqual(captured['params'], ('000001', '2026-01-01', '2026-03-31'))
+        self.assertEqual(result, {date(2026, 1, 2)})
 
     def test_fixed_hold_produces_closed_trades(self):
         with self._patch({5, 30}):
