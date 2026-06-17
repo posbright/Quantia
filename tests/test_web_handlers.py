@@ -1399,6 +1399,32 @@ class TestGetStrategyParams(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['name'], '放量上涨')
 
+    @patch('quantia.web.strategyParamsHandler._load_saved_params', return_value={})
+    @patch('quantia.web.strategyParamsHandler._ensure_params_table')
+    def test_indicator_signal_registered(self, mock_ensure, mock_load):
+        """前端「指标设置」页用 strategy=indicator_signal 复用通用 params 接口，
+        该 key 必须注册在 DEFAULT_STRATEGY_PARAMS（否则 GET 404 / save 400）。
+        回归守卫：曾因合并 INDICATOR_SIGNAL_PARAMS 的注册行被误删导致该页 404。"""
+        from quantia.web.strategyParamsHandler import (
+            get_strategy_params, DEFAULT_STRATEGY_PARAMS)
+        self.assertIn('indicator_signal', DEFAULT_STRATEGY_PARAMS)
+        result = get_strategy_params('indicator_signal')
+        self.assertIsNotNone(result)
+        self.assertIn('groups', result)
+        self.assertTrue(len(result['groups']) > 0)
+
+    @patch('quantia.web.strategyParamsHandler._load_saved_params', return_value={})
+    @patch('quantia.web.strategyParamsHandler._ensure_params_table')
+    def test_indicator_buy_sell_resolve_shared_storage(self, mock_ensure, mock_load):
+        """indicator_buy/sell 必须声明 storage_key=indicator_signal，
+        且 _resolve_storage_key 正确解析，保证「配置页」保存即驱动真实策略。"""
+        from quantia.web.strategyParamsHandler import (
+            get_strategy_params, _resolve_storage_key)
+        for view in ('indicator_buy', 'indicator_sell'):
+            doc = get_strategy_params(view)
+            self.assertEqual(doc.get('storage_key'), 'indicator_signal')
+            self.assertEqual(_resolve_storage_key(view), 'indicator_signal')
+
 
 class TestGetGptFilterValues(unittest.TestCase):
     """Tests for strategyParamsHandler.get_gpt_filter_values."""

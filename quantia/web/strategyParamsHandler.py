@@ -444,6 +444,10 @@ DEFAULT_STRATEGY_PARAMS = {
 # 合并技术策略参数定义
 DEFAULT_STRATEGY_PARAMS.update(TECHNICAL_STRATEGY_PARAMS)
 
+# 合并「指标买卖信号」参数定义（前端「指标设置」页复用通用 params 接口，strategy_key='indicator_signal'）
+from quantia.web.indicator_params_config import INDICATOR_SIGNAL_PARAMS
+DEFAULT_STRATEGY_PARAMS.update(INDICATOR_SIGNAL_PARAMS)
+
 
 # ========== 数据库操作 ==========
 
