@@ -22,7 +22,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -388,12 +387,11 @@ def scheduled_report_analysis(max_stocks: Optional[int] = None,
             stats['generated'] += 1
             _logger.info(f'[定时分析] {code} {stock_name} 报告生成成功')
 
-            # 推送报告摘要到钉钉
+            # 推送精简报告通知到钉钉（仅标的 + 评级/评分 + 详情链接）
             try:
-                # 智能摘要：若 content <= 2000字全部显示，否则提取结论或后半段
-                summary = _get_smart_summary(content, structured, threshold=2000)
                 rating = (structured or {}).get('rating') or ''
-                push_report_summary_to_dingtalk(code, stock_name, summary, rating)
+                rating_score = (structured or {}).get('rating_score')
+                push_report_summary_to_dingtalk(code, stock_name, rating, rating_score)
             except Exception as push_exc:
                 _logger.debug(f'[定时分析] {code} 推送失败(不影响主流程): {push_exc}')
 
@@ -571,73 +569,36 @@ def _send_score_alert(code: str, name: str, direction: str, message: Dict[str, s
 
 # ─── 功能 3: 钉钉推送报告摘要 ────────────────────────────────────
 
-def _get_smart_summary(content: str, structured: Optional[Dict[str, Any]] = None, threshold: int = 2000) -> str:
-    """智能摘要生成：超过阈值则提取结论，否则返回全文。
-    
-    Strategy:
-    - content <= threshold: 返回全部内容（通常 <= 2000字）
-    - content > threshold:
-      1. 优先提取结构化字段（rating/advice）组成摘要
-      2. 若结构化字段不足，从报告后半段提取结论分节
-      3. 最终限制在 1500 字（确保消息在钉钉上展示完整）
+def _build_report_detail_url(code: str, name: str = '') -> str:
+    """构建"查看 AI 分析详情"链接（指向前端个股分析页 /ai-report/analysis）。
+
+    base url 优先取 ``QUANTIA_WEB_BASE_URL``；未配置时回退到 ``http://<hostname>:9988``。
+    与 notification/templates.py::_build_link_block 同源策略（自动剥离误配的 /quantia 段，
+    避免拼出命中 SPA fallback 的 404 链接）。
     """
-    if not content:
-        return ''
-    
-    content = content or ''
-    if len(content) <= threshold:
-        return content
-    
-    # 内容超过阈值，进行智能摘要
-    structured = structured or {}
-    summary_parts = []
-    
-    # 第一优先级：结构化建议
-    if structured.get('short_term_advice'):
-        summary_parts.append(f"**短期**：{structured['short_term_advice'][:300]}")
-    if structured.get('mid_term_advice'):
-        summary_parts.append(f"**中期**：{structured['mid_term_advice'][:300]}")
-    if structured.get('long_term_advice'):
-        summary_parts.append(f"**长期**：{structured['long_term_advice'][:300]}")
-    
-    if summary_parts:
-        fallback_summary = '\n\n'.join(summary_parts)
-        return fallback_summary[:1500]
-    
-    # 第二优先级：从后半段提取结论分节
-    lines = content.splitlines()
-    mid_point = len(lines) // 2
-    later_half = '\n'.join(lines[mid_point:])
-    
-    # 尝试找到结论/综合评估分节
-    conclusion_patterns = (
-        r'(?m)^#+\s*(?:结论|综合评估|总体判断|投资建议)',
-        r'(?m)^#+\s*第[六7](?:部分|节)',
-    )
-    
-    for pattern in conclusion_patterns:
-        match = re.search(pattern, later_half)
-        if match:
-            section_start = match.start()
-            section_end = min(section_start + 1200, len(later_half))
-            return later_half[section_start:section_end][:1500]
-    
-    # 第三优先级：取后 1500 字（结论通常在报告末尾）
-    return content[-1500:]
+    import socket
+    from urllib.parse import quote
+    base = (os.environ.get('QUANTIA_WEB_BASE_URL') or '').rstrip('/')
+    if not base:
+        try:
+            host = socket.gethostname() or '127.0.0.1'
+        except Exception:
+            host = '127.0.0.1'
+        base = f'http://{host}:9988'
+    if base.lower().endswith('/quantia'):
+        base = base[:-len('/quantia')].rstrip('/')
+    url = f"{base}/ai-report/analysis?code={quote(code)}"
+    if name:
+        url += f"&name={quote(name)}"
+    return url
 
 
-# 钉钉 markdown 消息 text 字段硬限制：2000 字。调用方传入的 summary 已经过
-# _get_smart_summary 智能处理（<=2000 全文；>2000 提取结论后限 1500）。
-# 此处的 2000 仅作为防越界的最后一道安全限制，与智能摘要阈值保持一致。
-_DINGTALK_MARKDOWN_LIMIT = 2000
+def push_report_summary_to_dingtalk(code: str, name: str, rating: str = '',
+                                    rating_score: Optional[float] = None) -> bool:
+    """推送精简 AI 报告通知到钉钉群（受用户偏好 push_enabled 控制）。
 
-
-def push_report_summary_to_dingtalk(code: str, name: str, summary: str, rating: str = '') -> bool:
-    """将报告摘要推送到钉钉群。受用户偏好 push_enabled 控制。
-    
-    摘要内容决策（调用方已由 _get_smart_summary 预处理）：
-    - summary <= 2000 字：全部显示
-    - summary > 2000 字：钉钉 markdown 硬限制 2000 字，此处作为防越界安全截断
+    设计：只携带标的 + 评级/评分 + "查看 AI 分析详情"链接，不再塞入大段报告正文
+    （大段文本在钉钉里排版混乱且信息不全，完整内容点链接进系统查看）。
     """
     # 检查用户偏好
     pref = _get_user_preference()
@@ -653,25 +614,31 @@ def push_report_summary_to_dingtalk(code: str, name: str, summary: str, rating: 
         _logger.debug(f'[报告推送] {code} 钉钉推送未启用')
         return False
 
-    title = f"📊 AI 报告: {code} {name}"
+    title = f"📊 AI 报告: {code} {name}".strip()
     # rating 取值：结构化抽取为 buy/hold/avoid；兼容旧的 bullish/bearish/neutral
     rating_emoji = {
-        'buy': '🟢看多', 'hold': '🟡中性', 'avoid': '🔴看空',
-        'bullish': '🟢看多', 'bearish': '🔴看空', 'neutral': '🟡中性',
+        'buy': '🟢 看多', 'hold': '🟡 中性', 'avoid': '🔴 看空',
+        'bullish': '🟢 看多', 'bearish': '🔴 看空', 'neutral': '🟡 中性',
     }.get((rating or '').lower(), rating or '—')
-    
-    # 钉钉消息内容决策：防越界安全截断（与智能摘要阈值 2000 一致）
-    # 正常情况下 summary 已由 _get_smart_summary 处理，不会超过 2000；
-    # 此处仅防止调用方直接传入超长内容导致钉钉报错。
-    summary_content = summary if len(summary) <= _DINGTALK_MARKDOWN_LIMIT else summary[:_DINGTALK_MARKDOWN_LIMIT]
-    
+
+    # 评分（0~100）：缺失时仅展示评级
+    score_text = ''
+    if rating_score is not None:
+        try:
+            score_text = f"　评分 {float(rating_score):.0f}/100"
+        except (TypeError, ValueError):
+            score_text = ''
+
+    detail_url = _build_report_detail_url(code, name)
+    today = datetime.date.today().isoformat()
+
     markdown = (
-        f"## 📊 AI 分析报告摘要\n\n"
-        f"**标的**: {code} {name}\n\n"
-        f"**评级**: {rating_emoji}\n\n"
-        f"**摘要**:\n\n{summary_content}\n\n"
+        f"## 📊 AI 分析报告\n\n"
+        f"**标的**：{code} {name}\n\n"
+        f"**评级**：{rating_emoji}{score_text}\n\n"
+        f"[📄 查看 AI 分析详情]({detail_url})\n\n"
         f"---\n\n"
-        f"> 由 Quantia AI 定时分析生成，完整报告请登录系统查看。"
+        f"> {today} 由 Quantia AI 定时分析生成"
     )
 
     payload = DingTalkChannel.build_markdown_payload(title, markdown)

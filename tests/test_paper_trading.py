@@ -745,12 +745,19 @@ class TestEnsureTradeAndPositionTables:
     @patch('quantia.lib.database.executeSqlFetch', return_value=[])
     @patch('quantia.lib.database.executeSql')
     def test_ensure_trade_table_migrates_executed_at(self, mock_exec, mock_fetch, mock_check):
-        """\u8868\u5b58\u5728\u4f46\u7f3a executed_at \u5217\uff1a\u5e94 ALTER \u8865\u4e0a\u3002"""
+        """表存在但缺列：应 ALTER 补上 executed_at 及 Phase 3 迁移列。
+
+        mock executeSqlFetch 恒返回 []（即所有列都缺失）→ 应补齐
+        executed_at + close_profit/return_rate/slippage_cost/reason/reason_source 共 6 列。
+        """
         _ensure_trade_table()
-        mock_exec.assert_called_once()
-        sql = mock_exec.call_args[0][0]
-        assert 'ALTER TABLE cn_stock_backtest_trade' in sql
-        assert 'executed_at' in sql
+        assert mock_exec.call_count == 6
+        sqls = [c.args[0] for c in mock_exec.call_args_list]
+        assert any('ALTER TABLE cn_stock_backtest_trade' in s and 'executed_at' in s
+                   for s in sqls)
+        for col in ('close_profit', 'return_rate', 'slippage_cost',
+                    'reason', 'reason_source'):
+            assert any(col in s for s in sqls), f"缺少 {col} 列迁移"
 
     @patch('quantia.lib.database.checkTableIsExist', return_value=False)
     @patch('quantia.lib.database.executeSql')

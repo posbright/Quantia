@@ -264,7 +264,7 @@ class TestDingTalkReportPush:
         from quantia.job.stock_report_scheduled import push_report_summary_to_dingtalk
         mock_pref.return_value = {'push_enabled': True}
         mock_config.return_value = {'enabled': False, 'webhook': ''}
-        result = push_report_summary_to_dingtalk('000001', '平安银行', '测试摘要', 'bullish')
+        result = push_report_summary_to_dingtalk('000001', '平安银行', 'bullish', 72.0)
         assert result is False
 
     @patch('quantia.notification.channels.dingtalk.DingTalkChannel')
@@ -279,7 +279,7 @@ class TestDingTalkReportPush:
         mock_result.ok = True
         mock_channel_cls.return_value.send.return_value = mock_result
 
-        result = push_report_summary_to_dingtalk('000001', '平安银行', '看多摘要', 'bullish')
+        result = push_report_summary_to_dingtalk('000001', '平安银行', 'buy', 78.0)
         assert result is True
 
 

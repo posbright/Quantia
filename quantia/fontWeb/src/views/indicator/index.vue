@@ -4,9 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
 import { getKlineData, getFinancialSummary, getBacktestHistory, type KlineParams, type FinancialSummaryResult } from '@/api/stock'
-import { getReportHistory, getStockQuote, type ReportHistoryItem, type StockQuote } from '@/api/report'
+import { getReportHistory, getStockQuote, getAttentionList, setAttention, type ReportHistoryItem, type StockQuote } from '@/api/report'
 import { getStrategyHistory } from '@/api/strategy'
-import { ChatDotRound, ArrowDown } from '@element-plus/icons-vue'
+import { ChatDotRound, ArrowDown, Star, StarFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useCustomIndicatorOverlay } from '@/composables/useCustomIndicatorOverlay'
 import CustomIndicatorOverlayBar from '@/components/CustomIndicatorOverlayBar.vue'
@@ -114,6 +114,11 @@ const hasExpenseData = computed(() => {
 // === AI 分析历史报告 ===
 const latestReport = ref<ReportHistoryItem | null>(null)
 const reportLoading = ref(false)
+
+// === 关注 / 取消关注（个股详情页入口）===
+const attentionCodes = ref<string[]>([])
+const watchLoading = ref(false)
+const isWatched = computed(() => !!code.value && attentionCodes.value.includes(code.value))
 
 // === 自定义指标叠加 (PR-5) ===
 const klineDates = computed<string[]>(() => klineData.value?.dates || [])
@@ -713,6 +718,36 @@ const goAIAnalysis = () => {
   })
 }
 
+// 加载关注列表（判断当前股票是否已关注）
+const loadAttentionList = async () => {
+  try {
+    const res = await getAttentionList() as any
+    const items = res?.items || []
+    attentionCodes.value = items.map((i: { code: string }) => i.code)
+  } catch {
+    attentionCodes.value = []
+  }
+}
+
+// 关注 / 取消关注当前个股
+const toggleAttention = async () => {
+  if (!code.value) {
+    ElMessage.warning('无效的股票代码')
+    return
+  }
+  const willWatch = !isWatched.value
+  watchLoading.value = true
+  try {
+    await setAttention(code.value, willWatch)
+    await loadAttentionList()
+    ElMessage.success(willWatch ? '已加入关注' : '已取消关注')
+  } catch {
+    ElMessage.error('操作失败，请稍后重试')
+  } finally {
+    watchLoading.value = false
+  }
+}
+
 // Load financial data
 const loadFinancialData = async () => {
   if (!code.value) return
@@ -1050,6 +1085,7 @@ onMounted(() => {
   loadFinancialData()
   loadLatestReport()
   loadStrategyMarks()
+  loadAttentionList()
   window.addEventListener('resize', handleResize)
   ;(window as any).visualViewport?.addEventListener?.('resize', handleResize)
 })
@@ -1064,6 +1100,7 @@ onActivated(() => {
     loadFinancialData()
     loadLatestReport()
     loadStrategyMarks()
+    loadAttentionList()
   } else {
     // Same stock: re-render charts that were clear()ed during deactivation
     nextTick(() => {
@@ -1106,6 +1143,15 @@ onUnmounted(() => {
         <el-tag size="small" effect="plain">{{ date }}</el-tag>
       </div>
       <div class="top-actions">
+        <el-button
+          :type="isWatched ? 'warning' : 'default'"
+          size="small"
+          :loading="watchLoading"
+          @click="toggleAttention"
+        >
+          <el-icon><StarFilled v-if="isWatched" /><Star v-else /></el-icon>
+          &nbsp;{{ isWatched ? '已关注' : '关注' }}
+        </el-button>
         <el-button type="warning" size="small" @click="goAIAnalysis">
           <el-icon><ChatDotRound /></el-icon>&nbsp;AI 分析
         </el-button>
