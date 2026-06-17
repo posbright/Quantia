@@ -709,10 +709,17 @@ STRATEGY_OVERLAY_MAP = {
     'cn_stock_strategy_trend_pullback': ['ma20', 'ma60', 'macd'],
     'cn_stock_strategy_oversold_rebound': ['kdj', 'rsi', 'macd'],
     'cn_stock_strategy_breakout_confirm': ['ma20', 'vol', 'macd'],
+    'indicators_buy': ['kdj', 'rsi', 'macd'],
+    'indicators_sell': ['kdj', 'rsi', 'macd'],
 }
 _DEFAULT_OVERLAY = ['ma20']
 
 _RISK_FREE_RATE = 0.03  # 年化无风险利率
+
+_SINGLE_INDICATOR_TABLE_MAP = {
+    'indicators_buy': (tbs.TABLE_CN_STOCK_INDICATORS_BUY['name'], '指标买入信号'),
+    'indicators_sell': (tbs.TABLE_CN_STOCK_INDICATORS_SELL['name'], '指标卖出信号'),
+}
 
 # ── 单股回测退出逻辑分类（修复 A：入场/退出解耦）─────────────────────────────
 # 事件型策略：入场信号仅在特定交易日成立（放量、突破、反弹、跌停当天等），
@@ -728,6 +735,8 @@ _EVENT_STRATEGIES = frozenset({
     'cn_stock_strategy_trend_pullback',        # 趋势回调
     'cn_stock_strategy_oversold_rebound',      # 超跌反弹
     'cn_stock_strategy_breakout_confirm',      # 突破确认
+    'indicators_buy',                          # 指标买入信号（事件型）
+    'indicators_sell',                         # 指标卖出信号（事件型）
 })
 # 状态型策略（均线多头、海龟、低ATR、回踩年线、无大幅回撤）入场条件可连续多日
 # 成立，复用入场条件做持仓判断是合理的（条件消失即离场），仍走 strategy_signal。
@@ -793,6 +802,63 @@ def _resolve_single_strategy(strategy_name):
         if s.get('name') == strategy_name:
             return s.get('func'), s.get('cn', strategy_name)
     return None, None
+
+
+def _load_single_indicator_signal_dates(strategy_name, code, start_date_str, end_date_str):
+    """读取单股区间内的指标信号日期集合（一次查库，供逐日 O(1) 匹配）。"""
+    mapping = _SINGLE_INDICATOR_TABLE_MAP.get(strategy_name)
+    if not mapping:
+        return None
+    table_name, _ = mapping
+    if not mdb.checkTableIsExist(table_name):
+        return None
+    try:
+        rows = mdb.executeSqlFetch(
+            f"SELECT `date` FROM `{table_name}` "
+            "WHERE `code`=%s AND `date` >= %s AND `date` <= %s "
+            "ORDER BY `date` ASC",
+            (code, start_date_str, end_date_str),
+        )
+    except Exception:
+        logging.debug("读取指标信号日期异常: %s %s", strategy_name, code, exc_info=True)
+        return None
+
+    dates = set()
+    for r in rows or []:
+        raw = r['date'] if isinstance(r, dict) else r[0]
+        try:
+            dates.add(pd.Timestamp(raw).date())
+        except Exception:
+            continue
+    return dates
+
+
+def _resolve_single_strategy_with_indicator(strategy_name, code=None, start_date_str=None, end_date_str=None):
+    """解析单股回测策略：支持内置 check() + indicators_buy/sell。"""
+    func, cn = _resolve_single_strategy(strategy_name)
+    if func is not None:
+        return func, cn
+
+    mapping = _SINGLE_INDICATOR_TABLE_MAP.get(strategy_name)
+    if not mapping:
+        return None, None
+    _table_name, cn = mapping
+    if not (code and start_date_str and end_date_str):
+        return None, None
+
+    signal_dates = _load_single_indicator_signal_dates(strategy_name, code, start_date_str, end_date_str)
+    if signal_dates is None:
+        return None, None
+
+    def _indicator_match(_stock, _hist, date=None, **_kw):
+        if date is None:
+            return False
+        try:
+            return pd.Timestamp(date).date() in signal_dates
+        except Exception:
+            return False
+
+    return _indicator_match, cn
 
 
 def _resolve_custom_strategy(strategy_key):
@@ -1019,9 +1085,10 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
     if not start_date_str or not end_date_str:
         return {"error": "缺少回测区间参数"}
 
-    strategy_func, strategy_cn = _resolve_single_strategy(strategy)
+    strategy_func, strategy_cn = _resolve_single_strategy_with_indicator(
+        strategy, code=code, start_date_str=start_date_str, end_date_str=end_date_str)
     if strategy_func is None:
-        return {"error": f"策略 {strategy} 暂不支持单股区间回测（仅支持内置选股策略）"}
+        return {"error": f"策略 {strategy} 暂不支持单股区间回测"}
 
     # 解析持仓周期 / 退出模式
     #   - 显式 hold_days  → 固定持仓（fixed）

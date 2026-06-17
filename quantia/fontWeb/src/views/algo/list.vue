@@ -77,7 +77,14 @@
       </el-table-column>
       <el-table-column label="历史回测" width="100" align="center">
         <template #default="{ row }">
-          <span v-if="row.type === 'strategy'">{{ row.backtest_count || 0 }}</span>
+          <el-link
+            v-if="row.type === 'strategy'"
+            type="primary"
+            :underline="false"
+            @click.stop="goStrategyBacktests(row)"
+          >
+            {{ row.backtest_count || 0 }}
+          </el-link>
         </template>
       </el-table-column>
     </el-table>
@@ -181,6 +188,11 @@ function doRowClick(row: any) {
     return
   }
   router.push('/algo/edit/' + row.id)
+}
+
+function goStrategyBacktests(row: any) {
+  if (!row || row.type !== 'strategy' || !row.id) return
+  router.push({ path: '/algo/backtests', query: { strategy_id: row.id } })
 }
 
 async function doRowDblClick(row: any) {

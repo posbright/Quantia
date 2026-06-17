@@ -67,9 +67,37 @@ class RunSingleBacktestTests(unittest.TestCase):
 
     def test_unknown_strategy_rejected(self):
         with mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=self.hist):
-            res = bh._run_single_backtest('000001', 'indicators_buy',
+            res = bh._run_single_backtest('000001', 'unknown_strategy_name',
                                           '2026-01-01', '2026-03-01', hold_days=5)
         self.assertIn('error', res)
+
+    def test_indicators_buy_supported(self):
+        signal_day = self.hist['date'].iloc[5].strftime('%Y-%m-%d')
+        with mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
+             mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=self.hist), \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=self.hist), \
+             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=True), \
+             mock.patch.object(bh.mdb, 'executeSqlFetch', return_value=[{'date': signal_day}]):
+            res = bh._run_single_backtest('000001', 'indicators_buy',
+                                          '2026-01-01', '2026-03-31', hold_days=5)
+        self.assertNotIn('error', res)
+        self.assertEqual(res['strategy_cn'], '指标买入信号')
+        self.assertEqual(res['exit_mode'], 'fixed')
+        self.assertTrue(len(res['trades']) >= 1)
+
+    def test_indicators_sell_supported(self):
+        signal_day = self.hist['date'].iloc[8].strftime('%Y-%m-%d')
+        with mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
+             mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=self.hist), \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=self.hist), \
+             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=True), \
+             mock.patch.object(bh.mdb, 'executeSqlFetch', return_value=[{'date': signal_day}]):
+            res = bh._run_single_backtest('000001', 'indicators_sell',
+                                          '2026-01-01', '2026-03-31', hold_days=3)
+        self.assertNotIn('error', res)
+        self.assertEqual(res['strategy_cn'], '指标卖出信号')
+        self.assertEqual(res['exit_mode'], 'fixed')
+        self.assertTrue(len(res['trades']) >= 1)
 
     def test_fixed_hold_produces_closed_trades(self):
         with self._patch({5, 30}):
