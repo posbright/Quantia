@@ -27,6 +27,11 @@ __date__ = '2026/03/16'
 _CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                           'cache', 'fundamental')
 
+# 基本面查找缓存文件名。v4：price_lookup/volume_lookup 由“全历史”改为“仅回测区间”，
+# 并新增 cache_start/cache_end 区间元数据。版本号自 v3 提升，旧格式缓存（全历史、无区间
+# 元数据）会被自动忽略并按新格式重建，避免加载旧全量缓存时的瞬时高内存峰值。
+_FUND_CACHE_FILE = 'fundamental_v4.pickle'
+
 # 基本面数据库查询超时（毫秒）：避免慢查询阻塞回测线程。
 _FUND_DB_QUERY_TIMEOUT_MS = max(int(os.getenv('QUANTIA_FUND_DB_QUERY_TIMEOUT_MS', '8000')), 0)
 
@@ -1016,7 +1021,7 @@ class FundamentalDataProvider:
 
     def _load_fundamental_cache(self):
         """加载基本面数据缓存"""
-        cache_file = os.path.join(_CACHE_DIR, 'fundamental_v3.pickle')
+        cache_file = os.path.join(_CACHE_DIR, _FUND_CACHE_FILE)
         if not os.path.exists(cache_file):
             return False
         try:
@@ -1057,7 +1062,7 @@ class FundamentalDataProvider:
         """保存基本面数据缓存（原子写入：写临时文件后 os.replace，避免并发读到半写文件）"""
         try:
             os.makedirs(_CACHE_DIR, exist_ok=True)
-            cache_file = os.path.join(_CACHE_DIR, 'fundamental_v3.pickle')
+            cache_file = os.path.join(_CACHE_DIR, _FUND_CACHE_FILE)
             tmp_file = cache_file + '.tmp'
             data = {
                 'stock_info': self._stock_info,
