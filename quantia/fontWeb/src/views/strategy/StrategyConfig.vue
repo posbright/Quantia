@@ -423,6 +423,18 @@ const handleDiff = async () => {
                     />
                   </el-select>
                 </template>
+
+                <!-- 开关类型 -->
+                <template v-else-if="param.type === 'switch'">
+                  <el-switch
+                    v-model="param.value"
+                    :active-value="1"
+                    :inactive-value="0"
+                    active-text="开启"
+                    inactive-text="关闭"
+                    inline-prompt
+                  />
+                </template>
               </div>
 
               <div class="param-description">
