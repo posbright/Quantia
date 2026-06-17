@@ -254,7 +254,16 @@ def _insert_report(code: str, name: str, content: str, result: Any, source: str)
         structured = {}
 
     moat_factors_json = json.dumps(structured.get('moat_factors') or {}, ensure_ascii=False)
-    tools_json = json.dumps([tc.get('name') for tc in (result.tool_calls or [])])
+    tool_names: List[str] = []
+    for tc in (getattr(result, 'tool_calls', None) or []):
+        name = None
+        if isinstance(tc, dict):
+            name = tc.get('name')
+        else:
+            name = getattr(tc, 'name', None)
+        if name:
+            tool_names.append(str(name))
+    tools_json = json.dumps(tool_names)
     mdb.executeSql(
         f"""INSERT INTO `{_REPORT_TABLE}`
             (code, name, report_md, model, provider, tools_used,

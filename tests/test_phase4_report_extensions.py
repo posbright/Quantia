@@ -20,6 +20,7 @@ from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import pytest
+from quantia.lib.ai.providers.base import ToolCall
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -113,6 +114,24 @@ class TestStockReportScheduled:
         result = score_alert_check()
         assert result['checked'] == 0
         assert result['alerted'] == 0
+
+    @patch('quantia.job.stock_report_scheduled.mdb')
+    @patch('quantia.lib.ai.report_parser.extract_structured_fields')
+    def test_insert_report_accepts_toolcall_objects(self, mock_extract, mock_mdb):
+        from quantia.job.stock_report_scheduled import _insert_report
+
+        mock_extract.return_value = {}
+        result = MagicMock()
+        result.tool_calls = [ToolCall(id='1', name='web_search', arguments={})]
+        result.model = 'gpt'
+        result.provider = 'test'
+        result.total_tokens = 123
+
+        _insert_report('000001', '平安银行', '内容', result, 'scheduled')
+
+        assert mock_mdb.executeSql.called
+        params = mock_mdb.executeSql.call_args[0][1]
+        assert json.loads(params[5]) == ['web_search']
 
 
 # ═══════════════════════════════════════════════════════════════════
