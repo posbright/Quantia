@@ -19,7 +19,7 @@ import time
 import pickle
 import pandas as pd
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor, as_completed
+# ThreadPoolExecutor/as_completed 已移除（_batch_load_klines 改为纯缓存读取，不再并发在线拉取）
 
 __author__ = 'Quantia'
 __date__ = '2026/03/16'
