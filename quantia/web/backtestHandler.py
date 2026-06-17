@@ -879,7 +879,9 @@ def _compute_single_indicator_signal_dates(strategy_name, hist, start_date_norm=
     if hist is None or len(hist) == 0:
         return set()
     try:
-        ind = idr.get_indicators(hist.copy(), end_date=None, threshold=1, calc_threshold=None)
+        # threshold=None：返回完整指标序列（threshold=正整数会 tail 截断到最后 N 根，
+        # 致使仅最后一根被判定，几乎不产生历史信号）。
+        ind = idr.get_indicators(hist.copy(), end_date=None, threshold=None, calc_threshold=None)
     except Exception:
         logging.debug("单股指标信号重算异常: %s", strategy_name, exc_info=True)
         return set()
@@ -1046,7 +1048,9 @@ def _build_kline_and_indicators(hist, recommended, available):
     kdj = {'k': [None] * len(h), 'd': [None] * len(h), 'j': [None] * len(h)}
     rsi = {'6': [None] * len(h), '12': [None] * len(h), '24': [None] * len(h)}
     try:
-        ind = idr.get_indicators(h, end_date=None, threshold=1, calc_threshold=None)
+        # threshold=None：返回完整指标序列以对齐全部 K 线。threshold=正整数会 tail
+        # 截断到最后 N 根，导致 BOLL/MACD/KDJ/RSI 叠加仅最后一根有值、其余全为 None。
+        ind = idr.get_indicators(h, end_date=None, threshold=None, calc_threshold=None)
         if ind is not None and len(ind) > 0:
             ind = ind.copy()
             if not pd.api.types.is_datetime64_any_dtype(ind['date']):
@@ -1188,8 +1192,8 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
         return {"error": "缺少回测区间参数"}
 
     # 读取完整历史缓存（含区间前预热，供 MA250/长周期指标）+ spot 兜底补全（修复 C）。
-    # 先于策略解析加载：indicators_buy/sell 在选股结果表查无该股信号时，需用该股自身
-    # 指标序列重算信号（见 _compute_single_indicator_signal_dates）。
+    # 先于策略解析加载：indicators_buy/sell 单股回测须用该股自身指标序列重算信号
+    # （见 _compute_single_indicator_signal_dates）。
     hist = _load_single_hist(code, start_date_str, end_date_str)
     if hist is None:
         return {"error": f"股票 {code} 无缓存数据，请先执行数据获取"}

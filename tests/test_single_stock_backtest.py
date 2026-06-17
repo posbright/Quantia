@@ -194,6 +194,35 @@ class RunSingleBacktestTests(unittest.TestCase):
         # checkTableIsExist=False 使 load_params 不触发 fetch）。
         self.assertFalse(called['fetch'])
 
+    def test_compute_signal_uses_full_indicator_series(self):
+        """重算信号须取完整指标序列（threshold=None），否则仅最后一根被判定。"""
+        hist = _make_hist([10.0 + i * 0.1 for i in range(10)])
+        captured = {}
+
+        def fake_get_indicators(data, end_date=None, threshold=120, calc_threshold=None):
+            captured['threshold'] = threshold
+            return data  # 无指标列 → 返回空集；此处仅校验 threshold 传参
+
+        with mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False), \
+             mock.patch.object(bh.idr, 'get_indicators', side_effect=fake_get_indicators):
+            bh._compute_single_indicator_signal_dates('indicators_buy', hist)
+
+        self.assertIsNone(captured['threshold'])
+
+    def test_overlay_indicators_use_full_series(self):
+        """K 线叠加指标须取完整序列（threshold=None），否则 BOLL/MACD/KDJ/RSI 仅末根有值。"""
+        hist = _make_hist([10.0 + i * 0.1 for i in range(10)])
+        captured = {}
+
+        def fake_get_indicators(data, end_date=None, threshold=120, calc_threshold=None):
+            captured['threshold'] = threshold
+            return data
+
+        with mock.patch.object(bh.idr, 'get_indicators', side_effect=fake_get_indicators):
+            bh._build_kline_and_indicators(hist, list(bh._DEFAULT_OVERLAY), list(bh._ALL_OVERLAYS))
+
+        self.assertIsNone(captured['threshold'])
+
     def test_indicators_buy_backtest_works_without_table_rows(self):
         """端到端：选股表无 000001 信号，单股回测仍按自身指标产生交易（不再全空）。"""
         hist = _make_hist([10.0 + i * 0.1 for i in range(30)])
