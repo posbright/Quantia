@@ -819,40 +819,124 @@ def _normalize_backtest_date(value):
         return text
 
 
-def _load_single_indicator_signal_dates(strategy_name, code, start_date_str, end_date_str):
-    """读取单股区间内的指标信号日期集合（一次查库，供逐日 O(1) 匹配）。"""
+def _load_single_indicator_signal_dates(strategy_name, code, start_date_str, end_date_str, hist=None):
+    """读取单股区间内的指标信号日期集合（供逐日 O(1) 匹配）。
+
+    信号来源两段式：
+      1. 横截面选股结果表（cn_stock_indicators_buy/sell）：个股若曾被选中，直接复用
+         已持久化的信号日。
+      2. 回退按个股自身指标序列重算：该结果表仅保留极少数被选中个股、且只覆盖近期
+         日期，对绝大多数个股（如蓝筹股 000001）查不到任何信号日，会导致单股区间
+         回测全空、K 线无买卖点标注。此时用该股自身完整 K 线的指标时间序列重算技术
+         信号（见 _compute_single_indicator_signal_dates）。
+    """
     mapping = _SINGLE_INDICATOR_TABLE_MAP.get(strategy_name)
     if not mapping:
         return None
     table_name, _ = mapping
-    if not mdb.checkTableIsExist(table_name):
-        return None
     start_date_norm = _normalize_backtest_date(start_date_str)
     end_date_norm = _normalize_backtest_date(end_date_str)
-    if not start_date_norm or not end_date_norm:
-        return None
-    try:
-        rows = mdb.executeSqlFetch(
-            f"SELECT `date` FROM `{table_name}` "
-            "WHERE `code`=%s AND `date` >= %s AND `date` <= %s "
-            "ORDER BY `date` ASC",
-            (code, start_date_norm, end_date_norm),
-        )
-    except Exception:
-        logging.debug("读取指标信号日期异常: %s %s", strategy_name, code, exc_info=True)
-        return None
 
     dates = set()
-    for r in rows or []:
-        raw = r['date'] if isinstance(r, dict) else r[0]
+    # 1) 横截面选股结果表（个股若曾被选中，直接复用持久化信号日）
+    if mdb.checkTableIsExist(table_name) and start_date_norm and end_date_norm:
         try:
-            dates.add(pd.Timestamp(raw).date())
+            rows = mdb.executeSqlFetch(
+                f"SELECT `date` FROM `{table_name}` "
+                "WHERE `code`=%s AND `date` >= %s AND `date` <= %s "
+                "ORDER BY `date` ASC",
+                (code, start_date_norm, end_date_norm),
+            )
+            for r in rows or []:
+                raw = r['date'] if isinstance(r, dict) else r[0]
+                try:
+                    dates.add(pd.Timestamp(raw).date())
+                except Exception:
+                    continue
         except Exception:
-            continue
+            logging.debug("读取指标信号日期异常: %s %s", strategy_name, code, exc_info=True)
+
+    # 2) 选股表查不到该股信号（绝大多数个股）→ 回退按个股自身指标序列重算
+    if not dates and hist is not None:
+        computed = _compute_single_indicator_signal_dates(
+            strategy_name, hist, start_date_norm, end_date_norm)
+        if computed:
+            dates = computed
     return dates
 
 
-def _resolve_single_strategy_with_indicator(strategy_name, code=None, start_date_str=None, end_date_str=None):
+def _compute_single_indicator_signal_dates(strategy_name, hist, start_date_norm=None, end_date_norm=None):
+    """按个股自身完整 K 线的指标时间序列逐日重算技术买/卖信号日。
+
+    指标买/卖信号的横截面选股结果表（cn_stock_indicators_buy/sell）只是“某日全市场
+    被选中个股”的快照，并非个股的指标历史。单股区间回测应在该股自身的指标序列上评估
+    信号，而非检查它是否出现在选股表中。此处复用 buy_sell_signal 的技术阈值
+    （RSI_6 / KDJ-J / WR_6 / CCI / MFI 超卖/超买），在该股完整 K 线上逐日判定：
+      买入：rsi_6<阈值 且 kdjj<阈值 且 wr_6<阈值 且 cci<阈值 且 mfi<阈值（极度超卖）
+      卖出：上述镜像（极度超买）
+    阈值取用户在「指标设置」页持久化的参数（无配置回退默认值）。不含横截面选股专用的
+    “自历史最高点深跌”闸门——该闸门是全市场候选收敛装置，对单股可视化无意义且会令
+    绝大多数个股无任何信号。返回信号日 datetime.date 集合（限定在区间内）。
+    """
+    if hist is None or len(hist) == 0:
+        return set()
+    try:
+        ind = idr.get_indicators(hist.copy(), end_date=None, threshold=1, calc_threshold=None)
+    except Exception:
+        logging.debug("单股指标信号重算异常: %s", strategy_name, exc_info=True)
+        return set()
+    if ind is None or len(ind) == 0:
+        return set()
+    needed = ('rsi_6', 'kdjj', 'wr_6', 'cci', 'mfi', 'date')
+    if any(c not in ind.columns for c in needed):
+        return set()
+
+    try:
+        from quantia.core.indicator import buy_sell_signal as bss
+        p = bss.load_params()
+        _num = bss._to_num
+    except Exception:
+        p, _num = {}, (lambda v, d: d)
+
+    rsi6 = pd.to_numeric(ind['rsi_6'], errors='coerce')
+    kdjj = pd.to_numeric(ind['kdjj'], errors='coerce')
+    wr6 = pd.to_numeric(ind['wr_6'], errors='coerce')
+    cci = pd.to_numeric(ind['cci'], errors='coerce')
+    mfi = pd.to_numeric(ind['mfi'], errors='coerce')
+
+    if strategy_name == 'indicators_buy':
+        cond = ((rsi6 < _num(p.get('buy_rsi_6'), 15)) &
+                (kdjj < _num(p.get('buy_kdjj'), 0)) &
+                (wr6 < _num(p.get('buy_wr_6'), -90)) &
+                (cci < _num(p.get('buy_cci'), -150)) &
+                (mfi < _num(p.get('buy_mfi'), 20)))
+    elif strategy_name == 'indicators_sell':
+        cond = ((rsi6 > _num(p.get('sell_rsi_6'), 85)) &
+                (kdjj > _num(p.get('sell_kdjj'), 100)) &
+                (wr6 > _num(p.get('sell_wr_6'), -10)) &
+                (cci > _num(p.get('sell_cci'), 150)) &
+                (mfi > _num(p.get('sell_mfi'), 80)))
+    else:
+        return set()
+
+    lo = pd.Timestamp(start_date_norm) if start_date_norm else None
+    hi = pd.Timestamp(end_date_norm) if end_date_norm else None
+    dates = set()
+    for raw in ind.loc[cond.fillna(False), 'date']:
+        try:
+            ts = pd.Timestamp(raw)
+        except Exception:
+            continue
+        if lo is not None and ts < lo:
+            continue
+        if hi is not None and ts > hi:
+            continue
+        dates.add(ts.date())
+    return dates
+
+
+def _resolve_single_strategy_with_indicator(strategy_name, code=None, start_date_str=None,
+                                            end_date_str=None, hist=None):
     """解析单股回测策略：支持内置 check() + indicators_buy/sell。"""
     func, cn = _resolve_single_strategy(strategy_name)
     if func is not None:
@@ -865,7 +949,8 @@ def _resolve_single_strategy_with_indicator(strategy_name, code=None, start_date
     if not (code and start_date_str and end_date_str):
         return None, None
 
-    signal_dates = _load_single_indicator_signal_dates(strategy_name, code, start_date_str, end_date_str)
+    signal_dates = _load_single_indicator_signal_dates(
+        strategy_name, code, start_date_str, end_date_str, hist=hist)
     if signal_dates is None:
         return None, None
 
@@ -1104,8 +1189,15 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
     if not start_date_str or not end_date_str:
         return {"error": "缺少回测区间参数"}
 
+    # 读取完整历史缓存（含区间前预热，供 MA250/长周期指标）+ spot 兜底补全（修复 C）。
+    # 先于策略解析加载：indicators_buy/sell 在选股结果表查无该股信号时，需用该股自身
+    # 指标序列重算信号（见 _compute_single_indicator_signal_dates）。
+    hist = _load_single_hist(code, start_date_str, end_date_str)
+    if hist is None:
+        return {"error": f"股票 {code} 无缓存数据，请先执行数据获取"}
+
     strategy_func, strategy_cn = _resolve_single_strategy_with_indicator(
-        strategy, code=code, start_date_str=start_date_str, end_date_str=end_date_str)
+        strategy, code=code, start_date_str=start_date_str, end_date_str=end_date_str, hist=hist)
     if strategy_func is None:
         return {"error": f"策略 {strategy} 暂不支持单股区间回测"}
 
@@ -1126,11 +1218,6 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
         hold_days = None
         if strategy in _EVENT_STRATEGIES:
             exit_mode = 'rule_exit'
-
-    # 读取完整历史缓存（含区间前预热，供 MA250/长周期指标）+ spot 兜底补全（修复 C）
-    hist = _load_single_hist(code, start_date_str, end_date_str)
-    if hist is None:
-        return {"error": f"股票 {code} 无缓存数据，请先执行数据获取"}
 
     stock_name = _get_stock_name(code)
     limit_ratio = _price_limit_ratio(code, stock_name)

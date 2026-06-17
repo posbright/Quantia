@@ -115,6 +115,88 @@ class RunSingleBacktestTests(unittest.TestCase):
         self.assertEqual(captured['params'], ('000001', '2026-01-01', '2026-03-31'))
         self.assertEqual(result, {date(2026, 1, 2)})
 
+    def test_compute_signal_dates_from_own_indicator_series(self):
+        """选股结果表查无该股信号时，按个股自身指标序列重算超卖买入信号日。"""
+        hist = _make_hist([10.0 + i * 0.1 for i in range(10)])
+        ind = hist.copy()
+        # 仅第 3、7 根满足极度超卖（5 项指标同时越过阈值）
+        ind['rsi_6'] = 50.0
+        ind['kdjj'] = 50.0
+        ind['wr_6'] = -50.0
+        ind['cci'] = 0.0
+        ind['mfi'] = 50.0
+        for i in (3, 7):
+            ind.loc[i, ['rsi_6', 'kdjj', 'wr_6', 'cci', 'mfi']] = [10.0, -5.0, -95.0, -200.0, 10.0]
+
+        with mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False), \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=ind):
+            dates = bh._compute_single_indicator_signal_dates('indicators_buy', hist)
+
+        expected = {hist['date'].iloc[3].date(), hist['date'].iloc[7].date()}
+        self.assertEqual(dates, expected)
+
+    def test_compute_signal_dates_respects_range_bounds(self):
+        """重算信号日应裁剪到回测区间内。"""
+        hist = _make_hist([10.0 + i * 0.1 for i in range(10)])
+        ind = hist.copy()
+        ind['rsi_6'] = 10.0
+        ind['kdjj'] = -5.0
+        ind['wr_6'] = -95.0
+        ind['cci'] = -200.0
+        ind['mfi'] = 10.0  # 全部满足超卖
+
+        start = hist['date'].iloc[2].strftime('%Y-%m-%d')
+        end = hist['date'].iloc[5].strftime('%Y-%m-%d')
+        with mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False), \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=ind):
+            dates = bh._compute_single_indicator_signal_dates('indicators_buy', hist, start, end)
+
+        expected = {hist['date'].iloc[i].date() for i in range(2, 6)}
+        self.assertEqual(dates, expected)
+
+    def test_load_signal_dates_falls_back_to_own_series_when_table_empty(self):
+        """选股结果表存在但无该股记录 → 回退按个股指标序列重算（修复蓝筹股全空）。"""
+        hist = _make_hist([10.0 + i * 0.1 for i in range(10)])
+        ind = hist.copy()
+        ind['rsi_6'] = 50.0
+        ind['kdjj'] = 50.0
+        ind['wr_6'] = -50.0
+        ind['cci'] = 0.0
+        ind['mfi'] = 50.0
+        ind.loc[4, ['rsi_6', 'kdjj', 'wr_6', 'cci', 'mfi']] = [10.0, -5.0, -95.0, -200.0, 10.0]
+
+        with mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=True), \
+             mock.patch.object(bh.mdb, 'executeSqlFetch', return_value=[]), \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=ind):
+            dates = bh._load_single_indicator_signal_dates(
+                'indicators_buy', '000001', '2026-01-01', '2026-03-31', hist=hist)
+
+        self.assertEqual(dates, {hist['date'].iloc[4].date()})
+
+    def test_indicators_buy_backtest_works_without_table_rows(self):
+        """端到端：选股表无 000001 信号，单股回测仍按自身指标产生交易（不再全空）。"""
+        hist = _make_hist([10.0 + i * 0.1 for i in range(30)])
+        ind = hist.copy()
+        ind['rsi_6'] = 50.0
+        ind['kdjj'] = 50.0
+        ind['wr_6'] = -50.0
+        ind['cci'] = 0.0
+        ind['mfi'] = 50.0
+        ind.loc[5, ['rsi_6', 'kdjj', 'wr_6', 'cci', 'mfi']] = [10.0, -5.0, -95.0, -200.0, 10.0]
+
+        with mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
+             mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=hist), \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=ind), \
+             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=True), \
+             mock.patch.object(bh.mdb, 'executeSqlFetch', return_value=[]):
+            res = bh._run_single_backtest('000001', 'indicators_buy',
+                                          hist['date'].iloc[0].strftime('%Y-%m-%d'),
+                                          hist['date'].iloc[-1].strftime('%Y-%m-%d'),
+                                          hold_days=3)
+        self.assertNotIn('error', res)
+        self.assertEqual(res['strategy_cn'], '指标买入信号')
+        self.assertTrue(len(res['trades']) >= 1)
+
     def test_fixed_hold_produces_closed_trades(self):
         with self._patch({5, 30}):
             res = bh._run_single_backtest('000001', 'cn_stock_strategy_keep_increasing',
