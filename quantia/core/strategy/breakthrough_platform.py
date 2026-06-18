@@ -71,11 +71,17 @@ def check(code_name, data, date=None, threshold=60, recent_days=3, min_platform_
     if breakthrough_row is None:
         return False
 
-    # C. 突破日之前需构成真实平台：样本足够多，且全部贴近 MA60。
+    # C. 突破日之前需构成真实平台：取紧邻突破日的最近 min_platform_days 个交易日，
+    #    要求其全部贴近 MA60（落在偏离带内），构成横盘整理平台。
+    #    注意：只校验紧邻突破日的整理窗口，而非整个回溯窗口——整个回溯窗口（突破在
+    #    最近 recent_days 日内时约 57 天）会把平台之前的拉升/回调也强行纳入偏离带，
+    #    导致几乎无股票能通过（实测 2026-06-10 起全市场连续多个交易日 0 选中）。
+    #    “站稳 MA60 之上”由下方 B 段保证，故放宽 C 不会重新引入“收盘价远低于 MA60”的误选。
     data_front = data.loc[(data['date'] < breakthrough_row) & (data['ma60'] > 0)]
     if len(data_front) < min_platform_days:
         return False
-    for _close, _ma60 in zip(data_front['close'].values, data_front['ma60'].values):
+    platform = data_front.tail(n=min_platform_days)
+    for _close, _ma60 in zip(platform['close'].values, platform['ma60'].values):
         # 收盘价与均线偏离在 [min_deviation, max_deviation] 之间
         deviation = (_close - _ma60) / _ma60
         if not (dev_lo < deviation < dev_hi):
