@@ -180,12 +180,12 @@ TECHNICAL_STRATEGY_PARAMS = {
     },
     "breakthrough_platform": {
         "name": "突破平台",
-        "description": "股价在MA60附近长期横盘整理后，近期放量向上突破，且当前仍站稳均线之上。\n\n"
+        "description": "股价在MA60附近横盘整理形成平台后，近期放量向上突破，且当前仍站稳均线之上。\n\n"
                        "选股条件：\n"
-                       "1. 平台整理：突破日之前需有足够多交易日收盘价贴近MA60（偏离在设定范围内）\n"
-                       "2. 近期突破：突破日（开盘价<MA60≤收盘价 且放量上涨）须发生在信号日当天或最近数日内\n"
+                       "1. 平台整理：突破日之前紧邻的整理窗口（至少「平台最少天数」个交易日）收盘价持续贴近MA60（偏离在设定范围内），构成横盘平台\n"
+                       "2. 近期突破：突破日（开盘价<MA60≤收盘价 且放量上涨）须发生在信号日当天或最近「近期突破窗口」个交易日内，取最近一次突破\n"
                        "3. 站稳均线：突破日至今收盘价持续≥MA60，未跌回均线下方（过滤已失效的旧突破）\n\n"
-                       "适用场景：突破长期整理平台的启动信号。\n"
+                       "适用场景：突破横盘整理平台的启动信号。\n"
                        "风险提示：假突破风险，建议等突破确认后再入场。",
         "strategy_func": "cn_stock_strategy_breakthrough_platform",
         "groups": [
@@ -194,15 +194,19 @@ TECHNICAL_STRATEGY_PARAMS = {
                 "params": [
                     {"key": "ma_period", "label": "均线周期", "description": "平台关键均线周期（MA60）",
                      "type": "number", "value": 60, "min": 20, "max": 120, "step": 10, "unit": "天"},
-                    {"key": "min_deviation", "label": "最小偏离(%)", "description": "平台期收盘价与MA的最小偏差（负值=允许在MA上方）",
+                    {"key": "min_platform_days", "label": "平台最少天数", "description": "突破日前紧邻的整理窗口最少交易日数，该窗口内收盘价须全部贴近MA60",
+                     "type": "number", "value": 10, "min": 5, "max": 30, "step": 1, "unit": "天"},
+                    {"key": "min_deviation", "label": "最小偏离(%)", "description": "平台期收盘价相对MA的最小偏离（负值=允许收盘价在MA下方，如-5%表示最多低于MA 5%）",
                      "type": "number", "value": -5, "min": -20, "max": 0, "step": 1, "unit": "%"},
-                    {"key": "max_deviation", "label": "最大偏离(%)", "description": "平台期收盘价与MA的最大偏差（正值=允许在MA下方）",
+                    {"key": "max_deviation", "label": "最大偏离(%)", "description": "平台期收盘价相对MA的最大偏离（正值=允许收盘价在MA上方，如20%表示最多高于MA 20%）",
                      "type": "number", "value": 20, "min": 5, "max": 50, "step": 5, "unit": "%"},
                 ]
             },
             {
-                "group_name": "窗口设置",
+                "group_name": "突破窗口",
                 "params": [
+                    {"key": "recent_days", "label": "近期突破窗口", "description": "突破日须发生在信号日当天或最近N个交易日内（取最近一次突破），避免数月前的旧突破被持续误选",
+                     "type": "number", "value": 3, "min": 1, "max": 10, "step": 1, "unit": "天"},
                     {"key": "threshold", "label": "回溯天数", "description": "分析窗口长度",
                      "type": "number", "value": 60, "min": 20, "max": 120, "step": 10, "unit": "天"},
                 ]
