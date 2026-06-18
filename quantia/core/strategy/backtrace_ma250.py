@@ -15,6 +15,10 @@ __date__ = '2026/02/14'
 # 2.前段由年线(ma_period 日)以下向上突破
 # 3.后段必须在年线以上运行，且后段最低价日与最高价日相差必须在 min_pullback_days~max_pullback_days 日间
 # 4.回踩伴随缩量：最高价日交易量/后段最低价日交易量 > vol_shrink_ratio，后段最低价/最高价 < max_back_ratio
+# 5.回踩低点必须接近年线（名副其实的“回踩年线”）：后段最低收盘 <= 该日年线 x near_ma_ratio。
+#   不加此约束时，只要“突破年线后出现一次缩量回调且未跌破年线”就会命中，但价格可能仍远
+#   高于年线（如 300905 回调低 30.85 仍在年线 19.10 上方 61%），实为“突破后回调”而非“回踩
+#   年线”，买入后常继续朝年线方向下跌（接飞刀）。
 #
 # 参数（可经 UI/数据库 cn_strategy_params 真正接入每日选股与验证中心）：
 #   ma_period          年线周期，默认 250
@@ -23,9 +27,11 @@ __date__ = '2026/02/14'
 #   vol_shrink_ratio   缩量比例下限，默认 2
 #   max_back_ratio     最大回撤比上限，默认 0.8
 #   threshold          寻找最高/最低价的窗口，默认 60
+#   near_ma_ratio      回踩低点接近年线的上限倍数，默认 1.30（低点不得高于年线 30%）；
+#                      设为 None / <= 0 可关闭该约束（退回上游原版“仅不跌破年线”语义）。
 def check(code_name, data, date=None, threshold=60,
           ma_period=250, min_pullback_days=10, max_pullback_days=50,
-          vol_shrink_ratio=2, max_back_ratio=0.8):
+          vol_shrink_ratio=2, max_back_ratio=0.8, near_ma_ratio=1.30):
     if date is None:
         end_date = code_name[0]
     else:
@@ -60,6 +66,14 @@ def check(code_name, data, date=None, threshold=60,
         max_back_ratio = float(max_back_ratio)
     except (TypeError, ValueError):
         max_back_ratio = 0.8
+    # near_ma_ratio: None / 非法 / <= 0 视为“关闭接近年线约束”
+    if near_ma_ratio is None:
+        near_ma_ratio = 0.0
+    else:
+        try:
+            near_ma_ratio = float(near_ma_ratio)
+        except (TypeError, ValueError):
+            near_ma_ratio = 1.30
 
     if len(data.index) < ma_period:
         return False
@@ -73,8 +87,8 @@ def check(code_name, data, date=None, threshold=60,
     lowest_row = [1000000, 0, '']
     # 区间最高点
     highest_row = [0, 0, '']
-    # 近期低点
-    recent_lowest_row = [1000000, 0, '']
+    # 近期低点 [close, volume, date, ma250]
+    recent_lowest_row = [1000000, 0, '', 0.0]
 
     # 计算区间最高、最低价格
     for _close, _volume, _date in zip(data['close'].values, data['volume'].values, data['date'].values):
@@ -109,6 +123,7 @@ def check(code_name, data, date=None, threshold=60,
                 recent_lowest_row[0] = _close
                 recent_lowest_row[1] = _volume
                 recent_lowest_row[2] = _date
+                recent_lowest_row[3] = _ma250
 
     if not recent_lowest_row[2] or not highest_row[2]:
         return False
@@ -125,6 +140,15 @@ def check(code_name, data, date=None, threshold=60,
     if not (vol_ratio > vol_shrink_ratio and back_ratio < max_back_ratio):
         return False
 
+    # 回踩低点必须接近年线：后段最低收盘 <= 该日年线 x near_ma_ratio。
+    # 否则处于年线上方远处的“突破后回调”，并非真正回踩年线，予以剔除。
+    near_lowest_ma = recent_lowest_row[3]
+    if near_ma_ratio > 0:
+        if near_lowest_ma <= 0:
+            return False
+        if recent_lowest_row[0] > near_lowest_ma * near_ma_ratio:
+            return False
+
     p_change = data.iloc[-1]['p_change'] if 'p_change' in data.columns else 0.0
     return {
         'p_change': round(float(p_change), 2),
@@ -135,4 +159,5 @@ def check(code_name, data, date=None, threshold=60,
         'vol_ratio': round(float(vol_ratio), 2),
         'back_ratio': round(float(back_ratio), 2),
         'date_diff': int(date_diff.days),
+        'near_ma_ratio': round(float(recent_lowest_row[0] / near_lowest_ma), 3) if near_lowest_ma else None,
     }
