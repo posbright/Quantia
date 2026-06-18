@@ -108,10 +108,18 @@ const buildOption = (): echarts.EChartsOption => {
   const yAxes: any[] = []
   const series: any[] = []
 
+  const n = subs.length
   const mainTop = 8
-  const mainHeightPct = subs.length === 0 ? 78 : 56 - subs.length * 2
-  const subHeightPct = 14
-  const gap = 5
+  const reserveBottom = 16   // 底部预留：日期轴标签 + dataZoom 滑块（避免最底副图被挤出可视区、横坐标日期不显示）
+  const gap = 3
+  const usable = 100 - mainTop - reserveBottom
+  let subHeightPct = 0
+  let mainHeightPct = usable
+  if (n > 0) {
+    // 主图至少占可用高度一半；其余均分给副图（单个上限 13%、下限 6%），保证所有网格之和不溢出 100%。
+    subHeightPct = Math.min(13, Math.max(6, (usable * 0.45 - gap * n) / n))
+    mainHeightPct = usable - (subHeightPct + gap) * n
+  }
 
   grids.push({ left: 55, right: 20, top: mainTop + '%', height: mainHeightPct + '%' })
   xAxes.push({ type: 'category', data: dates, gridIndex: 0, boundaryGap: true, axisLine: { onZero: false }, axisLabel: { show: subs.length === 0 } })

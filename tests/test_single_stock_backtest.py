@@ -18,6 +18,7 @@ from tornado.testing import AsyncHTTPTestCase
 from tornado.web import Application
 
 from quantia.web import backtestHandler as bh
+import quantia.core.indicator.buy_sell_signal as bss
 
 
 def _make_hist(prices, start='2026-01-01'):
@@ -73,18 +74,11 @@ class RunSingleBacktestTests(unittest.TestCase):
         self.assertIn('error', res)
 
     def test_indicators_buy_supported(self):
-        # 单股回测按个股自身指标序列重算信号：第 5 根满足极度超卖。
-        ind = self.hist.copy()
-        ind['rsi_6'] = 50.0
-        ind['kdjj'] = 50.0
-        ind['wr_6'] = -50.0
-        ind['cci'] = 0.0
-        ind['mfi'] = 50.0
-        ind.loc[5, ['rsi_6', 'kdjj', 'wr_6', 'cci', 'mfi']] = [10.0, -5.0, -95.0, -200.0, 10.0]
+        # 单股指标回测在个股自身指标序列上按配置参数重算信号（含回撤闸门）
+        signal_day = self.hist['date'].iloc[5].date()
         with mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
              mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=self.hist), \
-             mock.patch.object(bh.idr, 'get_indicators', return_value=ind), \
-             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False):
+             mock.patch.object(bh, '_compute_single_indicator_signal_dates', return_value={signal_day}):
             res = bh._run_single_backtest('000001', 'indicators_buy',
                                           '2026-01-01', '2026-03-31', hold_days=5)
         self.assertNotIn('error', res)
@@ -93,24 +87,58 @@ class RunSingleBacktestTests(unittest.TestCase):
         self.assertTrue(len(res['trades']) >= 1)
 
     def test_indicators_sell_supported(self):
-        # 单股回测按个股自身指标序列重算信号：第 8 根满足极度超买。
-        ind = self.hist.copy()
-        ind['rsi_6'] = 50.0
-        ind['kdjj'] = 50.0
-        ind['wr_6'] = -50.0
-        ind['cci'] = 0.0
-        ind['mfi'] = 50.0
-        ind.loc[8, ['rsi_6', 'kdjj', 'wr_6', 'cci', 'mfi']] = [90.0, 105.0, -5.0, 200.0, 90.0]
+        signal_day = self.hist['date'].iloc[8].date()
         with mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
              mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=self.hist), \
-             mock.patch.object(bh.idr, 'get_indicators', return_value=ind), \
-             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False):
+             mock.patch.object(bh, '_compute_single_indicator_signal_dates', return_value={signal_day}):
             res = bh._run_single_backtest('000001', 'indicators_sell',
                                           '2026-01-01', '2026-03-31', hold_days=3)
         self.assertNotIn('error', res)
         self.assertEqual(res['strategy_cn'], '指标卖出信号')
         self.assertEqual(res['exit_mode'], 'fixed')
         self.assertTrue(len(res['trades']) >= 1)
+
+    def test_indicator_recompute_applies_drawdown_gate(self):
+        # 三根都极度超卖；high 恒为 100。buy_drawdown_ratio=0.90 要求现价 ≤ 10。
+        # idx1 现价 9（跌 91%）过闸；idx2 现价 30（仅跌 70%）被回撤闸门过滤。
+        dates = pd.bdate_range('2026-01-05', periods=3)
+        ind = pd.DataFrame({
+            'date': dates,
+            'high': [100.0, 100.0, 100.0],
+            'close': [50.0, 9.0, 30.0],
+            'rsi_6': [50.0, 5.0, 5.0],
+            'kdjj': [50.0, -10.0, -10.0],
+            'wr_6': [-50.0, -95.0, -95.0],
+            'cci': [0.0, -200.0, -200.0],
+            'mfi': [50.0, 5.0, 5.0],
+        })
+        params = dict(bss.DEFAULT_PARAMS)
+        params['buy_drawdown_ratio'] = 0.90
+        with mock.patch.object(bss, 'load_params', return_value=params), \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=ind):
+            out = bh._compute_single_indicator_signal_dates(
+                'indicators_buy', ind, '2026-01-01', '2026-12-31')
+        self.assertEqual(out, {dates[1].date()})
+
+    def test_indicator_recompute_sell_drawdown_gate(self):
+        # 三根都极度超买；high 恒为 100。sell_drawdown_ratio=0.80 要求现价 ≥ 80。
+        dates = pd.bdate_range('2026-01-05', periods=2)
+        ind = pd.DataFrame({
+            'date': dates,
+            'high': [100.0, 100.0],
+            'close': [90.0, 50.0],   # idx0 贴峰过闸；idx1 跌始被过滤
+            'rsi_6': [90.0, 90.0],
+            'kdjj': [110.0, 110.0],
+            'wr_6': [-5.0, -5.0],
+            'cci': [200.0, 200.0],
+            'mfi': [90.0, 90.0],
+        })
+        params = dict(bss.DEFAULT_PARAMS)
+        with mock.patch.object(bss, 'load_params', return_value=params), \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=ind):
+            out = bh._compute_single_indicator_signal_dates(
+                'indicators_sell', ind, '2026-01-01', '2026-12-31')
+        self.assertEqual(out, {dates[0].date()})
 
     def test_indicator_signal_dates_normalize_compact_date_strings(self):
         captured = {}
@@ -140,7 +168,10 @@ class RunSingleBacktestTests(unittest.TestCase):
         for i in (3, 7):
             ind.loc[i, ['rsi_6', 'kdjj', 'wr_6', 'cci', 'mfi']] = [10.0, -5.0, -95.0, -200.0, 10.0]
 
-        with mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False), \
+        # 回撤闸门置 0（现价 ≤ 1.0×峰值恒成立），本用例专测“指标超卖”逻辑。
+        _p = dict(bss.DEFAULT_PARAMS); _p['buy_drawdown_ratio'] = 0.0
+        with mock.patch.object(bss, 'load_params', return_value=_p), \
+             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False), \
              mock.patch.object(bh.idr, 'get_indicators', return_value=ind):
             dates = bh._compute_single_indicator_signal_dates('indicators_buy', hist)
 
@@ -159,7 +190,9 @@ class RunSingleBacktestTests(unittest.TestCase):
 
         start = hist['date'].iloc[2].strftime('%Y-%m-%d')
         end = hist['date'].iloc[5].strftime('%Y-%m-%d')
-        with mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False), \
+        _p = dict(bss.DEFAULT_PARAMS); _p['buy_drawdown_ratio'] = 0.0  # 回撤闸门置 0，专测区间裁剪
+        with mock.patch.object(bss, 'load_params', return_value=_p), \
+             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False), \
              mock.patch.object(bh.idr, 'get_indicators', return_value=ind):
             dates = bh._compute_single_indicator_signal_dates('indicators_buy', hist, start, end)
 
@@ -183,7 +216,9 @@ class RunSingleBacktestTests(unittest.TestCase):
             called['fetch'] = True
             return []
 
-        with mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False), \
+        _p = dict(bss.DEFAULT_PARAMS); _p['buy_drawdown_ratio'] = 0.0  # 回撤闸门置 0，专测重算路径
+        with mock.patch.object(bss, 'load_params', return_value=_p), \
+             mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=False), \
              mock.patch.object(bh.mdb, 'executeSqlFetch', side_effect=_fetch), \
              mock.patch.object(bh.idr, 'get_indicators', return_value=ind):
             dates = bh._load_single_indicator_signal_dates(
@@ -234,7 +269,9 @@ class RunSingleBacktestTests(unittest.TestCase):
         ind['mfi'] = 50.0
         ind.loc[5, ['rsi_6', 'kdjj', 'wr_6', 'cci', 'mfi']] = [10.0, -5.0, -95.0, -200.0, 10.0]
 
-        with mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
+        _p = dict(bss.DEFAULT_PARAMS); _p['buy_drawdown_ratio'] = 0.0  # 回撤闸门置 0，专测端到端交易生成
+        with mock.patch.object(bss, 'load_params', return_value=_p), \
+             mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
              mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=hist), \
              mock.patch.object(bh.idr, 'get_indicators', return_value=ind), \
              mock.patch.object(bh.mdb, 'checkTableIsExist', return_value=True), \

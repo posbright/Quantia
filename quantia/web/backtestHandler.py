@@ -868,13 +868,14 @@ def _compute_single_indicator_signal_dates(strategy_name, hist, start_date_norm=
 
     指标买/卖信号的横截面选股结果表（cn_stock_indicators_buy/sell）只是“某日全市场
     被选中个股”的快照，并非个股的指标历史。单股区间回测应在该股自身的指标序列上评估
-    信号，而非检查它是否出现在选股表中。此处复用 buy_sell_signal 的技术阈值
-    （RSI_6 / KDJ-J / WR_6 / CCI / MFI 超卖/超买），在该股完整 K 线上逐日判定：
-      买入：rsi_6<阈值 且 kdjj<阈值 且 wr_6<阈值 且 cci<阈值 且 mfi<阈值（极度超卖）
-      卖出：上述镜像（极度超买）
-    阈值取用户在「指标设置」页持久化的参数（无配置回退默认值）。不含横截面选股专用的
-    “自历史最高点深跌”闸门——该闸门是全市场候选收敛装置，对单股可视化无意义且会令
-    绝大多数个股无任何信号。返回信号日 datetime.date 集合（限定在区间内）。
+    信号。复用 buy_sell_signal 的技术阈值（RSI_6 / KDJ-J / WR_6 / CCI / MFI 超卖/超买）
+    并施加与全市场实时选股同口径的“自历史最高点回撤闸门”，使单股回测忠实反映用户在
+    「指标买入/卖出信号」配置页设置的全部参数（含 buy/sell_drawdown_ratio）：
+      买入：五指标同时极度超卖(AND) 且 现价 ≤ (1-buy_drawdown_ratio)×截至当日历史最高 high
+      卖出：五指标同时极度超买(AND) 且 现价 ≥ sell_drawdown_ratio×截至当日历史最高 high
+    历史最高用 cummax(high)（仅截至当日，无前视偏差）。基本面可选过滤依赖当日行情快照，
+    无法按历史重算，单股回测不应用（与全市场实时选股的唯一差异）。阈值取用户在「指标
+    设置」页持久化的参数（无配置回退默认值）。返回信号日 datetime.date 集合（限定区间内）。
     """
     if hist is None or len(hist) == 0:
         return set()
@@ -903,19 +904,28 @@ def _compute_single_indicator_signal_dates(strategy_name, hist, start_date_norm=
     wr6 = pd.to_numeric(ind['wr_6'], errors='coerce')
     cci = pd.to_numeric(ind['cci'], errors='coerce')
     mfi = pd.to_numeric(ind['mfi'], errors='coerce')
+    close = (pd.to_numeric(ind['close'], errors='coerce')
+             if 'close' in ind.columns else pd.Series([np.nan] * len(ind), index=ind.index))
+    # 截至当日（含当日）历史最高 high，与全市场 _peak_drawdown_ok 同口径，无前视偏差。
+    peak = (pd.to_numeric(ind['high'], errors='coerce').cummax()
+            if 'high' in ind.columns else pd.Series([np.nan] * len(ind), index=ind.index))
 
     if strategy_name == 'indicators_buy':
+        ratio = _num(p.get('buy_drawdown_ratio'), 0.80)
         cond = ((rsi6 < _num(p.get('buy_rsi_6'), 15)) &
                 (kdjj < _num(p.get('buy_kdjj'), 0)) &
                 (wr6 < _num(p.get('buy_wr_6'), -90)) &
                 (cci < _num(p.get('buy_cci'), -150)) &
-                (mfi < _num(p.get('buy_mfi'), 20)))
+                (mfi < _num(p.get('buy_mfi'), 20)) &
+                (close <= (1.0 - ratio) * peak))
     elif strategy_name == 'indicators_sell':
+        ratio = _num(p.get('sell_drawdown_ratio'), 0.80)
         cond = ((rsi6 > _num(p.get('sell_rsi_6'), 85)) &
                 (kdjj > _num(p.get('sell_kdjj'), 100)) &
                 (wr6 > _num(p.get('sell_wr_6'), -10)) &
                 (cci > _num(p.get('sell_cci'), 150)) &
-                (mfi > _num(p.get('sell_mfi'), 80)))
+                (mfi > _num(p.get('sell_mfi'), 80)) &
+                (close >= ratio * peak))
     else:
         return set()
 
@@ -937,7 +947,11 @@ def _compute_single_indicator_signal_dates(strategy_name, hist, start_date_norm=
 
 def _resolve_single_strategy_with_indicator(strategy_name, code=None, start_date_str=None,
                                             end_date_str=None, hist=None):
-    """解析单股回测策略：支持内置 check() + indicators_buy/sell。"""
+    """解析单股回测策略：支持内置 check() + indicators_buy/sell。
+
+    指标买/卖策略：提供 hist 时在个股自身指标序列上按【当前配置参数】逐日重算信号
+    （含历史最高回撤闸门），忠实反映配置页参数；未提供 hist 时回退读取选股结果表。
+    """
     func, cn = _resolve_single_strategy(strategy_name)
     if func is not None:
         return func, cn
@@ -1191,13 +1205,26 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
     if not start_date_str or not end_date_str:
         return {"error": "缺少回测区间参数"}
 
-    # 读取完整历史缓存（含区间前预热，供 MA250/长周期指标）+ spot 兜底补全（修复 C）。
+    # 读取完整历史缓存（含区间前预热，供 MA250/长周期指标 + 历史最高回撤闸门）+ spot 兜底补全（修复 C）。
     # 先于策略解析加载：indicators_buy/sell 单股回测须用该股自身指标序列重算信号
     # （见 _compute_single_indicator_signal_dates）。
     hist = _load_single_hist(code, start_date_str, end_date_str)
     if hist is None:
         return {"error": f"股票 {code} 无缓存数据，请先执行数据获取"}
 
+    start_ts = pd.Timestamp(start_date_str.replace('-', '')) if '-' not in str(start_date_str) else pd.Timestamp(start_date_str)
+    end_ts = pd.Timestamp(end_date_str.replace('-', '')) if '-' not in str(end_date_str) else pd.Timestamp(end_date_str)
+
+    in_range = hist[(hist['date'] >= start_ts) & (hist['date'] <= end_ts)]
+    if in_range.empty:
+        return {"error": "回测区间内无交易数据"}
+
+    # 裁剪到区间末：保留区间前完整历史供指标预热（plan §3.4 line 143）+ 历史最高回撤闸门，
+    # 但移除 end_ts 之后的"未来"K线，避免买卖点/持仓中定价越过区间末（lookahead）。
+    hist = hist[hist['date'] <= end_ts].reset_index(drop=True)
+
+    # 解析策略：指标买/卖策略在个股自身指标序列上按【当前配置参数】逐日重算信号（含回撤闸门），
+    # 使单股回测忠实反映「指标买入/卖出信号」配置页参数（如 buy_drawdown_ratio）。
     strategy_func, strategy_cn = _resolve_single_strategy_with_indicator(
         strategy, code=code, start_date_str=start_date_str, end_date_str=end_date_str, hist=hist)
     if strategy_func is None:
@@ -1225,17 +1252,6 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
     limit_ratio = _price_limit_ratio(code, stock_name)
     # 涨停跳过阈值：贴近涨停（留 5% 余量）即视为无法买入
     limit_skip = limit_ratio * 0.95
-
-    start_ts = pd.Timestamp(start_date_str.replace('-', '')) if '-' not in str(start_date_str) else pd.Timestamp(start_date_str)
-    end_ts = pd.Timestamp(end_date_str.replace('-', '')) if '-' not in str(end_date_str) else pd.Timestamp(end_date_str)
-
-    in_range = hist[(hist['date'] >= start_ts) & (hist['date'] <= end_ts)]
-    if in_range.empty:
-        return {"error": "回测区间内无交易数据"}
-
-    # 裁剪到区间末：保留区间前完整历史供指标预热（plan §3.4 line 143），
-    # 但移除 end_ts 之后的"未来"K线，避免买卖点/持仓中定价越过区间末（lookahead）。
-    hist = hist[hist['date'] <= end_ts].reset_index(drop=True)
 
     stock = (code, code, stock_name)
     dates_all = hist['date'].tolist()
