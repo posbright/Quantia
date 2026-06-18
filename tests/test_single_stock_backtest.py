@@ -508,6 +508,21 @@ class EventStrategyExitTests(unittest.TestCase):
         t = res['trades'][0]
         self.assertGreater(t['hold_days'], 1)
 
+    def test_backtrace_ma250_is_event_type(self):
+        # 回归：回踩年线是点事件/形态型策略（回踩形态仅成立于形态完成日附近，
+        # 期间价格可能继续深跌）。必须走规则退出（止损/止盈/最大持仓），
+        # 而非 strategy_signal（会持仓穿越下跌、放任亏损扩大）。
+        self.assertIn('cn_stock_strategy_backtrace_ma250', bh._EVENT_STRATEGIES)
+        # 跌破 -8% 时应止损离场，而非一直持有到形态消失。
+        prices = [10.0] * 7 + [9.0] * 33
+        hist = _make_hist(prices)
+        with self._patch(hist, {5}):
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_backtrace_ma250',
+                                          '2026-01-01', '2026-12-30', hold_days=None)
+        self.assertNotIn('error', res)
+        self.assertEqual(res['exit_mode'], 'rule_exit')
+        self.assertEqual(res['trades'][0]['exit_reason'], 'stop_loss')
+
 
 class CacheFallbackTests(unittest.TestCase):
     """修复 C：缓存缺失或过薄时从 cn_stock_spot 补全（仅读 MySQL，不发外部 API）。"""

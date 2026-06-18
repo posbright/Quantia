@@ -735,11 +735,17 @@ _EVENT_STRATEGIES = frozenset({
     'cn_stock_strategy_trend_pullback',        # 趋势回调
     'cn_stock_strategy_oversold_rebound',      # 超跌反弹
     'cn_stock_strategy_breakout_confirm',      # 突破确认
+    'cn_stock_strategy_backtrace_ma250',       # 回踩年线（点事件型：回踩形态特征仅成立于形态完成日）
     'indicators_buy',                          # 指标买入信号（事件型）
     'indicators_sell',                         # 指标卖出信号（事件型）
 })
-# 状态型策略（均线多头、海龟、低ATR、回踩年线、无大幅回撤）入场条件可连续多日
-# 成立，复用入场条件做持仓判断是合理的（条件消失即离场），仍走 strategy_signal。
+# 状态型策略（均线多头、海龟、低ATR、无大幅回撤）入场条件可连续多日成立，复用入场
+# 条件做持仓判断是合理的（条件消失即离场），仍走 strategy_signal。
+# 回踩年线（backtrace_ma250）是点事件/形态型：其"回踩 MA250"形态由 tail(60) 窗口内
+# 的最高/最低点结构定义，买入后形态会随窗口滑动持续成立多日——但此期间价格可能继续
+# 深跌（实测 300905 曾持仓 22 日浮亏 -15.85%），复用入场条件做持仓判断会让回测持仓到
+# 形态消失才离场、放任亏损扩大。故归入事件型，走与入场解耦的规则退出（止损/止盈/最大
+# 持仓），与 dev_plan §点事件型局限 一致。
 
 # 事件型策略的默认规则退出参数（按收盘价逐日判定）
 _EVENT_EXIT_STOP_LOSS = 0.08    # 止损：跌破买入价 8%
