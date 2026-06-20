@@ -40,6 +40,42 @@ class TestStockReportScheduled:
         assert hasattr(srs, 'run_all')
 
     @patch('quantia.job.stock_report_scheduled.mdb')
+    def test_get_stock_identity(self, mock_mdb):
+        from quantia.job.stock_report_scheduled import _get_stock_identity
+        mock_mdb.executeSqlFetch.return_value = [('000001', '平安银行', '银行')]
+        identity = _get_stock_identity('000001')
+        assert identity['code'] == '000001'
+        assert identity['name'] == '平安银行'
+        assert identity['industry'] == '银行'
+
+    def test_build_stock_report_prompts_lock_code(self):
+        from quantia.job.stock_report_scheduled import _build_stock_report_prompts
+        system, user = _build_stock_report_prompts('000001', '平安银行', '银行')
+        assert '000001' in system
+        assert '000001' in user
+        assert '平安银行' in user
+        assert 'WHERE code =' in system
+        assert 'WHERE code =' in user
+
+    def test_report_title_matches_target(self):
+        from quantia.job.stock_report_scheduled import _report_title_matches_target
+        ok_report = '# 📊 平安银行 (000001) 分析报告\n正文'
+        bad_report = '# 📊 招商银行 (600036) 分析报告\n正文'
+        assert _report_title_matches_target(ok_report, '000001', '平安银行')
+        assert not _report_title_matches_target(bad_report, '000001', '平安银行')
+
+    def test_extract_stock_name_from_tool_calls_object(self):
+        from quantia.job.stock_report_scheduled import _extract_stock_name_from_tool_calls
+
+        class DummyToolCall:
+            def __init__(self):
+                self.name = 'stock_profile'
+                self.ok = True
+                self.result = {'name': '平安银行'}
+
+        assert _extract_stock_name_from_tool_calls([DummyToolCall()]) == '平安银行'
+
+    @patch('quantia.job.stock_report_scheduled.mdb')
     def test_get_attention_codes_empty(self, mock_mdb):
         from quantia.job.stock_report_scheduled import _get_attention_codes
         mock_mdb.executeSqlFetch.return_value = []

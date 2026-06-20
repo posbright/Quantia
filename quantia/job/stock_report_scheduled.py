@@ -51,6 +51,84 @@ def _get_effective_tools() -> list:
     return list(_ALLOWED_TOOLS)
 
 
+def _get_stock_identity(code: str) -> Dict[str, str]:
+    """获取股票最新身份信息，用于 AI 报告生成时做代码/名称双重锚定。"""
+    try:
+        sql = """
+            SELECT code, name, industry
+            FROM cn_stock_spot
+            WHERE code = %s
+            ORDER BY date DESC LIMIT 1
+        """
+        rows = mdb.executeSqlFetch(sql, (code,)) or []
+        if rows:
+            return {
+                'code': str(rows[0][0] or code),
+                'name': str(rows[0][1] or ''),
+                'industry': str(rows[0][2] or ''),
+            }
+    except Exception as exc:
+        _logger.debug(f'[定时分析] 获取股票身份失败 {code}: {exc}')
+    return {'code': code, 'name': '', 'industry': ''}
+
+
+def _build_stock_report_prompts(code: str, stock_name: str = '', industry: str = '') -> tuple[str, str]:
+    """构造股票分析的 system/user 提示词，强制锁定到单一股票代码。"""
+    target_name = stock_name or '数据暂缺'
+    target_industry = industry or '数据暂缺'
+    system = (
+        '你是 Quantia AI 股票分析师。当前任务只允许分析用户指定的这一只 A 股代码，'
+        f'目标代码={code}，目标简称={target_name}，目标行业={target_industry}。'
+        '如果任何工具返回的公司名、简称、行业与目标代码不一致，必须以目标代码为唯一真相，'
+        '忽略冲突结果，不得切换到其他股票。'
+        '所有 stock_profile、kline_fetch、sql_query 的结果都只能围绕该代码展开；'
+        '对 cn_stock_spot、cn_stock_financial、cn_stock_fund_flow、cn_stock_patents 的查询必须显式使用 WHERE code = 目标代码，'
+        '禁止用 name、简称、行业、拼音或模糊匹配代替 code。'
+    )
+    user = (
+        f'请为 A 股 {code} 生成一份完整的投资分析报告。\n'
+        f'【分析锚点】代码：{code}，简称：{target_name}，行业：{target_industry}\n'
+        '要求：只分析这只股票；若任何工具结果与该代码不一致，一律忽略冲突；'
+        '执行 sql_query 时必须显式写 WHERE code = 目标代码，不得省略 code 过滤。'
+        '报告标题必须与目标股票一致，不能改成其他股票。'
+        '包含：技术面、基本面、资金面、事件面综合分析，并给出综合评级（看多/看空/中性）和操作建议。'
+    )
+    return system, user
+
+
+def _report_title_matches_target(content: str, code: str, stock_name: str = '') -> bool:
+    """校验报告首个标题是否仍锚定到目标股票。"""
+    for raw in (content or '').splitlines():
+        line = raw.strip()
+        if not line.startswith('#'):
+            continue
+        title = line.lstrip('#').strip()
+        if code and code not in title:
+            return False
+        if stock_name and stock_name not in title:
+            return False
+        return True
+    return False
+
+
+def _extract_stock_name_from_tool_calls(tool_calls: Any) -> str:
+    """从工具调用结果里提取 stock_profile 返回的股票名。"""
+    for tc in (tool_calls or []):
+        if isinstance(tc, dict):
+            name = tc.get('name')
+            ok = tc.get('ok')
+            result = tc.get('result', {})
+        else:
+            name = getattr(tc, 'name', None)
+            ok = getattr(tc, 'ok', False)
+            result = getattr(tc, 'result', {}) or {}
+        if name == 'stock_profile' and ok and isinstance(result, dict):
+            stock_name = result.get('name')
+            if stock_name:
+                return str(stock_name)
+    return ''
+
+
 # ─── 工具函数 ──────────────────────────────────────────────────────
 
 def _get_attention_codes() -> List[str]:
@@ -359,6 +437,13 @@ def scheduled_report_analysis(max_stocks: Optional[int] = None,
             from quantia.lib.ai.feature_switch import check_feature
             check_feature('stock_report')
 
+            identity = _get_stock_identity(code)
+            system_prompt, user_message = _build_stock_report_prompts(
+                code,
+                identity.get('name', ''),
+                identity.get('industry', ''),
+            )
+
             def _on_failover(failed_ov, next_ov, exc, _code=code):
                 stats['failover'] = stats.get('failover', 0) + 1
                 _logger.warning(
@@ -369,28 +454,28 @@ def scheduled_report_analysis(max_stocks: Optional[int] = None,
 
             result = run_agent_with_failover(
                 on_failover=_on_failover,
-                user_message=(
-                    f"请为 A 股 {code} 生成一份完整的投资分析报告。"
-                    f"包含：技术面、基本面、资金面、事件面综合分析，"
-                    f"并给出综合评级（看多/看空/中性）和操作建议。"
-                ),
+                user_message=user_message,
                 scene='stock_report',
                 agent='stock_analyst',
-                system=(
-                    '你是 Quantia AI 股票分析师。请生成完整的个股分析报告。'
-                    '格式要求：使用 Markdown，包含技术指标、财务数据、资金流向、'
-                    '事件风险等维度，最后给出综合评级和操作建议。'
-                ),
+                system=system_prompt,
                 allowed_tools=_get_effective_tools(),
             )
 
             # 存入数据库
             content = (result.content or '')[:10000]
-            stock_name = ''
-            for tc in (result.tool_calls or []):
-                if tc.get('name') == 'stock_profile' and tc.get('ok'):
-                    stock_name = tc.get('result', {}).get('name', '')
-                    break
+            if identity.get('name') and not _report_title_matches_target(content, code, identity.get('name', '')):
+                _logger.warning(f'[定时分析] {code} 首次报告标题未锚定到目标股票，触发重写')
+                result = run_agent_with_failover(
+                    on_failover=_on_failover,
+                    user_message=user_message + '\n\n上一版报告的股票身份不正确，请严格重写全文并只分析目标股票。',
+                    scene='stock_report',
+                    agent='stock_analyst',
+                    system=system_prompt + ' 上一版输出的股票身份不正确，必须严格重写。',
+                    allowed_tools=_get_effective_tools(),
+                )
+                content = (result.content or '')[:10000]
+
+            stock_name = _extract_stock_name_from_tool_calls(result.tool_calls)
 
             structured = _insert_report(code, stock_name, content, result, 'cron')
             stats['generated'] += 1
@@ -712,6 +797,13 @@ def pregenerate_hot_stocks(top_n: int = 50,
         try:
             from quantia.lib.ai.failover import run_agent_with_failover
 
+            identity = _get_stock_identity(code)
+            system_prompt, user_message = _build_stock_report_prompts(
+                code,
+                name or identity.get('name', ''),
+                identity.get('industry', ''),
+            )
+
             def _on_failover(failed_ov, next_ov, exc, _code=code):
                 stats['failover'] = stats.get('failover', 0) + 1
                 _logger.warning(
@@ -722,12 +814,24 @@ def pregenerate_hot_stocks(top_n: int = 50,
 
             result = run_agent_with_failover(
                 on_failover=_on_failover,
-                user_message=f"请为 A 股 {code} 生成分析报告。",
+                user_message=user_message,
                 scene='report_cron',
                 agent='stock_analyst',
+                system=system_prompt,
                 allowed_tools=_get_effective_tools(),
             )
             content = (result.content or '')[:10000]
+            if name and not _report_title_matches_target(content, code, name):
+                _logger.warning(f'[热门预生成] {code} 首次报告标题未锚定到目标股票，触发重写')
+                result = run_agent_with_failover(
+                    on_failover=_on_failover,
+                    user_message=user_message + '\n\n上一版报告的股票身份不正确，请严格重写全文并只分析目标股票。',
+                    scene='report_cron',
+                    agent='stock_analyst',
+                    system=system_prompt + ' 上一版输出的股票身份不正确，必须严格重写。',
+                    allowed_tools=_get_effective_tools(),
+                )
+                content = (result.content or '')[:10000]
             _insert_report(code, name, content, result, 'batch')
             stats['generated'] += 1
             _logger.info(f'[热门预生成] {code} {name} 完成')
