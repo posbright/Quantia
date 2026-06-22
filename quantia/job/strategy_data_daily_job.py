@@ -78,6 +78,52 @@ def _load_strategy_kwargs(table_name, strategy_fun):
 
 
 
+def _migrate_strategy_columns(table_name, insert_columns, columns_def):
+    """检查策略结果表是否缺少待写入的列，缺少则自动 ADD COLUMN。
+
+    策略表仅在首次创建时按完整结构建表；当策略新增输出指标（如回踩年线的
+    near_ma_ratio）时，已存在的表不会自动获得新列，导致 INSERT 报
+    "Unknown column ... in 'field list'"。此处以「实际待写入列」为准对比表内
+    现有列，自动补齐缺失列，保证服务器侧自愈；列的 DDL 类型优先取自结构
+    定义 columns_def，未声明的指标列（数值型）回退为 FLOAT。
+    """
+    try:
+        rows = mdb.executeSqlFetch(f"SHOW COLUMNS FROM `{table_name}`")
+        existing_names = {row[0] for row in rows} if rows else set()
+    except Exception as e:
+        logging.error(f"策略表列迁移 SHOW COLUMNS 失败：{table_name} - {e}")
+        return
+    if not existing_names:
+        return
+
+    columns_def = columns_def or {}
+    for col_name in insert_columns:
+        if col_name in existing_names:
+            continue
+        try:
+            meta = columns_def.get(col_name) or {}
+            ddl_type = _render_sql_type(meta.get('type'))
+            mdb.executeSql(f"ALTER TABLE `{table_name}` ADD COLUMN `{col_name}` {ddl_type} NULL")
+            logging.info(f"策略表自动迁移：为 `{table_name}` 新增列 `{col_name}` {ddl_type}")
+        except Exception as e:
+            # 1060 = Duplicate column name，并发/重复执行下安全忽略
+            if '1060' in str(e):
+                continue
+            logging.error(f"策略表列迁移 ADD COLUMN `{col_name}` 失败：{table_name} - {e}")
+
+
+def _render_sql_type(col_type):
+    """将结构定义中的 SQLAlchemy 类型（类或实例）渲染为 MySQL DDL 类型字符串。"""
+    if col_type is None:
+        return "FLOAT"
+    try:
+        from sqlalchemy.dialects import mysql
+        type_obj = col_type() if isinstance(col_type, type) else col_type
+        return type_obj.compile(dialect=mysql.dialect())
+    except Exception:
+        return "FLOAT"
+
+
 def prepare(date, strategy):
     try:
         logging.info(f"strategy_data_daily_job开始执行：{strategy.get('name', strategy)}，日期{date}")
@@ -93,7 +139,8 @@ def prepare(date, strategy):
             return
 
         # 删除老数据。
-        if mdb.checkTableIsExist(table_name):
+        table_existed = mdb.checkTableIsExist(table_name)
+        if table_existed:
             del_sql = f"DELETE FROM `{table_name}` WHERE `date` = %s"
             mdb.executeSql(del_sql, (date,))
             cols_type = None
@@ -118,6 +165,10 @@ def prepare(date, strategy):
         _columns_backtest = list(tbs.TABLE_CN_STOCK_BACKTEST_DATA['columns'])
         all_columns = list(columns) + sorted(extra_keys) + _columns_backtest
         data = data.reindex(columns=all_columns)
+        # 自动迁移：表已存在但缺少待写入的新增列时，自动 ALTER TABLE 补齐，
+        # 避免策略新增输出指标后 INSERT 报 "Unknown column" 而整表写入失败。
+        if table_existed:
+            _migrate_strategy_columns(table_name, all_columns, strategy.get('columns', {}))
         # 单例，时间段循环必须改时间
         date_str = date.strftime("%Y-%m-%d")
         if date.strftime("%Y-%m-%d") != data.iloc[0]['date']:

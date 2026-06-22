@@ -610,6 +610,7 @@ _backtrace_ma250_columns.update({
     'vol_ratio': {'type': FLOAT, 'cn': '缩量比', 'size': 80},
     'back_ratio': {'type': FLOAT, 'cn': '回踩比', 'size': 80},
     'date_diff': {'type': BIGINT, 'cn': '回踩天数', 'size': 80},
+    'near_ma_ratio': {'type': FLOAT, 'cn': '回踩低点/年线', 'size': 90},
 })
 _backtrace_ma250_columns.update(TABLE_CN_STOCK_BACKTEST_DATA['columns'])
 
