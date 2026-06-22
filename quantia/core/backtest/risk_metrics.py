@@ -24,6 +24,34 @@ __date__ = '2026/03/13'
 _TRADING_DAYS_PER_YEAR = 245
 # 无风险年化利率（1年定期存款约1.5%）
 _RISK_FREE_RATE = 0.015
+# 回测主表（cn_stock_backtest_portfolio）指标列为 DECIMAL(10,4)，可表示范围
+# 约 ±999999.9999。极端/退化输入（如极短窗口、近零波动）会让夏普、年化收益等
+# 计算出 inf / nan / 超大数值，直接入库会触发 MySQL 1264 "Out of range value"，
+# 导致整条回测结果写入失败。此处统一在指标产出口做有限化+夹断，保证 DB 安全。
+_DB_DECIMAL_MAX = 999999.9999
+
+
+def _safe_metric(value):
+    """将单个指标值规整为有限、可入库 DECIMAL(10,4) 的浮点数。
+
+    - NaN / Inf / -Inf → 0.0（退化输入下指标无意义，置零而非报错）
+    - 超出 ±_DB_DECIMAL_MAX → 夹断到边界，保留符号与量级信息
+    其它（int/str/None）原样返回，避免影响 trade_count、日期区间等非浮点字段。
+    """
+    if isinstance(value, bool) or not isinstance(value, float):
+        return value
+    if not np.isfinite(value):
+        return 0.0
+    if value > _DB_DECIMAL_MAX:
+        return _DB_DECIMAL_MAX
+    if value < -_DB_DECIMAL_MAX:
+        return -_DB_DECIMAL_MAX
+    return value
+
+
+def _sanitize_metrics(metrics):
+    """对指标字典中的所有浮点值做有限化+夹断，原地返回安全字典。"""
+    return {k: _safe_metric(v) for k, v in metrics.items()}
 
 
 def calculate_metrics(nav_series, benchmark_series=None, trades=None,
@@ -206,7 +234,7 @@ def calculate_metrics(nav_series, benchmark_series=None, trades=None,
     trade_win_rate = trade_win_count / trade_count * 100 if trade_count > 0 else 0
     total_trades = len(trades) if trades else 0
 
-    return {
+    return _sanitize_metrics({
         'total_return': round(total_return, 4),
         'annual_return': round(annual_return, 4),
         'benchmark_return': round(benchmark_return, 4),
@@ -232,7 +260,7 @@ def calculate_metrics(nav_series, benchmark_series=None, trades=None,
         'win_count': trade_win_count,
         'loss_count': trade_loss_count,
         'trading_days': n_days,
-    }
+    })
 
 
 def _empty_metrics():

@@ -1301,7 +1301,7 @@ class AiAgentsManageHandler(webBase.BaseHandler, ABC):
                 agents = [{k: v for k, v in a.items() if k != 'system_prompt'} for a in agents]
             self.set_header('Content-Type', 'application/json')
             self.write(json.dumps({'code': 0, 'data': {'agents': agents}},
-                                  ensure_ascii=False))
+                                  ensure_ascii=False, default=str))
         except Exception as exc:
             logging.exception('AiAgentsManageHandler.get 异常')
             _write_error(self, -1, f'读取 agent 失败: {exc}')
@@ -1343,7 +1343,7 @@ class AiAgentsManageHandler(webBase.BaseHandler, ABC):
             # 不返回 system_prompt（前端按需再 GET）
             saved_brief = {k: v for k, v in saved.items() if k != 'system_prompt'}
             self.set_header('Content-Type', 'application/json')
-            self.write(json.dumps({'code': 0, 'data': saved_brief}, ensure_ascii=False))
+            self.write(json.dumps({'code': 0, 'data': saved_brief}, ensure_ascii=False, default=str))
         except Exception as exc:
             from quantia.lib.ai.agent_store import AgentStoreError
             if isinstance(exc, AgentStoreError):
