@@ -528,6 +528,52 @@ class TestCreateApi:
         assert len(result) == 5
         assert result.iloc[-1] == 109  # last close
 
+    def test_history_expands_window_after_small_first_call(self, monkeypatch):
+        """回归(zero-trade 根因): history(code, 小N) 先于 history(code, 大N) 调用时，
+        懒加载必须按更大的 N 扩窗，而不是复用被首个小 N 截断的短缓存。
+
+        旧实现按首个调用的 count 决定窗口 max(count*3,80) 天并永久缓存，
+        随后 history(code,70) 复用 ~80天(~42行) 短缓存 → 长周期策略
+        check_buy_signal 恒因行数不足 return False → 永不下单。
+        """
+        import pandas as pd
+
+        # 模拟一只有 400 个交易日深度历史的股票；_load_security_data 按 start_date 切片返回。
+        full_dates = pd.bdate_range(end='2026-06-23', periods=400)
+        full_df = pd.DataFrame({
+            'date': full_dates,
+            'open': range(400), 'high': range(400),
+            'low': range(400), 'close': range(400), 'volume': [1000] * 400,
+        })
+
+        def fake_load(code, start_date=None, end_date=None):
+            df = full_df
+            if start_date is not None:
+                df = df[df['date'] >= pd.Timestamp(start_date)]
+            if end_date is not None:
+                df = df[df['date'] <= pd.Timestamp(end_date)]
+            return code, df.reset_index(drop=True)
+
+        monkeypatch.setattr(
+            'quantia.paper_trading.paper_engine._load_security_data', fake_load)
+
+        ctx = Context(1000000)
+        ctx.current_dt = pd.Timestamp('2026-06-23')
+        ctx._engine = type('E', (), {'_stock_data': {}, '_stock_data_start': {}})()
+        dp = DataProxy()
+        ns = _create_api(ctx, dp, GlobalVars())
+
+        # 复刻 buy_stocks 调用顺序：先小窗(门控) 再大窗(check_buy_signal)
+        s1 = ns['history']('600519', 1)
+        assert len(s1) == 1
+        s70 = ns['history']('600519', 70)
+        # 修复前这里会是 ~42（被首次 80 天窗口截断）；修复后应为完整 70。
+        assert len(s70) == 70, f"expected 70 rows after window expansion, got {len(s70)}"
+
+        # attribute_history 同样受益
+        ah = ns['attribute_history']('600519', 65, fields=['close'])
+        assert len(ah) == 65
+
     def test_get_price_returns_dataframe(self):
         """get_price() returns a DataFrame (empty when no data)."""
         import pandas as pd

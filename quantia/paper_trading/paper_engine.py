@@ -169,6 +169,54 @@ def _cache_security_data(context, data_proxy, code, loaded_df):
         })
 
 
+def _record_loaded_start(context, code, start_date):
+    """记录某标的已加载 K线的窗口起始日，供懒加载判定是否需要扩窗。"""
+    eng = getattr(context, '_engine', None)
+    if eng is None:
+        return
+    if not hasattr(eng, '_stock_data_start') or eng._stock_data_start is None:
+        eng._stock_data_start = {}
+    try:
+        eng._stock_data_start[code] = pd.Timestamp(start_date).normalize()
+    except Exception:
+        pass
+
+
+def _lazy_load_history(context, data_proxy, code, count):
+    """按需懒加载 / 扩窗某标的 K线，确保 current_dt 之前可取到 >= count 根 bar。
+
+    返回缓存的 DataFrame（可能为 None）。
+
+    修复（zero-trade 根因）：旧实现仅在 `_stock_data` 无缓存时按"首个 history 调用
+    的 count"决定加载窗口 `max(count*3, 80)` 天并缓存；当策略在 buy_stocks 里先调
+    `history(code, 1)`（`code not in data` 门控）再在 check_buy_signal 里调
+    `history(code, 70)` 时，第二次会复用被截断到 ~80 天(~42 行)的短缓存，导致长周期
+    策略(ma_trend=60 / high_window=250)恒因 `len(close) < 周期` 而 return False →
+    永不下单（策略 29/103/105 模拟盘从无成交即源于此）。本函数在请求窗口比已加载窗口
+    更早时重新加载更深历史，从根上修复。
+    """
+    eng = getattr(context, '_engine', None)
+    if eng is None:
+        return None
+    desired_days = max(int(count) * 3, 80)
+    desired_start = (pd.Timestamp(context.current_dt) - pd.Timedelta(days=desired_days)).normalize()
+    if not hasattr(eng, '_stock_data_start') or eng._stock_data_start is None:
+        eng._stock_data_start = {}
+    df = eng._stock_data.get(code)
+    loaded_start = eng._stock_data_start.get(code)
+    # 需要(重新)加载：未缓存，或本次请求窗口比已加载窗口更早(需要更深历史)。
+    if df is None or loaded_start is None or pd.Timestamp(loaded_start) > desired_start:
+        start_date = desired_start.strftime('%Y-%m-%d')
+        end_date = pd.Timestamp(context.current_dt).strftime('%Y-%m-%d')
+        loaded_code, loaded_df = _load_security_data(code, start_date, end_date)
+        if loaded_df is not None:
+            code = loaded_code
+            _cache_security_data(context, data_proxy, code, loaded_df)
+            _record_loaded_start(context, code, desired_start)
+            df = loaded_df
+    return df
+
+
 def _date_text(value):
     if value is None:
         return None
@@ -436,6 +484,7 @@ def run_paper_trading_daily(paper_id, scheduled=False, now=None):
 
         context.current_dt = run_date_nph
         context._engine = type('E', (), {'g': g, 'context': context, '_stock_data': {},
+                                          '_stock_data_start': {},
                                           '_pending_orders': [],
                                           '_trade_records': [], '_log_messages': [],
                                           '_custom_records': {}})()
@@ -471,6 +520,7 @@ def run_paper_trading_daily(paper_id, scheduled=False, now=None):
             code, df = _load_security_data(code, pre_start, date_str)
             if df is not None:
                 context._engine._stock_data[code] = df
+                _record_loaded_start(context, code, pre_start)
                 data_proxy._set_history(code, df)
                 today_row = df[df['date'] == pd.Timestamp(date_str)]
                 if len(today_row) > 0:
@@ -551,6 +601,7 @@ def run_paper_trading_daily(paper_id, scheduled=False, now=None):
                 code, df = _load_security_data(code, pre_start, date_str)
                 if df is not None:
                     context._engine._stock_data[code] = df
+                    _record_loaded_start(context, code, pre_start)
                     data_proxy._set_history(code, df)
                     today_row = df[df['date'] == pd.Timestamp(date_str)]
                     if len(today_row) > 0:
@@ -1162,15 +1213,7 @@ def _create_api(context, data_proxy, g):
 
     def history(code, count, field='close'):
         code = _normalize_security_code(code)
-        df = context._engine._stock_data.get(code) if hasattr(context, '_engine') and context._engine else None
-        if df is None:
-            start_date = (pd.Timestamp(context.current_dt) - pd.Timedelta(days=max(int(count) * 3, 80))).strftime('%Y-%m-%d')
-            end_date = pd.Timestamp(context.current_dt).strftime('%Y-%m-%d')
-            loaded_code, loaded_df = _load_security_data(code, start_date, end_date)
-            if loaded_df is not None and hasattr(context, '_engine') and context._engine:
-                code = loaded_code
-                _cache_security_data(context, data_proxy, code, loaded_df)
-                df = loaded_df
+        df = _lazy_load_history(context, data_proxy, code, count)
         if df is None:
             return pd.Series(dtype=float)
         mask = df['date'] <= pd.Timestamp(context.current_dt)
@@ -1183,15 +1226,8 @@ def _create_api(context, data_proxy, g):
                           skip_paused=True, df=True, fq='pre'):
         """聚宽 attribute_history 兼容"""
         code = security.split('.')[0] if '.' in security else security
-        stock_df = context._engine._stock_data.get(code) if hasattr(context, '_engine') and context._engine else None
-        if stock_df is None:
-            start_date = (pd.Timestamp(context.current_dt) - pd.Timedelta(days=max(int(count) * 3, 80))).strftime('%Y-%m-%d')
-            end_date = pd.Timestamp(context.current_dt).strftime('%Y-%m-%d')
-            loaded_code, loaded_df = _load_security_data(code, start_date, end_date)
-            if loaded_df is not None and hasattr(context, '_engine') and context._engine:
-                code = loaded_code
-                _cache_security_data(context, data_proxy, code, loaded_df)
-                stock_df = loaded_df
+        code = _normalize_security_code(code)
+        stock_df = _lazy_load_history(context, data_proxy, code, count)
         if stock_df is None:
             cols = fields or ['close']
             return pd.DataFrame(columns=cols)
