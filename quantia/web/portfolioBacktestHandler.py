@@ -1942,6 +1942,7 @@ class GetStrategyCodeListHandler(webBase.BaseHandler, ABC):
     def get(self):
         try:
             _ensure_strategy_table()
+            _ensure_backtest_table()
             folder_id = self.get_argument('folder_id', None)
 
             # 获取文件夹列表
@@ -1962,9 +1963,15 @@ class GetStrategyCodeListHandler(webBase.BaseHandler, ABC):
                 where += ' AND folder_id = %s'
                 params.append(int(folder_id))
 
+            # 历史回测数量直接实时统计 cn_stock_backtest_portfolio 中该策略的真实记录数，
+            # 而不是读取 cn_stock_strategy_code.backtest_count 计数列。后者只增不减
+            # （删除回测记录不回退、失败回测不计数），会与「历史回测列表」实际记录数漂移。
             rows = mdb.executeSqlFetch(
                 f'SELECT id, name, description, category, folder_id, initial_cash, benchmark, '
-                f'compile_count, backtest_count, status, created_at, updated_at '
+                f'compile_count, '
+                f'(SELECT COUNT(*) FROM cn_stock_backtest_portfolio bp '
+                f'WHERE bp.strategy_id = cn_stock_strategy_code.id) AS backtest_count, '
+                f'status, created_at, updated_at '
                 f'FROM cn_stock_strategy_code {where} ORDER BY updated_at DESC', tuple(params))
             data = []
             if rows:
