@@ -992,6 +992,34 @@ class TestStrategyDataDailyJob(unittest.TestCase):
         self.assertIn(stock_key, extras)
         self.assertEqual(extras[stock_key]['p_change'], 3.5)
 
+    def test_load_strategy_kwargs_not_whitelisted(self):
+        """非白名单策略：直接返回空 dict，不查库。"""
+        m = self._mod()
+        self.assertEqual(
+            m._load_strategy_kwargs('cn_stock_strategy_unknown', lambda *a, **k: None), {})
+
+    @patch(f'{_mdb}.checkTableIsExist', return_value=False)
+    def test_load_strategy_kwargs_no_params_table(self, _):
+        """参数表不存在：返回空 dict，check() 用默认参数（零回归）。"""
+        m = self._mod()
+        from quantia.core.strategy import breakthrough_platform as bp
+        self.assertEqual(
+            m._load_strategy_kwargs('cn_stock_strategy_breakthrough_platform', bp.check), {})
+
+    @patch(f'{_mdb}.executeSqlFetch')
+    @patch(f'{_mdb}.checkTableIsExist', return_value=True)
+    def test_load_strategy_kwargs_filters_by_signature(self, mock_exist, mock_fetch):
+        """仅保留 check() 签名内的参数：标量与 JSON 字符串均解析，签名外的键被丢弃。"""
+        m = self._mod()
+        from quantia.core.strategy import breakthrough_platform as bp
+        mock_fetch.return_value = [
+            ('min_platform_days', 15),   # 标量，签名内
+            ('recent_days', '5'),         # JSON 字符串，签名内
+            ('foobar', 99),               # 签名外，应被丢弃
+        ]
+        kw = m._load_strategy_kwargs('cn_stock_strategy_breakthrough_platform', bp.check)
+        self.assertEqual(kw, {'min_platform_days': 15, 'recent_days': 5})
+
 
 # ============================================================================
 # 12. klinepattern_data_daily_job

@@ -192,6 +192,21 @@ def streaming_analysis(date):
     for strategy in strategies:
         _ensure_table_schema(strategy['name'], strategy['columns'])
 
+    # 4.1 加载各策略的 UI 可调参数（cn_strategy_params），按 check() 签名过滤后在选股时透传。
+    # 与每日选股任务 strategy_data_daily_job 一致：仅白名单策略、仅用户自定义过的参数会生效；
+    # 未配置时返回空 dict，check() 使用默认参数 —— 默认行为零回归。一次性加载，避免逐股查库。
+    strategy_kwargs_map = {}
+    try:
+        from quantia.job.strategy_data_daily_job import _load_strategy_kwargs
+        for strategy in strategies:
+            kw = _load_strategy_kwargs(strategy['name'], strategy['func'])
+            if kw:
+                strategy_kwargs_map[strategy['name']] = kw
+                logging.info(f"流式分析：策略 {strategy['name']} 接入自定义参数 {kw}")
+    except Exception:
+        logging.warning("流式分析：加载策略自定义参数失败，本次使用默认参数", exc_info=True)
+        strategy_kwargs_map = {}
+
     # 5. 准备数据库表（记录需要清理的表，延迟到首次写入时清理）
     # 采用延迟删除策略：不在开头一次性 DELETE 所有表的当日数据，
     # 而是在每个表首次写入前才 DELETE，避免中途崩溃导致数据丢失
@@ -254,10 +269,11 @@ def streaming_analysis(date):
         for strategy in strategies:
             try:
                 func = strategy['func']
+                s_kwargs = strategy_kwargs_map.get(strategy['name'], {})
                 if func.__name__ == 'check_high_tight' and stock_tops is not None:
-                    matched = func(stock, hist_data, date=date, istop=(code in stock_tops))
+                    matched = func(stock, hist_data, date=date, istop=(code in stock_tops), **s_kwargs)
                 else:
-                    matched = func(stock, hist_data, date=date)
+                    matched = func(stock, hist_data, date=date, **s_kwargs)
                 if matched:
                     result['strategies'][strategy['name']] = matched
             except Exception as e:
