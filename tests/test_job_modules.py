@@ -812,6 +812,27 @@ class TestStreamingAnalysisJob(unittest.TestCase):
         drop_calls = [c for c in mock_exec.call_args_list if 'DROP' in str(c)]
         self.assertGreater(len(drop_calls), 0)
 
+    @patch(f'{_mdb}.executeSql')
+    @patch(f'{_mdb}.checkTableIsExist', return_value=True)
+    def test_ensure_table_schema_invalidates_cache_after_drop(self, mock_exist, mock_exec):
+        """DROP TABLE 后必须清除 checkTableIsExist 缓存，否则重建时 cols_type=None
+        会把 date 列推断为 TEXT，导致 ADD PRIMARY KEY 失败（1170）。回归：backtrace_ma250。"""
+        m = self._mod()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = [('col1',)]  # 缺 col2/col3 → 触发 DROP
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_cur_ctx = MagicMock()
+        mock_cur_ctx.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cur_ctx.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cur_ctx
+
+        with patch(f'{_mdb}.get_connection', return_value=mock_conn), \
+             patch(f'{_mdb}.invalidate_table_exists_cache') as mock_inv:
+            m._ensure_table_schema('t', {'col1': 'INT', 'col2': 'FLOAT', 'col3': 'VARCHAR'})
+        mock_inv.assert_called_once_with('t')
+
     def test_flush_results_empty(self):
         """Empty data → no DB writes."""
         m = self._mod()
@@ -893,6 +914,39 @@ class TestStreamingAnalysisJob(unittest.TestCase):
         """缓存覆盖目标交易日的股票正常参与策略选股（零回归）。"""
         results = self._run_streaming_single('2026-06-22')
         self.assertEqual(len(results.get('cn_stock_strategy_fake', [])), 1)
+
+
+# ============================================================================
+# 9b. database 表存在缓存失效（回归：backtrace_ma250 TEXT date 主键失败）
+# ============================================================================
+class TestDatabaseTableExistsCache(unittest.TestCase):
+    """invalidate_table_exists_cache 必须能清除 checkTableIsExist 的 TTL 缓存。"""
+
+    def _mod(self):
+        import quantia.lib.database as mdb
+        return mdb
+
+    def test_invalidate_single_table(self):
+        mdb = self._mod()
+        if mdb._TABLE_EXISTS_TTL <= 0:
+            self.skipTest('表存在缓存被禁用')
+        mdb._cache_table_exists('t_keep', True)
+        mdb._cache_table_exists('t_drop', True)
+        self.assertTrue(mdb._get_cached_table_exists('t_drop'))
+        mdb.invalidate_table_exists_cache('t_drop')
+        # 目标表缓存被清除（返回 None 触发重新查询），其它表不受影响
+        self.assertIsNone(mdb._get_cached_table_exists('t_drop'))
+        self.assertTrue(mdb._get_cached_table_exists('t_keep'))
+
+    def test_invalidate_all(self):
+        mdb = self._mod()
+        if mdb._TABLE_EXISTS_TTL <= 0:
+            self.skipTest('表存在缓存被禁用')
+        mdb._cache_table_exists('t_a', True)
+        mdb._cache_table_exists('t_b', False)
+        mdb.invalidate_table_exists_cache(None)
+        self.assertIsNone(mdb._get_cached_table_exists('t_a'))
+        self.assertIsNone(mdb._get_cached_table_exists('t_b'))
 
 
 # ============================================================================

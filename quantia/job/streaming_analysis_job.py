@@ -405,6 +405,7 @@ def _ensure_table_schema(table_name, expected_columns):
                 f"(如 {list(missing)[:5]})，将删除重建"
             )
             mdb.executeSql(f"DROP TABLE `{table_name}`")
+            mdb.invalidate_table_exists_cache(table_name)
             logging.info(f"已删除旧表 {table_name}，将在写入时自动重建")
     except Exception as e:
         mdb._invalidate_shared_conn()
@@ -444,9 +445,10 @@ def _write_indicator_results(results, date_str, tables_cleaned):
     """写入指标计算结果"""
     table_name = tbs.TABLE_CN_STOCK_INDICATORS['name']
     _clean_table_if_needed(table_name, date_str, tables_cleaned)
-    cols_type = None
-    if not mdb.checkTableIsExist(table_name):
-        cols_type = tbs.get_field_types(tbs.TABLE_CN_STOCK_INDICATORS['columns'])
+    # 始终提供 cols_type：dtype 仅在 CREATE TABLE 时生效，append 时被忽略，
+    # 但能保证表被重建（如 schema 自愈 DROP）时 date 列建为 DATE 而非 TEXT，
+    # 避免后续 ADD PRIMARY KEY 因 TEXT 主键报错 1170。
+    cols_type = tbs.get_field_types(tbs.TABLE_CN_STOCK_INDICATORS['columns'])
 
     dataKey = pd.DataFrame(results.keys())
     _columns = tuple(tbs.TABLE_CN_STOCK_FOREIGN_KEY['columns'])
@@ -465,9 +467,8 @@ def _write_kline_results(results, date_str, tables_cleaned):
     """写入K线形态识别结果"""
     table_name = tbs.TABLE_CN_STOCK_KLINE_PATTERN['name']
     _clean_table_if_needed(table_name, date_str, tables_cleaned)
-    cols_type = None
-    if not mdb.checkTableIsExist(table_name):
-        cols_type = tbs.get_field_types(tbs.TABLE_CN_STOCK_KLINE_PATTERN['columns'])
+    # 始终提供 cols_type（理由同 _write_indicator_results）。
+    cols_type = tbs.get_field_types(tbs.TABLE_CN_STOCK_KLINE_PATTERN['columns'])
 
     dataKey = pd.DataFrame(results.keys())
     _columns = tuple(tbs.TABLE_CN_STOCK_FOREIGN_KEY['columns'])
@@ -490,9 +491,8 @@ def _write_strategy_results(matched_stocks, table_name, date_str, tables_cleaned
         if s['name'] == table_name:
             strategy_def = s
             break
-    cols_type = None
-    if not mdb.checkTableIsExist(table_name):
-        cols_type = tbs.get_field_types(strategy_def['columns'] if strategy_def else tbs.TABLE_CN_STOCK_STRATEGIES[0]['columns'])
+    # 始终提供 cols_type（理由同 _write_indicator_results）。
+    cols_type = tbs.get_field_types(strategy_def['columns'] if strategy_def else tbs.TABLE_CN_STOCK_STRATEGIES[0]['columns'])
 
     data = pd.DataFrame(matched_stocks)
     columns = tuple(tbs.TABLE_CN_STOCK_FOREIGN_KEY['columns'])

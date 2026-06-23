@@ -263,6 +263,23 @@ def _get_cached_table_exists(table_name):
         return bool(exists)
 
 
+def invalidate_table_exists_cache(table_name=None):
+    """清除"表是否存在"的 TTL 缓存。
+
+    在 DROP/CREATE/RENAME TABLE 等 DDL 之后必须调用，否则 checkTableIsExist
+    会返回过期的缓存值，导致：
+      - DELETE/写入命中"已不存在"的表（1146）；
+      - 调用方误判表已存在而跳过 cols_type 计算，使 to_sql 把 date 列推断为
+        TEXT，后续 ADD PRIMARY KEY 失败（1170）。
+    传入 None 时清空整个缓存。
+    """
+    with _table_exists_lock:
+        if table_name is None:
+            _table_exists_cache.clear()
+        else:
+            _table_exists_cache.pop(str(table_name), None)
+
+
 # 判断是否为可重试的数据库瞬态错误（死锁、锁超时、连接异常等）
 def _is_retryable_error(e):
     # 特殊异常类型：连接损坏导致的非数据库异常也应重试
