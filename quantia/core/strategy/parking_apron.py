@@ -10,7 +10,7 @@ __date__ = '2026/02/14'
 
 
 # 停机坪
-# 1.最近 threshold 日有涨幅大于 limit_up_pct%，且必须是放量上涨
+# 1.最近 threshold 日有涨幅大于 limit_up_pct%，且该涨停日收盘创近 threshold 日新高（突破确认，非放量判定）
 # 2.紧接的下个交易日必须高开，收盘价必须上涨，且与开盘价偏差不超过 max_open_close_ratio%
 # 3.接下 consolidation_days-1 个交易日同样满足上述条件，且每天涨跌幅在 ±max_daily_change% 间
 #

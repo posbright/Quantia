@@ -849,6 +849,51 @@ class TestStreamingAnalysisJob(unittest.TestCase):
         self._mod().main()
         self.assertEqual(mock_rwa.call_count, 2)
 
+    def _run_streaming_single(self, cache_max_date):
+        """以单只股票跑一遍 streaming_analysis，返回 _flush_results 收到的 strategy_results。
+
+        通过 cache_max_date 控制缓存新鲜度：早于目标日 → stale。
+        策略列表被替换成单个永远命中的假策略，便于观察是否被 stale 守卫跳过。
+        """
+        import quantia.job.streaming_analysis_job as m
+        import quantia.core.tablestructure as tbs
+
+        target = datetime.datetime(2026, 6, 22)
+
+        def fake_check(stock, hist, date=None):
+            return True
+
+        fake_strategy = {'name': 'cn_stock_strategy_fake', 'func': fake_check, 'columns': {}}
+        spot = pd.DataFrame({'date': ['2026-06-22'], 'code': ['603056'], 'name': ['T']})
+        hist = pd.DataFrame({'date': pd.to_datetime([cache_max_date]), 'close': [10.0]})
+
+        captured = {}
+
+        def capture_flush(ind, kl, strat, extras, ds, strs, cleaned):
+            captured['strategy_results'] = {k: list(v) for k, v in strat.items()}
+
+        with patch.object(m.tbs, 'TABLE_CN_STOCK_STRATEGIES', [fake_strategy]), \
+             patch.object(m, '_get_stock_list_from_db', return_value=spot), \
+             patch.object(m, '_get_stock_tops_from_db', return_value=None), \
+             patch.object(m, '_ensure_table_schema'), \
+             patch.object(m, '_flush_results', side_effect=capture_flush), \
+             patch.object(m.stf, 'read_stock_hist_from_cache', return_value=hist), \
+             patch.object(m.idr, 'get_indicator', return_value=None), \
+             patch.object(m.kpr, 'get_pattern_recognition', return_value=None), \
+             patch('quantia.job.strategy_data_daily_job._load_strategy_kwargs', return_value={}):
+            m.streaming_analysis(target)
+        return captured.get('strategy_results', {})
+
+    def test_streaming_skips_strategy_for_stale_stock(self):
+        """停牌/缓存陈旧（无目标日K线）的股票不应被写入任何策略选股结果。"""
+        results = self._run_streaming_single('2026-01-20')
+        self.assertEqual(results.get('cn_stock_strategy_fake'), [])
+
+    def test_streaming_keeps_strategy_for_fresh_stock(self):
+        """缓存覆盖目标交易日的股票正常参与策略选股（零回归）。"""
+        results = self._run_streaming_single('2026-06-22')
+        self.assertEqual(len(results.get('cn_stock_strategy_fake', [])), 1)
+
 
 # ============================================================================
 # 10. indicators_data_daily_job

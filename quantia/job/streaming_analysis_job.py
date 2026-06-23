@@ -266,18 +266,23 @@ def streaming_analysis(date):
             logging.info(f"K线形态识别异常：{code} - {e}")
 
         # --- 策略检测 ---
-        for strategy in strategies:
-            try:
-                func = strategy['func']
-                s_kwargs = strategy_kwargs_map.get(strategy['name'], {})
-                if func.__name__ == 'check_high_tight' and stock_tops is not None:
-                    matched = func(stock, hist_data, date=date, istop=(code in stock_tops), **s_kwargs)
-                else:
-                    matched = func(stock, hist_data, date=date, **s_kwargs)
-                if matched:
-                    result['strategies'][strategy['name']] = matched
-            except Exception as e:
-                logging.info(f"策略检测异常：{code} {strategy['name']} - {e}")
+        # 停牌/缓存陈旧的股票（无目标交易日 K 线）不参与当日策略选股：否则会把数月前的
+        # 历史形态当作"当日选中"反复写入。例如 603056 德邦股份停牌（volume=0、缓存停在
+        # 2026-01-20），其 1 月的停机坪形态会被每个交易日重新选中并标注为当日。
+        # 指标/K线形态仍基于最后可用 K 线计算（详情页展示用），仅策略选股跳过。
+        if not result['stale']:
+            for strategy in strategies:
+                try:
+                    func = strategy['func']
+                    s_kwargs = strategy_kwargs_map.get(strategy['name'], {})
+                    if func.__name__ == 'check_high_tight' and stock_tops is not None:
+                        matched = func(stock, hist_data, date=date, istop=(code in stock_tops), **s_kwargs)
+                    else:
+                        matched = func(stock, hist_data, date=date, **s_kwargs)
+                    if matched:
+                        result['strategies'][strategy['name']] = matched
+                except Exception as e:
+                    logging.info(f"策略检测异常：{code} {strategy['name']} - {e}")
 
         # 显式释放大 DataFrame，降低 GC 延迟回收的影响
         del hist_data
