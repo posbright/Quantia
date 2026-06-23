@@ -251,6 +251,15 @@ class FundamentalDataProvider:
         # in_ 限定股票池查询或 get_all_securities）若加载会把全市场 K 线读入
         # 内存，造成 OOM。因此轻量模式跳过缓存，仅拉取股票信息与候选代码。
         if load_klines and self._load_fundamental_cache():
+            # 缓存命中。但若其区间未覆盖当前回测区间，_load_fundamental_cache 会清空
+            # price_lookup（stock_info/candidate_codes 与区间无关，仍可复用）。此时
+            # 必须用已加载的候选代码就地重建 price_lookup，否则全市场（无 in_ 过滤）
+            # 策略的 get_fundamentals 永远取不到当日价格 → 选股池恒为空 → 全程 0 笔
+            # 交易。重建后顺带回写缓存，使其覆盖更宽区间。
+            if not self._price_lookup and self._candidate_codes:
+                logging.info("[基本面] 缓存区间不覆盖，按候选代码重建 price_lookup")
+                self._batch_load_klines()
+                self._save_fundamental_cache()
             self._klines_loaded = True
             return
 
