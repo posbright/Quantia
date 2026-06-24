@@ -26,9 +26,21 @@
 """
 
 import os
+import warnings
 
 __author__ = 'Quantia'
 __date__ = '2026/03/12'
+
+# ── 抑制第三方库的 pkg_resources 弃用噪声 ──
+# akshare 依赖的 akracer/py_mini_racer 在 import 时执行 `import pkg_resources`，
+# setuptools>=81 会对每个子进程打印 UserWarning("pkg_resources is deprecated as an API")。
+# 这是无害的第三方弃用提示（非本项目代码），但会污染 analysis/fetch 作业日志。
+# 本模块经 quantia/__init__.py 在任何 akshare 导入之前加载，故在此处注册过滤器即可全进程生效。
+warnings.filterwarnings(
+    'ignore',
+    message=r'pkg_resources is deprecated as an API',
+    category=UserWarning,
+)
 
 # ── .env 自动加载 ──
 # 向上查找到项目根目录（quantia/lib/envconfig.py → 项目根）
