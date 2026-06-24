@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS `{PATENTS_TABLE}` (
     `key_tech_desc` TEXT COMMENT '核心技术描述',
     `competitive_position` VARCHAR(200) DEFAULT NULL COMMENT '行业专利排名描述',
 
-    `data_source` ENUM('annual_report','google_patents','mixed') DEFAULT 'annual_report'
+    `data_source` ENUM('annual_report','google_patents','mixed','announcement') DEFAULT 'annual_report'
         COMMENT '数据来源',
     `source_detail` JSON DEFAULT NULL COMMENT '来源明细',
     `confidence_score` TINYINT UNSIGNED DEFAULT 80 COMMENT '数据可信度(0-100)',
@@ -99,7 +99,7 @@ _PATENT_COLUMN_DEFS: List[Tuple[str, str]] = [
     ('key_tech_desc', "TEXT COMMENT '核心技术描述'"),
     ('competitive_position', "VARCHAR(200) DEFAULT NULL COMMENT '行业专利排名描述'"),
     ('data_source',
-     "ENUM('annual_report','google_patents','mixed') DEFAULT 'annual_report' COMMENT '数据来源'"),
+     "ENUM('annual_report','google_patents','mixed','announcement') DEFAULT 'annual_report' COMMENT '数据来源'"),
     ('source_detail', "JSON DEFAULT NULL COMMENT '来源明细'"),
     ('confidence_score', "TINYINT UNSIGNED DEFAULT 80 COMMENT '数据可信度(0-100)'"),
     ('created_at', "DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '首次入库时间'"),
@@ -120,23 +120,37 @@ def reconcile_patents_columns() -> None:
     import quantia.lib.database as mdb  # 延迟导入
     try:
         rows = mdb.executeSqlFetch(
-            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+            "SELECT COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
             "WHERE TABLE_NAME=%s AND TABLE_SCHEMA=DATABASE()",
             (PATENTS_TABLE,),
         ) or []
     except Exception as exc:
         _logger.warning('[patent_analytics] 读取列信息失败, 跳过补齐: %s', exc)
         return
-    existing = {r[0] for r in rows}
+    existing = {r[0]: (r[1] or '') for r in rows}
+    column_ddl = dict(_PATENT_COLUMN_DEFS)
     missing = [(name, ddl) for name, ddl in _PATENT_COLUMN_DEFS if name not in existing]
-    if not missing:
-        return
     for name, ddl in missing:
         try:
             mdb.executeSql(f"ALTER TABLE `{PATENTS_TABLE}` ADD COLUMN `{name}` {ddl}")
             _logger.info('[patent_analytics] 补齐缺失列 %s.%s', PATENTS_TABLE, name)
         except Exception as exc:
             _logger.warning('[patent_analytics] 补齐列 %s 失败: %s', name, exc)
+
+    # 幂等修正 data_source ENUM：历史表创建时 ENUM 仅含 annual_report/google_patents/
+    # mixed，而公告聚合 (aggregate_patent_data) 写入 data_source='announcement'，会触发
+    # MySQL 1265 "Data truncated for column 'data_source'" 致整批写入失败。仅当该列已存在
+    # 且当前类型未包含 'announcement' 时执行 ALTER MODIFY 扩展枚举（幂等、不丢数据）。
+    ds_type = existing.get('data_source', '')
+    if ds_type and 'announcement' not in ds_type:
+        try:
+            mdb.executeSql(
+                f"ALTER TABLE `{PATENTS_TABLE}` MODIFY COLUMN `data_source` "
+                f"{column_ddl['data_source']}")
+            _logger.info('[patent_analytics] 扩展 %s.data_source 枚举含 announcement',
+                         PATENTS_TABLE)
+        except Exception as exc:
+            _logger.warning('[patent_analytics] 扩展 data_source 枚举失败: %s', exc)
 
 
 def ensure_patents_table() -> None:
