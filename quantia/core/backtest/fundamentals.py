@@ -15,6 +15,7 @@
 
 import logging
 import os
+import sys
 import time
 import pickle
 import pandas as pd
@@ -27,10 +28,13 @@ __date__ = '2026/03/16'
 _CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                           'cache', 'fundamental')
 
-# 基本面查找缓存文件名。v4：price_lookup/volume_lookup 由“全历史”改为“仅回测区间”，
-# 并新增 cache_start/cache_end 区间元数据。版本号自 v3 提升，旧格式缓存（全历史、无区间
-# 元数据）会被自动忽略并按新格式重建，避免加载旧全量缓存时的瞬时高内存峰值。
-_FUND_CACHE_FILE = 'fundamental_v4.pickle'
+# 基本面查找缓存文件名。
+# v4：price_lookup/volume_lookup 由“全历史”改为“仅回测区间”，并新增 cache_start/cache_end。
+# v5：进一步抑制全市场动态基本面池策略(~4400 候选)的常驻内存 OOM——(1) price_lookup 的
+#     日期键 sys.intern 化（同一交易日跨股票共享一个 str 对象，pickle 亦按 identity memoize，
+#     加载后仍共享）；(2) volume_lookup 不再随缓存持久化，改为 is_paused 回退路径按需惰性
+#     构建。旧 v4 缓存（含全市场 eager volume、未 intern 的重复日期键）会被自动忽略并重建。
+_FUND_CACHE_FILE = 'fundamental_v5.pickle'
 
 # 基本面数据库查询超时（毫秒）：避免慢查询阻塞回测线程。
 _FUND_DB_QUERY_TIMEOUT_MS = max(int(os.getenv('QUANTIA_FUND_DB_QUERY_TIMEOUT_MS', '8000')), 0)
@@ -554,18 +558,23 @@ class FundamentalDataProvider:
             logging.info(f"[基本面] K线缓存加载完成: {loaded}/{total} 只")
 
     def _build_price_lookup(self, code, df):
-        """构建价格和成交量快速查找字典。
+        """构建价格快速查找字典（仅 close；volume 改为按需惰性加载）。
 
-        _price_lookup / _volume_lookup 仅在回测各调仓/交易日（区间内）被查询
-        （用于市值估算、pe 估算、停牌回退判断），不需要回测区间外的历史。
-        因此仅保留 [回测开始, 回测结束] 区间内的日期，可将整张表的内存占用从
-        “全历史×全市场”（约 1GB+）降到“区间×全市场”（数十 MB），从根因上抑制
-        全市场基本面筛选的常驻内存峰值。区间信息由引擎 run() 写入。
+        _price_lookup 仅在回测各调仓/交易日（区间内）被查询（市值/PE 估算），
+        不需要回测区间外的历史，因此仅保留 [回测开始, 回测结束] 区间内日期。
+
+        两项关键内存优化（全市场动态基本面池策略 ~4400 候选 × 数百交易日，实测
+        dict-of-dicts 达 ~700MB，会压垮 1.6GB 生产机导致 OOM 卡死）：
+          1) 日期键 sys.intern 化：同一交易日在 ~4400 只股票间共享同一个 str 对象，
+             把 ~300 万个重复日期字符串收敛为 ~700 个（约省 188MB）。
+          2) volume 不再随价格 eager 构建：_volume_lookup 仅供 is_paused 的回退路径
+             使用，且路径一已能按需懒加载单只股票判停牌，故 volume 改为
+             _ensure_volume_loaded 按访问到的少量股票惰性构建（约省 350MB）。
+        区间信息由引擎 run() 写入。
         """
         bt_start = getattr(self._engine, '_bt_start_str', None) if self._engine else None
         bt_end = getattr(self._engine, '_bt_end_str', None) if self._engine else None
         prices = {}
-        volumes = {}
         for _, row in df.iterrows():
             d = row['date']
             if hasattr(d, 'strftime'):
@@ -575,9 +584,35 @@ class FundamentalDataProvider:
             # 仅保留回测区间内日期（区间未知时退回全保留，保持向后兼容）
             if bt_start and bt_end and not (bt_start <= d_str <= bt_end):
                 continue
-            prices[d_str] = float(row['close'])
-            volumes[d_str] = int(row.get('volume', 0))
+            # intern：跨股票共享同一日期 str 对象，消除 ~300 万重复键的内存放大
+            prices[sys.intern(d_str)] = float(row['close'])
         self._price_lookup[code] = prices
+
+    def _ensure_volume_loaded(self, code):
+        """按需惰性构建单只股票的 _volume_lookup（区间内 date_str -> volume）。
+
+        替代旧的“随 _price_lookup eager 构建全市场 volume”逻辑：volume 仅被
+        is_paused 的回退路径（路径二）使用，而路径一已能按需加载单只股票判停牌，
+        因此绝大多数候选股根本不会触达路径二。改为惰性构建后，仅真正被查询停牌
+        且路径一未命中的少量股票才会建表，避免 ~4400 候选 × 数百日 ≈ 350MB 常驻。
+        """
+        if code in self._volume_lookup:
+            return
+        from .data_feed import _load_from_cache
+        bt_start = getattr(self._engine, '_bt_start_str', None) if self._engine else None
+        bt_end = getattr(self._engine, '_bt_end_str', None) if self._engine else None
+        volumes = {}
+        df = _load_from_cache(code)
+        if df is not None and len(df) > 0:
+            for _, row in df.iterrows():
+                d = row['date']
+                if hasattr(d, 'strftime'):
+                    d_str = d.strftime('%Y-%m-%d')
+                else:
+                    d_str = str(d)[:10]
+                if bt_start and bt_end and not (bt_start <= d_str <= bt_end):
+                    continue
+                volumes[sys.intern(d_str)] = int(row.get('volume', 0))
         self._volume_lookup[code] = volumes
 
     def get_fundamentals(self, q, date=None):
@@ -976,10 +1011,11 @@ class FundamentalDataProvider:
                 vol = subset['volume'].iloc[-1]
                 return bool(pd.isna(vol) or vol == 0)
 
-        # 路径二：回退到基本面 _volume_lookup（仅当策略使用过基本面 API 时才有数据）
+        # 路径二：回退到基本面 _volume_lookup（按需惰性构建，避免全市场 eager OOM）
         date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)[:10]
+        self._ensure_volume_loaded(code)
         volumes = self._volume_lookup.get(code)
-        if volumes is None:
+        if not volumes:
             return True  # 无数据 = 停牌
         vol = volumes.get(date_str, -1)
         if vol < 0:
@@ -1015,11 +1051,12 @@ class FundamentalDataProvider:
                 covered = (cache_start <= bt_start and bt_end <= cache_end)
             if covered:
                 self._price_lookup = data['price_lookup']
-                self._volume_lookup = data['volume_lookup']
             else:
                 self._price_lookup = {}
-                self._volume_lookup = {}
                 logging.info("[基本面] 缓存区间未覆盖当前回测区间，price_lookup 将按需重建")
+            # volume_lookup 不再随缓存持久化（旧格式会载入全市场 ~350MB 导致 OOM），
+            # 统一置空，由 is_paused 回退路径 _ensure_volume_loaded 按需惰性构建。
+            self._volume_lookup = {}
             logging.info(f"[基本面] 从缓存加载: {len(self._candidate_codes)} 只候选股票，"
                          f"{len(self._price_lookup)} 只有K线数据")
             return True
@@ -1036,9 +1073,9 @@ class FundamentalDataProvider:
             data = {
                 'stock_info': self._stock_info,
                 'price_lookup': self._price_lookup,
-                'volume_lookup': self._volume_lookup,
                 'candidate_codes': self._candidate_codes,
                 # 记录本次构建 price_lookup 所用的回测区间，供加载时判断覆盖关系
+                # （volume_lookup 不再持久化，改为运行时按需惰性构建）
                 'cache_start': getattr(self._engine, '_bt_start_str', None) if self._engine else None,
                 'cache_end': getattr(self._engine, '_bt_end_str', None) if self._engine else None,
             }
