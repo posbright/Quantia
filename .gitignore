@@ -189,3 +189,9 @@ build_done.txt
 # Frontend visual regression: actual snapshots are local only, baseline is committed
 quantia/fontWeb/tests/visual/actual/
 quantia/fontWeb/tests/visual/diff/
+
+# Local virtualenv / large binaries / data dumps (untracked 2026-06-25)
+quantia_env/
+.qoder/
+stock_v8/
+tools/fund/nav_dump*.csv.gz
