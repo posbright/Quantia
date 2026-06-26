@@ -148,6 +148,67 @@ def _load_security_data(code, start_date=None, end_date=None):
     return clean, load_stock_data(clean, start_date, end_date)
 
 
+def _apply_ex_rights_to_positions(context, last_run_date, date_str):
+    """除权除息(送转/分红)发生时，按除权因子重锚持仓成本价 avg_cost。
+
+    背景（修复"买入价远高于卖出价的假亏损"）：
+      模拟盘的估值与 K 线统一使用前复权(qfq)价。前复权序列在每次除权后会把所有
+      历史价整体下移、重锚到最新基准；但持仓 avg_cost 是建仓时记录的"旧基准绝对价"，
+      不会随之调整。一旦持仓股在持有期内除权——例如 605117 德业股份 2026-05-22 高送转
+      (除权前 168.65 → 除权参考价 119.18，因子约 0.707)——avg_cost 仍停留在除权前
+      水平(如 159.29)，而当日估值/卖出用的是除权后前复权价(约 112~116)，两者基准不一致，
+      于是凭空产生约等于除权幅度的"假亏损"(本例 -24.7%，实际约 +3%)。
+
+    检测方式（以 cn_stock_spot 的交易所昨收价为权威口径，稳定且与查询窗口无关）：
+      交易所在除权日上报的"昨收价"(pre_close_price)其实是"除权参考价"，会与上一交易日的
+      真实收盘价(new_price)不相等；二者之比即当日除权因子 f(<1)。扫描上次运行日到当日之间
+      的每个交易日，把所有 |f-1|>0.5% 的除权因子累乘(0.5% 阈值用于滤除昨收价的零星数据
+      抖动，同时保留真实的送转/分红)，再令 avg_cost *= 累计因子，把成本基准对齐到当前
+      前复权基准。股数保持不变(与前复权"价格内含复权收益"的约定一致，保证收益率正确)。
+
+    仅作用于"自上次运行即已持有"的标的(从 state_json 恢复而来)：今日新开仓在本步骤之后
+      才建立；且每日运行都会增量重锚，使 avg_cost 始终停留在最新前复权基准上。
+    """
+    if last_run_date is None:
+        return
+    try:
+        start = pd.Timestamp(last_run_date).strftime('%Y-%m-%d')
+    except Exception:
+        return
+    positions = getattr(context.portfolio, 'positions', None)
+    if not positions:
+        return
+    import quantia.lib.database as mdb
+    for code, pos in list(positions.items()):
+        if pos.amount <= 0 or pos.avg_cost <= 0:
+            continue
+        try:
+            rows = mdb.executeSqlFetch(
+                'SELECT date, new_price, pre_close_price FROM cn_stock_spot '
+                'WHERE code=%s AND date >= %s AND date <= %s ORDER BY date',
+                (code, start, date_str))
+        except Exception:
+            continue
+        if not rows or len(rows) < 2:
+            continue
+        factor = 1.0
+        for i in range(1, len(rows)):
+            prev_close = rows[i - 1][1]
+            pre_close = rows[i][2]
+            if prev_close and pre_close and float(prev_close) > 0:
+                f = float(pre_close) / float(prev_close)
+                # 偏离 >0.5% 视为发生过除权除息(真实送转/分红)；普通日 pre_close==上一日
+                # 收盘价、f≈1，零星 <0.5% 的数据抖动被阈值滤除。
+                if abs(f - 1.0) > 0.005:
+                    factor *= f
+        if abs(factor - 1.0) > 1e-6:
+            old_cost = pos.avg_cost
+            pos.avg_cost = round(old_cost * factor, 4)
+            logging.info(
+                '[模拟交易] 除权重锚 %s: 因子 %.4f, avg_cost %.3f -> %.3f'
+                % (code, factor, old_cost, pos.avg_cost))
+
+
 def _cache_security_data(context, data_proxy, code, loaded_df):
     """Cache dynamically loaded K-line data and update the current-day bar."""
     if loaded_df is None or not hasattr(context, '_engine') or not context._engine:
@@ -481,6 +542,9 @@ def run_paper_trading_daily(paper_id, scheduled=False, now=None):
             restore_portfolio(context, state_json, g)
             logging.info(f"[模拟交易] 恢复状态: 现金={context.portfolio.available_cash:.2f}, "
                          f"持仓={len(context.portfolio.positions)}只")
+            # 除权除息重锚：持仓股在上次运行到今日之间若发生送转/分红，按除权因子
+            # 校正 avg_cost，避免成本基准与前复权估值/卖出价错位产生"假亏损"。
+            _apply_ex_rights_to_positions(context, last_run_date, date_str)
 
         context.current_dt = run_date_nph
         context._engine = type('E', (), {'g': g, 'context': context, '_stock_data': {},

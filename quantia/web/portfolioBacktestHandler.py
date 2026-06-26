@@ -1963,6 +1963,22 @@ class GetStrategyCodeListHandler(webBase.BaseHandler, ABC):
                 where += ' AND folder_id = %s'
                 params.append(int(folder_id))
 
+            # 模拟交易关联：统计每个策略在 cn_stock_paper_trading 中的实例数与运行中实例数，
+            # 供前端列表展示「是否关联模拟交易」。表可能尚未建立（部分环境未启用模拟交易），
+            # 故先做存在性检查，失败时降级为「无关联」，避免列表整体报错。
+            paper_map = {}
+            try:
+                if mdb.checkTableIsExist('cn_stock_paper_trading'):
+                    paper_rows = mdb.executeSqlFetch(
+                        "SELECT strategy_id, COUNT(*), "
+                        "SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) "
+                        "FROM cn_stock_paper_trading GROUP BY strategy_id")
+                    if paper_rows:
+                        for pr in paper_rows:
+                            paper_map[pr[0]] = (int(pr[1] or 0), int(pr[2] or 0))
+            except Exception:
+                paper_map = {}
+
             # 历史回测数量直接实时统计 cn_stock_backtest_portfolio 中该策略的真实记录数，
             # 而不是读取 cn_stock_strategy_code.backtest_count 计数列。后者只增不减
             # （删除回测记录不回退、失败回测不计数），会与「历史回测列表」实际记录数漂移。
@@ -1976,6 +1992,7 @@ class GetStrategyCodeListHandler(webBase.BaseHandler, ABC):
             data = []
             if rows:
                 for r in rows:
+                    paper_count, paper_running = paper_map.get(r[0], (0, 0))
                     data.append({
                         'id': r[0], 'name': r[1], 'description': r[2] or '',
                         'category': r[3] or 'stock',
@@ -1987,6 +2004,9 @@ class GetStrategyCodeListHandler(webBase.BaseHandler, ABC):
                         'status': r[9],
                         'created_at': r[10].strftime('%Y-%m-%d %H:%M:%S') if r[10] else '',
                         'updated_at': r[11].strftime('%Y-%m-%d %H:%M:%S') if r[11] else '',
+                        'paper_count': paper_count,
+                        'paper_running': paper_running,
+                        'has_paper': paper_count > 0,
                         'type': 'strategy',
                     })
             self.write(json.dumps({
