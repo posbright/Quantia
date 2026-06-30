@@ -17,8 +17,19 @@ init_env() {
         set -a; source "$PROJECT_ROOT/.env"; set +a
     fi
 
-    # Python 解释器（可通过 .env 的 PYTHON_BIN 覆盖）
-    export PYTHON_BIN="${PYTHON_BIN:-python3}"
+    # Python 解释器选择（优先级：显式 PYTHON_BIN(env/.env) > 项目本地 venv > 系统 python3）
+    # 跨机零配置：开发机用 .venv、服务器用 quantia_env 都能自动命中，避免误用缺依赖的系统 python。
+    # 显式设置 PYTHON_BIN（环境变量或 .env）时始终优先，不被自动探测覆盖。
+    if [ -z "${PYTHON_BIN:-}" ]; then
+        if [ -x "$PROJECT_ROOT/.venv/bin/python" ]; then
+            PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+        elif [ -x "$PROJECT_ROOT/quantia_env/bin/python" ]; then
+            PYTHON_BIN="$PROJECT_ROOT/quantia_env/bin/python"
+        else
+            PYTHON_BIN="python3"
+        fi
+    fi
+    export PYTHON_BIN
 
     # 日志目录
     LOG_DIR=$PROJECT_ROOT/quantia/log
