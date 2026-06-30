@@ -17,14 +17,15 @@ init_env() {
         set -a; source "$PROJECT_ROOT/.env"; set +a
     fi
 
-    # Python 解释器选择（优先级：显式 PYTHON_BIN(env/.env) > 项目本地 venv > 系统 python3）
-    # 跨机零配置：开发机用 .venv、服务器用 quantia_env 都能自动命中，避免误用缺依赖的系统 python。
-    # 显式设置 PYTHON_BIN（环境变量或 .env）时始终优先，不被自动探测覆盖。
+    # Python 解释器选择（优先级：显式 PYTHON_BIN(env/.env) > 项目本地 .venv > 系统 python3）
+    # 跨机零配置：新机器在项目根创建 .venv 即自动命中，无需改脚本。
+    # 显式设置 PYTHON_BIN（环境变量或 .env）始终优先。
+    # 注意：刻意不自动探测 quantia_env —— 现网 web_service.py 以系统 python3 运行（见 bin/run_web.sh），
+    #       cron 默认沿用 python3 与之保持一致，避免 cron 偷偷切到可能与 web 运行时不同步的 venv。
+    #       若要让 cron 用 quantia_env 或其它命名的 venv，请在 .env 显式设置 PYTHON_BIN。
     if [ -z "${PYTHON_BIN:-}" ]; then
         if [ -x "$PROJECT_ROOT/.venv/bin/python" ]; then
             PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
-        elif [ -x "$PROJECT_ROOT/quantia_env/bin/python" ]; then
-            PYTHON_BIN="$PROJECT_ROOT/quantia_env/bin/python"
         else
             PYTHON_BIN="python3"
         fi

@@ -632,7 +632,7 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 | `QUANTIA_NO_SERVICE_STOP` | 0 | 设为 `1` 禁用自动停止/恢复服务 |
 | `QUANTIA_SETTLEMENT_HOUR` | 18 | API 数据结算时间（小时） |
 | `QUANTIA_FETCH_TIMEOUT` | 7200 | `run_fetch` 超时秒数（默认 2 小时） |
-| `PYTHON_BIN` | 自动探测 | Python 解释器路径（**所有** cron 脚本统一使用）。不设时 `init_env` 按 `$PROJECT_ROOT/.venv/bin/python` → `$PROJECT_ROOT/quantia_env/bin/python` → 系统 `python3` 顺序自动探测；显式设置（env / `.env`）始终优先 |
+| `PYTHON_BIN` | 自动探测 | Python 解释器路径（**所有** cron 脚本统一使用）。不设时 `init_env` 优先用 `$PROJECT_ROOT/.venv/bin/python`（存在时），否则回退系统 `python3`；显式设置（env / `.env`）始终优先。刻意不自动探测 `quantia_env`（现网 web 以系统 python3 运行，cron 默认与之一致）；如需用 quantia_env 请在 `.env` 显式设 `PYTHON_BIN` |
 
 可通过 `.env` 文件或系统环境变量设置，`_common.sh` 的 `init_env` 会自动加载 `.env` 文件。
 
