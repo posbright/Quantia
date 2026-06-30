@@ -174,7 +174,7 @@ class FundPeerCompareHandler(webBase.BaseHandler):
                 f"FROM `{_RANK_TABLE}` r{joins} "
                 f"{where}"
             )
-            bucket = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
+            bucket = pd.read_sql(sql, con=mdb.engine_ro(), params=tuple(params))
             if bucket.empty:
                 _write_error(self, f'同类桶 {fund_type} 无数据', 404)
                 return

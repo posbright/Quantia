@@ -324,7 +324,7 @@ class FundCompositeAnalysisHandler(webBase.BaseHandler):
                     f"LEFT JOIN `{_PROFILE_TABLE}` p ON p.`code` = r.`code` "
                     f"WHERE r.`date` = (SELECT MAX(`date`) FROM `{_RANK_TABLE}`) "
                     f"  AND r.`fund_type` = %s",
-                    con=mdb.engine(), params=(fund_type,))
+                    con=mdb.engine_ro(), params=(fund_type,))
                 if not bucket.empty:
                     peer_percentiles = peer.compute_peer_dims(bucket, code)['percentiles']
 

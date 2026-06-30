@@ -185,7 +185,7 @@ def _apply_max_hold_exit_rule(buy_idx: int, sell_idx: object, max_hold: int, his
 
 def _get_table_trade_date_count(table_name: str, start_date: str, end_date: str):
     sql = f"SELECT COUNT(DISTINCT `date`) as cnt FROM `{table_name}` WHERE `date` >= %s AND `date` <= %s"
-    df = pd.read_sql(sql, con=mdb.engine(), params=(start_date, end_date))
+    df = pd.read_sql(sql, con=mdb.engine_ro(), params=(start_date, end_date))
     try:
         return int(df.iloc[0]['cnt']) if df is not None and len(df) > 0 else 0
     except Exception:
@@ -318,7 +318,7 @@ def _get_recent_date_range(table_name: str, trade_days: int):
     trade_days = max(1, min(trade_days, 365))
 
     sql_dates = f"SELECT DISTINCT `date` FROM `{table_name}` ORDER BY `date` DESC LIMIT {trade_days}"
-    df = pd.read_sql(sql_dates, con=mdb.engine())
+    df = pd.read_sql(sql_dates, con=mdb.engine_ro())
     if df is None or len(df) == 0:
         return None
 
@@ -373,7 +373,7 @@ class DashboardOverviewHandler(webBase.BaseHandler, ABC):
             cols.append(f'avg_rate_{h}')
 
         sql = f"SELECT {', '.join([f'`{c}`' for c in cols])} FROM `{summary_table}` WHERE `date` >= %s AND `date` <= %s"
-        df = pd.read_sql(sql, con=mdb.engine(), params=(start_date, end_date))
+        df = pd.read_sql(sql, con=mdb.engine_ro(), params=(start_date, end_date))
         if df is None or len(df) == 0:
             self.write(json.dumps({'error': '指定区间无回测汇总数据'}, ensure_ascii=False))
             return
@@ -494,7 +494,7 @@ class PerformanceTimelineHandler(webBase.BaseHandler, ABC):
                   FROM `{summary_table}`
                   WHERE `date` >= %s AND `date` <= %s {strategy_filter}
                   ORDER BY `date` ASC"""
-        df = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
+        df = pd.read_sql(sql, con=mdb.engine_ro(), params=tuple(params))
         if df is None or len(df) == 0:
             self.write(json.dumps({'error': '指定区间无数据'}, ensure_ascii=False))
             return
@@ -575,7 +575,7 @@ class StrategyDetailHandler(webBase.BaseHandler, ABC):
 
         rate_cols = [f"`rate_{h}` as `rate_{h}`" for h in horizons]
         sql_cnt = f"SELECT COUNT(*) as cnt FROM `{table_name}` WHERE `date` >= %s AND `date` <= %s"
-        cnt_df = pd.read_sql(sql_cnt, con=mdb.engine(), params=(start_date, end_date))
+        cnt_df = pd.read_sql(sql_cnt, con=mdb.engine_ro(), params=(start_date, end_date))
         total = int(cnt_df.iloc[0]['cnt']) if cnt_df is not None and len(cnt_df) > 0 else 0
 
         sql = f"""SELECT `date`, `code`, `name`, {', '.join(rate_cols)}
@@ -583,7 +583,7 @@ class StrategyDetailHandler(webBase.BaseHandler, ABC):
                   WHERE `date` >= %s AND `date` <= %s
                   ORDER BY `date` DESC
                   LIMIT {offset}, {page_size_i}"""
-        df = pd.read_sql(sql, con=mdb.engine(), params=(start_date, end_date))
+        df = pd.read_sql(sql, con=mdb.engine_ro(), params=(start_date, end_date))
         rows = []
         if df is not None and len(df) > 0:
             for _, r in df.iterrows():
@@ -652,7 +652,7 @@ class ReturnDistributionHandler(webBase.BaseHandler, ABC):
         end_date = date_range['end']
 
         sql = f"SELECT `rate_{h}` as v FROM `{table_name}` WHERE `date` >= %s AND `date` <= %s AND `rate_{h}` IS NOT NULL"
-        df = pd.read_sql(sql, con=mdb.engine(), params=(start_date, end_date))
+        df = pd.read_sql(sql, con=mdb.engine_ro(), params=(start_date, end_date))
         if df is None or len(df) == 0:
             # 无收益数据属于正常情况（信号太新，尚无 rate 数据），返回空分布而非 error
             bins_empty = [{'range': lab, 'count': 0, 'percentage': 0} for lab in ['<-10%', '-10%~-5%', '-5%~0%', '0%~5%', '5%~10%', '>10%']]
@@ -761,7 +761,7 @@ class TradePairHandler(webBase.BaseHandler, ABC):
         end_date = date_range['end']
 
         sql_cnt = f"SELECT COUNT(*) as cnt FROM `{buy_table}` WHERE `date` >= %s AND `date` <= %s"
-        cnt_df = pd.read_sql(sql_cnt, con=mdb.engine(), params=(start_date, end_date))
+        cnt_df = pd.read_sql(sql_cnt, con=mdb.engine_ro(), params=(start_date, end_date))
         total = int(cnt_df.iloc[0]['cnt']) if cnt_df is not None and len(cnt_df) > 0 else 0
 
         sql_buy = f"""SELECT `date`, `code`, `name`
@@ -769,7 +769,7 @@ class TradePairHandler(webBase.BaseHandler, ABC):
                       WHERE `date` >= %s AND `date` <= %s
                       ORDER BY `date` DESC
                       LIMIT {offset}, {page_size_i}"""
-        buy_df = pd.read_sql(sql_buy, con=mdb.engine(), params=(start_date, end_date))
+        buy_df = pd.read_sql(sql_buy, con=mdb.engine_ro(), params=(start_date, end_date))
         if buy_df is None or len(buy_df) == 0:
             self.write(json.dumps({'strategy_name': strategy, 'total': total, 'rows': []}, ensure_ascii=False))
             return
@@ -783,7 +783,7 @@ class TradePairHandler(webBase.BaseHandler, ABC):
         placeholders = ','.join(['%s'] * len(codes))
         sql_sell = f"SELECT `code`, `date` FROM `{sell_table}` WHERE `code` IN ({placeholders}) AND `date` > %s ORDER BY `code`, `date` ASC"
         sell_params = list(codes) + [min_buy_date_dash]
-        sell_df = pd.read_sql(sql_sell, con=mdb.engine(), params=tuple(sell_params))
+        sell_df = pd.read_sql(sql_sell, con=mdb.engine_ro(), params=tuple(sell_params))
 
         sell_map = {}
         if sell_df is not None and len(sell_df) > 0:

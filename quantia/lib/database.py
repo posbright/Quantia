@@ -107,6 +107,91 @@ def engine_to_db(to_db):
     return _engine_to_db_cache[to_db]
 
 
+# ============================================================================
+# 读写分离（可选，默认关闭）
+# ----------------------------------------------------------------------------
+# 主库（QUANTIA_DB_HOST）承接所有写入；从库只读副本（QUANTIA_DB_READ_HOST）承接
+# Web 层读流量。仅当 QUANTIA_RW_SPLIT=1 且 QUANTIA_DB_READ_HOST 非空时启用；否则
+# engine_ro() 等价于 engine()（指向主库），全链路零行为变化。
+#
+# 重要：从库复制是异步的、存在秒级延迟。因此「写后立即读」的代码（典型为
+# quantia/job/ 抓取/分析作业，先写主库再同一次运行读回）必须仍读主库——它们使用
+# engine()/executeSqlFetch 等默认主库路径，不要改用 engine_ro()。Web 层读取的是
+# 早先作业已落库的数据，复制延迟可忽略，故只在 Web handler 的 pd.read_sql 使用
+# engine_ro()。若某段 Web 代码确有写后立即读，用 `with use_master():` 强制回主库。
+# ============================================================================
+_RW_SPLIT = _cfg.get_bool('QUANTIA_RW_SPLIT', False)
+db_read_host = _cfg.get_str('QUANTIA_DB_READ_HOST', '').strip()
+db_read_port = _cfg.get_int('QUANTIA_DB_READ_PORT', db_port)
+db_read_user = _cfg.get_str('QUANTIA_DB_READ_USER', db_user)
+db_read_password = _cfg.get_str('QUANTIA_DB_READ_PASSWORD', db_password)
+# 启用前提：开关打开 + 配置了从库地址（缺一不可，保证默认完全向后兼容）
+RW_SPLIT_ENABLED = bool(_RW_SPLIT and db_read_host)
+
+_READ_MYSQL_CONN_URL = "mysql+pymysql://%s:%s@%s:%s/%s?charset=%s" % (
+    db_read_user, quote_plus(db_read_password), db_read_host, db_read_port, db_database, db_charset)
+
+_engine_ro_instance = None  # 从库只读连接池单例
+
+if RW_SPLIT_ENABLED:
+    logging.info(
+        f"读写分离已启用：写→{db_host}:{db_port}，读→{db_read_host}:{db_read_port}（库 {db_database}）")
+
+
+def _force_master_active():
+    """当前线程是否处于 use_master() 强制主库读上下文中。"""
+    return getattr(_thread_local, 'force_master_reads', False)
+
+
+class _UseMasterContext:
+    """上下文管理器：在 with 块内把只读路由强制回主库（用于 Web 层「写后立即读」
+    或对复制延迟敏感的读）。支持嵌套（保存/恢复前值）。"""
+    def __enter__(self):
+        self._prev = getattr(_thread_local, 'force_master_reads', False)
+        _thread_local.force_master_reads = True
+        return self
+    def __exit__(self, *exc_info):
+        _thread_local.force_master_reads = self._prev
+        return False
+
+
+def use_master():
+    """返回一个上下文管理器，在其内部所有 engine_ro() 调用都回退到主库 engine()。
+
+    用法::
+
+        with mdb.use_master():
+            df = pd.read_sql(sql, con=mdb.engine_ro())   # 实际走主库，避免复制延迟
+    """
+    return _UseMasterContext()
+
+
+def engine_ro():
+    """获取「只读」数据库引擎：
+
+    - 未启用读写分离 / 配置缺失 / 处于 use_master() 上下文：返回主库 engine()（同一对象）。
+    - 启用读写分离：返回指向从库的只读连接池单例（线程安全双重检查锁）。
+
+    仅供明确的只读查询（Web 层 pd.read_sql）使用。写入与「写后立即读」请用 engine()。
+    """
+    if not RW_SPLIT_ENABLED or _force_master_active():
+        return engine()
+    global _engine_ro_instance
+    if _engine_ro_instance is not None:
+        return _engine_ro_instance
+    with _engine_lock:
+        if _engine_ro_instance is None:
+            _engine_ro_instance = create_engine(
+                _READ_MYSQL_CONN_URL,
+                pool_size=_cfg.get_int('QUANTIA_DB_POOL_SIZE', 2),
+                max_overflow=_cfg.get_int('QUANTIA_DB_MAX_OVERFLOW', 3),
+                pool_recycle=_cfg.get_int('QUANTIA_DB_POOL_RECYCLE', 600),
+                pool_pre_ping=True,
+                pool_timeout=_cfg.get_int('QUANTIA_DB_POOL_TIMEOUT', 30)
+            )
+    return _engine_ro_instance
+
+
 # DB Api -数据库连接对象connection
 # 使用 threading.local() 实现每线程独立连接，避免多线程共享连接导致协议错乱
 # （2026-03-17 故障根因：streaming_analysis ThreadPoolExecutor 中多线程共享
