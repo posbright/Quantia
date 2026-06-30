@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.types import NVARCHAR
 from sqlalchemy import inspect
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.exc import OperationalError, InterfaceError
 from urllib.parse import quote_plus
 
 # 集中式 .env 加载（通过 envconfig 模块完成，import 即触发）
@@ -133,6 +134,12 @@ _READ_MYSQL_CONN_URL = "mysql+pymysql://%s:%s@%s:%s/%s?charset=%s" % (
 
 _engine_ro_instance = None  # 从库只读连接池单例
 
+# 从库读熔断冷却秒数：从库读连接失败后，在该时间窗内所有只读查询直接走主库，
+# 避免每个请求都先撞一次「连不上的从库」再降级（既慢又刷错误日志）。冷却到期后
+# 自动再探一次从库，实现自愈。默认 30s。
+_RO_COOLDOWN_SECONDS = max(_cfg.get_int('QUANTIA_RW_SPLIT_COOLDOWN', 30), 1)
+_ro_unhealthy_until = 0.0  # monotonic 时间戳；< now 表示熔断已恢复
+
 if RW_SPLIT_ENABLED:
     logging.info(
         f"读写分离已启用：写→{db_host}:{db_port}，读→{db_read_host}:{db_read_port}（库 {db_database}）")
@@ -190,6 +197,50 @@ def engine_ro():
                 pool_timeout=_cfg.get_int('QUANTIA_DB_POOL_TIMEOUT', 30)
             )
     return _engine_ro_instance
+
+
+def _ro_circuit_open():
+    """从库读熔断是否处于打开状态（打开 = 暂时全部走主库）。"""
+    return time.monotonic() < _ro_unhealthy_until
+
+
+def _trip_ro_circuit(exc):
+    """从库读连接失败时触发熔断：丢弃可能已损坏的从库连接池、设置冷却窗口。"""
+    global _ro_unhealthy_until, _engine_ro_instance
+    with _engine_lock:
+        _ro_unhealthy_until = time.monotonic() + _RO_COOLDOWN_SECONDS
+        ro = _engine_ro_instance
+        _engine_ro_instance = None
+    if ro is not None:
+        try:
+            ro.dispose()
+        except Exception:
+            logging.debug("database._trip_ro_circuit: dispose 从库引擎异常", exc_info=True)
+    logging.warning(
+        f"从库只读连接失败，{_RO_COOLDOWN_SECONDS}s 内只读查询降级走主库："
+        f"{type(exc).__name__}: {exc}")
+
+
+def read_sql_ro(sql, params=None, **kwargs):
+    """Web 层只读查询统一入口：优先走从库，从库连接级故障时**当次请求内自动降级主库**。
+
+    设计动机：读写分离是「可选、默认关闭」的增强特性，它的从库故障（连不上 / 复制中断 /
+    重启）**不应该把核心页面打成 500**。本函数在以下情况直接走主库：
+    - 未启用读写分离 / 处于 use_master() 上下文 / 熔断打开（最近刚失败）。
+    其余情况走从库；若从库抛连接级异常（OperationalError / InterfaceError，如
+    [Errno 111] Connection refused），触发熔断并用主库**重试一次**，保证本次请求不失败。
+
+    注意：仅捕获连接级异常并降级；查询级错误（如 ProgrammingError 1054 未知列）**不**降级，
+    照常抛出——那是真实的 schema/SQL 问题，应当暴露而非被静默掩盖。
+    """
+    import pandas as pd  # 局部导入，避免数据库模块顶层强依赖 pandas
+    if not RW_SPLIT_ENABLED or _force_master_active() or _ro_circuit_open():
+        return pd.read_sql(sql, con=engine(), params=params, **kwargs)
+    try:
+        return pd.read_sql(sql, con=engine_ro(), params=params, **kwargs)
+    except (OperationalError, InterfaceError) as e:
+        _trip_ro_circuit(e)
+        return pd.read_sql(sql, con=engine(), params=params, **kwargs)
 
 
 # DB Api -数据库连接对象connection

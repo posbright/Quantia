@@ -219,7 +219,7 @@ class FundRankHandler(webBase.BaseHandler):
             sql = (f"SELECT {', '.join(select_parts)} "
                    f"FROM `{_FUND_RANK_TABLE}` r{joins} {where}{order} LIMIT %s")
             params.append(limit)
-            df = pd.read_sql(sql, con=mdb.engine_ro(), params=tuple(params))
+            df = mdb.read_sql_ro(sql, params=tuple(params))
 
             snapshot_date = None
             date_rows = mdb.executeSqlFetch(

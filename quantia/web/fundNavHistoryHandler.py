@@ -118,7 +118,7 @@ class FundNavHistoryHandler(webBase.BaseHandler):
                 params.append(start.isoformat())
             sql += "ORDER BY `nav_date` ASC"
 
-            df = pd.read_sql(sql, con=mdb.engine_ro(), params=tuple(params))
+            df = mdb.read_sql_ro(sql, params=tuple(params))
             points = []
             for _, r in df.iterrows():
                 d = r['nav_date']
@@ -276,7 +276,7 @@ class FundNavPeerHandler(webBase.BaseHandler):
                 params.append(start)
             sql += "ORDER BY `nav_date` ASC"
 
-            df = pd.read_sql(sql, con=mdb.engine_ro(), params=tuple(params))
+            df = mdb.read_sql_ro(sql, params=tuple(params))
             points, peer_count = compute_peer_baseline(df, code)
             _write_json(self, {
                 'code': code, 'fund_type': fund_type, 'range': rng,

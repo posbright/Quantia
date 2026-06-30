@@ -314,7 +314,7 @@ class FundCompositeAnalysisHandler(webBase.BaseHandler):
             # 同类桶分位（夏普/抗跌的「同类前 Z%」需桶内对标）
             peer_percentiles = {}
             if fund_type and table_presence.get(_SCORE_TABLE, False):
-                bucket = pd.read_sql(
+                bucket = mdb.read_sql_ro(
                     f"SELECT r.`code` AS code, r.`rate_1y` AS rate_1y, r.`fee` AS fee, "
                     f"       s.`sharpe` AS sharpe, s.`max_drawdown` AS max_drawdown, "
                     f"       p.`scale_yi` AS scale_yi "
@@ -324,7 +324,7 @@ class FundCompositeAnalysisHandler(webBase.BaseHandler):
                     f"LEFT JOIN `{_PROFILE_TABLE}` p ON p.`code` = r.`code` "
                     f"WHERE r.`date` = (SELECT MAX(`date`) FROM `{_RANK_TABLE}`) "
                     f"  AND r.`fund_type` = %s",
-                    con=mdb.engine_ro(), params=(fund_type,))
+                    params=(fund_type,))
                 if not bucket.empty:
                     peer_percentiles = peer.compute_peer_dims(bucket, code)['percentiles']
 
