@@ -1,5 +1,12 @@
 chcp 65001
 @echo off
+rem Python 解释器：显式 PYTHON_BIN > 项目本地 .venv > 系统 python
+set "PY=python"
+if not "%PYTHON_BIN%"=="" (
+    set "PY=%PYTHON_BIN%"
+) else if exist "%~dp0..\..\.venv\Scripts\python.exe" (
+    set "PY=%~dp0..\..\.venv\Scripts\python.exe"
+)
 cd %~dp0
 cd ..
 cd job
@@ -24,6 +31,6 @@ echo 策略数据作业（旧版独立） python strategy_data_daily_job.py
 echo 回测数据 python backtest_data_daily_job.py
 echo 收盘后数据 python basic_data_after_close_daily_job.py
 echo ------正在执行作业中，请等待------
-python execute_daily_job.py
+"%PY%" execute_daily_job.py
 pause
 exit
