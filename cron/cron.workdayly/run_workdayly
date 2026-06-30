@@ -8,6 +8,7 @@
 #   Phase 5   AI报告+评分预警  (run_report_alert)
 #   Phase 6   综合指标股票池   (refresh_composite_universe)
 #   Phase 7   AI知识库索引     (refresh_ai_kb)
+#   Phase 8   基金重仓股全覆盖 (run_fund_holding_batch，仅方案C 开启时生效)
 # 等价于分别调度上述独立脚本，但适合单机一键执行（严格串行，单一内存峰值）。
 # 每个阶段失败不影响后续阶段继续执行。
 #
