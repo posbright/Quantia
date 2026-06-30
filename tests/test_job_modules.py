@@ -200,6 +200,15 @@ class TestExecuteDailyJob(unittest.TestCase):
             mock_saj.assert_called()
             mock_bdj.assert_called()
 
+    @patch(f'{_trd}.get_trade_date_last', side_effect=ValueError('boom'))
+    def test_main_default_path_failure_returns_not_exit(self, mock_td):
+        """无参默认路径下日期解析失败应沿用历史语义（return），
+        绝不 sys.exit(2)——非零退出仅保留给显式传入的非法 CLI 参数。"""
+        edj = self._mod()
+        # 不应抛 SystemExit；应安静返回 None（在进入任何 phase 之前）
+        self.assertIsNone(edj.main())
+        mock_td.assert_called_once()
+
 
 # ============================================================================
 # 1b. execute_daily_job._resolve_run_date (CLI date argument)

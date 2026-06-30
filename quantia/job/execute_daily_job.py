@@ -282,12 +282,18 @@ def main(date_arg=None):
     logging.info("######## 任务执行时间: %s #######" % _start.strftime("%Y-%m-%d %H:%M:%S.%f"))
 
     # 获取交易日期（无参数时取最近交易日；可选单日期参数覆盖日期相关步骤）
+    # 注意：仅当"显式传入了日期参数"且其非法时才以非零码退出；无参数的默认路径
+    # 任何异常都沿用历史语义（记录日志后 return），保证定时任务行为零变化。
+    _date_provided = date_arg is not None and str(date_arg).strip() != ''
     try:
         run_date, run_date_nph, _date_overridden = _resolve_run_date(date_arg)
         date_str = run_date_nph.strftime("%Y-%m-%d")
     except ValueError as e:
-        logging.error(f"命令行日期参数错误，任务终止：{e}")
-        sys.exit(2)
+        if _date_provided:
+            logging.error(f"命令行日期参数错误，任务终止：{e}")
+            sys.exit(2)
+        logging.error("获取交易日期失败，无法继续", exc_info=True)
+        return
     except Exception as e:
         logging.error("获取交易日期失败，无法继续", exc_info=True)
         return
