@@ -116,7 +116,7 @@ class TestFundAiHandler(AsyncHTTPTestCase):
         fake = _FakeResult('## 一、业绩与风险概览\n夏普1.6。', [
             {'name': 'web_search', 'ok': True,
              'result': {'results': [{'title': '资讯A', 'url': 'http://n/1'}]}}])
-        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp)), \
+        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp, {})), \
              mock.patch.object(fah, '_load_cache', return_value=None), \
              mock.patch.object(fah, '_save_cache') as save_mock, \
              mock.patch('quantia.lib.ai.prompt_loader.load', return_value='SYS'), \
@@ -139,7 +139,7 @@ class TestFundAiHandler(AsyncHTTPTestCase):
         comp = _sample_composite()
         cached = {'content': '缓存内容', 'sources': [{'title': 't', 'url': 'u'}],
                   'model': 'm', 'created_at': None}
-        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp)), \
+        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp, {})), \
              mock.patch.object(fah, '_load_cache', return_value=cached), \
              mock.patch('quantia.lib.ai.run_agent') as run_mock:
             resp = self.fetch('/api/fund/ai_analysis', method='POST',
@@ -153,7 +153,7 @@ class TestFundAiHandler(AsyncHTTPTestCase):
     def test_post_llm_failure_falls_back_to_rules(self):
         ctx = _sample_ctx()
         comp = _sample_composite()
-        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp)), \
+        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp, {})), \
              mock.patch.object(fah, '_load_cache', return_value=None), \
              mock.patch('quantia.lib.ai.prompt_loader.load', return_value='SYS'), \
              mock.patch('quantia.lib.ai.run_agent',
@@ -171,7 +171,7 @@ class TestFundAiHandler(AsyncHTTPTestCase):
     def test_post_feature_disabled_returns_fallback(self):
         ctx = _sample_ctx()
         comp = _sample_composite()
-        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp)), \
+        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp, {})), \
              mock.patch.object(fah, '_load_cache', return_value=None), \
              mock.patch('quantia.lib.ai.feature_switch.is_feature_enabled',
                         return_value=False), \
@@ -188,7 +188,7 @@ class TestFundAiHandler(AsyncHTTPTestCase):
         assert resp.code == 400
 
     def test_post_fund_not_found(self):
-        with mock.patch.object(fah, 'gather_ctx', return_value=(None, None)):
+        with mock.patch.object(fah, 'gather_ctx', return_value=(None, None, {})):
             resp = self.fetch('/api/fund/ai_analysis', method='POST',
                               body=json.dumps({'code': 'zzz'}))
         assert resp.code == 404
@@ -198,7 +198,7 @@ class TestFundAiHandler(AsyncHTTPTestCase):
         comp = _sample_composite()
         cached = {'content': '历史缓存', 'sources': [], 'model': 'm',
                   'created_at': None}
-        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp)), \
+        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp, {})), \
              mock.patch.object(fah, '_load_cache', return_value=cached):
             resp = self.fetch('/api/fund/ai_analysis?code=001000')
         assert resp.code == 200
@@ -210,7 +210,7 @@ class TestFundAiHandler(AsyncHTTPTestCase):
     def test_get_cache_only_miss(self):
         ctx = _sample_ctx()
         comp = _sample_composite()
-        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp)), \
+        with mock.patch.object(fah, 'gather_ctx', return_value=(ctx, comp, {})), \
              mock.patch.object(fah, '_load_cache', return_value=None):
             resp = self.fetch('/api/fund/ai_analysis?code=001000')
         assert resp.code == 200
