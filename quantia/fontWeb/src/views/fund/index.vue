@@ -12,6 +12,43 @@
       <div class="fund-snapshot fund-snapshot--empty" v-else>
         暂无基金数据（待每日数据采集任务落库）
       </div>
+
+      <!-- 重仓股全覆盖（方案C）开关 + 覆盖统计 -->
+      <div class="fund-coverage">
+        <el-popover placement="bottom-end" :width="280" trigger="hover">
+          <template #reference>
+            <span class="coverage-badge">
+              重仓覆盖
+              <b>{{ holdingCfg ? holdingCfg.stats.funds_with_holdings : '—' }}</b>
+              /
+              {{ holdingCfg ? holdingCfg.stats.total_equity_funds : '—' }}
+            </span>
+          </template>
+          <div class="coverage-pop" v-if="holdingCfg">
+            <div class="cp-row"><span>权益基金总数</span><b>{{ holdingCfg.stats.total_equity_funds }}</b></div>
+            <div class="cp-row"><span>已有重仓数据</span><b>{{ holdingCfg.stats.funds_with_holdings }}</b></div>
+            <div class="cp-row"><span>本月已覆盖</span><b>{{ holdingCfg.stats.covered_this_cycle }}</b></div>
+            <div class="cp-row"><span>本月已尝试</span><b>{{ holdingCfg.stats.attempted_this_cycle }}</b></div>
+            <div class="cp-row"><span>本月待抓取</span><b class="cp-warn">{{ holdingCfg.stats.remaining_this_cycle }}</b></div>
+            <div class="cp-row"><span>最新更新日</span><b>{{ holdingCfg.stats.last_update_date || '—' }}</b></div>
+            <div class="cp-row"><span>每类每批</span><b>{{ holdingCfg.stats.batch_per_type }}</b></div>
+            <div class="cp-note">所属主行业由重仓股加权派生，覆盖全后将自动补全。</div>
+          </div>
+        </el-popover>
+        <el-tooltip
+          placement="bottom"
+          content="开启后，下次重仓股采集任务将按近1年收益分层、每类每批（默认1000）分批抓取全部权益基金（约1.4万只），并自动补全所属主行业；可断点续跑。关闭则维持默认 Top-200 抓取。"
+        >
+          <span class="coverage-switch">
+            <span class="cs-label">全量覆盖(C)</span>
+            <el-switch
+              v-model="fullCoverage"
+              :loading="coverageLoading"
+              @change="onToggleCoverage"
+            />
+          </span>
+        </el-tooltip>
+      </div>
     </div>
 
     <!-- 风险提示条 -->
@@ -293,11 +330,14 @@ import {
   getFundRankMeta,
   getFundRank,
   getFundRankIndustries,
+  getFundHoldingConfig,
+  setFundHoldingConfig,
   type FundRankMeta,
   type FundRankResult,
   type FundPeriodOption,
   type FundRankItem,
   type FundIndustriesResult,
+  type FundHoldingConfig,
 } from '@/api/fund'
 import FundDetailDrawer from './FundDetailDrawer.vue'
 import FundCompareTab from './FundCompareTab.vue'
@@ -320,6 +360,36 @@ const items = ref<FundRankItem[]>([])
 const count = ref(0)
 const loading = ref(false)
 const metaLoaded = ref(false)
+
+// 重仓股全覆盖（方案C）开关 + 覆盖统计
+const holdingCfg = ref<FundHoldingConfig | null>(null)
+const fullCoverage = ref(false)
+const coverageLoading = ref(false)
+
+async function loadHoldingConfig() {
+  try {
+    const res = (await getFundHoldingConfig()) as unknown as { code: number; data: FundHoldingConfig }
+    holdingCfg.value = res.data
+    fullCoverage.value = res.data.enabled
+  } catch {
+    // 静默：覆盖统计为辅助信息，失败不阻断排行榜
+  }
+}
+
+async function onToggleCoverage(val: string | number | boolean) {
+  const enabled = !!val
+  coverageLoading.value = true
+  try {
+    const res = (await setFundHoldingConfig(enabled)) as unknown as { code: number; msg?: string; data: FundHoldingConfig }
+    holdingCfg.value = res.data
+    fullCoverage.value = res.data.enabled
+    ElMessage.success(res.msg || (enabled ? '已开启全覆盖' : '已关闭全覆盖'))
+  } catch {
+    fullCoverage.value = !enabled // 失败回滚
+  } finally {
+    coverageLoading.value = false
+  }
+}
 
 // 详情抽屉
 const detailVisible = ref(false)
@@ -490,7 +560,7 @@ async function loadRank() {
 // 布局使用 keep-alive，用 onActivated 而非 onMounted 保证回到页面时刷新
 onActivated(async () => {
   if (!metaLoaded.value) await loadMeta()
-  await Promise.all([loadRank(), loadIndustries()])
+  await Promise.all([loadRank(), loadIndustries(), loadHoldingConfig()])
 })
 </script>
 
@@ -520,6 +590,50 @@ onActivated(async () => {
 }
 .fund-snapshot--empty {
   color: #e6a23c;
+}
+.fund-coverage {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+.coverage-badge {
+  font-size: 13px;
+  color: #606266;
+  cursor: default;
+  white-space: nowrap;
+}
+.coverage-badge b {
+  color: #409eff;
+}
+.coverage-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.cs-label {
+  font-size: 13px;
+  color: #606266;
+  white-space: nowrap;
+}
+.coverage-pop .cp-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  line-height: 1.9;
+  color: #606266;
+}
+.coverage-pop .cp-row b {
+  color: #303133;
+}
+.coverage-pop .cp-warn {
+  color: #e6a23c;
+}
+.coverage-pop .cp-note {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #909399;
+  line-height: 1.5;
 }
 .risk-tip {
   background: #fdf6ec;
@@ -720,6 +834,12 @@ onActivated(async () => {
   .fund-header {
     flex-wrap: wrap;
     gap: 4px 12px;
+  }
+  .fund-coverage {
+    margin-left: 0;
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px 12px;
   }
 }
 </style>

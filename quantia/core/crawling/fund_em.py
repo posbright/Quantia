@@ -32,10 +32,13 @@ def _is_transient_fetch_error(e) -> bool:
     msg = str(e).lower()
     transient_markers = ('remotedisconnected', 'connection aborted', 'connection reset',
                          'connection refused', 'timed out', 'timeout', 'temporarily',
-                         'max retries', 'proxyerror', 'protocolerror', 'broken pipe')
+                         'max retries', 'proxyerror', 'protocolerror', 'broken pipe',
+                         'ssl', 'unexpected_eof', 'eof occurred', 'decryption failed',
+                         'bad record mac', 'wrong version number')
     return any(m in msg for m in transient_markers) or \
         e.__class__.__name__ in ('ConnectionError', 'ProtocolError', 'Timeout',
-                                 'ReadTimeout', 'ConnectTimeout', 'ChunkedEncodingError')
+                                 'ReadTimeout', 'ConnectTimeout', 'ChunkedEncodingError',
+                                 'SSLError', 'SSLEOFError', 'SSLZeroReturnError')
 
 
 def _fetch_with_retry(fn, *args, _desc='', **kwargs):
@@ -384,18 +387,33 @@ def _map_holding_columns(df: pd.DataFrame, code) -> pd.DataFrame:
 
 
 def fund_holding_latest(code, year) -> pd.DataFrame:
-    """逐基金最新季度前十大重仓股；当年无披露则回退上一年。"""
+    """逐基金最新季度前十大重仓股；当年无披露则回退上一年。
+
+    东财 fundf10 偶发 SSLError / EOF / 连接重置：经 _fetch_with_retry 做有限次
+    指数退避重试，避免一次瞬态抖动就把整只基金判定为「无持仓」拉低覆盖率。
+    """
     import akshare as ak
 
     df = None
+    last_error = None
+    got_clean_response = False
     for y in (year, year - 1):
         try:
-            df = ak.fund_portfolio_hold_em(symbol=str(code), date=str(y))
-        except Exception:
+            df = _fetch_with_retry(
+                ak.fund_portfolio_hold_em, symbol=str(code), date=str(y),
+                _desc=f"holding {code}/{y}")
+            got_clean_response = True  # akshare 正常返回（即便为空），非抓取异常
+        except Exception as e:
+            last_error = e
             logging.warning(f"fund_em.fund_holding_latest: {code}/{y} 抓取失败", exc_info=True)
             df = None
         if df is not None and len(df.index) > 0:
             break
-    if df is None or len(df.index) == 0:
-        return None
-    return _map_holding_columns(df, code)
+    if df is not None and len(df.index) > 0:
+        return _map_holding_columns(df, code)
+    # 无数据：区分「确实无披露」与「持续抓取失败」。
+    # 全部年份都未拿到一次干净响应（纯瞬态/SSL 失败）则向上抛出，避免误判为「无持仓」
+    # 而被全覆盖逻辑标记为本周期已尝试，从而本月不再重试。
+    if not got_clean_response and last_error is not None:
+        raise last_error
+    return None

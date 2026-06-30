@@ -85,6 +85,10 @@ record_stage "Phase 6: 综合指标股票池刷新" $? warn
 run_sub "Phase 7: AI知识库索引刷新" "$SCRIPT_DIR/refresh_ai_kb"
 record_stage "Phase 7: AI知识库索引刷新" $? warn
 
+# Phase 8: 基金重仓股全覆盖分批采集（仅前端开启方案C时生效，否则秒级空跑；非关键链）
+run_sub "Phase 8: 基金重仓股全覆盖分批" "$SCRIPT_DIR/run_fund_holding_batch"
+record_stage "Phase 8: 基金重仓股全覆盖分批" $? warn
+
 OVERALL_END=$(date +%s)
 OVERALL_DUR=$((OVERALL_END - OVERALL_START))
 OVERALL_STR=$(elapsed_fmt $OVERALL_DUR)

@@ -1,0 +1,30 @@
+#!/bin/bash
+# 基金重仓股「全覆盖（方案C）」每日分层分批增量采集（仅在前端开启方案C时生效）
+# 触发：每个交易日运行一次；逐日分批抓取，直至本月权益基金全部覆盖后自动空跑。
+#
+# 与月度 run_fund_profile_holding 的关系：
+#   - 方案C 关闭：本脚本每日空跑退出（no-op），月度任务做默认 Top-200 抓取。
+#   - 方案C 开启：本脚本每日按近1年收益分层、每类每批（默认1000）抓取尚未覆盖的权益基金，
+#     时间预算内（QUANTIA_FUND_HOLDING_BATCH_SECONDS）跑完即停，剩余留待次日；
+#     job 内置「本月已抓过则跳过」实现断点续跑与幂等，保证数据准确有效。
+# 属 fetch 管道（akshare 抓取 + 读库回填行业）。
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/fund_holding_batch.log
+
+check_trade_day "基金重仓股全覆盖分批采集"
+
+# 单次运行时间预算（秒）：默认 50 分钟，避免单日长时间占用；剩余次日续跑。
+export QUANTIA_FUND_HOLDING_MAX_SECONDS="${QUANTIA_FUND_HOLDING_BATCH_SECONDS:-3000}"
+
+cd "$PROJECT_ROOT"
+echo "[$(date +'%F %T')] 开始基金重仓股全覆盖分批采集（--full-if-enabled）..." | tee -a "$LOG_FILE"
+timeout "${QUANTIA_FUND_HOLDING_BATCH_TIMEOUT:-3300}" \
+    "$PYTHON_BIN" "$PROJECT_ROOT/quantia/job/fetch_fund_holding_job.py" --full-if-enabled \
+    >>"$LOG_FILE" 2>&1
+RC=$?
+echo "[$(date +'%F %T')] 完成 (rc=$RC)" | tee -a "$LOG_FILE"
+exit $RC

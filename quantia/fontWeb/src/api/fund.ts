@@ -259,3 +259,34 @@ export function runFundAiAnalysis(code: string, refresh = false) {
     data: { code, refresh },
   })
 }
+
+// ── 基金重仓股「全覆盖（方案C）」开关 + 覆盖统计 ───────────────────────
+export interface FundHoldingCoverageStats {
+  total_equity_funds: number
+  funds_with_holdings: number
+  covered_this_cycle: number
+  attempted_this_cycle: number
+  remaining_this_cycle: number
+  last_update_date: string | null
+  batch_per_type: number
+}
+
+export interface FundHoldingConfig {
+  enabled: boolean
+  stats: FundHoldingCoverageStats
+}
+
+export function getFundHoldingConfig() {
+  return request<{ code: number; data: FundHoldingConfig }>({
+    url: '/api/fund/holding/config',
+    method: 'get',
+  })
+}
+
+export function setFundHoldingConfig(enabled: boolean) {
+  return request<{ code: number; msg?: string; data: FundHoldingConfig }>({
+    url: '/api/fund/holding/config',
+    method: 'post',
+    data: { enabled },
+  })
+}
