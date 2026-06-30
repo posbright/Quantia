@@ -221,13 +221,15 @@ def save_fund_holding(code, year, industry_map, update_date):
 
 
 def _crawl_codes(codes, year, industry_map, update_date, deadline=None):
-    """逐只抓取 + 限速，返回 (ok有持仓数, total_rows, stopped)。单只异常吞掉跳过，不中断批量。
+    """逐只抓取 + 限速，返回 (ok有持仓数, total_rows, stopped, attempted)。单只异常吞掉跳过，不中断批量。
 
     deadline（time.monotonic 时刻）非空时，在「每只之间」检查时间预算并干净停止，
     避免被外层 timeout SIGTERM 在 save_fund_holding 的「删旧→写新」之间打断。
+    attempted = 本批中「未抛异常、已记录 attempt」的基金数；用于上层判断数据源是否整体不可达。
     """
     total_rows = 0
     ok = 0
+    attempted = 0
     stopped = False
     for code in codes:
         if deadline is not None and time.monotonic() >= deadline:
@@ -239,11 +241,12 @@ def _crawl_codes(codes, year, industry_map, update_date, deadline=None):
             if n > 0:
                 ok += 1
             _record_attempt(code, n > 0, update_date)
+            attempted += 1
         except Exception:
             logging.warning(f"fetch_fund_holding_job: {code} 处理失败，跳过", exc_info=True)
         finally:
             time.sleep(random.uniform(0.5, 1.5))  # 限速
-    return ok, total_rows, stopped
+    return ok, total_rows, stopped, attempted
 
 
 def run(codes=None, limit_per_type=None, job_date=None):
@@ -260,7 +263,7 @@ def run(codes=None, limit_per_type=None, job_date=None):
 
     industry_map = _load_industry_map()
     start = record_task_start(_JOB_NAME, 'holding', job_date)
-    ok, total_rows, _ = _crawl_codes(codes, year, industry_map, update_date)
+    ok, total_rows, _, _ = _crawl_codes(codes, year, industry_map, update_date)
     record_task_end(_JOB_NAME, 'holding', job_date, start, success=True,
                     message=f"{ok}/{len(codes)} 基金有持仓", rows_affected=total_rows)
     logging.info(f"fetch_fund_holding_job 完成：{ok}/{len(codes)} 基金，共 {total_rows} 行持仓")
@@ -298,12 +301,21 @@ def run_full_coverage(batch_per_type=None, max_seconds=None, job_date=None):
             logging.info("fetch_fund_holding_job 全覆盖：本周期已全部覆盖")
             break
         batch_no += 1
-        ok, rows, stopped = _crawl_codes(codes, year, industry_map, update_date, deadline=deadline)
+        ok, rows, stopped, attempted = _crawl_codes(codes, year, industry_map, update_date, deadline=deadline)
         grand_total += rows
         grand_ok += ok
         logging.info(f"fetch_fund_holding_job 全覆盖第{batch_no}批：{ok}/{len(codes)} 只有持仓，本批 {rows} 行")
         if stopped:
             logging.info("fetch_fund_holding_job 全覆盖：批内达到时间预算，干净停止，剩余留待下次")
+            break
+        # 无进展守卫：整批基金全部抛异常（attempted==0）且无新行，说明数据源整体不可达
+        # （如东方财富封禁本机 IP）。此时不记录任何 attempt → 下一轮会重选同一批 →
+        # 在无 deadline 时陷入死循环、有 deadline 时持续空转并疯狂重试，反而加重封禁。
+        # 直接干净停止，剩余留待下次（届时 IP 可能已解封）。
+        if attempted == 0:
+            logging.warning(
+                f"fetch_fund_holding_job 全覆盖：本批 {len(codes)} 只全部抓取失败且 0 进展，"
+                f"数据源疑似不可达/被封禁，提前停止避免空转与重试风暴，剩余留待下次")
             break
     remaining = _count_remaining_full_coverage(cycle_floor)
     record_task_end(_JOB_NAME, 'holding_full', job_date, start, success=True,

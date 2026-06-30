@@ -10,9 +10,12 @@
 
 属 fetch 管道（仅此处 + stockfetch + fetch_* 可调外部 API）。
 """
+import contextlib
 import logging
+import os
 import random
 import re
+import threading
 import time
 
 import pandas as pd
@@ -23,6 +26,77 @@ __date__ = '2026/06/01'
 # akshare 外部抓取重试配置（东财/雪球偶发瞬时断连：RemoteDisconnected / 连接重置）
 _FETCH_MAX_RETRIES = 3
 _FETCH_BACKOFF_BASE = 1.5  # 秒，指数退避基数
+
+# 代理池开关：东方财富封禁本机 IP 时，重试改走代理池（默认开启，可经 .env 关闭）。
+# akshare 不暴露 proxies 参数，只能临时改 HTTP(S)_PROXY 环境变量让其内部 requests 走代理。
+_USE_PROXY_ON_RETRY = os.environ.get('QUANTIA_FUND_HOLDING_USE_PROXY', '1').strip().lower() not in ('0', 'false', 'no', '')
+
+# 临时改写并恢复的代理相关环境变量名（含大小写变体，覆盖 requests 各平台读取习惯）
+_PROXY_ENV_KEYS = ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')
+
+
+@contextlib.contextmanager
+def _proxy_env(proxy_url):
+    """临时把 HTTP(S)_PROXY 指向 proxy_url，退出时精确恢复原值（无值则删除）。
+
+    akshare 内部用 requests（trust_env=True），故进程级环境变量即可注入代理。
+    proxy_url 为 None 时不做任何改动（直连）。
+    """
+    if not proxy_url:
+        yield
+        return
+    saved = {k: os.environ.get(k) for k in _PROXY_ENV_KEYS}
+    try:
+        for k in _PROXY_ENV_KEYS:
+            os.environ[k] = proxy_url
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _get_https_proxy():
+    """从代理池取一个支持 HTTPS 隧道的代理 URL；不可用 / 未启用 / 异常 → None（直连）。"""
+    if not _USE_PROXY_ON_RETRY:
+        return None
+    try:
+        from quantia.core.singleton_proxy import proxys
+        return proxys().get_https_proxy()
+    except Exception:  # noqa: BLE001 —— 代理池不可用时静默回退直连，绝不阻断抓取
+        return None
+
+
+# ── 自适应代理优先：IP 被封检测 ──
+# 正常（未被封）时首次直连（快、稳）；连续多只基金「首次直连」都璬态失败→
+# 判定 IP 疑似被封 → 后续基金首次即「代理优先」（代理不可用再回退直连），
+# 避免每只基金都先白费一次注定被封的直连；一旦某次直连成功立即解除（IP 已解封）。
+_BLOCK_DETECT_THRESHOLD = int(os.environ.get('QUANTIA_FUND_HOLDING_BLOCK_THRESHOLD', '2') or 2)
+_block_lock = threading.Lock()
+_consecutive_direct_fail = 0
+_ip_suspected_blocked = False
+
+
+def _ip_blocked() -> bool:
+    with _block_lock:
+        return _ip_suspected_blocked
+
+
+def _note_direct_result(success: bool):
+    """根据一次「直连」结果更新 IP 被封判定：直连成功→立即解除；
+    连续直连璬态失败达阈值→判定被封（后续代理优先）。仅统计直连结果，
+    代理失败不计入（代理失败≠本机 IP 被封）。"""
+    global _consecutive_direct_fail, _ip_suspected_blocked
+    with _block_lock:
+        if success:
+            _consecutive_direct_fail = 0
+            _ip_suspected_blocked = False
+        else:
+            _consecutive_direct_fail += 1
+            if _consecutive_direct_fail >= _BLOCK_DETECT_THRESHOLD:
+                _ip_suspected_blocked = True
 
 
 def _is_transient_fetch_error(e) -> bool:
@@ -41,20 +115,38 @@ def _is_transient_fetch_error(e) -> bool:
                                  'SSLError', 'SSLEOFError', 'SSLZeroReturnError')
 
 
-def _fetch_with_retry(fn, *args, _desc='', **kwargs):
+def _fetch_with_retry(fn, *args, _desc='', _use_proxy_on_retry=False, **kwargs):
     """对 akshare 调用做有限次重试 + 指数退避（含轻微抖动）。
 
     仅吞掉瞬态网络异常并重试，非瞬态异常或末次失败将异常抛回调用方按原逻辑处理。
+    _use_proxy_on_retry=True 时启用「自适应代理优先」：
+      - 正常（未被封）：首次直连（快、稳），仅重试才走代理；
+      - 一旦检测到 IP 疑似被封（连续直连璬态失败达阈值）：首次即代理优先，
+        代理不可用时回退直连；任一次直连成功立即解除被封判定。
+    代理池无可用代理或未启用则始终直连。每次取一个新代理以分散来源。
     """
     last_exc = None
     for attempt in range(1, _FETCH_MAX_RETRIES + 1):
+        # 决定本次走代理还是直连：开启代理 且 （非首次 或 已判定 IP 被封）→ 代理优先
+        # （取不到代理则 proxy_url=None 自动回退直连）；否则直连。
+        prefer_proxy = _use_proxy_on_retry and (attempt > 1 or _ip_blocked())
+        proxy_url = _get_https_proxy() if prefer_proxy else None
+        used_direct = proxy_url is None
         try:
-            return fn(*args, **kwargs)
+            with _proxy_env(proxy_url):
+                result = fn(*args, **kwargs)
+            if _use_proxy_on_retry and used_direct:
+                _note_direct_result(True)  # 直连成功 → 解除被封判定
+            return result
         except Exception as e:  # noqa: BLE001 —— akshare 抛出的异常类型繁杂，统一研判后决定是否重试
             last_exc = e
-            if attempt < _FETCH_MAX_RETRIES and _is_transient_fetch_error(e):
+            transient = _is_transient_fetch_error(e)
+            if _use_proxy_on_retry and used_direct and transient:
+                _note_direct_result(False)  # 直连璬态失败 → 累计，达阈值则判定被封
+            if attempt < _FETCH_MAX_RETRIES and transient:
                 sleep_s = _FETCH_BACKOFF_BASE * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
-                logging.debug(f"fund_em 抓取瞬态失败（第{attempt}/{_FETCH_MAX_RETRIES}次重试）{_desc}：{type(e).__name__}")
+                _via = '直连' if used_direct else '经代理'
+                logging.debug(f"fund_em 抓取瞬态失败（第{attempt}/{_FETCH_MAX_RETRIES}次，本次{_via}）{_desc}：{type(e).__name__}")
                 time.sleep(sleep_s)
             else:
                 raise
@@ -391,29 +483,37 @@ def fund_holding_latest(code, year) -> pd.DataFrame:
 
     东财 fundf10 偶发 SSLError / EOF / 连接重置：经 _fetch_with_retry 做有限次
     指数退避重试，避免一次瞬态抖动就把整只基金判定为「无持仓」拉低覆盖率。
+    东财封禁本机 IP（持续 SSL/EOF）时，重试自动改走代理池（_use_proxy_on_retry）。
+
+    三态返回，便于上层正确决定「是否记尝试 / 是否本周期重试」：
+      - 有数据 → 返回 DataFrame；
+      - 确无披露（akshare 干净返回空）或确定性解析错误（KeyError/ValueError 等，重试无益）
+        → 返回 None（上层记为已尝试、本周期不再重试）；
+      - 持续网络瞬态失败（SSL/EOF/连接重置，已含代理重试仍失败）→ 抛出异常
+        （上层不记尝试，留待下周期重试，避免把临时被封误判为「无持仓」）。
     """
     import akshare as ak
 
     df = None
-    last_error = None
-    got_clean_response = False
+    transient_error = None  # 仅「持续网络瞬态」失败才挂起重试；确定性错误视为无披露
     for y in (year, year - 1):
         try:
             df = _fetch_with_retry(
                 ak.fund_portfolio_hold_em, symbol=str(code), date=str(y),
-                _desc=f"holding {code}/{y}")
-            got_clean_response = True  # akshare 正常返回（即便为空），非抓取异常
-        except Exception as e:
-            last_error = e
-            logging.warning(f"fund_em.fund_holding_latest: {code}/{y} 抓取失败", exc_info=True)
+                _desc=f"holding {code}/{y}", _use_proxy_on_retry=True)
+        except Exception as e:  # noqa: BLE001 —— 按瞬态/确定性分流，二者处理方式不同
             df = None
+            if _is_transient_fetch_error(e):
+                transient_error = e
+                logging.warning(f"fund_em.fund_holding_latest: {code}/{y} 网络瞬态抓取失败", exc_info=True)
+            else:
+                logging.warning(f"fund_em.fund_holding_latest: {code}/{y} 解析/数据异常，按无披露处理", exc_info=True)
         if df is not None and len(df.index) > 0:
-            break
-    if df is not None and len(df.index) > 0:
-        return _map_holding_columns(df, code)
-    # 无数据：区分「确实无披露」与「持续抓取失败」。
-    # 全部年份都未拿到一次干净响应（纯瞬态/SSL 失败）则向上抛出，避免误判为「无持仓」
-    # 而被全覆盖逻辑标记为本周期已尝试，从而本月不再重试。
-    if not got_clean_response and last_error is not None:
-        raise last_error
+            return _map_holding_columns(df, code)
+    # 走到这里 = 两年都没有可用数据。
+    # 期间若出现过「持续网络瞬态」失败 → 抛出，使上层下周期重试（不误标为无持仓，
+    # 当年抓取失败也不会被一年干净空响应掩盖）；否则（干净空响应 / 确定性解析错误）
+    # 视为确实无披露返回 None。
+    if transient_error is not None:
+        raise transient_error
     return None
