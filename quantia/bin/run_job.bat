@@ -10,11 +10,10 @@ if not "%PYTHON_BIN%"=="" (
 cd %~dp0
 cd ..
 cd job
-echo ------整体作业，支持批量作业------
-echo 当前时间作业 python execute_daily_job.py
-echo 1个时间作业 python execute_daily_job.py 2026-02-24
-echo N个时间作业 python execute_daily_job.py 2026-02-24,2026-02-25
-echo 区间作业 python execute_daily_job.py 2026-02-01 2026-02-25
+echo ------整体作业（可选指定单个交易日）------
+echo 最近交易日作业 run_job.bat
+echo 指定单个交易日 run_job.bat 2026-02-24
+echo （暂不支持多日期/区间：子作业按实时数据运行，无法回补历史区间）
 echo ------数据获取与分析（拆分模式）------
 echo 数据获取（API调用+K线缓存） python fetch_daily_job.py
 echo 数据分析（指标+策略+回测） python analysis_daily_job.py
@@ -31,6 +30,6 @@ echo 策略数据作业（旧版独立） python strategy_data_daily_job.py
 echo 回测数据 python backtest_data_daily_job.py
 echo 收盘后数据 python basic_data_after_close_daily_job.py
 echo ------正在执行作业中，请等待------
-"%PY%" execute_daily_job.py
+"%PY%" execute_daily_job.py %*
 pause
 exit

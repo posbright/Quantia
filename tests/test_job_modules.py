@@ -202,6 +202,89 @@ class TestExecuteDailyJob(unittest.TestCase):
 
 
 # ============================================================================
+# 1b. execute_daily_job._resolve_run_date (CLI date argument)
+# ============================================================================
+class TestResolveRunDate(unittest.TestCase):
+    """Tests for execute_daily_job._resolve_run_date — optional single-date CLI arg.
+
+    Default behavior (no arg) must remain byte-identical to the historical
+    `trd.get_trade_date_last()` path. Explicit dates are validated (format,
+    not-future, trade-day) and override only the date-aware steps.
+    """
+
+    def _mod(self):
+        import quantia.job.execute_daily_job as edj
+        return edj
+
+    # -- no argument → falls back to get_trade_date_last (unchanged default) --
+    def test_no_arg_falls_back_to_default(self):
+        edj = self._mod()
+        with patch(f'{_trd}.get_trade_date_last',
+                   return_value=(TEST_DATE.date(), TEST_DATE.date())) as mock_last:
+            run_date, run_date_nph, overridden = edj._resolve_run_date()
+            self.assertFalse(overridden)
+            self.assertEqual(run_date, TEST_DATE.date())
+            self.assertEqual(run_date_nph, TEST_DATE.date())
+            mock_last.assert_called_once()
+
+    def test_empty_string_falls_back_to_default(self):
+        edj = self._mod()
+        with patch(f'{_trd}.get_trade_date_last',
+                   return_value=(TEST_DATE.date(), TEST_DATE.date())) as mock_last:
+            _, _, overridden = edj._resolve_run_date('   ')
+            self.assertFalse(overridden)
+            mock_last.assert_called_once()
+
+    # -- valid explicit dates ------------------------------------------------
+    def test_valid_iso_date_overrides(self):
+        edj = self._mod()
+        with patch(f'{_trd}.is_trade_date', return_value=True), \
+             patch(f'{_trd}.get_trade_date_last') as mock_last:
+            run_date, run_date_nph, overridden = edj._resolve_run_date('2026-03-18')
+            self.assertTrue(overridden)
+            self.assertEqual(run_date, datetime.date(2026, 3, 18))
+            self.assertEqual(run_date_nph, datetime.date(2026, 3, 18))
+            # explicit date must NOT call get_trade_date_last
+            mock_last.assert_not_called()
+
+    def test_valid_compact_date_format(self):
+        edj = self._mod()
+        with patch(f'{_trd}.is_trade_date', return_value=True):
+            run_date, run_date_nph, overridden = edj._resolve_run_date('20260318')
+            self.assertTrue(overridden)
+            self.assertEqual(run_date, datetime.date(2026, 3, 18))
+
+    # -- invalid inputs raise ValueError ------------------------------------
+    def test_malformed_date_raises(self):
+        edj = self._mod()
+        with self.assertRaises(ValueError):
+            edj._resolve_run_date('not-a-date')
+
+    def test_future_date_raises(self):
+        edj = self._mod()
+        future = (datetime.datetime.now().date() + datetime.timedelta(days=30)).strftime('%Y-%m-%d')
+        with patch(f'{_trd}.is_trade_date', return_value=True):
+            with self.assertRaises(ValueError):
+                edj._resolve_run_date(future)
+
+    def test_non_trade_date_raises(self):
+        edj = self._mod()
+        with patch(f'{_trd}.is_trade_date', return_value=False):
+            with self.assertRaises(ValueError):
+                edj._resolve_run_date('2026-03-21')  # a Saturday
+
+    def test_comma_list_rejected(self):
+        edj = self._mod()
+        with self.assertRaises(ValueError):
+            edj._resolve_run_date('2026-03-18,2026-03-19')
+
+    def test_range_with_space_rejected(self):
+        edj = self._mod()
+        with self.assertRaises(ValueError):
+            edj._resolve_run_date('2026-03-18 2026-03-19')
+
+
+# ============================================================================
 # 2. basic_data_daily_job
 # ============================================================================
 class TestBasicDataDailyJob(unittest.TestCase):

@@ -148,13 +148,11 @@ python fetch_data_job.py 2024-06-15
 
 ```powershell
 cd quantia\job
+# 不带参数：按最近交易日运行
 python execute_daily_job.py
-```
-
-日期范围：
-
-```powershell
-python execute_daily_job.py 2024-01-01 2024-01-31
+# 可选：指定单个交易日（仅覆盖记账/新鲜度检查/基本面选股/健康检查等日期相关步骤；
+# 行情/分析等子作业仍按实时数据运行，不支持多日期或区间）
+python execute_daily_job.py 2024-01-15
 ```
 
 ### K 线缓存增量更新

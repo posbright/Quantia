@@ -229,18 +229,75 @@ def _run_stock_spot_buy(date):
         logging.error(f"基本面选股处理异常", exc_info=True)
 
 
-def main():
+def _resolve_run_date(date_arg=None):
+    """解析可选的运行日期参数，返回 (run_date, run_date_nph, overridden)。
+
+    - date_arg 为空：回退 ``trd.get_trade_date_last()``，与历史默认行为完全一致
+      （overridden=False）。无参数的定时任务路径不受任何影响。
+    - date_arg 提供：解析 ``YYYY-MM-DD`` 或 ``YYYYMMDD``，并校验：
+        * 格式合法；
+        * 不晚于今天（不支持未来日期）；
+        * 为交易日（按交易日历，日历不可用时降级为工作日判断）。
+      指定日期场景不区分盘中/盘后，run_date 与 run_date_nph 取同一日期（overridden=True）。
+    - date_arg 非法 / 为多日期或区间：抛出 ``ValueError``，由调用方记录并以非零码退出。
+
+    重要限制：本函数仅决定 execute_daily_job 中"日期相关"步骤（作业记账、数据
+    新鲜度检查、基本面选股 stock_spot_buy、分析完成判定、数据健康检查）所用的日期。
+    行情/选股/分析等子作业内部各自按实时数据运行，**不接受**该日期参数，因此指定历史
+    日期无法真正回补当日的实时快照，仅用于按该日重跑日期相关的派生步骤与记账。
+    """
+    if date_arg is None or not str(date_arg).strip():
+        run_date, run_date_nph = trd.get_trade_date_last()
+        return run_date, run_date_nph, False
+
+    raw = str(date_arg).strip()
+    if ',' in raw or ' ' in raw:
+        raise ValueError(
+            f"暂不支持多日期/区间批量（'{raw}'）：子作业按实时数据运行，无法真正回补历史区间，"
+            f"请一次只指定单个交易日（YYYY-MM-DD）"
+        )
+
+    parsed = None
+    for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            parsed = datetime.datetime.strptime(raw, fmt).date()
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        raise ValueError(f"无法解析日期参数 '{raw}'，期望格式 YYYY-MM-DD 或 YYYYMMDD")
+
+    today = datetime.datetime.now().date()
+    if parsed > today:
+        raise ValueError(f"日期参数 '{raw}' 晚于今天（{today}），不支持未来日期")
+    if not trd.is_trade_date(parsed):
+        raise ValueError(f"日期参数 '{raw}' 不是交易日（周末或节假日）")
+
+    return parsed, parsed, True
+
+
+def main(date_arg=None):
     start = time.time()
     _start = datetime.datetime.now()
     logging.info("######## 任务执行时间: %s #######" % _start.strftime("%Y-%m-%d %H:%M:%S.%f"))
 
-    # 获取交易日期
+    # 获取交易日期（无参数时取最近交易日；可选单日期参数覆盖日期相关步骤）
     try:
-        run_date, run_date_nph = trd.get_trade_date_last()
+        run_date, run_date_nph, _date_overridden = _resolve_run_date(date_arg)
         date_str = run_date_nph.strftime("%Y-%m-%d")
+    except ValueError as e:
+        logging.error(f"命令行日期参数错误，任务终止：{e}")
+        sys.exit(2)
     except Exception as e:
         logging.error("获取交易日期失败，无法继续", exc_info=True)
         return
+
+    if _date_overridden:
+        logging.warning(
+            f"⚠ 已指定运行日期 {date_str}：作业记账、数据新鲜度检查、基本面选股(stock_spot_buy)"
+            f"与数据健康检查将按该日期执行。注意：行情/选股/分析等子作业内部仍按实时数据运行，"
+            f"无法真正回补历史某日的实时快照——指定历史日期主要用于按该日重跑日期相关的派生步骤与记账。"
+        )
 
     overall_start = record_task_start(_JOB_NAME, '__overall__', run_date_nph)
 
@@ -487,4 +544,13 @@ def _data_health_check(pipeline_start, run_date_nph=None):
 
 # main函数入口
 if __name__ == '__main__':
-    main()
+    # 仅支持单个可选日期参数（YYYY-MM-DD / YYYYMMDD）。多参数（区间/多日期）
+    # 明确拒绝而非静默忽略——子作业按实时数据运行，无法真正回补历史区间。
+    _extra_args = [a for a in sys.argv[1:] if a and a.strip()]
+    if len(_extra_args) > 1:
+        logging.error(
+            f"execute_daily_job 仅支持单个日期参数（YYYY-MM-DD）；检测到多个参数 {_extra_args}，已拒绝。"
+            f"子作业按实时数据运行，无法回补历史区间。"
+        )
+        sys.exit(2)
+    main(_extra_args[0] if _extra_args else None)
