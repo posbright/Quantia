@@ -188,7 +188,11 @@ const buildOption = (): echarts.EChartsOption => {
     xAxis: xAxes,
     yAxis: yAxes,
     dataZoom: [
-      { type: 'inside', xAxisIndex: Array.from({ length: xCount }, (_, i) => i), start: 0, end: 100, throttle: 80 },
+      {
+        type: 'inside', xAxisIndex: Array.from({ length: xCount }, (_, i) => i), start: 0, end: 100, throttle: 80,
+        zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false,
+        preventDefaultMouseMove: true,
+      },
       { type: 'slider', xAxisIndex: Array.from({ length: xCount }, (_, i) => i), start: 0, end: 100, bottom: 6, height: 18, realtime: false },
     ],
     series,

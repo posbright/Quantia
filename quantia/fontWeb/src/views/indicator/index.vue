@@ -652,7 +652,11 @@ const renderChart = () => {
     xAxis: xAxes,
     yAxis: yAxes,
     dataZoom: [
-      { type: 'inside', xAxisIndex: zoomXIndices, start: zoomStart, end: 100, throttle: 80 },
+      {
+        type: 'inside', xAxisIndex: zoomXIndices, start: zoomStart, end: 100, throttle: 80,
+        zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false,
+        preventDefaultMouseMove: true,
+      },
       {
         show: true, xAxisIndex: zoomXIndices, type: 'slider',
         bottom: 6, height: 18, start: zoomStart, end: 100,
