@@ -416,6 +416,23 @@ class proxys(metaclass=singleton_type):
         """手动触发刷新"""
         threading.Thread(target=self._refresh_cycle, daemon=True).start()
 
+    def ensure_https_upgraded(self):
+        """公开接口：对池中尚未验证 HTTPS 的代理补充 HTTPS 隧道验证（阻塞至完成）。
+
+        供常驻预热守护周期性调用，为 https:// 接口（如东财股票实时行情
+        push2.eastmoney.com HTTPS 端点）持续养出 https_ok 代理。
+        若无待升级代理，方法内部立即返回。
+        """
+        self._upgrade_https_in_background()
+
+    def persist(self):
+        """公开接口：将当前可用代理及数据源统计落盘到磁盘缓存。
+
+        磁盘缓存是 cron 短命进程之间共享可用代理的唯一载体，预热守护
+        通过持续落盘，让每个短进程启动即可从缓存秒加载可用代理。
+        """
+        self._save_disk_cache()
+
     def _trigger_emergency_refresh(self):
         """
         代理池耗尽时触发紧急补充（异步，不阻塞调用方）。
