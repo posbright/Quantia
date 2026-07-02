@@ -187,4 +187,29 @@ onBeforeUnmount(() => {
   background: var(--el-fill-color-light);
   font-weight: 600;
 }
+
+/* 移动端：输入框整行、内边距收窄、宽报告表格可横向滚动 */
+@media (max-width: 767.98px) {
+  .report-compare-page {
+    padding: 12px;
+  }
+  .compare-inputs {
+    gap: 8px;
+  }
+  .stock-input {
+    width: 100%;
+  }
+  .compare-inputs > .el-button {
+    width: 100%;
+  }
+  .vs-label {
+    width: 100%;
+    text-align: center;
+  }
+  .report-content :deep(table) {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}
 </style>

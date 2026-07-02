@@ -460,4 +460,33 @@ watch(
   width: 100%;
   height: 320px;
 }
+
+/* 移动端：选择器整行堆叠、图表降高、区间切换换行 */
+@media (max-width: 767.98px) {
+  .fct-picker {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .fct-picker :deep(.el-select) {
+    width: 100% !important;
+  }
+  .fct-radar {
+    height: 260px;
+  }
+  .fct-nav {
+    height: 240px;
+  }
+  .fct-nav-head {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .fct-table {
+    font-size: 12px;
+  }
+  .fct-table th,
+  .fct-table td {
+    padding: 6px 6px;
+  }
+}
 </style>
