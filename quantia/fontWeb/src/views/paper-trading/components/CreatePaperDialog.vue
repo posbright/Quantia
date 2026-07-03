@@ -28,6 +28,7 @@
           filterable
           :loading="backtestsLoading"
           :disabled="!form.strategy_id"
+          @change="$emit('backtest-change', $event)"
         >
           <el-option
             v-for="bt in strategyBacktests"
@@ -101,6 +102,7 @@ defineProps<{
 
 defineEmits<{
   (e: 'strategy-change', val: number | null): void
+  (e: 'backtest-change', val: number | null): void
   (e: 'submit'): void
 }>()
 
