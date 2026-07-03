@@ -219,6 +219,50 @@ export function getKlineData(params: KlineParams) {
   return request({ url: '/api/kline', method: 'get', params })
 }
 
+/** K线预测（AgentPit kpred 代理） */
+export interface KpredParams {
+  code: string
+  days?: number  // 1~30, default 5
+}
+export interface KpredPrediction {
+  date: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume?: number
+}
+export interface KpredFactor {
+  key: string
+  label: string
+  score: number
+  weight: number
+  contribution: number
+}
+export interface KpredPro {
+  composite_score: number
+  rating: string
+  confidence: string
+  conflict_level: string
+  adj_return_pct: number
+  factor_return_pct: number
+  kronos_raw_return_pct: number
+  sigma_daily_pct: number
+  factors: KpredFactor[]
+}
+export interface KpredResult {
+  symbol: string
+  name: string
+  last_close: number
+  last_date: string
+  predictions: KpredPrediction[]
+  pro: KpredPro
+  latencyMs?: number
+}
+export function getKpred(params: KpredParams) {
+  return request({ url: '/api/kpred', method: 'post', data: params })
+}
+
 /** 股票财务摘要（估值 + 最新财务 + 历史序列） */
 export interface FinancialHistoryItem {
   report_date: string

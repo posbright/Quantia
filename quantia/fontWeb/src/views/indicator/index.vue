@@ -3,7 +3,7 @@ import { ref, shallowRef, onMounted, onUnmounted, onActivated, onDeactivated, co
 import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
-import { getKlineData, getFinancialSummary, getBacktestHistory, type KlineParams, type FinancialSummaryResult } from '@/api/stock'
+import { getKlineData, getFinancialSummary, getBacktestHistory, getKpred, type KlineParams, type FinancialSummaryResult, type KpredResult, type KpredPrediction } from '@/api/stock'
 import { getReportHistory, getStockQuote, getAttentionList, setAttention, type ReportHistoryItem, type StockQuote } from '@/api/report'
 import { getStrategyHistory } from '@/api/strategy'
 import { ChatDotRound, ArrowDown, Star, StarFilled } from '@element-plus/icons-vue'
@@ -125,6 +125,53 @@ const klineDates = computed<string[]>(() => klineData.value?.dates || [])
 const codeStr = computed(() => code.value || '')
 const ciOverlay = useCustomIndicatorOverlay(codeStr, currentPeriod, klineDates)
 
+// === K线预测（AgentPit kpred） ===
+const predEnabled = ref(false)
+const predDays = ref(5)
+const predDaysOptions = [3, 5, 10]
+const predLoading = ref(false)
+const predData = ref<KpredResult | null>(null)
+
+const loadPrediction = async () => {
+  if (!code.value) return
+  predLoading.value = true
+  predData.value = null
+  try {
+    const res = await getKpred({ code: code.value, days: predDays.value }) as any
+    const body = res?.code !== undefined ? res : res?.data
+    if (body?.code === 0 && body.data) {
+      predData.value = body.data as KpredResult
+    } else {
+      ElMessage.warning(body?.msg || 'K线预测请求失败')
+    }
+  } catch (e: any) {
+    ElMessage.error('K线预测服务异常')
+  } finally {
+    predLoading.value = false
+    await nextTick()
+    renderChart()
+  }
+}
+
+watch(predEnabled, (v) => {
+  if (v && !predData.value) loadPrediction()
+  else renderChart()
+})
+watch(predDays, () => {
+  if (predEnabled.value) loadPrediction()
+})
+// 切换股票时清空预测数据
+watch(code, () => {
+  predData.value = null
+  if (predEnabled.value) loadPrediction()
+})
+// 非日K时禁用预测展示（API 仅返回日K预测）
+watch(currentPeriod, (p) => {
+  if (p !== 'daily' && predEnabled.value) {
+    predEnabled.value = false
+  }
+})
+
 const { isMobile, breakpoint } = useResponsive()
 
 // 当前是否展示技术副图（MACD/KDJ/...）
@@ -230,9 +277,19 @@ const renderChart = () => {
     useDirtyRect: false,
   })
 
-  const dates: string[] = d.dates
-  const ohlc: number[][] = d.ohlc
-  const volumes: number[] = d.volumes
+  const dates: string[] = [...d.dates]
+  const ohlc: number[][] = [...d.ohlc]
+  const volumes: number[] = [...d.volumes]
+
+  // === 预测K线数据追加 ===
+  const predPredictions: KpredPrediction[] = (predEnabled.value && predData.value?.predictions) ? predData.value.predictions : []
+  const predStartIdx = dates.length  // 预测数据起始索引
+  for (const p of predPredictions) {
+    dates.push(p.date)
+    ohlc.push([p.open, p.close, p.low, p.high])
+    volumes.push(p.volume || 0)
+  }
+
   // 逐日 换手率/振幅/涨跌幅（K线接口扩展字段，缺列时为空数组，tooltip 内做兜底）
   const turnoverArr: (number | null)[] = d.turnover || []
   const amplitudeArr: (number | null)[] = d.amplitude || []
@@ -366,9 +423,13 @@ const renderChart = () => {
   if (showBollOnMain) legendData.push('BOLL上轨', 'BOLL中轨', 'BOLL下轨')
 
   // === Series ===
+  // 主K线 data：有预测时，预测区间用 null 填充（让预测 series 独立渲染预测区，避免重叠）
+  const mainOhlcData = predPredictions.length > 0
+    ? [...ohlc.slice(0, predStartIdx), ...new Array(predPredictions.length).fill(null)]
+    : ohlc
   const series: any[] = [
     {
-      name: 'K线', type: 'candlestick', data: ohlc,
+      name: 'K线', type: 'candlestick', data: mainOhlcData,
       itemStyle: {
         color: COLORS.up, color0: COLORS.down,
         borderColor: COLORS.up, borderColor0: COLORS.down,
@@ -397,6 +458,38 @@ const renderChart = () => {
       },
     },
   ]
+
+  // === 预测K线 series（半透明虚线边框，视觉区分于实际K线） ===
+  if (predPredictions.length > 0) {
+    // 预测区域用 null 填充历史部分，只在预测日有值
+    const predOhlcData: (number[] | null)[] = new Array(predStartIdx).fill(null)
+    for (const p of predPredictions) {
+      predOhlcData.push([p.open, p.close, p.low, p.high])
+    }
+    series.push({
+      name: '预测K线',
+      type: 'candlestick',
+      data: predOhlcData,
+      itemStyle: {
+        color: 'rgba(255, 140, 0, 0.5)',
+        color0: 'rgba(0, 180, 120, 0.5)',
+        borderColor: 'rgba(255, 140, 0, 0.8)',
+        borderColor0: 'rgba(0, 180, 120, 0.8)',
+        borderType: 'dashed',
+      },
+      z: 5,
+    })
+    legendData.push('预测K线')
+
+    // 预测区间分界竖线 markLine（在主 K线 series 上标注）
+    series[0].markLine = {
+      silent: true,
+      symbol: 'none',
+      lineStyle: { type: 'dashed', color: '#e6a23c', width: 1.5 },
+      label: { show: true, formatter: '← 预测', position: 'insideEndTop', color: '#e6a23c', fontSize: 10 },
+      data: [{ xAxis: dates[predStartIdx] }],
+    }
+  }
 
   // MA lines
   if (showMA) {
@@ -588,6 +681,40 @@ const renderChart = () => {
     if (idx == null || idx < 0 || !ohlc[idx]) return ''
     const [open, close, low, high] = ohlc[idx]
     const prevClose = idx > 0 && ohlc[idx - 1] ? Number(ohlc[idx - 1][1]) : null
+
+    // === 预测K线区域：展示 Pro 多因子评分 ===
+    if (predPredictions.length > 0 && idx >= predStartIdx) {
+      const pro = predData.value?.pro
+      const predIdx = idx - predStartIdx
+      const predItem = predPredictions[predIdx]
+      let proHtml = ''
+      if (pro) {
+        const ratingCls = pro.composite_score >= 0 ? 'kt-up' : 'kt-down'
+        const factorsHtml = (pro.factors || []).slice(0, 6).map(f =>
+          `<div class="kt-row"><span class="kt-label">${f.label}</span><span class="kt-val">${(f.score * 100).toFixed(0)}分</span><span class="kt-sub">${(f.contribution * 100).toFixed(1)}%贡献</span></div>`
+        ).join('')
+        proHtml = `
+          <div class="kt-sep"></div>
+          <div class="kt-pred-header">Pro 多因子评分</div>
+          <div class="kt-row"><span class="kt-label">综合评分</span><span class="kt-val ${ratingCls}">${pro.composite_score.toFixed(3)}</span></div>
+          <div class="kt-row"><span class="kt-label">评级</span><span class="kt-val ${ratingCls}">${pro.rating}</span></div>
+          <div class="kt-row"><span class="kt-label">置信度</span><span class="kt-val">${pro.confidence}</span></div>
+          <div class="kt-row"><span class="kt-label">因子一致性</span><span class="kt-val">${pro.conflict_level}</span></div>
+          <div class="kt-row"><span class="kt-label">预期收益</span><span class="kt-val ${pro.adj_return_pct >= 0 ? 'kt-up' : 'kt-down'}">${pro.adj_return_pct >= 0 ? '+' : ''}${pro.adj_return_pct.toFixed(2)}%</span></div>
+          <div class="kt-row"><span class="kt-label">日波动率</span><span class="kt-val">${pro.sigma_daily_pct.toFixed(2)}%</span></div>
+          ${factorsHtml ? `<div class="kt-sep"></div><div class="kt-pred-header">因子明细</div>${factorsHtml}` : ''}`
+      }
+      return `
+        <div class="kline-tip kline-tip-pred">
+          <div class="kt-date">${predItem?.date || dates[idx] || ''} <span class="kt-pred-badge">预测</span></div>
+          <div class="kt-row"><span class="kt-label">开盘</span><span class="kt-val">${open?.toFixed(2)}</span></div>
+          <div class="kt-row"><span class="kt-label">最高</span><span class="kt-val">${high?.toFixed(2)}</span></div>
+          <div class="kt-row"><span class="kt-label">最低</span><span class="kt-val">${low?.toFixed(2)}</span></div>
+          <div class="kt-row"><span class="kt-label">收盘</span><span class="kt-val">${close?.toFixed(2)}</span></div>
+          ${proHtml}
+        </div>`
+    }
+
     const pct = (v: number): string => {
       if (prevClose == null || !(prevClose > 0)) return ''
       const p = ((v - prevClose) / prevClose) * 100
@@ -1218,6 +1345,25 @@ onUnmounted(() => {
           </el-checkbox-group>
         </div>
         <CustomIndicatorOverlayBar :state="ciOverlay" />
+        <div v-if="currentPeriod === 'daily'" class="pred-controls">
+          <el-switch v-model="predEnabled" size="small" active-text="预测" inactive-text="" :loading="predLoading" />
+          <el-select
+            v-if="predEnabled"
+            v-model="predDays"
+            size="small"
+            style="width: 80px; margin-left: 6px;"
+          >
+            <el-option v-for="d in predDaysOptions" :key="d" :label="`${d}天`" :value="d" />
+          </el-select>
+          <el-button
+            v-if="predEnabled"
+            size="small"
+            type="warning"
+            :loading="predLoading"
+            style="margin-left: 6px;"
+            @click="loadPrediction"
+          >刷新</el-button>
+        </div>
       </div>
       <div v-if="currentPeriod === 'daily' && strategyMarkDates.length" class="strategy-mark-hint">
         <span class="dot"></span>
@@ -1444,6 +1590,9 @@ onUnmounted(() => {
 .overlay-checks {
   display: flex; align-items: center; gap: 6px;
   .label { font-size: 12px; color: #999; }
+}
+.pred-controls {
+  display: flex; align-items: center; margin-left: 12px;
 }
 
 /* 行情快照栏（实时盘口）—— 扁平、密排，贴合本页东方财富风格 */
@@ -1677,7 +1826,28 @@ onUnmounted(() => {
     .kt-val.kt-down { color: #00a838; }
     .kt-up { color: #ec0000; }
     .kt-down { color: #00a838; }
+    .kt-sub { font-size: 10px; color: #b0b0b0; margin-left: 4px; }
   }
   .kt-sep { height: 1px; background: #f0f0f0; margin: 5px 0; }
+  .kt-pred-badge {
+    display: inline-block;
+    font-size: 10px;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: #e6a23c;
+    color: #fff;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .kt-pred-header {
+    font-weight: 700;
+    font-size: 11px;
+    color: #e6a23c;
+    margin: 3px 0 2px;
+  }
+}
+.kline-tip-pred {
+  min-width: 200px;
+  max-width: 280px;
 }
 </style>

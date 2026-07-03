@@ -40,6 +40,7 @@ import quantia.web.indicatorParamsHandler as indicatorParamsHandler
 import quantia.web.backtestHandler as backtestHandler
 import quantia.web.backtestDashboardHandler as backtestDashboardHandler
 import quantia.web.klineHandler as klineHandler
+import quantia.web.kpredHandler as kpredHandler
 import quantia.web.portfolioBacktestHandler as portfolioBacktestHandler
 import quantia.web.paperTradingHandler as paperTradingHandler
 import quantia.web.tradeSignalHandler as tradeSignalHandler
@@ -104,6 +105,8 @@ class Application(tornado.web.Application):
             (r"/quantia/api/indicator/advisor", indicatorParamsHandler.IndicatorAdvisorHandler),
             # K线数据JSON API
             (r"/quantia/api/kline", klineHandler.GetKlineDataHandler),
+            # K线预测（AgentPit kpred 代理）
+            (r"/quantia/api/kpred", kpredHandler.GetKpredHandler),
             # 股票财务数据
             (r"/quantia/api/stock/financial_summary", stockFinancialHandler.StockFinancialSummaryHandler),
             # 回测验证
