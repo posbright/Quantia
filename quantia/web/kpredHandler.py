@@ -75,7 +75,10 @@ def _do_upstream_request(api_url: str, api_key: str, code: str, days: int, timeo
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         resp_body = resp.read().decode('utf-8')
-        return json.loads(resp_body)
+        try:
+            return json.loads(resp_body)
+        except json.JSONDecodeError:
+            raise ValueError(f'上游返回非 JSON 响应 (HTTP {resp.status}, body[:200]={resp_body[:200]})')
 
 
 class GetKpredHandler(tornado.web.RequestHandler):

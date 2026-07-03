@@ -131,13 +131,16 @@ const predDays = ref(5)
 const predDaysOptions = [3, 5, 10]
 const predLoading = ref(false)
 const predData = ref<KpredResult | null>(null)
+let predRequestSeq = 0  // 请求序列号，防止快速切股时旧请求覆盖新数据
 
 const loadPrediction = async () => {
   if (!code.value) return
   predLoading.value = true
   predData.value = null
+  const seq = ++predRequestSeq
   try {
     const res = await getKpred({ code: code.value, days: predDays.value }) as any
+    if (seq !== predRequestSeq) return  // 已被更新的请求取代，丢弃
     const body = res?.code !== undefined ? res : res?.data
     if (body?.code === 0 && body.data) {
       predData.value = body.data as KpredResult
@@ -145,11 +148,14 @@ const loadPrediction = async () => {
       ElMessage.warning(body?.msg || 'K线预测请求失败')
     }
   } catch (e: any) {
+    if (seq !== predRequestSeq) return
     ElMessage.error('K线预测服务异常')
   } finally {
-    predLoading.value = false
-    await nextTick()
-    renderChart()
+    if (seq === predRequestSeq) {
+      predLoading.value = false
+      await nextTick()
+      renderChart()
+    }
   }
 }
 
