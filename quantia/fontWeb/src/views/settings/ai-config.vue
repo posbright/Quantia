@@ -106,7 +106,7 @@
         </el-form-item>
         <el-form-item>
           <span class="hint">
-            博查需 QUANTIA_AI_BOCHA_API_KEY；Google Search 复用 QUANTIA_AGENTPIT_API_KEY；
+            博查需 QUANTIA_AI_BOCHA_API_KEY；Google Search 需 QUANTIA_GOOGLE_SEARCH_API_KEY；
             Bing 为零配置兜底。首选引擎失败时自动降级到下一个可用引擎。
           </span>
         </el-form-item>

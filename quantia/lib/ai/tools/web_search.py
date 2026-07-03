@@ -12,7 +12,7 @@
 
 支持的引擎：
 - bocha:    博查 AI 搜索（国内首选，结构化 JSON + summary，需 QUANTIA_AI_BOCHA_API_KEY）
-- google:   Google Search via AgentPit（LLM 搜索摘要，需 QUANTIA_AGENTPIT_API_KEY）
+- google:   Google Search via AgentPit（LLM 搜索摘要，需 QUANTIA_GOOGLE_SEARCH_API_KEY）
 - bing:     Bing CN 搜索（零配置兜底）
 
 注：'google' 和 'agentpit' 均指向 AgentPit AI 搜索服务，接受两种标识。
@@ -205,11 +205,11 @@ _AGENTPIT_SEARCH_URL = 'https://api.agentpit.io/v1/open-api/search'
 def _search_agentpit(query: str, top_n: int) -> List[Dict[str, str]]:
     """AgentPit AI 搜索（基于 LLM 的搜索摘要服务）。
 
-    返回单条 AI 生成摘要结果，复用 QUANTIA_AGENTPIT_API_KEY。
+    返回单条 AI 生成摘要结果，使用独立的 QUANTIA_GOOGLE_SEARCH_API_KEY。
     """
-    api_key = (os.environ.get('QUANTIA_AGENTPIT_API_KEY') or '').strip()
+    api_key = (os.environ.get('QUANTIA_GOOGLE_SEARCH_API_KEY') or '').strip()
     if not api_key:
-        raise ToolError('QUANTIA_AGENTPIT_API_KEY 未配置')
+        raise ToolError('QUANTIA_GOOGLE_SEARCH_API_KEY 未配置')
 
     headers = {
         'Authorization': f'Bearer {api_key}',
@@ -277,7 +277,7 @@ def _get_preferred_engine() -> str:
     # 自动检测：优先选有 key 配置的引擎，避免无谓的失败调用
     if os.environ.get('QUANTIA_AI_BOCHA_API_KEY', '').strip():
         return 'bocha'
-    if os.environ.get('QUANTIA_AGENTPIT_API_KEY', '').strip():
+    if os.environ.get('QUANTIA_GOOGLE_SEARCH_API_KEY', '').strip():
         return 'google'
     return 'bing'
 
@@ -398,7 +398,7 @@ class WebSearchTool(Tool):
             # 需要对应 key 才尝试
             if eng == 'bocha' and not os.environ.get('QUANTIA_AI_BOCHA_API_KEY', '').strip():
                 continue
-            if eng == 'google' and not os.environ.get('QUANTIA_AGENTPIT_API_KEY', '').strip():
+            if eng == 'google' and not os.environ.get('QUANTIA_GOOGLE_SEARCH_API_KEY', '').strip():
                 continue
             # bing 无需 key，始终可用
             try:
