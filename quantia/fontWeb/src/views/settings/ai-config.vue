@@ -86,6 +86,33 @@
       </div>
     </el-card>
 
+    <!-- ── Web Search 引擎偏好 ── -->
+    <el-card style="margin-top: 16px">
+      <template #header>
+        <div class="card-header">
+          <span>Web Search 搜索引擎</span>
+        </div>
+      </template>
+      <el-alert type="info" show-icon :closable="false" style="margin-bottom: 12px">
+        设置 AI 助手使用的互联网搜索引擎。未配置 API Key 的引擎会在 fallback 链中自动跳过。
+      </el-alert>
+      <el-form :label-width="isMobile ? '100px' : '140px'" style="max-width: 500px">
+        <el-form-item label="默认引擎">
+          <el-select v-model="webSearchEngine" placeholder="选择搜索引擎" @change="onSearchEngineChange">
+            <el-option label="博查 AI (Bocha)" value="bocha" />
+            <el-option label="Bing CN（零配置）" value="bing" />
+            <el-option label="Google Search (AgentPit)" value="google" />
+          </el-select>
+        </el-form-item>
+        <el-form-item>
+          <span class="hint">
+            博查需 QUANTIA_AI_BOCHA_API_KEY；Google Search 复用 QUANTIA_AGENTPIT_API_KEY；
+            Bing 为零配置兜底。首选引擎失败时自动降级到下一个可用引擎。
+          </span>
+        </el-form-item>
+      </el-form>
+    </el-card>
+
     <el-dialog v-model="dialogVisible" :title="form.id ? '编辑 AI 配置' : '新增 AI 配置'" :fullscreen="isMobile" :width="isMobile ? '100%' : 'min(780px, 92vw)'">
       <el-form :model="form" :label-width="isMobile ? '110px' : '140px'">
         <el-form-item label="名称">
@@ -183,6 +210,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listAIConfigs, saveAIConfig, deleteAIConfig, AIDecisionConfig,
+  getSysconfig, setSysconfig,
 } from '@/api/settings'
 import { aiGetConfig, type AiProviderProfile } from '@/api/ai'
 import { useResponsive } from '@/composables/useResponsive'
@@ -286,8 +314,35 @@ const onDelete = async (row: AIDecisionConfig) => {
   await loadList()
 }
 
+// ── Web Search 引擎偏好 ──
+const webSearchEngine = ref('bocha')
+
+async function loadSearchEngine() {
+  try {
+    const res = await getSysconfig('web_search_engine')
+    if (res.code === 0 && res.data?.value) {
+      webSearchEngine.value = res.data.value
+    }
+  } catch {
+    // 未配置，保持默认
+  }
+}
+
+async function onSearchEngineChange(val: string) {
+  try {
+    const res = await setSysconfig('web_search_engine', val)
+    if (res.code === 0) {
+      ElMessage.success(`搜索引擎已切换为 ${val}`)
+    } else {
+      ElMessage.error(res.msg || '保存失败')
+    }
+  } catch (e: any) {
+    ElMessage.error('保存失败: ' + (e?.message || e))
+  }
+}
+
 onMounted(async () => {
-  await Promise.all([loadList(), loadProviders()])
+  await Promise.all([loadList(), loadProviders(), loadSearchEngine()])
 })
 </script>
 

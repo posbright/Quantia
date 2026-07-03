@@ -2,17 +2,21 @@
 # -*- coding: utf-8 -*-
 """web_search 工具：搜索互联网获取实时信息。
 
-优先级：
-1. 若配置了 QUANTIA_AI_WEB_SEARCH_URL → 调用自建搜索代理（SearXNG 等）
-2. 若配置了 QUANTIA_AI_BOCHA_API_KEY → 使用博查 (Bocha) AI 搜索（首选，国内专用）
-3. 否则使用 Bing CN 搜索作为零配置 fallback
+搜索引擎优先级（支持用户偏好切换）：
+0. 若配置了 QUANTIA_AI_WEB_SEARCH_URL → 调用自建搜索代理（SearXNG 等）
+1. 若用户设置了偏好（env QUANTIA_AI_WEB_SEARCH_ENGINE / DB cn_system_config.web_search_engine）
+   → 优先使用对应引擎（bocha/bing/google）
+2. 默认 fallback 链：自动检测已配置 key 的引擎 → Bing CN 兜底
+3. 未配置 API Key 的引擎自动跳过
 4. 全部失败时优雅降级，返回空结果 + warning
 
-博查 API（推荐）：
-  - 专为 AI 设计的搜索引擎，结构化 JSON + summary 摘要
-  - 支持 freshness 时间过滤、语义排序
-  - 国内 ICP 备案，稳定可达
-  - 注册获取 Key：https://open.bochaai.com/dashboard
+支持的引擎：
+- bocha:    博查 AI 搜索（国内首选，结构化 JSON + summary，需 QUANTIA_AI_BOCHA_API_KEY）
+- google:   Google Search via AgentPit（LLM 搜索摘要，需 QUANTIA_AGENTPIT_API_KEY）
+- bing:     Bing CN 搜索（零配置兜底）
+
+注：'google' 和 'agentpit' 均指向 AgentPit AI 搜索服务，接受两种标识。
+    响应格式: {result: str, tokensUsed: int, latencyMs: int}
 
 自建代理 endpoint 协议（极简）：
   GET <URL>?q=<query>&n=<top_n>
@@ -194,11 +198,95 @@ def _search_bing_cn(query: str, top_n: int) -> List[Dict[str, str]]:
     return results
 
 
+# ── AgentPit AI 搜索 ─────────────────────────────────────────────────────────
+_AGENTPIT_SEARCH_URL = 'https://api.agentpit.io/v1/open-api/search'
+
+
+def _search_agentpit(query: str, top_n: int) -> List[Dict[str, str]]:
+    """AgentPit AI 搜索（基于 LLM 的搜索摘要服务）。
+
+    返回单条 AI 生成摘要结果，复用 QUANTIA_AGENTPIT_API_KEY。
+    """
+    api_key = (os.environ.get('QUANTIA_AGENTPIT_API_KEY') or '').strip()
+    if not api_key:
+        raise ToolError('QUANTIA_AGENTPIT_API_KEY 未配置')
+
+    headers = {
+        'Authorization': f'Bearer {api_key}',
+        'Content-Type': 'application/json',
+    }
+    try:
+        resp = requests.post(
+            _AGENTPIT_SEARCH_URL,
+            json={'query': query},
+            headers=headers,
+            timeout=60,  # AgentPit 搜索延迟较高（实测 ~17s），给足超时
+        )
+    except requests.RequestException as exc:
+        raise ToolError(f'web_search(AgentPit) 网络错误: {exc}') from exc
+
+    if resp.status_code == 401:
+        raise ToolError('web_search(AgentPit) API Key 无效或已过期')
+    if resp.status_code == 429:
+        raise ToolError('web_search(AgentPit) 月度 Token 额度已用完')
+    if resp.status_code >= 400:
+        raise ToolError(f'web_search(AgentPit) HTTP {resp.status_code}: {resp.text[:200]}')
+
+    try:
+        data = resp.json()
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ToolError(f'web_search(AgentPit) 非 JSON 响应: {resp.text[:200]}') from exc
+
+    result_text = (data.get('result') or '').strip()
+    if not result_text:
+        return []
+
+    # AgentPit 返回单条 AI 摘要，包装为统一格式
+    # 响应可能较长（~3000字），保留足够上下文给 LLM 使用
+    return [{
+        'title': f'AI 搜索摘要: {query[:60]}',
+        'url': '',
+        'snippet': result_text[:4000],
+    }]
+
+
+# ── 搜索引擎偏好配置读取 ────────────────────────────────────────────────────
+# 支持的引擎标识：bocha / bing / google / agentpit（google 是 agentpit 的别名）
+_VALID_ENGINES = ('bocha', 'bing', 'google', 'agentpit')
+
+
+def _get_preferred_engine() -> str:
+    """读取用户配置的首选搜索引擎。
+
+    优先级：
+    1. 环境变量 QUANTIA_AI_WEB_SEARCH_ENGINE
+    2. DB cn_system_config.web_search_engine
+    3. 自动检测：bocha key 已配 → 'bocha'；agentpit key 已配 → 'google'；否则 'bing'
+    """
+    env_val = (os.environ.get('QUANTIA_AI_WEB_SEARCH_ENGINE') or '').strip().lower()
+    if env_val in _VALID_ENGINES:
+        return env_val
+    # 尝试从 DB 读取（延迟导入避免循环依赖）
+    try:
+        from quantia.lib.sysconfig import get as sysconfig_get
+        db_val = (sysconfig_get('web_search_engine') or '').strip().lower()
+        if db_val in _VALID_ENGINES:
+            return db_val
+    except Exception:
+        pass
+    # 自动检测：优先选有 key 配置的引擎，避免无谓的失败调用
+    if os.environ.get('QUANTIA_AI_BOCHA_API_KEY', '').strip():
+        return 'bocha'
+    if os.environ.get('QUANTIA_AGENTPIT_API_KEY', '').strip():
+        return 'google'
+    return 'bing'
+
+
 class WebSearchTool(Tool):
     name = 'web_search'
     description = (
         '搜索互联网获取实时新闻、公告、行业动态等信息。'
-        '支持博查AI搜索（推荐）、Bing CN 或自建搜索代理。'
+        '支持博查AI搜索、Google Search (AgentPit)、Bing CN 或自建搜索代理。'
     )
     parameters = {
         'type': 'object',
@@ -269,24 +357,60 @@ class WebSearchTool(Tool):
 
     @staticmethod
     def _search_with_fallback(query: str, top_n: int) -> List[Dict[str, str]]:
-        """内置搜索 fallback 链：博查 (Bocha) → Bing CN。
+        """根据用户偏好选择搜索引擎，失败时 fallback 到 Bing CN。
 
-        优先用博查 AI 搜索（需 QUANTIA_AI_BOCHA_API_KEY）；
-        未配置或失败时降级到 Bing CN（零配置即可用）。
+        偏好优先级：用户配置（env/DB）→ 自动检测 → Bing 兜底
+        任何引擎失败都降级到下一个，最终 Bing CN 作为零配置兜底。
         """
-        # 第一梯队：博查 AI 搜索（国内首选，结构化 + 语义排序）
-        bocha_key = os.environ.get('QUANTIA_AI_BOCHA_API_KEY', '').strip()
-        if bocha_key:
+        preferred = _get_preferred_engine()
+        _logger.debug('[web_search] preferred engine: %s', preferred)
+
+        # 'google' 和 'agentpit' 均映射到 AgentPit 搜索
+        engine_map = {
+            'bocha': ('Bocha', _search_bocha),
+            'google': ('Google Search', _search_agentpit),
+            'agentpit': ('Google Search', _search_agentpit),
+            'bing': ('Bing CN', _search_bing_cn),
+        }
+
+        # 首选引擎优先
+        if preferred in engine_map:
+            name, fn = engine_map[preferred]
             try:
-                results = _search_bocha(query, top_n)
+                results = fn(query, top_n)
                 if results:
                     return results
-                _logger.info('[web_search] Bocha 返回空结果，尝试 Bing CN fallback')
+                _logger.info('[web_search] %s 返回空结果，尝试 fallback', name)
             except ToolError as exc:
-                _logger.info(f'[web_search] Bocha 失败 ({exc})，尝试 Bing CN fallback')
+                _logger.info('[web_search] %s 失败 (%s)，尝试 fallback', name, exc)
 
-        # 第二梯队：Bing CN（零配置，国内可达）
-        return _search_bing_cn(query, top_n)
+        # Fallback 链：按优先级尝试其他引擎（跳过已尝试的和无 key 的）
+        # 注：google/agentpit 是同一引擎，只需尝试一次
+        tried_agentpit = preferred in ('google', 'agentpit')
+        fallback_order = ['bocha', 'google', 'bing']
+        for eng in fallback_order:
+            if eng == preferred:
+                continue
+            # google/agentpit 同源，已试过就跳过
+            if eng == 'google' and tried_agentpit:
+                continue
+            name, fn = engine_map[eng]
+            # 需要对应 key 才尝试
+            if eng == 'bocha' and not os.environ.get('QUANTIA_AI_BOCHA_API_KEY', '').strip():
+                continue
+            if eng == 'google' and not os.environ.get('QUANTIA_AGENTPIT_API_KEY', '').strip():
+                continue
+            # bing 无需 key，始终可用
+            try:
+                results = fn(query, top_n)
+                if results:
+                    return results
+            except ToolError as exc:
+                _logger.info('[web_search] fallback %s 失败 (%s)', name, exc)
+                continue
+
+        # 全部失败，返回空（上层会 warning）
+        return []
 
     def _search_via_proxy(self, url: str, query: str, top_n: int) -> List[Dict[str, str]]:
         """通过自建搜索代理获取结果。"""

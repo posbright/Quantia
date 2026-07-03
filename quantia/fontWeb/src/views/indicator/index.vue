@@ -696,9 +696,10 @@ const renderChart = () => {
       let proHtml = ''
       if (pro) {
         const ratingCls = pro.composite_score >= 0 ? 'kt-up' : 'kt-down'
-        const factorsHtml = (pro.factors || []).slice(0, 6).map(f =>
-          `<div class="kt-row"><span class="kt-label">${f.label}</span><span class="kt-val">${(f.score * 100).toFixed(0)}分</span><span class="kt-sub">${(f.contribution * 100).toFixed(1)}%贡献</span></div>`
-        ).join('')
+        const factorsHtml = (pro.factors || []).slice(0, 6).map(f => {
+          const sCls = f.contribution >= 0 ? 'kt-up' : 'kt-down'
+          return `<div class="kt-row"><span class="kt-label">${f.label}</span><span class="kt-val ${sCls}">${f.score >= 0 ? '+' : ''}${(f.score * 100).toFixed(0)}分</span><span class="kt-sub">${f.contribution >= 0 ? '+' : ''}${(f.contribution * 100).toFixed(1)}%</span></div>`
+        }).join('')
         proHtml = `
           <div class="kt-sep"></div>
           <div class="kt-pred-header">Pro 多因子评分</div>

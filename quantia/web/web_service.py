@@ -63,6 +63,7 @@ import quantia.web.fundPeerCompareHandler as fundPeerCompareHandler
 import quantia.web.fundCompositeAnalysisHandler as fundCompositeAnalysisHandler
 import quantia.web.fundHoldingConfigHandler as fundHoldingConfigHandler
 import quantia.web.fundAiAnalysisHandler as fundAiAnalysisHandler
+import quantia.web.sysconfigHandler as sysconfigHandler
 import quantia.web.fundNavHistoryHandler as fundNavHistoryHandler
 import quantia.web.stockFinancialHandler as stockFinancialHandler
 import quantia.web.selectionScoreHandler as selectionScoreHandler
@@ -300,6 +301,8 @@ class Application(tornado.web.Application):
             (r"/quantia/api/fund/nav_peer", fundNavHistoryHandler.FundNavPeerHandler),
             (r"/quantia/api/fund/ai_analysis", fundAiAnalysisHandler.FundAiAnalysisHandler),
             (r"/quantia/api/fund/holding/config", fundHoldingConfigHandler.FundHoldingConfigHandler),
+            # ── 通用系统配置 ──
+            (r"/quantia/api/sysconfig", sysconfigHandler.SysconfigHandler),
             # ── 性能监控（前端 web-vitals 上报，仅接收不处理）──
             (r"/quantia/api/metric/web_vitals", WebVitalsHandler),
             # ── Vue SPA 路由 ──
