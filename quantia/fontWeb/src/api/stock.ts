@@ -223,6 +223,7 @@ export function getKlineData(params: KlineParams) {
 export interface KpredParams {
   code: string
   days?: number  // 1~30, default 5
+  refresh?: boolean  // true=绕过服务端缓存强制重新预测
 }
 export interface KpredPrediction {
   date: string

@@ -134,37 +134,23 @@ const predData = ref<KpredResult | null>(null)
 const predError = ref('')  // 预测失败时的错误信息（持久显示，直到下次成功或关闭开关）
 let predRequestSeq = 0  // 请求序列号，防止快速切股时旧请求覆盖新数据
 
-// 当日预测缓存：避免同一股票+天数重复请求 API（key: "code_days_YYYY-MM-DD"）
-const predCache = new Map<string, KpredResult>()
-const getPredCacheKey = () => `${code.value}_${predDays.value}_${dayjs().format('YYYY-MM-DD')}`
-
 const loadPrediction = async (forceRefresh = false) => {
   if (!code.value) return
-
-  // 缓存命中：当天已有该股票+天数的预测结果，直接使用
-  const cacheKey = getPredCacheKey()
-  if (!forceRefresh && predCache.has(cacheKey)) {
-    predData.value = predCache.get(cacheKey)!
-    predError.value = ''
-    predLoading.value = false
-    await nextTick()
-    renderChart()
-    return
-  }
-
   predLoading.value = true
   predData.value = null
   predError.value = ''
   const seq = ++predRequestSeq
   try {
-    const res = await getKpred({ code: code.value, days: predDays.value }) as any
+    // 服务端缓存：同一股票+天数+日期只请求一次上游 API，全局共享。
+    // forceRefresh=true 时传 refresh 参数绕过服务端缓存。
+    const params: any = { code: code.value, days: predDays.value }
+    if (forceRefresh) params.refresh = true
+    const res = await getKpred(params) as any
     if (seq !== predRequestSeq) return  // 已被更新的请求取代，丢弃
     const body = res?.code !== undefined ? res : res?.data
     if (body?.code === 0 && body.data) {
       predData.value = body.data as KpredResult
       predError.value = ''
-      // 缓存成功结果（同一天内有效）
-      predCache.set(cacheKey, body.data as KpredResult)
     } else {
       const msg = body?.msg || 'K线预测请求失败'
       predError.value = msg

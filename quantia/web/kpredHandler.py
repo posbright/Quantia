@@ -4,6 +4,7 @@
 K线预测代理 Handler
 
 转发前端请求至 AgentPit kpred API，将 API Key 保持在服务端。
+内置当日缓存：同一股票+天数在同一天内只请求一次上游 API，后续所有用户直接返回缓存。
 
 可配置项（.env / 环境变量）：
   QUANTIA_AGENTPIT_API_KEY  — 必填，AgentPit API Key
@@ -16,6 +17,7 @@ K线预测代理 Handler
 import json
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 import tornado.web
 from tornado.ioloop import IOLoop
@@ -28,6 +30,37 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_URL = 'https://api.agentpit.io/v1/open-api/kpred'
 _DEFAULT_TIMEOUT = 300  # seconds
 _executor = ThreadPoolExecutor(max_workers=4)
+
+# ===== 服务端当日缓存 =====
+# key: "code_days_YYYYMMDD"  value: (timestamp, response_dict)
+# 同一股票+天数+日期的预测结果是确定性的（同模型、同输入数据），与用户无关。
+# 缓存在进程内存中，web_service 重启或跨天自动失效。
+_pred_cache: dict = {}
+_pred_cache_date: str = ''  # 当前缓存所属日期，跨天时清空全部缓存
+
+
+def _get_cache(code: str, days: int) -> dict | None:
+    """查询当日缓存，命中返回 response dict，未命中返回 None"""
+    global _pred_cache, _pred_cache_date
+    today = time.strftime('%Y%m%d')
+    if _pred_cache_date != today:
+        # 跨天：清空前一天的缓存
+        _pred_cache.clear()
+        _pred_cache_date = today
+        return None
+    key = f'{code}_{days}_{today}'
+    return _pred_cache.get(key)
+
+
+def _set_cache(code: str, days: int, data: dict):
+    """写入当日缓存"""
+    global _pred_cache, _pred_cache_date
+    today = time.strftime('%Y%m%d')
+    if _pred_cache_date != today:
+        _pred_cache.clear()
+        _pred_cache_date = today
+    key = f'{code}_{days}_{today}'
+    _pred_cache[key] = data
 
 
 def _get_api_key() -> str:
@@ -129,6 +162,16 @@ class GetKpredHandler(tornado.web.RequestHandler):
         except (TypeError, ValueError):
             days = 5
 
+        # === 服务端缓存命中：同一股票+天数+日期直接返回，无需调用上游 ===
+        refresh = body.get('refresh', False)  # 前端"刷新"按钮传 refresh:true 绕过缓存
+        if not refresh:
+            cached = _get_cache(code, days)
+            if cached is not None:
+                logger.debug('kpred cache hit: %s days=%d', code, days)
+                self.write(json.dumps({'code': 0, 'data': cached, '_cached': True},
+                                      ensure_ascii=False))
+                return
+
         timeout = _get_timeout(body.get('timeout'))
         api_url = _get_api_url()
 
@@ -166,3 +209,5 @@ class GetKpredHandler(tornado.web.RequestHandler):
             return
 
         self.write(json.dumps({'code': 0, 'data': data}, ensure_ascii=False))
+        # 缓存成功的预测结果（当天有效）
+        _set_cache(code, days, data)
