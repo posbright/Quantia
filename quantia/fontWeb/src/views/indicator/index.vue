@@ -131,12 +131,14 @@ const predDays = ref(5)
 const predDaysOptions = [3, 5, 10]
 const predLoading = ref(false)
 const predData = ref<KpredResult | null>(null)
+const predError = ref('')  // 预测失败时的错误信息（持久显示，直到下次成功或关闭开关）
 let predRequestSeq = 0  // 请求序列号，防止快速切股时旧请求覆盖新数据
 
 const loadPrediction = async () => {
   if (!code.value) return
   predLoading.value = true
   predData.value = null
+  predError.value = ''
   const seq = ++predRequestSeq
   try {
     const res = await getKpred({ code: code.value, days: predDays.value }) as any
@@ -144,11 +146,15 @@ const loadPrediction = async () => {
     const body = res?.code !== undefined ? res : res?.data
     if (body?.code === 0 && body.data) {
       predData.value = body.data as KpredResult
+      predError.value = ''
     } else {
-      ElMessage.warning(body?.msg || 'K线预测请求失败')
+      const msg = body?.msg || 'K线预测请求失败'
+      predError.value = msg
+      ElMessage.warning(msg)
     }
   } catch (e: any) {
     if (seq !== predRequestSeq) return
+    predError.value = 'K线预测服务异常，请稍后重试'
     ElMessage.error('K线预测服务异常')
   } finally {
     if (seq === predRequestSeq) {
@@ -161,7 +167,10 @@ const loadPrediction = async () => {
 
 watch(predEnabled, (v) => {
   if (v && !predData.value) loadPrediction()
-  else renderChart()
+  else {
+    if (!v) predError.value = ''
+    renderChart()
+  }
 })
 watch(predDays, () => {
   if (predEnabled.value) loadPrediction()
@@ -1378,6 +1387,15 @@ onUnmounted(() => {
         <span class="dot"></span>
         <span class="txt">{{ strategyMarkName || '策略' }} 历史选中 <b>{{ strategyMarkDates.length }}</b> 次（图钉标注）</span>
       </div>
+      <!-- 预测失败持久提示（历史K线仍正常显示） -->
+      <el-alert
+        v-if="predEnabled && predError && !predLoading"
+        :title="predError"
+        type="warning"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 4px;"
+      />
     </div>
 
     <!-- Chart area -->
