@@ -429,9 +429,11 @@ const renderChart = () => {
   if (showBollOnMain) legendData.push('BOLL上轨', 'BOLL中轨', 'BOLL下轨')
 
   // === Series ===
-  // 主K线 data：有预测时，预测区间用 null 填充（让预测 series 独立渲染预测区，避免重叠）
+  // 主K线 data：有预测时，预测区间用 '-' 填充（让预测 series 独立渲染预测区，避免重叠）
+  // 注意：ECharts 5 candlestick 的 getInitialData 对 null 会抛 "Cannot read properties of null (reading 'value')"，
+  // 必须用 '-' 作为空数据标记。
   const mainOhlcData = predPredictions.length > 0
-    ? [...ohlc.slice(0, predStartIdx), ...new Array(predPredictions.length).fill(null)]
+    ? [...ohlc.slice(0, predStartIdx), ...new Array(predPredictions.length).fill('-')]
     : ohlc
   const series: any[] = [
     {
@@ -467,8 +469,8 @@ const renderChart = () => {
 
   // === 预测K线 series（半透明虚线边框，视觉区分于实际K线） ===
   if (predPredictions.length > 0) {
-    // 预测区域用 null 填充历史部分，只在预测日有值
-    const predOhlcData: (number[] | null)[] = new Array(predStartIdx).fill(null)
+    // 预测区域用 '-' 填充历史部分，只在预测日有值（null 会导致 ECharts 崩溃）
+    const predOhlcData: (number[] | string)[] = new Array(predStartIdx).fill('-')
     for (const p of predPredictions) {
       predOhlcData.push([p.open, p.close, p.low, p.high])
     }
