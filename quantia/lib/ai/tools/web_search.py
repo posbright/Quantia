@@ -11,9 +11,12 @@
 4. 全部失败时优雅降级，返回空结果 + warning
 
 支持的引擎：
-- bocha:    博查 AI 搜索（国内首选，结构化 JSON + summary，需 QUANTIA_AI_BOCHA_API_KEY）
-- google:   Google Search via AgentPit（LLM 搜索摘要，需 QUANTIA_GOOGLE_SEARCH_API_KEY）
-- bing:     Bing CN 搜索（零配置兜底）
+- bocha:    博查 AI 搜索（国内首选，结构化 JSON + summary）
+            env: QUANTIA_WEB_SEARCH_BOCHA_KEY + QUANTIA_WEB_SEARCH_BOCHA_URL
+- google:   Google Search via AgentPit（LLM 搜索摘要）
+            env: QUANTIA_WEB_SEARCH_GOOGLE_KEY + QUANTIA_WEB_SEARCH_GOOGLE_URL
+- bing:     Bing 搜索（零配置兜底，可选配 API Key）
+            env: QUANTIA_WEB_SEARCH_BING_KEY + QUANTIA_WEB_SEARCH_BING_URL
 
 注：'google' 和 'agentpit' 均指向 AgentPit AI 搜索服务，接受两种标识。
     响应格式: {result: str, tokensUsed: int, latencyMs: int}
@@ -55,14 +58,15 @@ _COMMON_HEADERS = {
 }
 
 # ── 博查 (Bocha) AI 搜索 ────────────────────────────────────────────────────
-_BOCHA_API_URL = 'https://api.bochaai.com/v1/web-search'
+_BOCHA_DEFAULT_URL = 'https://api.bochaai.com/v1/web-search'
 
 
 def _search_bocha(query: str, top_n: int) -> List[Dict[str, str]]:
     """博查 AI 搜索（国内首选，结构化 JSON + 语义排序 + 摘要）。"""
-    api_key = os.environ.get('QUANTIA_AI_BOCHA_API_KEY', '').strip()
+    api_key = (os.environ.get('QUANTIA_WEB_SEARCH_BOCHA_KEY') or '').strip()
     if not api_key:
-        raise ToolError('QUANTIA_AI_BOCHA_API_KEY 未配置')
+        raise ToolError('QUANTIA_WEB_SEARCH_BOCHA_KEY 未配置')
+    api_url = (os.environ.get('QUANTIA_WEB_SEARCH_BOCHA_URL') or '').strip() or _BOCHA_DEFAULT_URL
 
     headers = {
         'Authorization': f'Bearer {api_key}',
@@ -77,7 +81,7 @@ def _search_bocha(query: str, top_n: int) -> List[Dict[str, str]]:
     }
     try:
         resp = requests.post(
-            _BOCHA_API_URL,
+            api_url,
             json=payload,
             headers=headers,
             timeout=_TIMEOUT_SEC,
@@ -121,16 +125,23 @@ def _search_bocha(query: str, top_n: int) -> List[Dict[str, str]]:
 
 
 # ── Bing CN ──────────────────────────────────────────────────────────────────
-_BING_URL = 'https://www.bing.com/search'
+_BING_DEFAULT_URL = 'https://www.bing.com/search'
 
 
 def _search_bing_cn(query: str, top_n: int) -> List[Dict[str, str]]:
-    """Bing 搜索（国内外均可访问，优先返回中文结果）。"""
+    """搜索（支持自定义 URL 和 API Key，默认 Bing CN HTML 抓取）。"""
+    api_url = (os.environ.get('QUANTIA_WEB_SEARCH_BING_URL') or '').strip() or _BING_DEFAULT_URL
+    api_key = (os.environ.get('QUANTIA_WEB_SEARCH_BING_KEY') or '').strip()
+
+    headers = dict(_COMMON_HEADERS)
+    if api_key:
+        headers['Ocp-Apim-Subscription-Key'] = api_key
+
     try:
         resp = requests.get(
-            _BING_URL,
+            api_url,
             params={'q': query, 'count': top_n},
-            headers=_COMMON_HEADERS,
+            headers=headers,
             timeout=_TIMEOUT_SEC,
         )
         resp.raise_for_status()
@@ -199,17 +210,18 @@ def _search_bing_cn(query: str, top_n: int) -> List[Dict[str, str]]:
 
 
 # ── AgentPit AI 搜索 ─────────────────────────────────────────────────────────
-_AGENTPIT_SEARCH_URL = 'https://api.agentpit.io/v1/open-api/search'
+_GOOGLE_DEFAULT_URL = 'https://api.agentpit.io/v1/open-api/search'
 
 
 def _search_agentpit(query: str, top_n: int) -> List[Dict[str, str]]:
     """AgentPit AI 搜索（基于 LLM 的搜索摘要服务）。
 
-    返回单条 AI 生成摘要结果，使用独立的 QUANTIA_GOOGLE_SEARCH_API_KEY。
+    返回单条 AI 生成摘要结果，使用独立的 QUANTIA_WEB_SEARCH_GOOGLE_KEY。
     """
-    api_key = (os.environ.get('QUANTIA_GOOGLE_SEARCH_API_KEY') or '').strip()
+    api_key = (os.environ.get('QUANTIA_WEB_SEARCH_GOOGLE_KEY') or '').strip()
     if not api_key:
-        raise ToolError('QUANTIA_GOOGLE_SEARCH_API_KEY 未配置')
+        raise ToolError('QUANTIA_WEB_SEARCH_GOOGLE_KEY 未配置')
+    api_url = (os.environ.get('QUANTIA_WEB_SEARCH_GOOGLE_URL') or '').strip() or _GOOGLE_DEFAULT_URL
 
     headers = {
         'Authorization': f'Bearer {api_key}',
@@ -217,7 +229,7 @@ def _search_agentpit(query: str, top_n: int) -> List[Dict[str, str]]:
     }
     try:
         resp = requests.post(
-            _AGENTPIT_SEARCH_URL,
+            api_url,
             json={'query': query},
             headers=headers,
             timeout=60,  # AgentPit 搜索延迟较高（实测 ~17s），给足超时
@@ -275,9 +287,9 @@ def _get_preferred_engine() -> str:
     except Exception:
         pass
     # 自动检测：优先选有 key 配置的引擎，避免无谓的失败调用
-    if os.environ.get('QUANTIA_AI_BOCHA_API_KEY', '').strip():
+    if os.environ.get('QUANTIA_WEB_SEARCH_BOCHA_KEY', '').strip():
         return 'bocha'
-    if os.environ.get('QUANTIA_GOOGLE_SEARCH_API_KEY', '').strip():
+    if os.environ.get('QUANTIA_WEB_SEARCH_GOOGLE_KEY', '').strip():
         return 'google'
     return 'bing'
 
@@ -396,9 +408,9 @@ class WebSearchTool(Tool):
                 continue
             name, fn = engine_map[eng]
             # 需要对应 key 才尝试
-            if eng == 'bocha' and not os.environ.get('QUANTIA_AI_BOCHA_API_KEY', '').strip():
+            if eng == 'bocha' and not os.environ.get('QUANTIA_WEB_SEARCH_BOCHA_KEY', '').strip():
                 continue
-            if eng == 'google' and not os.environ.get('QUANTIA_GOOGLE_SEARCH_API_KEY', '').strip():
+            if eng == 'google' and not os.environ.get('QUANTIA_WEB_SEARCH_GOOGLE_KEY', '').strip():
                 continue
             # bing 无需 key，始终可用
             try:
