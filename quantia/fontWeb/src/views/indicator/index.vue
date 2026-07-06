@@ -134,8 +134,24 @@ const predData = ref<KpredResult | null>(null)
 const predError = ref('')  // 预测失败时的错误信息（持久显示，直到下次成功或关闭开关）
 let predRequestSeq = 0  // 请求序列号，防止快速切股时旧请求覆盖新数据
 
-const loadPrediction = async () => {
+// 当日预测缓存：避免同一股票+天数重复请求 API（key: "code_days_YYYY-MM-DD"）
+const predCache = new Map<string, KpredResult>()
+const getPredCacheKey = () => `${code.value}_${predDays.value}_${dayjs().format('YYYY-MM-DD')}`
+
+const loadPrediction = async (forceRefresh = false) => {
   if (!code.value) return
+
+  // 缓存命中：当天已有该股票+天数的预测结果，直接使用
+  const cacheKey = getPredCacheKey()
+  if (!forceRefresh && predCache.has(cacheKey)) {
+    predData.value = predCache.get(cacheKey)!
+    predError.value = ''
+    predLoading.value = false
+    await nextTick()
+    renderChart()
+    return
+  }
+
   predLoading.value = true
   predData.value = null
   predError.value = ''
@@ -147,6 +163,8 @@ const loadPrediction = async () => {
     if (body?.code === 0 && body.data) {
       predData.value = body.data as KpredResult
       predError.value = ''
+      // 缓存成功结果（同一天内有效）
+      predCache.set(cacheKey, body.data as KpredResult)
     } else {
       const msg = body?.msg || 'K线预测请求失败'
       predError.value = msg
@@ -1379,7 +1397,7 @@ onUnmounted(() => {
             type="warning"
             :loading="predLoading"
             style="margin-left: 6px;"
-            @click="loadPrediction"
+            @click="loadPrediction(true)"
           >刷新</el-button>
         </div>
       </div>
