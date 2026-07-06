@@ -846,6 +846,80 @@ GET /quantia/api/trade_date
 
 ---
 
+### K线预测（AgentPit kpred 代理）
+
+#### POST `/quantia/api/kpred`
+
+代理转发 K 线预测请求至 AgentPit kpred API，服务端保管 API Key。
+
+**内置当日缓存**：同一股票+天数在同一天内只调用一次上游 API，后续所有用户请求直接返回缓存结果（<10ms）。缓存与用户无关，按 `{code}_{days}_{YYYYMMDD}` 维度全局共享，跨天自动清空。
+
+**请求体 (JSON)**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| code | string | 是 | 6 位 A 股代码 |
+| days | number | 否 | 预测天数 1~30，默认 5 |
+| refresh | boolean | 否 | true=绕过服务端缓存强制重新预测 |
+| timeout | number | 否 | 覆盖请求超时（秒，1~600） |
+
+**成功响应**:
+
+```json
+{
+  "code": 0,
+  "data": {
+    "name": "中际联合",
+    "last_close": 45.98,
+    "last_date": "2026-07-03",
+    "predictions": [
+      {"date": "2026-07-04", "open": 46.1, "high": 47.2, "low": 45.5, "close": 46.8, "volume": 35600}
+    ],
+    "pro": {
+      "composite_score": 0.23,
+      "rating": "偏多",
+      "confidence": "中",
+      "conflict_level": "低",
+      "adj_return_pct": 1.85,
+      "sigma_daily_pct": 2.1,
+      "factors": [{"label": "趋势", "score": 0.6, "contribution": 0.12}]
+    },
+    "latencyMs": 17000
+  },
+  "_cached": true
+}
+```
+
+`_cached: true` 表示命中服务端缓存（未调用上游 API）。
+
+**失败响应**:
+
+| HTTP 状态码 | msg | 说明 |
+|------------|-----|------|
+| 400 | 缺少 code 参数 / code 格式无效 | 参数校验失败 |
+| 401 | API Key 无效 | QUANTIA_AGENTPIT_API_KEY 错误 |
+| 429 | 月度额度已用完 | AgentPit 配额耗尽 |
+| 500 | 服务端未配置 QUANTIA_AGENTPIT_API_KEY | 未配置环境变量 |
+| 502 | 预测服务异常/连接失败 | 上游不可达 |
+
+**环境变量**:
+
+| 变量 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| QUANTIA_AGENTPIT_API_KEY | 是 | - | AgentPit API Key |
+| QUANTIA_KPRED_API_URL | 否 | `https://api.agentpit.io/v1/open-api/kpred` | API 端点 |
+| QUANTIA_KPRED_TIMEOUT | 否 | 300 | 上游超时（秒） |
+
+**前端交互**:
+
+- 指标详情页日K模式下显示"预测"开关，开启后请求本接口
+- 历史K线始终正常渲染，预测失败时显示 `el-alert` 持久提示
+- 预测K线用半透明虚线橙色蜡烛图渲染，与历史K线视觉区分
+- "刷新"按钮传 `refresh: true` 强制绕过缓存重新预测
+- ECharts 5 candlestick 空数据使用 `'-'`（非 null，避免 getInitialData 崩溃）
+
+---
+
 ## 鉴权 API
 
 | 方法 | 路径 | 说明 |
