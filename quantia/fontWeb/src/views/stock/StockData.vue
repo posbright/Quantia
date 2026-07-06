@@ -301,32 +301,37 @@ const goSampleStock = (nameOrCode: string) => {
 }
 
 // 点击"主力净流入最大股"名称 → 进入个股详情页。
-// 数据中仅存名称，需先按名称解析出股票代码（查个股资金流向表），解析成功跳指标详情，失败则降级为个股资金流向搜索。
+// 数据中仅存名称，需先按名称解析出股票代码（依次查 cn_stock_fund_flow → cn_stock_spot），
+// 解析成功跳指标详情，全部失败则提示用户。
 // 注意：名称可能含内部空格（如 "红 宝 丽"），DB 也以相同格式存储，只能去首尾空格、保留内部空格才能 LIKE 命中。
 const goStockDetailByName = async (stockName: string) => {
   const name = String(stockName || '').trim()
   if (!name) return
-  try {
-    const r: any = await getStockData({
-      name: 'cn_stock_fund_flow',
-      keyword: name,
-      page: 1,
-      page_size: 1
-    })
-    const row = (r?.data || [])[0]
-    const code = row && row.code ? String(row.code) : ''
-    if (code) {
-      router.push({
-        path: '/indicator/detail',
-        query: { code, name: row.name || name, date: row.date || selectedDate.value, strategy: 'cn_stock_fund_flow' }
+  // 依次尝试多个表解析股票代码
+  const lookupTables = ['cn_stock_fund_flow', 'cn_stock_spot']
+  for (const tableName of lookupTables) {
+    try {
+      const r: any = await getStockData({
+        name: tableName,
+        keyword: name,
+        page: 1,
+        page_size: 1
       })
-      return
+      const row = (r?.data || [])[0]
+      const code = row && row.code ? String(row.code) : ''
+      if (code) {
+        router.push({
+          path: '/indicator/detail',
+          query: { code, name: row.name || name, date: row.date || selectedDate.value, strategy: 'cn_stock_fund_flow' }
+        })
+        return
+      }
+    } catch {
+      // 当前表查询失败，继续尝试下一张表
     }
-  } catch {
-    // 忽略解析失败，走降级
   }
-  // 降级：跳转个股资金流向并按名称搜索
-  router.push({ path: '/fund-flow/individual', query: { keyword: name } })
+  // 所有表都未解析到代码 → 提示用户，不做无意义跳转
+  ElMessage.warning(`"${name}" 暂无个股数据（该股可能未纳入数据采集范围），无法跳转详情`)
 }
 
 // 资金流向列排序变更（服务端排序）

@@ -24,6 +24,8 @@
           <el-icon><VideoPlay /></el-icon>
           生成报告
         </el-button>
+      </div>
+      <div v-if="currentCode || attentionCount > 0" class="action-row">
         <el-tooltip
           content="忽略历史分析记录，立即重新调用 AI 进行全新分析"
           placement="top"
@@ -1680,7 +1682,15 @@ watch(klineCollapsed, (collapsed) => {
 
 .search-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
+  align-items: center;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
 }
 
@@ -1693,7 +1703,9 @@ watch(klineCollapsed, (collapsed) => {
 }
 
 .search-input {
-  width: 360px;
+  flex: 1 0 280px;
+  max-width: 400px;
+  min-width: 200px;
 }
 
 .suggestion-code {
@@ -2246,11 +2258,15 @@ watch(klineCollapsed, (collapsed) => {
   .search-row {
     flex-wrap: wrap;
   }
+  .action-row {
+    flex-wrap: wrap;
+  }
   .toolbar-row {
     flex-wrap: wrap;
   }
   .search-input {
-    width: 100%;
+    flex: 1 0 100%;
+    max-width: 100%;
   }
   .report-container {
     max-height: none;
@@ -2522,6 +2538,10 @@ watch(klineCollapsed, (collapsed) => {
   .search-row {
     flex-direction: column;
     gap: 8px;
+  }
+  .action-row {
+    flex-wrap: wrap;
+    gap: 4px;
   }
   .toolbar-row {
     flex-wrap: wrap;

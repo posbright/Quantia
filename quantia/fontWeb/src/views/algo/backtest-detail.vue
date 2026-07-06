@@ -532,7 +532,7 @@ function tradeReason(trade: any) {
 }
 
 function decisionStatus(pass: boolean | null, positive = '满足', negative = '偏离') {
-  if (pass == null) return '缺数据'
+  if (pass == null) return '参考'
   return pass ? positive : negative
 }
 
