@@ -26,6 +26,12 @@ def _hist(n=60, turnover=None):
 
 class TestBackfillTurnover(unittest.TestCase):
 
+    def setUp(self):
+        stf.clear_turnover_index_cache()
+
+    def tearDown(self):
+        stf.clear_turnover_index_cache()
+
     def test_gate_skips_db_when_cache_sufficient(self):
         # 近窗口有 >= min_bars(20) 个正换手率 → 不应查库
         h = _hist(60, turnover=[3.0] * 60)
@@ -79,6 +85,60 @@ class TestBackfillTurnover(unittest.TestCase):
         self.assertIsNone(stf.backfill_turnover_from_spot('000001', None))
         empty = pd.DataFrame()
         self.assertTrue(stf.backfill_turnover_from_spot('000001', empty).empty)
+
+
+class TestTurnoverBatchIndex(unittest.TestCase):
+    """批量索引：把每股一次全表扫描降为整轮一次（修复 (date,code) 主键下的按股全扫描）。"""
+
+    def setUp(self):
+        stf.clear_turnover_index_cache()
+
+    def tearDown(self):
+        stf.clear_turnover_index_cache()
+
+    def test_index_built_once_and_serves_many_codes(self):
+        idx = {'000001': {'2026-05-01': 3.0}, '600519': {'2026-05-01': 1.2}}
+        with mock.patch.object(stf, '_build_turnover_index',
+                               return_value=idx) as build:
+            m1 = stf._load_turnover_map('cn_stock_spot', '000001', '2026-01-01')
+            m2 = stf._load_turnover_map('cn_stock_spot', '600519', '2026-01-01')
+            m3 = stf._load_turnover_map('cn_stock_spot', '000002', '2026-01-01')
+        self.assertEqual(build.call_count, 1)  # 只扫描一次全表
+        self.assertEqual(m1, {'2026-05-01': 3.0})
+        self.assertEqual(m2, {'2026-05-01': 1.2})
+        self.assertEqual(m3, {})  # 未在索引中的 code → 空 dict
+
+    def test_index_rebuilds_only_for_earlier_window(self):
+        with mock.patch.object(stf, '_build_turnover_index',
+                               return_value={'000001': {}}) as build:
+            stf._load_turnover_map('cn_stock_spot', '000001', '2026-03-01')
+            # 更晚窗口命中缓存，不重建
+            stf._load_turnover_map('cn_stock_spot', '000001', '2026-04-01')
+            self.assertEqual(build.call_count, 1)
+            # 更早窗口需要更早数据 → 重建一次
+            stf._load_turnover_map('cn_stock_spot', '000001', '2026-01-01')
+            self.assertEqual(build.call_count, 2)
+
+    def test_kill_switch_disables_db(self):
+        h = _hist(60)  # 无 turnover 列
+        with mock.patch.object(stf._cfg, 'get_bool', return_value=False), \
+                mock.patch.object(stf, '_build_turnover_index',
+                                  side_effect=AssertionError('不应查库')):
+            out = stf.backfill_turnover_from_spot('000001', h)
+        self.assertNotIn('turnover', out.columns)  # 未补齐，原样返回
+
+    def test_build_index_dedups_dates_and_groups_by_code(self):
+        df = pd.DataFrame({
+            'code': ['000001', '000001', '600519'],
+            'date': pd.to_datetime(['2026-05-01', '2026-05-02', '2026-05-01']),
+            'turnoverrate': [3.0, 4.0, 1.5],
+        })
+        with mock.patch('quantia.core.stockfetch.pd.read_sql', return_value=df), \
+                mock.patch('quantia.lib.database.checkTableIsExist', return_value=True), \
+                mock.patch('quantia.lib.database.engine', return_value=object()):
+            idx = stf._build_turnover_index('cn_stock_spot', '2026-01-01')
+        self.assertEqual(idx['000001'], {'2026-05-01': 3.0, '2026-05-02': 4.0})
+        self.assertEqual(idx['600519'], {'2026-05-01': 1.5})
 
 
 if __name__ == '__main__':
