@@ -2960,3 +2960,88 @@ def _fallback_kline_from_spot(code, date_start, date_end):
     except Exception as e:
         logging.debug(f"_fallback_kline_from_spot 异常：{code} - {e}")
     return None
+
+
+def _load_turnover_map(table, code, start_dash):
+    """从每日快照表读取 code 自 start_dash 起的 {YYYY-MM-DD: 换手率%} 映射。
+    仅读 MySQL，无外部请求。查询失败/无表/无数据均返回空 dict。"""
+    try:
+        import quantia.lib.database as mdb
+        if not mdb.checkTableIsExist(table):
+            return {}
+        sql = (
+            f"SELECT `date`, `turnoverrate` FROM `{table}` "
+            f"WHERE `code` = %s AND `date` >= %s AND `turnoverrate` IS NOT NULL"
+        )
+        df = pd.read_sql(sql, mdb.engine(), params=(code, start_dash))
+        if df is None or len(df) == 0:
+            return {}
+        out = {}
+        for d, tr in zip(df['date'], df['turnoverrate']):
+            ds = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
+            try:
+                out[ds] = float(tr) if pd.notna(tr) else 0.0
+            except (TypeError, ValueError):
+                out[ds] = 0.0
+        return out
+    except Exception as e:
+        logging.debug(f"_load_turnover_map({table}) 异常：{code} - {e}")
+        return {}
+
+
+def backfill_turnover_from_spot(code, hist_data, tail=None):
+    """按需从 DB 补齐 K 线 DataFrame 的 turnover(换手率%) 列。
+
+    背景：部分本地 qfq 缓存为旧最简格式（仅 OHLCV+amount），或历史行由不提供换手率
+    的数据源（新浪）建立，导致 turnover 缺失/全 0，筹码分布无法计算。DB 的
+    cn_stock_spot / cn_etf_spot 每日快照含完整换手率，可按日期补齐。
+
+    仅读 MySQL，绝不发起外部 API（符合架构规则1：分析管道只读 DB + 缓存）。
+    仅当"近窗口换手率有效样本不足"时才查库；缓存本身已含足够换手率时零开销直接返回。
+
+    Args:
+        code: 股票/ETF 代码
+        hist_data: 含 date 列、时间升序的 K 线 DataFrame
+        tail: 检测/补齐的近窗口长度（缺省 = CYQ lookback + 余量）
+
+    Returns:
+        补齐后的 DataFrame（补不到时原样返回；调用方据 compute 结果决定是否落行）。
+    """
+    try:
+        if hist_data is None or len(hist_data) == 0 or 'date' not in hist_data.columns:
+            return hist_data
+
+        min_bars = _cfg.get_int('QUANTIA_CYQ_MIN_BARS', 20)
+        if tail is None:
+            tail = _cfg.get_int('QUANTIA_CYQ_LOOKBACK', 120) + 10
+        tail = int(tail)
+
+        has_col = 'turnover' in hist_data.columns
+        if has_col:
+            tail_turn = pd.to_numeric(hist_data['turnover'].tail(tail), errors='coerce')
+            if int((tail_turn > 0).sum()) >= min_bars:
+                return hist_data  # 缓存换手率已足够，零查询
+
+        # 规范化日期键（兼容 Timestamp / 'YYYY-MM-DD' / 'YYYYMMDD'）
+        key = hist_data['date'].apply(_to_dash_date_safe)
+        start_dash = str(key.tail(tail).min())
+
+        turnover_map = _load_turnover_map('cn_stock_spot', code, start_dash)
+        if not turnover_map:
+            turnover_map = _load_turnover_map('cn_etf_spot', code, start_dash)
+        if not turnover_map:
+            return hist_data  # 补不到，原样返回
+
+        mapped = key.map(turnover_map)
+        if has_col:
+            existing = pd.to_numeric(hist_data['turnover'], errors='coerce')
+            filled = existing.where(existing > 0, mapped)  # 已有>0 的缓存值优先
+        else:
+            filled = mapped
+
+        hist_data = hist_data.copy()
+        hist_data['turnover'] = pd.to_numeric(filled, errors='coerce').fillna(0.0)
+        return hist_data
+    except Exception as e:
+        logging.debug(f"backfill_turnover_from_spot 异常：{code} - {e}")
+        return hist_data

@@ -1,6 +1,6 @@
 # 筹码分布（历史）数据开发方案
 
-> 状态：已实现（计算模块 + 表结构 + 流式接入 + 回填脚本 + 单测），待生产验证（依赖缓存 turnover 覆盖，见 §2.1）
+> 状态：已实现（计算模块 + 表结构 + 流式接入 + 回填脚本 + 前端页面 + turnover DB 兜底 + 单测），待生产跑批验证。换手率来源见 §2.1（缓存 + DB 双保险，本地陈旧缓存也能算）。
 > 归属阶段：数据分析管道扩展（Analysis pipeline）
 > 关联规则：AGENTS.md 架构规则 1（Fetch/Analysis/Web 分离）、规则 7（列校验）、DB 写库规范（chunksize=500 / NaN 清洗）
 
@@ -37,38 +37,26 @@
 
 > 说明：筹码分布是**估算**（基于日 OHLC + 换手率的三角形分布衰减模型），不是真实账户级持仓。文档、页面与字段命名都应体现"估算"属性，避免误导。
 
-### 2.1 数据前提：缓存必须含 `turnover`（换手率）——已在开发期实测发现
+### 2.1 数据前提：换手率 `turnover` 来源（缓存 + DB 双保险，已实现）
 
-CYQ 衰减模型的每根 K 线权重来自**换手率** `turnover`。K 线缓存 `cache/hist/**/*qfq.gzip.pickle` 的 `turnover` 列由 Fetch 管道写入：
+CYQ 衰减模型的每根 K 线权重来自**换手率** `turnover`。turnover 有两个来源，分析管道均**只读本地/DB、绝不发外网**（符合规则 1）：
 
-- `_fetch_from_sources` 会把新拉取数据列名强制对齐 `CN_STOCK_HIST_DATA`（含 `turnover`），`stock_hist_cache_incremental` 增量 `pd.concat([旧缓存, 新数据])` 后 turnover 列被保留。
-- **因此每日 fetch 追加的新行都带 turnover**；历史旧行若在"turnover 入列"之前抓取则为 `NaN`。经 ~`lookback`（默认 120）个交易日的每日 fetch 后，CYQ 窗口即被 turnover 完整覆盖。
+**来源① K 线缓存**（`cache/hist/**/*qfq.gzip.pickle` 的 `turnover` 列，由 Fetch 管道写入）：
 
-**开发期实测（本地 dev 环境）**：随机抽 120 个本地 qfq 缓存，仅 **1/120** 含非空 turnover——本地缓存陈旧、长期未跑每日 fetch，故本地端到端只能产出极少行。这是**数据新鲜度问题，不是代码 bug**：
+- `_fetch_from_sources` 把新拉取数据列名按位对齐 `CN_STOCK_HIST_DATA`（东财日线第 11 列 `换手率`→`turnover`；腾讯同，新浪不提供则为 0），`stock_hist_cache_incremental` 增量 `pd.concat([旧缓存, 新数据])` 后 turnover 列被保留。
+- **每日 fetch 追加的新行都带 turnover**；历史旧行若在"turnover 入列"之前抓取则为 `NaN`。
 
-- 模块对缺失/全 0 turnover **安全降级**——`total_chips<=0` → 返回 `None` → 不落该行（不产生错误数据，不抛异常）。
-- 生产环境若每日 fetch 已稳定运行且 turnover 已入列一段时间，则近端窗口 turnover 齐备，覆盖率接近全市场。
+**来源② DB 每日快照**（`cn_stock_spot` / `cn_etf_spot` 的 `turnoverrate` 列）：
 
-**上线前置检查（必须先做）**：在目标环境（本地或生产）执行
+- 经远程库实测（`instockdb`）：`cn_stock_spot` 每日约 4930 只、`turnoverrate` **0 个 NULL**、约 93% 为正值，历史 2026-02-03 至今，单只约 95 个交易日。数据完整、每日增长。
+- `quantia/core/stockfetch.py::backfill_turnover_from_spot(code, hist_data)` 在 compute 前**按需**从这两张表按 `date` 补齐 turnover：仅当缓存近窗口有效换手率样本 `< min_bars(20)` 时才查库；缓存已够则零查询直接返回（生产热路径零开销）。A 股查 `cn_stock_spot`，查不到再回退 `cn_etf_spot`。
 
-```python
-import glob, random, pandas as pd
-files = glob.glob('quantia/cache/hist/**/*qfq.gzip.pickle', recursive=True)
-ok = tot = 0
-for f in random.sample(files, min(200, len(files))):
-    try:
-        d = pd.read_pickle(f, compression='gzip'); tot += 1
-        # 只看最近 lookback 根窗口内是否有 turnover
-        if 'turnover' in d.columns and d.tail(120)['turnover'].notna().any():
-            ok += 1
-    except Exception:
-        pass
-print('near-window turnover coverage:', ok, '/', tot)
-```
+**因此本地陈旧缓存（旧最简格式 `[date,open,high,low,close,volume,amount]`，实测 0/400 含 turnover）也能算出真实筹码**——由来源② 兜底。已在 `streaming_analysis_job`（`chip_input = stf.backfill_turnover_from_spot(...)`）与 `backfill_chip_distribution` 两条路径接入。
 
-- 覆盖率高（≳80%）→ 直接跑 `run_analysis`，`cn_stock_chip_distribution` 即有数据。
-- 覆盖率低 → 先让 Fetch 管道对全历史补拉带 turnover 的 K 线（重跑 fetch，使旧行 turnover 从 `NaN` 变为真实值），再跑分析；或接受近端逐日累积、覆盖率随每日 fetch 自然升高。
-- **不要**为了"有数据"而在分析管道里发外网补 turnover（违反规则 1）。turnover 的来源永远是 Fetch 管道。
+**安全降级**：来源①②均补不到 turnover 时，`total_chips<=0` → `compute_chip_metrics` 返回 `None` → 不落该行（不产生错误数据、不抛异常）。
+
+**上线前置检查（可选）**：DB `cn_stock_spot.turnoverrate` 有 ~95 个交易日即可支撑 CYQ 窗口（`min_bars=20`）；随每日 fetch 覆盖度自然增长。**不要**在分析管道里发外网补 turnover（违反规则 1）——来源永远是 Fetch 管道写入的缓存或 DB 快照。
+
 
 ## 3. 算法（与现有 cyq.py / 东财同源）
 

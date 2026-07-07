@@ -100,6 +100,8 @@ def backfill(days=None, max_seconds=None):
         if hist is None or len(hist) == 0 or 'date' not in hist.columns:
             continue
         hist = hist.sort_values('date').reset_index(drop=True)
+        # 按需从 DB(cn_stock_spot/cn_etf_spot) 补齐换手率（旧缓存缺 turnover 时）。仅读 DB，无外部请求。
+        hist = stf.backfill_turnover_from_spot(code, hist)
         n = len(hist)
         # 对最近 days 个交易日，逐日计算"截止该日"的筹码指标
         for end_idx in range(max(0, n - days), n):

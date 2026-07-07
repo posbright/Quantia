@@ -272,7 +272,8 @@ def streaming_analysis(date):
         # --- 筹码分布指标（复用已读的 hist_data，零额外 I/O）---
         # 与指标一致：不因 stale 跳过（个股详情展示需要）。
         try:
-            chip_result = cyqd.compute_chip_metrics(hist_data)
+            chip_input = stf.backfill_turnover_from_spot(code, hist_data)
+            chip_result = cyqd.compute_chip_metrics(chip_input)
             if chip_result is not None:
                 result['chip'] = chip_result
         except Exception as e:
