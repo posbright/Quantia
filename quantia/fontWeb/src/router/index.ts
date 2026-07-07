@@ -318,6 +318,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '低ATR成长', tableName: 'cn_stock_strategy_low_atr', isRealtime: false }
       },
       {
+        path: 'low-ma-convergence',
+        name: 'StrategyLowMaConvergence',
+        component: () => import('@/views/stock/StockData.vue'),
+        meta: { title: '低位均线粘合', tableName: 'cn_stock_strategy_low_ma_convergence', isRealtime: false }
+      },
+      {
         path: 'trend-pullback',
         name: 'StrategyTrendPullback',
         component: () => import('@/views/stock/StockData.vue'),

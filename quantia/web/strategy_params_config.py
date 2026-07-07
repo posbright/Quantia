@@ -99,6 +99,39 @@ TECHNICAL_STRATEGY_PARAMS = {
             }
         ]
     },
+    "low_ma_convergence": {
+        "name": "低位均线粘合",
+        "description": "捕捉价格处于阶段低位，且 MA5/10/20/30/60 多条均线高度靠拢的股票。\n\n"
+                       "选股条件：\n"
+                       "1. 当前收盘价处于近N日高低价区间的中低位，默认不高于80%位置\n"
+                       "2. MA5、MA10、MA20、MA30、MA60 五条均线最大差距 ≤ 均线均值的设定比例\n"
+                       "3. 当前收盘价没有明显远离MA60，避免价格已脱离粘合区\n\n"
+                       "适用场景：寻找长期下跌或横盘后的低位收敛形态，适合等待方向选择。\n"
+                       "风险提示：均线粘合只代表波动收敛，不代表一定向上突破，建议结合成交量和基本面确认。",
+        "strategy_func": "cn_stock_strategy_low_ma_convergence",
+        "groups": [
+            {
+                "group_name": "低位条件",
+                "params": [
+                    {"key": "low_window", "label": "低位观察窗口", "description": "用近N日高低价区间判断当前价格位置",
+                     "type": "number", "value": 120, "min": 60, "max": 500, "step": 10, "unit": "天"},
+                    {"key": "low_position_pct", "label": "最高低位百分位(%)", "description": "收盘价在区间内的位置需不高于此百分位，越低越严格",
+                     "type": "number", "value": 80, "min": 5, "max": 90, "step": 1, "unit": "%"},
+                ]
+            },
+            {
+                "group_name": "均线粘合",
+                "params": [
+                    {"key": "convergence_pct", "label": "最大粘合度(%)", "description": "五条均线最大值与最小值的差距 / 均线均值，越小越严格",
+                     "type": "number", "value": 5.5, "min": 1, "max": 15, "step": 0.5, "unit": "%"},
+                    {"key": "max_close_ma60_dev", "label": "收盘偏离MA60上限(%)", "description": "避免股价已明显脱离长期均线粘合区",
+                     "type": "number", "value": 8, "min": 1, "max": 20, "step": 0.5, "unit": "%"},
+                    {"key": "threshold", "label": "回溯天数", "description": "分析所需的最少历史交易日数，通常与低位观察窗口一致或更长",
+                     "type": "number", "value": 120, "min": 60, "max": 500, "step": 10, "unit": "天"},
+                ]
+            }
+        ]
+    },
     "parking_apron": {
         "name": "停机坪",
         "description": "高位放量涨停后的窄幅整理形态，类似飞机在停机坪暂停准备再次起飞。\n\n"

@@ -297,6 +297,7 @@ async function loadStrategyList() {
         { value: 'backtrace_ma250', label: '回踩年线' },
         { value: 'breakthrough_platform', label: '突破平台' },
         { value: 'low_atr', label: '低ATR成长' },
+        { value: 'low_ma_convergence', label: '低位均线粘合' },
       ]},
       { label: '量价形态', category: 'pat', items: [
         { value: 'climax_limitdown', label: '放量跌停' },

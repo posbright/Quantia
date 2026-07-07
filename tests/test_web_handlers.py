@@ -1477,6 +1477,7 @@ class TestTechnicalStrategyParams(unittest.TestCase):
             'backtrace_ma250', 'breakthrough_platform',
             'low_backtrace_increase', 'turtle_trade',
             'high_tight_flag', 'climax_limitdown', 'low_atr',
+            'low_ma_convergence',
             'indicator_buy', 'indicator_sell', 'fundamental_buy',
         ]
         for k in expected_keys:
