@@ -2981,34 +2981,34 @@ def _build_turnover_index(table, start_dash):
     关键：cn_stock_spot 主键为 (date, code)，`code=? AND date>=?` 的按股查询无法用索引定位
     code（EXPLAIN 实测 range 扫描约 21.6 万行、filtered 仅 9%）。若在流式分析热循环里对 4900+
     只股票逐股查询即约 10 亿次行检查。改为按 date 一次范围扫描（同样约 21.6 万行、filtered 90%）
-    整轮共享，DB 负载由 O(N) 降为 O(1)。"""
+    整轮共享，DB 负载由 O(N) 降为 O(1)。
+
+    约定：表不存在 / 无数据 → 返回空 dict（合法空，可缓存）；DB 连接/查询异常 → 抛出，
+    由 _get_turnover_index 捕获后**不缓存**，下一只股票重试，避免一次瞬时故障毒化整轮。"""
+    import quantia.lib.database as mdb
+    if not mdb.checkTableIsExist(table):
+        return {}
+    sql = (
+        f"SELECT `code`, `date`, `turnoverrate` FROM `{table}` "
+        f"WHERE `date` >= %s AND `turnoverrate` IS NOT NULL"
+    )
+    df = pd.read_sql(sql, mdb.engine(), params=(start_dash,))
     idx = {}
-    try:
-        import quantia.lib.database as mdb
-        if not mdb.checkTableIsExist(table):
-            return idx
-        sql = (
-            f"SELECT `code`, `date`, `turnoverrate` FROM `{table}` "
-            f"WHERE `date` >= %s AND `turnoverrate` IS NOT NULL"
-        )
-        df = pd.read_sql(sql, mdb.engine(), params=(start_dash,))
-        if df is None or len(df) == 0:
-            return idx
-        date_pool = {}  # 复用日期字符串对象，显著降内存（仅约 N 个交易日的去重字符串）
-        for c, d, tr in zip(df['code'], df['date'], df['turnoverrate']):
-            ds = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
-            ds = date_pool.setdefault(ds, ds)
-            try:
-                v = float(tr) if pd.notna(tr) else 0.0
-            except (TypeError, ValueError):
-                v = 0.0
-            m = idx.get(c)
-            if m is None:
-                m = {}
-                idx[c] = m
-            m[ds] = v
-    except Exception as e:
-        logging.debug(f"_build_turnover_index({table}) 异常：{e}")
+    if df is None or len(df) == 0:
+        return idx
+    date_pool = {}  # 复用日期字符串对象，显著降内存（仅约 N 个交易日的去重字符串）
+    for c, d, tr in zip(df['code'], df['date'], df['turnoverrate']):
+        ds = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
+        ds = date_pool.setdefault(ds, ds)
+        try:
+            v = float(tr) if pd.notna(tr) else 0.0
+        except (TypeError, ValueError):
+            v = 0.0
+        m = idx.get(c)
+        if m is None:
+            m = {}
+            idx[c] = m
+        m[ds] = v
     return idx
 
 
@@ -3016,7 +3016,8 @@ def _get_turnover_index(table, start_dash):
     """进程级、线程安全的批量换手率索引访问器（双重检查锁）。
 
     首次（或需要更早窗口时）触发一次全表扫描构建；后续调用命中内存。多线程并发
-    （流式分析用 ThreadPoolExecutor）下用锁串行化构建，最坏重复构建一次但结果正确。"""
+    （流式分析用 ThreadPoolExecutor）下用锁串行化构建，最坏重复构建一次但结果正确。
+    构建抛异常（DB 瞬时故障）时返回空 dict 且**不写缓存**，下一只股票重试。"""
     cached = _TURNOVER_INDEX_CACHE.get(table)
     if cached is not None and cached[0] <= start_dash:
         return cached[1]
@@ -3025,7 +3026,11 @@ def _get_turnover_index(table, start_dash):
         if cached is not None and cached[0] <= start_dash:
             return cached[1]
         build_start = start_dash if cached is None else min(cached[0], start_dash)
-        idx = _build_turnover_index(table, build_start)
+        try:
+            idx = _build_turnover_index(table, build_start)
+        except Exception as e:
+            logging.debug(f"_get_turnover_index 构建失败，暂不缓存（下次重试）：{table} - {e}")
+            return {}
         _TURNOVER_INDEX_CACHE[table] = (build_start, idx)
         return idx
 

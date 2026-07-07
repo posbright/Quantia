@@ -140,6 +140,19 @@ class TestTurnoverBatchIndex(unittest.TestCase):
         self.assertEqual(idx['000001'], {'2026-05-01': 3.0, '2026-05-02': 4.0})
         self.assertEqual(idx['600519'], {'2026-05-01': 1.5})
 
+    def test_transient_build_error_not_cached_then_retries(self):
+        # 第一次构建抛异常（DB 瞬时故障）→ 返回空且不缓存；第二次成功 → 缓存
+        idx_ok = {'000001': {'2026-05-01': 2.0}}
+        with mock.patch.object(stf, '_build_turnover_index',
+                               side_effect=[RuntimeError('db down'), idx_ok]) as build:
+            m1 = stf._load_turnover_map('cn_stock_spot', '000001', '2026-01-01')
+            self.assertEqual(m1, {})  # 故障当次降级为空
+            m2 = stf._load_turnover_map('cn_stock_spot', '000001', '2026-01-01')
+            self.assertEqual(m2, {'2026-05-01': 2.0})  # 重试成功
+            m3 = stf._load_turnover_map('cn_stock_spot', '000001', '2026-01-01')
+        self.assertEqual(build.call_count, 2)  # 成功后命中缓存，不再构建
+        self.assertEqual(m3, {'2026-05-01': 2.0})
+
 
 if __name__ == '__main__':
     unittest.main()
