@@ -73,6 +73,7 @@ from . import breakthrough_platform
 from . import parking_apron
 from . import low_backtrace_increase
 from . import keep_increasing
+from . import low_ma_convergence
 from . import high_tight_flag
 
 __all__ = [
@@ -114,5 +115,6 @@ __all__ = [
     'parking_apron',
     'low_backtrace_increase',
     'keep_increasing',
+    'low_ma_convergence',
     'high_tight_flag'
 ]

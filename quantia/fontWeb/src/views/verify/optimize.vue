@@ -498,6 +498,7 @@ const fallbackStrategyGroups: StrategyGroup[] = [
     { value: 'parking_apron', label: '停机坪', type: 'signal' },
     { value: 'backtrace_ma250', label: '回踩年线', type: 'signal' },
     { value: 'low_atr', label: '低ATR成长', type: 'signal' },
+    { value: 'low_ma_convergence', label: '低位均线粘合', type: 'signal' },
   ], category: 'tech' },
   { label: '形态与趋势', items: [
     { value: 'climax_limitdown', label: '放量跌停', type: 'signal' },

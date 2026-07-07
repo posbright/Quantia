@@ -13,6 +13,7 @@ from quantia.core.strategy import breakthrough_platform
 from quantia.core.strategy import parking_apron
 from quantia.core.strategy import low_backtrace_increase
 from quantia.core.strategy import keep_increasing
+from quantia.core.strategy import low_ma_convergence
 from quantia.core.strategy import high_tight_flag
 from quantia.core.strategy.technical import value_invest_strategies
 
@@ -589,6 +590,23 @@ _keep_increasing_columns.update({
 })
 _keep_increasing_columns.update(TABLE_CN_STOCK_BACKTEST_DATA['columns'])
 
+# 低位均线粘合策略专用列
+_low_ma_convergence_columns = TABLE_CN_STOCK_FOREIGN_KEY['columns'].copy()
+_low_ma_convergence_columns.update({
+    'p_change': {'type': FLOAT, 'cn': '涨跌幅(%)', 'size': 90},
+    'close': {'type': FLOAT, 'cn': '收盘价', 'size': 80},
+    'hit_count': {'type': Integer, 'cn': '命中次数', 'size': 90},
+    'low_position': {'type': FLOAT, 'cn': '低位百分位(%)', 'size': 110},
+    'ma_convergence': {'type': FLOAT, 'cn': '均线粘合度(%)', 'size': 110},
+    'close_ma60_dev': {'type': FLOAT, 'cn': '收盘偏离MA60(%)', 'size': 120},
+    'ma5': {'type': FLOAT, 'cn': '5日均线', 'size': 80},
+    'ma10': {'type': FLOAT, 'cn': '10日均线', 'size': 80},
+    'ma20': {'type': FLOAT, 'cn': '20日均线', 'size': 80},
+    'ma30': {'type': FLOAT, 'cn': '30日均线', 'size': 80},
+    'ma60': {'type': FLOAT, 'cn': '60日均线', 'size': 80},
+})
+_low_ma_convergence_columns.update(TABLE_CN_STOCK_BACKTEST_DATA['columns'])
+
 # 停机坪策略专用列
 _parking_apron_columns = TABLE_CN_STOCK_FOREIGN_KEY['columns'].copy()
 _parking_apron_columns.update({
@@ -768,6 +786,9 @@ TABLE_CN_STOCK_STRATEGIES = [
      'columns': _enter_columns},
     {'name': 'cn_stock_strategy_keep_increasing', 'cn': '均线多头', 'size': 70, 'func': keep_increasing.check,
      'columns': _keep_increasing_columns},
+    {'name': 'cn_stock_strategy_low_ma_convergence', 'cn': '低位均线粘合', 'size': 90,
+     'func': low_ma_convergence.check,
+     'columns': _low_ma_convergence_columns},
     {'name': 'cn_stock_strategy_parking_apron', 'cn': '停机坪', 'size': 70, 'func': parking_apron.check,
      'columns': _parking_apron_columns},
     {'name': 'cn_stock_strategy_backtrace_ma250', 'cn': '回踩年线', 'size': 70, 'func': backtrace_ma250.check,
