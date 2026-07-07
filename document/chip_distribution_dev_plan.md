@@ -156,13 +156,17 @@ print('near-window turnover coverage:', ok, '/', tot)
 - 写库同样 `chunksize=500` + NaN 清洗；按 `(date,code)` 去重覆盖。
 - 该脚本属分析管道：只读缓存 + 写库，**零 API**。
 
-### 5.5 （可选，后续阶段）Web/前端展示
+### 5.5 Web/前端展示（已实现）
 
-本期先交付数据层。若要页面：
+本期已交付前端页面，**复用现有通用数据表基础设施，零新增 handler / 零新增 Vue 组件**：
 
-- 后端：复用现有通用数据表接口（`GetStockDataHandler` 按 `tableName` 提供），在 `web_service.py` 注册路由并在前端 `router/index.ts` 增加 `tableName: 'cn_stock_chip_distribution'` 的菜单项；构建 `dist` 后 copy 到 `quantia/web/static`（规则 8 + restart-and-deploy skill）。
-- 移动端适配：该表 ≥5 列，需按 AGENTS.md 移动端规范提供卡片视图。
-- 标注为独立 Phase，本方案不在首批实现。
+- **后端路由**：无需新增。通用接口 `GET /quantia/api_data?name=cn_stock_chip_distribution&date=...&page=...`（[dataTableHandler.py](../quantia/web/dataTableHandler.py) `GetStockDataHandler`，已在 [web_service.py](../quantia/web/web_service.py) 注册，满足规则 8）。
+- **数据表注册**：[singleton_stock_web_module_data.py](../quantia/core/singleton_stock_web_module_data.py) 新增一条 `web_module_data`（type=股票指标数据，ico=fa fa-pie-chart，`column_names=get_field_cns(..., format_hints=FIELD_FORMAT_MAP)`，`order_by cdatetime DESC`）。**handler 以此白名单校验表名**，注册后接口即可访问。
+- **前端路由/菜单**：[router/index.ts](../quantia/fontWeb/src/router/index.ts) 在「技术指标」分组下新增 `path: 'chip-distribution'`，`component: StockData.vue`，`meta: { title: '筹码分布', tableName: 'cn_stock_chip_distribution', isRealtime: false }`。侧边栏由路由 `meta.title` 自动生成菜单项。
+- **移动端适配**：通用视图 [StockData.vue](../quantia/fontWeb/src/views/stock/StockData.vue) **已内置** `useResponsive` 桌面 `el-table` + 移动端 `.card-list` 卡片视图（`mobileCardColumns`）、`100dvh` 高度、分页移动端简化布局，天然满足 AGENTS.md 移动端规范，无需另写卡片。
+- **列说明 tooltip**：[columnTooltips.ts](../quantia/fontWeb/src/utils/columnTooltips.ts) `commonColumnDescriptions` 增加 `winner_rate/avg_cost/cost_9x/cost_7x/concentration_*` 中文释义。
+- **完整分布曲线**：个股 K 线图右侧筹码峰形图由 [visualization.py](../quantia/core/kline/visualization.py) 实时渲染（既有能力，非本方案改动）。本页提供的是**可筛选/排序/翻页的历史标量指标**。
+- **部署**：改前端后 `npm run build`（含 `vue-tsc`）→ copy `dist/**` 到 [quantia/web/static](../quantia/web/static)；改后端后重启 `web_service.py`（restart-and-deploy skill）。
 
 ## 6. 边界与异常处理
 
