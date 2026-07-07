@@ -4,6 +4,7 @@ import * as echarts from 'echarts'
 import { getStockPatents, getStockPatentsCompare, type PatentData, type PatentCompareItem } from '@/api/stock'
 
 const props = defineProps<{ code: string }>()
+const emit = defineEmits<{ (e: 'loaded', hasData: boolean): void }>()
 
 const data = ref<PatentData | null>(null)
 const reason = ref<string>('')
@@ -78,6 +79,7 @@ const loadPatents = async () => {
     reason.value = '加载失败'
   } finally {
     loading.value = false
+    emit('loaded', !!data.value)
   }
 }
 

@@ -14,6 +14,7 @@ import { useResponsive } from '@/composables/useResponsive'
 import { useChartFullscreen } from '@/composables/useChartFullscreen'
 import ChartFullscreenBtn from '@/components/ChartFullscreenBtn.vue'
 import PatentCard from '@/components/PatentCard.vue'
+import CompanyProfileCard from '@/components/CompanyProfileCard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -114,6 +115,12 @@ const hasExpenseData = computed(() => {
 // === AI 分析历史报告 ===
 const latestReport = ref<ReportHistoryItem | null>(null)
 const reportLoading = ref(false)
+
+// === 专利/护城河卡片是否有数据（无数据则隐藏该卡片）===
+const patentHasData = ref(false)
+const onPatentLoaded = (hasData: boolean) => {
+  patentHasData.value = hasData
+}
 
 // === 关注 / 取消关注（个股详情页入口）===
 const attentionCodes = ref<string[]>([])
@@ -1545,9 +1552,14 @@ onUnmounted(() => {
       <el-empty v-else description="暂无财务数据" :image-size="60" />
     </div>
 
-    <!-- 知识产权 / 专利护城河 (Phase 3a/4) -->
+    <!-- 公司概况 / 基本面 (行业·地区·概念·板块·营收总额，cn_stock_selection 100% 覆盖) -->
     <div v-if="code" class="section-card">
-      <PatentCard :code="code" />
+      <CompanyProfileCard :code="code" :name="stockName" />
+    </div>
+
+    <!-- 知识产权 / 专利护城河 (仅当存在专利数据时显示；无数据自动隐藏) -->
+    <div v-if="code" v-show="patentHasData" class="section-card">
+      <PatentCard :code="code" @loaded="onPatentLoaded" />
     </div>
 
     <!-- 最新 AI 分析报告 -->
