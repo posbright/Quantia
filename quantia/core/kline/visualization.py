@@ -100,10 +100,21 @@ def get_plot_kline(code, stock, date, stock_name):
                        toolbar_location=None, y_axis_location="right")
         p_cyq.xgrid.grid_line_color = None
         p_cyq.xaxis.visible = False
-        cyq_avgcost_line = p_cyq.line(x="x", y="y", color="red", line_width=2, line_dash="dotted")
-        cyq_avgcost_text = p_cyq.add_glyph(ColumnDataSource(dict(x=[], y=[], text=[])),glyph = Text(x="x", y="y", text="text",text_align="center"))
-        cyq_down_varea = p_cyq.varea(x="x", y1="y1", y2=0, fill_alpha=0.3, fill_color="red")
-        cyq_up_varea = p_cyq.varea(x="x", y1="y1", y2=0, fill_alpha=0.3, fill_color="blue")
+        cyq_line_source = ColumnDataSource(dict(x=[], y=[]))
+        cyq_down_source = ColumnDataSource(dict(x=[], y1=[]))
+        cyq_up_source = ColumnDataSource(dict(x=[], y1=[]))
+        cyq_avgcost_line = p_cyq.line(
+            x="x", y="y", source=cyq_line_source,
+            color="red", line_width=2, line_dash="dotted")
+        cyq_avgcost_text = p_cyq.add_glyph(
+            ColumnDataSource(dict(x=[], y=[], text=[])),
+            glyph=Text(x="x", y="y", text="text", text_align="center"))
+        cyq_down_varea = p_cyq.varea(
+            x="x", y1="y1", y2=0, source=cyq_down_source,
+            fill_alpha=0.3, fill_color="red")
+        cyq_up_varea = p_cyq.varea(
+            x="x", y1="y1", y2=0, source=cyq_up_source,
+            fill_alpha=0.3, fill_color="blue")
         json_str_stock = cyq_stock.to_json(orient="records")
         js_array_str_stock = json.dumps(json.loads(json_str_stock), indent=2)
         cqy_callback =  CustomJS.from_file(os.path.join(os.path.dirname(__file__), "cyq.js"), isinit=False, div_cyq=div_cyq, cyq_avgcost_line=cyq_avgcost_line.data_source, cyq_avgcost_text=cyq_avgcost_text.data_source, cyq_down_varea=cyq_down_varea.data_source, cyq_up_varea=cyq_up_varea.data_source, kline_data=js_array_str_stock, k_range=k_length, cyq_days=cyq_days)

@@ -32,6 +32,7 @@ from tornado.ioloop import IOLoop
 from concurrent.futures import ThreadPoolExecutor
 
 import quantia.lib.database as mdb
+from quantia.lib.ai.exceptions import AIError
 import quantia.web.base as webBase
 
 __author__ = 'Quantia'
@@ -720,6 +721,19 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
                 'latency_ms': elapsed_ms,
             }))
 
+    except AIError as exc:
+        raw = str(exc)
+        if '已被管理员禁用' in raw or '预算已耗尽' in raw:
+            _logger.warning(f'[stockReport] Agent 报告生成被额度/功能开关拦截: {exc}')
+            q.put(('error', {'msg': _to_user_friendly_error(exc)}))
+        else:
+            detail = ''
+            status_code = getattr(exc, 'status_code', 0)
+            body = getattr(exc, 'body', '')
+            if status_code or body:
+                detail = f' [status={status_code} body={body}]'
+            _logger.exception(f'[stockReport] Agent 报告生成失败: {exc}{detail}')
+            q.put(('error', {'msg': _to_user_friendly_error(exc)}))
     except Exception as exc:
         # ProviderError 携带上游 status_code/body —— 一并记录，便于定位
         # HTTP 402(账户欠费/余额不足) 等仅凭 "HTTP 402" 无法判断的上游错误。
