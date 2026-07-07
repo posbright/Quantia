@@ -88,6 +88,19 @@ def _envkeys():
     return os.environ
 
 
+def _has_real_api_key(value: str) -> bool:
+    """Return False for empty or template placeholder API keys."""
+    raw = (value or '').strip()
+    if not raw:
+        return False
+    low = raw.lower()
+    placeholder_tokens = (
+        'your_', 'your-', 'your ', 'replace_me', 'placeholder',
+        'xxx', '你的真实key', '你的真实', '填入', '示例',
+    )
+    return not any(token in low for token in placeholder_tokens)
+
+
 def _load_from_db() -> Dict[str, Any]:
     """从 cn_stock_strategy_params 的 ai_model 组读取。
 
@@ -224,7 +237,7 @@ def list_provider_profiles() -> Dict[str, Any]:
         if attr in ('API_BASE', 'BASE_URL'):
             prof['api_base'] = env[k]
         elif attr == 'API_KEY':
-            prof['has_key'] = bool(env[k])
+            prof['has_key'] = _has_real_api_key(env[k])
         elif attr == 'MODELS':
             prof['models'] = [m.strip() for m in env[k].split(',') if m.strip()]
         elif attr == 'DEFAULT_MODEL':

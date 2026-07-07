@@ -320,8 +320,8 @@ class MoatAIService:
             logging.warning("未配置AI API密钥，跳过AI分析")
             return None
         try:
-            from quantia.lib.ai import run_chat
-            return run_chat(
+            from quantia.lib.ai.failover import run_chat_with_failover
+            return run_chat_with_failover(
                 prompt,
                 scene='moat_analysis',
                 # audit-fix-1-P3: 使用专用 user_id，避免与 Web 用户调用共享全局限流桶

@@ -384,11 +384,11 @@ class FundAiAnalysisHandler(webBase.BaseHandler):
 
             # ── 调用 LLM ──
             try:
-                from quantia.lib.ai import run_agent
+                from quantia.lib.ai.failover import run_agent_with_failover
                 from quantia.lib.ai.prompt_loader import load as load_prompt
                 system = load_prompt(_PROMPT_NAME)
                 user_message = build_user_message(ctx, composite)
-                result = run_agent(
+                result = run_agent_with_failover(
                     user_message=user_message,
                     scene=_SCENE,
                     agent=_PROMPT_NAME,

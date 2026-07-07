@@ -9,6 +9,8 @@
 核心入口：
     run_agent_with_failover(*, overrides=None, fallback_chain=None,
                             on_failover=None, **run_agent_kwargs)
+    run_chat_with_failover(prompt, *, overrides=None, fallback_chain=None,
+                           on_failover=None, **run_chat_kwargs)
         - 按 fallback_chain（默认自动构建）依次尝试 run_agent；
         - 命中"可转移"错误（欠费 / 限流 / 上游不可用）→ 切换下一个 provider；
         - 命中不可转移错误（如输出校验失败 ValidationError）→ 立即抛出；
@@ -166,3 +168,53 @@ def run_agent_with_failover(
     if last_exc is not None:
         raise last_exc
     raise AIError('run_agent_with_failover: 故障转移链为空')
+
+
+def run_chat_with_failover(
+    prompt: str,
+    *,
+    overrides: Optional[Dict[str, Any]] = None,
+    fallback_chain: Optional[List[Dict[str, Any]]] = None,
+    on_failover: Optional[Callable[[Dict[str, Any], Dict[str, Any], BaseException], None]] = None,
+    **run_chat_kwargs: Any,
+) -> str:
+    """run_chat 的故障转移封装，用于非流式、无工具的 AI 调用。"""
+    from quantia.lib.ai import run_chat
+
+    chain = fallback_chain if fallback_chain is not None else build_fallback_chain(overrides)
+    if not chain:
+        chain = [dict(overrides or {})]
+
+    total = len(chain)
+    last_exc: Optional[BaseException] = None
+
+    for idx, ov in enumerate(chain):
+        prov_label = (ov or {}).get('provider') or '<default>'
+        try:
+            content = run_chat(prompt, overrides=(ov or None), **run_chat_kwargs)
+            if idx > 0:
+                _logger.info(
+                    '[AI failover] run_chat 已切换到备用 provider=%s model=%s 并成功生成',
+                    prov_label, (ov or {}).get('model') or '<default>',
+                )
+            return content
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            is_last = idx >= total - 1
+            if not should_failover(exc) or is_last:
+                raise
+            next_ov = chain[idx + 1]
+            next_label = (next_ov or {}).get('provider') or '<default>'
+            _logger.warning(
+                '[AI failover] run_chat provider=%s 调用失败 (%s: %s)，切换到 provider=%s 重试',
+                prov_label, type(exc).__name__, exc, next_label,
+            )
+            if on_failover is not None:
+                try:
+                    on_failover(ov, next_ov, exc)
+                except Exception:  # noqa: BLE001
+                    _logger.debug('[AI failover] run_chat on_failover 回调异常', exc_info=True)
+
+    if last_exc is not None:
+        raise last_exc
+    raise AIError('run_chat_with_failover: 故障转移链为空')

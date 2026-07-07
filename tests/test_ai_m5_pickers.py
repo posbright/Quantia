@@ -66,6 +66,12 @@ class ProviderProfileTests(unittest.TestCase):
         for p in data['profiles']:
             self.assertNotIn('api_key', p)
 
+    def test_placeholder_api_key_is_not_available(self):
+        os.environ['QUANTIA_AI_PROVIDER_DEEPSEEK_API_KEY'] = 'sk-你的真实key'
+        data = ai_config.list_provider_profiles()
+        prof = next(p for p in data['profiles'] if p['name'] == 'deepseek')
+        self.assertFalse(prof['has_key'])
+
     def test_provider_name_with_underscore(self):
         # P0-1（六轮）：provider 名包含下划线（如 azure_openai）必须正确解析
         os.environ['QUANTIA_AI_PROVIDER_AZURE_OPENAI_API_BASE'] = 'https://az.example/v1'

@@ -158,5 +158,35 @@ class RunWithFailoverTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 500)
 
 
+class RunChatWithFailoverTests(unittest.TestCase):
+    def test_chat_failover_on_provider_error(self):
+        calls = []
+
+        def fake_run_chat(prompt, *, overrides=None, **kwargs):
+            calls.append((prompt, overrides, kwargs))
+            if len(calls) == 1:
+                raise ProviderError('HTTP 402', status_code=402)
+            return 'OK'
+
+        with mock.patch('quantia.lib.ai.run_chat', side_effect=fake_run_chat):
+            result = fo.run_chat_with_failover(
+                'hello',
+                fallback_chain=[{}, {'provider': 'openai'}],
+                scene='indicator_advisor',
+            )
+
+        self.assertEqual(result, 'OK')
+        self.assertEqual(calls[1][1], {'provider': 'openai'})
+
+    def test_chat_validation_error_no_failover(self):
+        with mock.patch('quantia.lib.ai.run_chat', side_effect=ValidationError('bad')):
+            with self.assertRaises(ValidationError):
+                fo.run_chat_with_failover(
+                    'hello',
+                    fallback_chain=[{}, {'provider': 'openai'}],
+                    scene='indicator_advisor',
+                )
+
+
 if __name__ == '__main__':
     unittest.main()
