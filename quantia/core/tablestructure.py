@@ -469,6 +469,15 @@ FIELD_FORMAT_MAP = {
     'amplitude': {'fmt': 'pct'},
     'period_max': {'fmt': 'price'},
     'pct_change': {'fmt': 'pct', 'color': True},
+    # 筹码分布
+    'winner_rate': {'fmt': 'pct'},
+    'avg_cost': {'fmt': 'price'},
+    'cost_90_low': {'fmt': 'price'},
+    'cost_90_high': {'fmt': 'price'},
+    'concentration_90': {'fmt': 'ratio'},
+    'cost_70_low': {'fmt': 'price'},
+    'cost_70_high': {'fmt': 'price'},
+    'concentration_70': {'fmt': 'ratio'},
     # 回测收益率列
     **{('rate_%s' % i): {'fmt': 'pct', 'color': True} for i in range(1, RATE_FIELDS_COUNT + 1, 1)},
 }
@@ -561,6 +570,23 @@ STOCK_STATS_DATA = {'name': 'calculate_indicator', 'cn': '股票统计/指标计
 TABLE_CN_STOCK_INDICATORS = {'name': 'cn_stock_indicators', 'cn': '股票指标数据',
                              'columns': TABLE_CN_STOCK_FOREIGN_KEY['columns'].copy()}
 TABLE_CN_STOCK_INDICATORS['columns'].update(STOCK_STATS_DATA['columns'])
+
+# 筹码分布指标（截止当日，基于本地 K 线缓存 + CYQ 估算模型；非真实账户级持仓）
+# 只存标量指标，完整分布曲线由 kline/visualization.py 查看个股时实时计算。
+_chip_distribution_columns = TABLE_CN_STOCK_FOREIGN_KEY['columns'].copy()
+_chip_distribution_columns.update({
+    'close': {'type': FLOAT, 'cn': '收盘价', 'size': 80},
+    'winner_rate': {'type': FLOAT, 'cn': '获利比例(%)', 'size': 100},
+    'avg_cost': {'type': FLOAT, 'cn': '平均成本', 'size': 90},
+    'cost_90_low': {'type': FLOAT, 'cn': '90成本-低', 'size': 90},
+    'cost_90_high': {'type': FLOAT, 'cn': '90成本-高', 'size': 90},
+    'concentration_90': {'type': FLOAT, 'cn': '90集中度', 'size': 90},
+    'cost_70_low': {'type': FLOAT, 'cn': '70成本-低', 'size': 90},
+    'cost_70_high': {'type': FLOAT, 'cn': '70成本-高', 'size': 90},
+    'concentration_70': {'type': FLOAT, 'cn': '70集中度', 'size': 90},
+})
+TABLE_CN_STOCK_CHIP_DISTRIBUTION = {'name': 'cn_stock_chip_distribution', 'cn': '筹码分布',
+                                    'columns': _chip_distribution_columns}
 
 _tmp_columns = TABLE_CN_STOCK_FOREIGN_KEY['columns'].copy()
 _tmp_columns.update(TABLE_CN_STOCK_BACKTEST_DATA['columns'])
