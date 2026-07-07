@@ -930,7 +930,7 @@ class TestStreamingAnalysisJob(unittest.TestCase):
         m = self._mod()
         cleaned = set()
         with patch(f'{_mdb}.insert_db_from_df') as mock_insert:
-            m._flush_results({}, {}, {}, {}, TEST_DATE_STR, [], cleaned)
+            m._flush_results({}, {}, {}, {}, {}, TEST_DATE_STR, [], cleaned)
             mock_insert.assert_not_called()
 
     @patch(f'{_mdb}.checkTableIsExist', return_value=False)
@@ -982,7 +982,7 @@ class TestStreamingAnalysisJob(unittest.TestCase):
 
         captured = {}
 
-        def capture_flush(ind, kl, strat, extras, ds, strs, cleaned):
+        def capture_flush(ind, kl, chip, strat, extras, ds, strs, cleaned):
             captured['strategy_results'] = {k: list(v) for k, v in strat.items()}
 
         with patch.object(m.tbs, 'TABLE_CN_STOCK_STRATEGIES', [fake_strategy]), \

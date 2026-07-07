@@ -41,6 +41,7 @@ import quantia.core.stockfetch as stf
 import quantia.core.indicator.calculate_indicator as idr
 import quantia.core.indicator.buy_sell_signal as bss
 import quantia.core.pattern.pattern_recognitions as kpr
+import quantia.core.kline.chip_distribution as cyqd
 from quantia.core.singleton_stock import stock_data
 import quantia.lib.envconfig as _cfg
 
@@ -189,6 +190,7 @@ def streaming_analysis(date):
     # 4. 验证数据库表 schema（旧版表列数不足时自动重建）
     _ensure_table_schema(tbs.TABLE_CN_STOCK_INDICATORS['name'], tbs.TABLE_CN_STOCK_INDICATORS['columns'])
     _ensure_table_schema(tbs.TABLE_CN_STOCK_KLINE_PATTERN['name'], tbs.TABLE_CN_STOCK_KLINE_PATTERN['columns'])
+    _ensure_table_schema(tbs.TABLE_CN_STOCK_CHIP_DISTRIBUTION['name'], tbs.TABLE_CN_STOCK_CHIP_DISTRIBUTION['columns'])
     for strategy in strategies:
         _ensure_table_schema(strategy['name'], strategy['columns'])
 
@@ -215,6 +217,7 @@ def streaming_analysis(date):
     # 6. 初始化结果缓冲区
     indicator_results = {}      # {(date, code, name): pd.Series}
     kline_results = {}          # {(date, code, name): pd.Series}
+    chip_results = {}           # {(date, code, name): dict}  筹码分布指标
     strategy_results = {s['name']: [] for s in strategies}  # {table_name: [(date, code, name)]}
     strategy_extras = {s['name']: {} for s in strategies}   # {table_name: {(date, code, name): {field: value}}}
 
@@ -231,6 +234,7 @@ def streaming_analysis(date):
         result = {
             'indicator': None,
             'kline': None,
+            'chip': None,
             'strategies': {},  # {table_name: True/dict}
             'stale': False,    # 缓存不含目标日期
         }
@@ -264,6 +268,15 @@ def streaming_analysis(date):
                 result['kline'] = kline_result
         except Exception as e:
             logging.info(f"K线形态识别异常：{code} - {e}")
+
+        # --- 筹码分布指标（复用已读的 hist_data，零额外 I/O）---
+        # 与指标一致：不因 stale 跳过（个股详情展示需要）。
+        try:
+            chip_result = cyqd.compute_chip_metrics(hist_data)
+            if chip_result is not None:
+                result['chip'] = chip_result
+        except Exception as e:
+            logging.info(f"筹码分布计算异常：{code} - {e}")
 
         # --- 策略检测 ---
         # 停牌/缓存陈旧的股票（无目标交易日 K 线）不参与当日策略选股：否则会把数月前的
@@ -311,6 +324,8 @@ def streaming_analysis(date):
                         indicator_results[stock] = result['indicator']
                     if result['kline'] is not None:
                         kline_results[stock] = result['kline']
+                    if result['chip'] is not None:
+                        chip_results[stock] = result['chip']
                     for s_name, matched in result['strategies'].items():
                         if matched:
                             strategy_results[s_name].append(stock)
@@ -324,9 +339,10 @@ def streaming_analysis(date):
                     logging.error(f"流式分析处理异常：{code} -", exc_info=True)
 
         # 每批处理完后：写入数据库 + 释放内存
-        _flush_results(indicator_results, kline_results, strategy_results, strategy_extras, date_str, strategies, tables_cleaned)
+        _flush_results(indicator_results, kline_results, chip_results, strategy_results, strategy_extras, date_str, strategies, tables_cleaned)
         indicator_results.clear()
         kline_results.clear()
+        chip_results.clear()
         for k in strategy_results:
             strategy_results[k] = []
         for k in strategy_extras:
@@ -412,7 +428,7 @@ def _ensure_table_schema(table_name, expected_columns):
         logging.error(f"检查表 {table_name} schema 异常（后续写入可能失败）", exc_info=True)
 
 
-def _flush_results(indicator_results, kline_results, strategy_results, strategy_extras, date_str, strategies, tables_cleaned):
+def _flush_results(indicator_results, kline_results, chip_results, strategy_results, strategy_extras, date_str, strategies, tables_cleaned):
     """将缓冲区中的分析结果批量写入数据库"""
 
     # --- 写入指标数据 ---
@@ -428,6 +444,13 @@ def _flush_results(indicator_results, kline_results, strategy_results, strategy_
             _write_kline_results(kline_results, date_str, tables_cleaned)
         except Exception as e:
             logging.error(f"写入K线形态数据异常", exc_info=True)
+
+    # --- 写入筹码分布数据 ---
+    if chip_results:
+        try:
+            _write_chip_results(chip_results, date_str, tables_cleaned)
+        except Exception as e:
+            logging.error(f"写入筹码分布数据异常", exc_info=True)
 
     # --- 写入策略数据 ---
     for strategy in strategies:
@@ -479,6 +502,23 @@ def _write_kline_results(results, date_str, tables_cleaned):
     data = pd.merge(dataKey, dataVal, on=['code'], how='left')
     if date_str != data.iloc[0]['date']:
         data['date'] = date_str
+    mdb.insert_db_from_df(data, table_name, cols_type, False, "`date`,`code`")
+
+
+def _write_chip_results(results, date_str, tables_cleaned):
+    """写入筹码分布指标结果"""
+    table_name = tbs.TABLE_CN_STOCK_CHIP_DISTRIBUTION['name']
+    _clean_table_if_needed(table_name, date_str, tables_cleaned)
+    # 始终提供 cols_type（理由同 _write_indicator_results）。
+    cols_type = tbs.get_field_types(tbs.TABLE_CN_STOCK_CHIP_DISTRIBUTION['columns'])
+
+    # results: {(date, code, name): {field: value}}
+    # 键与值来自同一 dict，迭代顺序一致，直接按列拼接（避免 merge-on-code 的脆弱性）。
+    keys_df = pd.DataFrame(list(results.keys()),
+                           columns=list(tbs.TABLE_CN_STOCK_FOREIGN_KEY['columns']))
+    vals_df = pd.DataFrame(list(results.values()))
+    data = pd.concat([keys_df.reset_index(drop=True), vals_df.reset_index(drop=True)], axis=1)
+    data['date'] = date_str
     mdb.insert_db_from_df(data, table_name, cols_type, False, "`date`,`code`")
 
 
