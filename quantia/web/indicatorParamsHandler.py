@@ -229,8 +229,8 @@ class IndicatorAdvisorHandler(webBase.BaseHandler, ABC):
                 overrides[k_dst] = v
 
         def _call():
-            from quantia.lib.ai import run_chat
-            return run_chat(
+            from quantia.lib.ai.failover import run_chat_with_failover
+            return run_chat_with_failover(
                 prompt,
                 scene='indicator_advisor',
                 system='你是严谨的 A 股量化指标参数顾问，只输出符合要求的 JSON。',

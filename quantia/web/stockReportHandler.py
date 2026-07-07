@@ -629,7 +629,7 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
                       model_overrides: Optional[Dict[str, Any]] = None):
     """在线程中运行 Agent 生成报告，通过 queue 推送进度和文本。"""
     try:
-        from quantia.lib.ai import run_agent
+        from quantia.lib.ai.failover import run_agent_with_failover
         from quantia.lib.ai.feature_switch import check_feature
 
         # 检查功能开关
@@ -659,7 +659,7 @@ def _run_agent_report(code: str, q: queue.Queue, cancel: threading.Event,
         if model_overrides:
             agent_overrides.update(model_overrides)
 
-        result = run_agent(
+        result = run_agent_with_failover(
             user_message=user_message,
             scene='stock_report',
             agent='stock_analyst',
@@ -1087,7 +1087,7 @@ def _run_followup(code: str, report_md: str, question: str,
                   q: queue.Queue, cancel: threading.Event):
     """在线程中运行追问 Agent，复用报告上下文，不重调 Tools。"""
     try:
-        from quantia.lib.ai import run_agent
+        from quantia.lib.ai.failover import run_agent_with_failover
         from quantia.lib.ai.feature_switch import check_feature
 
         check_feature('stock_report')
@@ -1100,7 +1100,7 @@ def _run_followup(code: str, report_md: str, question: str,
         )
 
         started = time.time()
-        result = run_agent(
+        result = run_agent_with_failover(
             user_message=context_msg,
             scene='stock_report',
             agent='stock_analyst',
@@ -1417,12 +1417,12 @@ def _run_batch_summary(codes: List[str], q: queue.Queue, cancel: threading.Event
         if cancel.is_set():
             break
         try:
-            from quantia.lib.ai import run_agent
+            from quantia.lib.ai.failover import run_agent_with_failover
             from quantia.lib.ai.feature_switch import check_feature
             check_feature('stock_report')
 
             started = time.time()
-            result = run_agent(
+            result = run_agent_with_failover(
                 user_message=(
                     f"请为 A 股 {code} 生成一段简短的投资分析摘要，不超过300字。"
                     f"包含：1）当前走势概括 2）主要技术信号 3）资金动向 4）综合评级（看多/看空/中性）"
@@ -1978,11 +1978,11 @@ class StockReportCompareHandler(webBase.BaseHandler, ABC):
 
         def _run_compare():
             try:
-                from quantia.lib.ai import run_agent
+                from quantia.lib.ai.failover import run_agent_with_failover
                 from quantia.lib.ai.feature_switch import check_feature
                 check_feature('stock_report')
 
-                result = run_agent(
+                result = run_agent_with_failover(
                     user_message=(
                         f"请对比分析 A 股 {codes[0]} 和 {codes[1]} 两只股票。\n"
                         f"要求：\n"
@@ -2311,11 +2311,11 @@ class StockReportTranslateHandler(webBase.BaseHandler, ABC):
 
         def _run_translate():
             try:
-                from quantia.lib.ai import run_agent
+                from quantia.lib.ai.failover import run_agent_with_failover
                 from quantia.lib.ai.feature_switch import check_feature
                 check_feature('stock_report')
 
-                result = run_agent(
+                result = run_agent_with_failover(
                     user_message=(
                         f"Please translate the following Chinese stock analysis report "
                         f"into professional English. Keep the Markdown format, tables, "
