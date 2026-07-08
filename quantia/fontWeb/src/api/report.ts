@@ -274,6 +274,11 @@ export interface StockQuote {
   code: string
   name?: string
   date?: string | null
+  industry?: string | null
+  concept?: string | null
+  board?: string | null
+  area?: string | null
+  listing_date?: string | null
   price?: number | null
   change_pct?: number | null
   change_amount?: number | null

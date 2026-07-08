@@ -38,6 +38,46 @@ __author__ = 'Quantia'
 __date__ = '2026/05/23'
 
 _logger = logging.getLogger(__name__)
+_TABLE_COLUMNS_CACHE: Dict[str, set] = {}
+
+
+def _get_table_columns(table_name: str):
+    if table_name in _TABLE_COLUMNS_CACHE:
+        return _TABLE_COLUMNS_CACHE[table_name]
+    try:
+        rows = mdb.executeSqlFetch(
+            """
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+            """, (table_name,))
+        cols = {str(row[0]).lower() for row in (rows or []) if row and row[0] is not None}
+        if cols:
+            _TABLE_COLUMNS_CACHE[table_name] = cols
+            return cols
+    except Exception as exc:
+        _logger.debug(f'[stockReport] schema 查询异常 table={table_name}: {exc}')
+    return set()
+
+
+def _derive_stock_board(code: str, is_hs300=None, is_sz50=None, is_zz500=None):
+    boards = []
+    if code.startswith(('600', '601', '603', '605')):
+        boards.append('沪市主板')
+    elif code.startswith(('000', '001', '002', '003')):
+        boards.append('深市主板')
+    elif code.startswith('300'):
+        boards.append('创业板')
+    elif code.startswith('688'):
+        boards.append('科创板')
+    elif code.startswith(('8', '4', '9')):
+        boards.append('北交所')
+
+    index_flags = ((is_hs300, '沪深300'), (is_sz50, '上证50'), (is_zz500, '中证500'))
+    for flag, label in index_flags:
+        if str(flag or '').strip() in {'是', '1', 'true', 'True', 'Y', 'y'}:
+            boards.append(label)
+    return ', '.join(boards) if boards else None
 
 _REPORT_TABLE = 'cn_stock_ai_report'
 _STREAM_SENTINEL = object()
@@ -1662,10 +1702,38 @@ class StockDataFallbackHandler(webBase.BaseHandler, ABC):
 class StockQuoteHandler(webBase.BaseHandler, ABC):
     """GET /quantia/api/ai/report/quote — 个股实时行情快照（详情页默认展示）。
 
-    单表查询 cn_stock_spot，返回价格/涨跌/量额/市值/估值等行情字段，
+    查询 cn_stock_spot，返回价格/涨跌/量额/市值/估值等行情字段，
     并派生涨停/跌停价、总股本/流通股（spot 表 total_shares/free_shares 常为 0，
-    由市值 ÷ 现价回算）。市盈率(动)优先取 cn_stock_selection（更可靠）。
+    由市值 ÷ 现价回算）。市盈率(动)与公司属性优先取 cn_stock_selection（更可靠）。
     """
+
+    def _load_profile(self, code):
+        profile = {'industry': None, 'concept': None, 'board': None, 'area': None, 'listing_date': None}
+        if not mdb.checkTableIsExist('cn_stock_selection'):
+            return profile
+        required = {'date', 'code', 'industry', 'concept', 'area', 'listing_date', 'is_hs300', 'is_sz50', 'is_zz500'}
+        if not required.issubset(_get_table_columns('cn_stock_selection')):
+            return profile
+        try:
+            rows = mdb.executeSqlFetch(
+                """
+                SELECT industry, concept, area, listing_date, is_hs300, is_sz50, is_zz500
+                FROM cn_stock_selection
+                WHERE code = %s
+                ORDER BY date DESC LIMIT 1
+                """, (code,))
+            if rows:
+                r = rows[0]
+                profile.update({
+                    'industry': r[0] or None,
+                    'concept': r[1] or None,
+                    'board': _derive_stock_board(code, r[4], r[5], r[6]),
+                    'area': r[2] or None,
+                    'listing_date': str(r[3]) if r[3] is not None else None,
+                })
+        except Exception as exc:
+            _logger.debug(f'[stockReport] quote profile 查询异常: {exc}')
+        return profile
 
     @gen.coroutine
     def get(self):
@@ -1713,6 +1781,8 @@ class StockQuoteHandler(webBase.BaseHandler, ABC):
         except Exception as sel_exc:
             _logger.debug(f'[stockReport] quote selection 查询异常: {sel_exc}')
 
+        profile = self._load_profile(code)
+
         # 总市值/流通值单位为万元；total_shares/free_shares 常为 0，用市值回算（股）
         total_cap_wan = r[12]
         free_cap_wan = r[13]
@@ -1734,6 +1804,11 @@ class StockQuoteHandler(webBase.BaseHandler, ABC):
             'name': name,
             'date': str(r[19]) if r[19] is not None else None,
             'price': new_price,
+            'industry': profile['industry'],
+            'concept': profile['concept'],
+            'board': profile['board'],
+            'area': profile['area'],
+            'listing_date': profile['listing_date'],
             'change_pct': r[2],
             'change_amount': r[3],
             'open': r[4],
