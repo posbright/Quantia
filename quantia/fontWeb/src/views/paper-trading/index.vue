@@ -698,6 +698,7 @@
       :frequency-options="frequencyOptions"
       :formatters="{ backtestOptionLabel, retCls, fmtPct }"
       @strategy-change="onCreateStrategyChange"
+      @backtest-change="onCreateBacktestChange"
       @submit="doCreate"
     />
 
@@ -804,6 +805,8 @@ function defaultCreateForm() {
 }
 
 const createForm = ref(defaultCreateForm())
+// 记录最近一次自动生成的默认名称，用于判断用户是否手动改过名称，避免覆盖用户输入
+const lastAutoCreateName = ref('')
 const settingsForm = ref({
   name: '',
   initial_cash: 1000000,
@@ -1443,6 +1446,7 @@ async function loadStrategyBacktests(strategyId: number) {
 
 function openCreateDialog() {
   createForm.value = defaultCreateForm()
+  lastAutoCreateName.value = ''
   strategyBacktests.value = []
   showCreateDialog.value = true
 }
@@ -1616,6 +1620,21 @@ async function onCreateStrategyChange(strategyId: number | null) {
   if (strategyId) await loadStrategyBacktests(strategyId)
 }
 
+// 选择回测后，自动把交易名称填为「策略名-回测收益」，方便区分
+function onCreateBacktestChange(backtestId: number | null) {
+  if (!backtestId) return
+  const bt = strategyBacktests.value.find((b: any) => b.id === backtestId)
+  if (!bt) return
+  const stratName = bt.strategy_name || `策略-${bt.strategy_id ?? ''}`
+  const ret = bt.total_return != null ? fmtPct(bt.total_return) : ''
+  const autoName = ret ? `${stratName}-${ret}` : stratName
+  // 仅当名称为空，或仍是上次自动填充的值时才覆盖，避免冲掉用户手动输入
+  if (!createForm.value.name || createForm.value.name === lastAutoCreateName.value) {
+    createForm.value.name = autoName
+    lastAutoCreateName.value = autoName
+  }
+}
+
 async function loadDetailData(id: number, resetView = true) {
   detailLoading.value = true
   if (resetView) {
@@ -1772,6 +1791,7 @@ async function doCreate() {
       ElMessage.success('模拟盘创建成功')
       showCreateDialog.value = false
       createForm.value = defaultCreateForm()
+      lastAutoCreateName.value = ''
       strategyBacktests.value = []
       loadList()
     } else { ElMessage.error(body?.msg || '创建失败') }

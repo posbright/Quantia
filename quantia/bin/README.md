@@ -141,9 +141,9 @@ run_web.bat
 
 ### 工作流程
 
-1. 激活虚拟环境 `.venv\Scripts\activate.bat`
+1. 解释器选择：`PYTHON_BIN`（环境变量）> 项目本地 `.venv\Scripts\python.exe` > 系统 `python`
 2. 设置 `PYTHONPATH` 为项目根目录
-3. 执行 `python quantia\web\web_service.py`
+3. 执行 `"%PY%" quantia\web\web_service.py`
 
 ### 适用场景
 
@@ -167,9 +167,9 @@ chmod +x run_web.sh
 
 ### 工作流程
 
-1. 自动 source `.venv/bin/activate`（若存在）
+1. 解释器选择：`PYTHON_BIN`（环境变量）> 项目本地 `.venv/bin/python` > 系统 `python3`
 2. 设置 `PYTHONPATH` 和 `LANG=zh_CN.UTF-8`
-3. 执行 `python3 quantia/web/web_service.py`
+3. 执行 `"$PY" quantia/web/web_service.py`
 
 ---
 
@@ -188,14 +188,15 @@ chmod +x restart_web.sh
 
 ### 工作流程
 
-1. `kill` 所有 `web_service.py` 相关进程
-2. 等待 1 秒
-3. `nohup python3 web_service.py &` 在后台启动
-4. 日志输出到同目录 `nohup.out`
+1. 解释器选择：`PYTHON_BIN` > 项目本地 `.venv/bin/python` > 系统 `python3`
+2. 按 `web_service.py` 路径匹配并 `kill` 所有相关进程（不依赖解释器名为 python3）
+3. 等待 2 秒
+4. `nohup "$PY" web_service.py &` 在后台启动
+5. 日志输出到 `$PROJECT_ROOT/quantia/log/web_service.log`
 
 ### 注意事项
 
-- 直接在 `quantia/web/` 目录下执行
+- 可在任意目录执行（脚本自动解析项目根目录）
 - 使用 `ps -ef | grep web_service.py` 查找进程
 
 ---
@@ -216,15 +217,19 @@ run_job.bat [日期参数]
 
 | 参数 | 说明 | 示例 |
 |------|------|------|
-| 无参数 | 执行当天日期的任务 | `run_job.bat` |
-| 单个日期 | 执行指定日期的任务 | `run_job.bat 2024-01-15` |
+| 无参数 | 按最近交易日运行 | `run_job.bat` |
+| 单个交易日 | 按指定交易日运行日期相关步骤 | `run_job.bat 2024-01-15` |
 
 ### 工作流程
 
-1. 激活虚拟环境
-2. 设置 `PYTHONPATH`
-3. 按顺序执行以下 Job：
-   - `execute_daily_job.py` — 每日执行任务入口
+1. 解释器选择：`PYTHON_BIN`（环境变量）> 项目本地 `.venv\Scripts\python.exe` > 系统 `python`
+2. 切换到 `quantia\job` 目录
+3. 执行 `execute_daily_job.py` — 每日执行任务入口
+
+> 注：`execute_daily_job.py` 仅接受**单个**交易日参数（YYYY-MM-DD / YYYYMMDD）。指定日期
+> 只覆盖日期相关步骤（作业记账、数据新鲜度检查、基本面选股、数据健康检查）；
+> 行情/选股/分析等子作业内部按实时数据运行，无法真正回补历史某日的实时快照。
+> 多日期 / 区间参数会被拒绝并以非零码退出。
 
 ### 示例
 

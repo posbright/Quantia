@@ -360,7 +360,7 @@ def _run_batch_backtest(strategy_name, period, limit=30, horizons=None, success_
                   FROM `{table_name}`
                   WHERE `rate_1` IS NOT NULL
                   GROUP BY `date` ORDER BY `date` DESC LIMIT {limit}"""
-        data = pd.read_sql(sql=sql, con=mdb.engine())
+        data = mdb.read_sql_ro(sql=sql)
     except Exception as e:
         # 查询失败（可能是表结构不匹配），尝试动态计算
         if strategy_func is not None:
@@ -450,7 +450,7 @@ def _compute_batch_backtest_onthefly(strategy_func, strategy_cn, strategy_name, 
         spot_table = tbs.TABLE_CN_STOCK_SPOT['name']
         if not mdb.checkTableIsExist(spot_table):
             return {"error": "股票基础数据表不存在，请先运行数据获取任务（fetch_data_job.py）"}
-        stocks_df = pd.read_sql(f"SELECT `code` FROM `{spot_table}`", mdb.engine())
+        stocks_df = mdb.read_sql_ro(f"SELECT `code` FROM `{spot_table}`")
         stock_codes = stocks_df['code'].tolist()
     except Exception as e:
         return {"error": f"获取股票列表失败: {e}"}
@@ -678,7 +678,7 @@ def _get_stock_name(code):
         table = tbs.TABLE_CN_STOCK_SPOT['name']
         if mdb.checkTableIsExist(table):
             sql = f"SELECT `name` FROM `{table}` WHERE `code` = %s LIMIT 1"
-            result = pd.read_sql(sql, mdb.engine(), params=(code,))
+            result = mdb.read_sql_ro(sql, params=(code,))
             if result is not None and len(result) > 0:
                 return result.iloc[0]['name']
     except Exception:

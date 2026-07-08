@@ -200,6 +200,98 @@ class TestExecuteDailyJob(unittest.TestCase):
             mock_saj.assert_called()
             mock_bdj.assert_called()
 
+    @patch(f'{_trd}.get_trade_date_last', side_effect=ValueError('boom'))
+    def test_main_default_path_failure_returns_not_exit(self, mock_td):
+        """无参默认路径下日期解析失败应沿用历史语义（return），
+        绝不 sys.exit(2)——非零退出仅保留给显式传入的非法 CLI 参数。"""
+        edj = self._mod()
+        # 不应抛 SystemExit；应安静返回 None（在进入任何 phase 之前）
+        self.assertIsNone(edj.main())
+        mock_td.assert_called_once()
+
+
+# ============================================================================
+# 1b. execute_daily_job._resolve_run_date (CLI date argument)
+# ============================================================================
+class TestResolveRunDate(unittest.TestCase):
+    """Tests for execute_daily_job._resolve_run_date — optional single-date CLI arg.
+
+    Default behavior (no arg) must remain byte-identical to the historical
+    `trd.get_trade_date_last()` path. Explicit dates are validated (format,
+    not-future, trade-day) and override only the date-aware steps.
+    """
+
+    def _mod(self):
+        import quantia.job.execute_daily_job as edj
+        return edj
+
+    # -- no argument → falls back to get_trade_date_last (unchanged default) --
+    def test_no_arg_falls_back_to_default(self):
+        edj = self._mod()
+        with patch(f'{_trd}.get_trade_date_last',
+                   return_value=(TEST_DATE.date(), TEST_DATE.date())) as mock_last:
+            run_date, run_date_nph, overridden = edj._resolve_run_date()
+            self.assertFalse(overridden)
+            self.assertEqual(run_date, TEST_DATE.date())
+            self.assertEqual(run_date_nph, TEST_DATE.date())
+            mock_last.assert_called_once()
+
+    def test_empty_string_falls_back_to_default(self):
+        edj = self._mod()
+        with patch(f'{_trd}.get_trade_date_last',
+                   return_value=(TEST_DATE.date(), TEST_DATE.date())) as mock_last:
+            _, _, overridden = edj._resolve_run_date('   ')
+            self.assertFalse(overridden)
+            mock_last.assert_called_once()
+
+    # -- valid explicit dates ------------------------------------------------
+    def test_valid_iso_date_overrides(self):
+        edj = self._mod()
+        with patch(f'{_trd}.is_trade_date', return_value=True), \
+             patch(f'{_trd}.get_trade_date_last') as mock_last:
+            run_date, run_date_nph, overridden = edj._resolve_run_date('2026-03-18')
+            self.assertTrue(overridden)
+            self.assertEqual(run_date, datetime.date(2026, 3, 18))
+            self.assertEqual(run_date_nph, datetime.date(2026, 3, 18))
+            # explicit date must NOT call get_trade_date_last
+            mock_last.assert_not_called()
+
+    def test_valid_compact_date_format(self):
+        edj = self._mod()
+        with patch(f'{_trd}.is_trade_date', return_value=True):
+            run_date, run_date_nph, overridden = edj._resolve_run_date('20260318')
+            self.assertTrue(overridden)
+            self.assertEqual(run_date, datetime.date(2026, 3, 18))
+
+    # -- invalid inputs raise ValueError ------------------------------------
+    def test_malformed_date_raises(self):
+        edj = self._mod()
+        with self.assertRaises(ValueError):
+            edj._resolve_run_date('not-a-date')
+
+    def test_future_date_raises(self):
+        edj = self._mod()
+        future = (datetime.datetime.now().date() + datetime.timedelta(days=30)).strftime('%Y-%m-%d')
+        with patch(f'{_trd}.is_trade_date', return_value=True):
+            with self.assertRaises(ValueError):
+                edj._resolve_run_date(future)
+
+    def test_non_trade_date_raises(self):
+        edj = self._mod()
+        with patch(f'{_trd}.is_trade_date', return_value=False):
+            with self.assertRaises(ValueError):
+                edj._resolve_run_date('2026-03-21')  # a Saturday
+
+    def test_comma_list_rejected(self):
+        edj = self._mod()
+        with self.assertRaises(ValueError):
+            edj._resolve_run_date('2026-03-18,2026-03-19')
+
+    def test_range_with_space_rejected(self):
+        edj = self._mod()
+        with self.assertRaises(ValueError):
+            edj._resolve_run_date('2026-03-18 2026-03-19')
+
 
 # ============================================================================
 # 2. basic_data_daily_job
@@ -838,7 +930,7 @@ class TestStreamingAnalysisJob(unittest.TestCase):
         m = self._mod()
         cleaned = set()
         with patch(f'{_mdb}.insert_db_from_df') as mock_insert:
-            m._flush_results({}, {}, {}, {}, TEST_DATE_STR, [], cleaned)
+            m._flush_results({}, {}, {}, {}, {}, TEST_DATE_STR, [], cleaned)
             mock_insert.assert_not_called()
 
     @patch(f'{_mdb}.checkTableIsExist', return_value=False)
@@ -890,7 +982,7 @@ class TestStreamingAnalysisJob(unittest.TestCase):
 
         captured = {}
 
-        def capture_flush(ind, kl, strat, extras, ds, strs, cleaned):
+        def capture_flush(ind, kl, chip, strat, extras, ds, strs, cleaned):
             captured['strategy_results'] = {k: list(v) for k, v in strat.items()}
 
         with patch.object(m.tbs, 'TABLE_CN_STOCK_STRATEGIES', [fake_strategy]), \

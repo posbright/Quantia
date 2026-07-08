@@ -409,9 +409,65 @@ def _query_patent_info(code: str) -> Dict[str, Any]:
     }
 
 
+def _query_company_profile(code: str) -> Dict[str, Any]:
+    """公司概况：主营构成（按行业/产品/地区收入占比+分部毛利率）+ 经营范围。
+
+    数据来自 cn_stock_company_profile（月度采集，季度级稳定）。表未部署或无数据时
+    返回 {}（安全跳过）。主营构成为季度级，附带 report_date 供 LLM 标注、勿当实时。
+    """
+    from quantia.lib.database import executeSqlFetch
+    try:
+        rows = executeSqlFetch(
+            "SELECT report_date, business_scope, mainop "
+            "FROM cn_stock_company_profile WHERE code = %s LIMIT 1", (code,))
+    except Exception:
+        # 表未部署（旧库）等 → 安全跳过，不影响其余画像
+        return {}
+    if not rows:
+        return {}
+    row = rows[0]
+    report_date = str(row[0]) if row[0] else None
+    scope = row[1]
+    mainop_raw = row[2]
+
+    import json as _json
+    mainop_items = []
+    if mainop_raw:
+        try:
+            parsed = _json.loads(mainop_raw) if isinstance(mainop_raw, str) else mainop_raw
+            if isinstance(parsed, list):
+                mainop_items = parsed
+        except (ValueError, TypeError):
+            mainop_items = []
+
+    out: Dict[str, Any] = {}
+    if report_date:
+        out['report_date'] = report_date
+    if scope:
+        # 经营范围可能极长，AI 只需概览，截断控制 token
+        out['business_scope'] = str(scope)[:300]
+    if mainop_items:
+        # 仅保留 AI 分析所需字段并用中文键自解释，降低幻觉；占比/毛利率为 0~1 小数
+        compact = []
+        for it in mainop_items:
+            if not isinstance(it, dict):
+                continue
+            compact.append({
+                '维度': it.get('type'),
+                '项目': it.get('item'),
+                '收入占比': it.get('income_ratio'),
+                '毛利率': it.get('gross_profit_ratio'),
+                '报告期': it.get('report_date'),
+            })
+        if compact:
+            out['mainop'] = compact
+            out['_说明'] = '主营构成为季度级数据，收入占比/毛利率均为 0~1 小数；请以 report_date 标注时点，勿当实时数据。'
+    return out if out else {}
+
+
 class StockProfileTool(Tool):
     name = 'stock_profile'
-    description = '获取个股综合画像：最新行情+近期指标+资金流向+K线形态信号+近30日K线。'
+    description = '获取个股综合画像：最新行情+近期指标+资金流向+K线形态信号+近30日K线+主营构成/业务结构。'
     parameters = {
         'type': 'object',
         'required': ['code'],
@@ -440,6 +496,7 @@ class StockProfileTool(Tool):
         kline_30d = _query_kline_30d(code)
         financials = _query_financials(code)
         patent_info = _query_patent_info(code)
+        business = _query_company_profile(code)
 
         result = {
             'code': code,
@@ -453,4 +510,6 @@ class StockProfileTool(Tool):
         }
         if patent_info:
             result['patent_info'] = patent_info
+        if business:
+            result['business'] = business
         return result

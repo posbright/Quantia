@@ -430,16 +430,16 @@ class SelectionScoreListHandler(webBase.BaseHandler):
                 f"FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql}"
             )
 
-            total_df = pd.read_sql(count_sql, con=mdb.engine(), params=tuple(params))
+            total_df = mdb.read_sql_ro(count_sql, params=tuple(params))
             total = int(total_df.iloc[0]['cnt']) if not total_df.empty else 0
 
             if need_python_sort:
-                df_all = pd.read_sql(data_sql_all, con=mdb.engine(), params=tuple(params))
+                df_all = mdb.read_sql_ro(data_sql_all, params=tuple(params))
                 df_all, sort_by, view_active = _sort_list_dataframe(df_all, sort_effective, template_effective)
                 df = df_all.iloc[offset: offset + page_size].copy()
             else:
                 data_params = list(params) + [page_size, offset]
-                df = pd.read_sql(data_sql, con=mdb.engine(), params=tuple(data_params))
+                df = mdb.read_sql_ro(data_sql, params=tuple(data_params))
                 df, sort_by, view_active = _sort_list_dataframe(df, sort_effective, template_effective)
 
             items = []
@@ -524,7 +524,7 @@ class SelectionScoreDetailHandler(webBase.BaseHandler):
                 )
                 params = (code,)
 
-            df = pd.read_sql(sql, con=mdb.engine(), params=params)
+            df = mdb.read_sql_ro(sql, params=params)
             if df.empty:
                 _write_json(self, _with_contract({
                     'item': None,
@@ -602,7 +602,7 @@ class SelectionScoreIndustriesHandler(webBase.BaseHandler):
                 f"SELECT `date`,`industry`,`code`,`name`,`total_score`,`quality_score`,`score_growth`,`risk_flags` "
                 f"FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql}"
             )
-            df = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
+            df = mdb.read_sql_ro(sql, params=tuple(params))
             if df.empty:
                 _write_json(self, _with_contract({'date': None, 'count': 0, 'items': []}, 'industries'))
                 return
@@ -683,7 +683,7 @@ class SelectionScoreTopHandler(webBase.BaseHandler):
                 f"FROM `{scoring.SELECTION_SCORE_TABLE}`{where_sql} "
                 f"ORDER BY `quality_score` DESC, `total_score` DESC LIMIT %s"
             )
-            df = pd.read_sql(sql, con=mdb.engine(), params=tuple(list(params) + [n]))
+            df = mdb.read_sql_ro(sql, params=tuple(list(params) + [n]))
             items = _build_top_items(df, n)
 
             date_ctx = _resolve_date_context(date_arg, df)

@@ -353,7 +353,11 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
       ...(ext.subPanel ? [{ left: 58, right: 38, top: 530, height: 60 }] : []),
     ],
     dataZoom: [
-      { type: 'inside', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, throttle: 80 },
+      {
+        type: 'inside', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, throttle: 80,
+        zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false,
+        preventDefaultMouseMove: true,
+      },
       { type: 'slider', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, bottom: 4, height: 20, realtime: false },
     ],
     xAxis: [

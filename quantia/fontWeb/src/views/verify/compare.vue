@@ -184,13 +184,13 @@
 
     <!-- 六维雷达图 + 累计收益走势 (并排) -->
     <el-row v-if="matrixReady" :gutter="16" style="margin-top: 16px">
-      <el-col :span="12">
+      <el-col :xs="24" :span="12">
         <el-card shadow="never">
           <template #header><span>六维能力雷达图</span></template>
           <div ref="radarChartRef" style="height: 300px" />
         </el-card>
       </el-col>
-      <el-col :span="12">
+      <el-col :xs="24" :span="12">
         <el-card shadow="never">
           <template #header><span>累计收益率走势</span></template>
           <div ref="navChartRef" style="height: 300px" />

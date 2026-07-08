@@ -126,7 +126,7 @@ class StrategyFusionHandler(webBase.BaseHandler):
                   AND `{rate_col}` IS NOT NULL
             """
             try:
-                df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+                df = mdb.read_sql_ro(sql, params=(str(start_date), str(end_date)))
             except Exception as e:
                 logger.error(f"加载策略 {table} 失败: {e}", exc_info=True)
                 _write_error(self, f'加载策略 {table} 失败', 500)
@@ -332,7 +332,7 @@ class StrategyFusionHandler(webBase.BaseHandler):
         cols_sql = ', '.join(['`date`', '`code`'] + [f'`{c}`' for c in indicator_cols])
         sql = f"SELECT {cols_sql} FROM `{indicators_table}` WHERE `date` >= %s AND `date` <= %s"
         try:
-            ind_df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+            ind_df = mdb.read_sql_ro(sql, params=(str(start_date), str(end_date)))
         except Exception:
             return strategy_data
 
@@ -536,7 +536,7 @@ def _load_dim_signals_tech(items, start_date, end_date):
             continue
         sql = f"SELECT `date`, `code` FROM `{table}` WHERE `date` >= %s AND `date` <= %s"
         try:
-            df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+            df = mdb.read_sql_ro(sql, params=(str(start_date), str(end_date)))
         except Exception as e:
             logger.warning(f"技术维度加载 {table} 失败: {e}")
             warnings.append(f"技术维度加载 {table} 失败")
@@ -574,7 +574,7 @@ def _load_dim_signals_table_filter(table, allowed_cols, items, start_date, end_d
            f"WHERE `date` >= %s AND `date` <= %s AND {where_extra}")
     params = [str(start_date), str(end_date)] + [v for (_, _, v) in parsed]
     try:
-        df = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
+        df = mdb.read_sql_ro(sql, params=tuple(params))
     except Exception as e:
         logger.warning(f"{dim_label}维度查询 {table} 失败: {e}")
         warnings.append(f"{dim_label}维度查询失败")
@@ -720,7 +720,7 @@ def _load_rate_df(start_date, end_date, holding_days):
         sql = (f"SELECT `date`, `code`, `{rate_col}` AS rate FROM `{table}` "
                f"WHERE `date` >= %s AND `date` <= %s AND `{rate_col}` IS NOT NULL")
         try:
-            df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+            df = mdb.read_sql_ro(sql, params=(str(start_date), str(end_date)))
             if df is not None and len(df) > 0:
                 return df.drop_duplicates(subset=['date', 'code']).reset_index(drop=True)
         except Exception as e:
@@ -735,7 +735,7 @@ def _load_rate_df(start_date, end_date, holding_days):
         sql = (f"SELECT `date`, `code`, `{rate_col}` AS rate FROM `{tname}` "
                f"WHERE `date` >= %s AND `date` <= %s AND `{rate_col}` IS NOT NULL")
         try:
-            df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+            df = mdb.read_sql_ro(sql, params=(str(start_date), str(end_date)))
         except Exception:
             continue
         if df is not None and len(df) > 0:

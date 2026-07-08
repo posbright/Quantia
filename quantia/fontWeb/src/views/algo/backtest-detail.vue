@@ -532,7 +532,7 @@ function tradeReason(trade: any) {
 }
 
 function decisionStatus(pass: boolean | null, positive = '满足', negative = '偏离') {
-  if (pass == null) return '缺数据'
+  if (pass == null) return '参考'
   return pass ? positive : negative
 }
 
@@ -1257,7 +1257,11 @@ function renderStockChart(period: 'daily' | 'weekly' | 'monthly') {
       ...(ext.subPanel ? [{ left: isMobile.value ? 40 : 58, right: isMobile.value ? 16 : 62, top: 550, height: 60 }] : []),
     ],
     dataZoom: [
-      { type: 'inside', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, minSpan: Math.max(5, Math.round(150 / dates.length * 100)), throttle: 80 },
+      {
+        type: 'inside', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, minSpan: Math.max(5, Math.round(150 / dates.length * 100)), throttle: 80,
+        zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: false,
+        preventDefaultMouseMove: true,
+      },
       { type: 'slider', xAxisIndex: ext.subPanel ? [0, 1, 2, 3] : [0, 1, 2], start: range.start, end: range.end, bottom: 4, height: 20, minSpan: Math.max(5, Math.round(150 / dates.length * 100)), realtime: false },
     ],
     xAxis: [

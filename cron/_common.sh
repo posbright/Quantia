@@ -8,17 +8,34 @@
 init_env() {
     export PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:$PATH
     export PYTHONIOENCODING=utf-8
-    export LANG=zh_CN.UTF-8
-    export LC_CTYPE=zh_CN.UTF-8
+    export LANG=C.UTF-8
+    export LC_CTYPE=C.UTF-8
     export PYTHONPATH=$PROJECT_ROOT
 
     # 加载 .env（兼容方法 A 系统环境变量 + 方法 B .env 文件）
+    # 注意：用 sed 剥除行尾 CRLF(\r) 再 source —— 若 .env 在 Windows 上编辑保存为 CRLF，
+    #   bash `source` 会把行尾 \r 并入变量值（如 QUANTIA_DB_CHARSET=utf8mb4\r），
+    #   导致 pymysql charset_by_name 返回 None → 建连前抛
+    #   AttributeError: 'NoneType' object has no attribute 'encoding'，且 host/password
+    #   等其它变量同样被 \r 污染。对 LF 文件而言 sed 为无操作，无副作用。
     if [ -f "$PROJECT_ROOT/.env" ]; then
-        set -a; source "$PROJECT_ROOT/.env"; set +a
+        set -a; source <(sed 's/\r$//' "$PROJECT_ROOT/.env"); set +a
     fi
 
-    # Python 解释器（可通过 .env 的 PYTHON_BIN 覆盖）
-    export PYTHON_BIN="${PYTHON_BIN:-python3}"
+    # Python 解释器选择（优先级：显式 PYTHON_BIN(env/.env) > 项目本地 .venv > 系统 python3）
+    # 跨机零配置：新机器在项目根创建 .venv 即自动命中，无需改脚本。
+    # 显式设置 PYTHON_BIN（环境变量或 .env）始终优先。
+    # 注意：刻意不自动探测 quantia_env —— 现网 web_service.py 以系统 python3 运行（见 bin/run_web.sh），
+    #       cron 默认沿用 python3 与之保持一致，避免 cron 偷偷切到可能与 web 运行时不同步的 venv。
+    #       若要让 cron 用 quantia_env 或其它命名的 venv，请在 .env 显式设置 PYTHON_BIN。
+    if [ -z "${PYTHON_BIN:-}" ]; then
+        if [ -x "$PROJECT_ROOT/.venv/bin/python" ]; then
+            PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+        else
+            PYTHON_BIN="python3"
+        fi
+    fi
+    export PYTHON_BIN
 
     # 日志目录
     LOG_DIR=$PROJECT_ROOT/quantia/log

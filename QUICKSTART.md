@@ -124,12 +124,16 @@ python strategy_data_daily_job.py
 ### 批量处理历史数据
 
 ```bash
-# 指定日期
-python execute_daily_job.py 2024-01-15
+# 不带参数：按最近交易日运行
+python execute_daily_job.py
 
-# 日期范围
-python execute_daily_job.py 2024-01-01 2024-01-31
+# 指定单个交易日（YYYY-MM-DD）
+python execute_daily_job.py 2024-01-15
 ```
+
+> 注：仅支持**单个交易日**，且只覆盖日期相关步骤（作业记账、数据新鲜度检查、
+> 基本面选股、数据健康检查）。行情/选股/分析等子作业内部按实时数据运行，
+> 无法真正回补历史某日的实时快照；多日期 / 区间参数会被拒绝。
 
 ### 调整历史数据获取年数
 

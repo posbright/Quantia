@@ -219,6 +219,51 @@ export function getKlineData(params: KlineParams) {
   return request({ url: '/api/kline', method: 'get', params })
 }
 
+/** K线预测（AgentPit kpred 代理） */
+export interface KpredParams {
+  code: string
+  days?: number  // 1~30, default 5
+  refresh?: boolean  // true=绕过服务端缓存强制重新预测
+}
+export interface KpredPrediction {
+  date: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume?: number
+}
+export interface KpredFactor {
+  key: string
+  label: string
+  score: number
+  weight: number
+  contribution: number
+}
+export interface KpredPro {
+  composite_score: number
+  rating: string
+  confidence: string
+  conflict_level: string
+  adj_return_pct: number
+  factor_return_pct: number
+  kronos_raw_return_pct: number
+  sigma_daily_pct: number
+  factors: KpredFactor[]
+}
+export interface KpredResult {
+  symbol: string
+  name: string
+  last_close: number
+  last_date: string
+  predictions: KpredPrediction[]
+  pro: KpredPro
+  latencyMs?: number
+}
+export function getKpred(params: KpredParams) {
+  return request({ url: '/api/kpred', method: 'post', data: params })
+}
+
 /** 股票财务摘要（估值 + 最新财务 + 历史序列） */
 export interface FinancialHistoryItem {
   report_date: string
@@ -263,6 +308,70 @@ export interface FinancialSummaryResult {
 
 export function getFinancialSummary(code: string, limit = 12) {
   return request<FinancialSummaryResult>({ url: '/api/stock/financial_summary', method: 'get', params: { code, limit } })
+}
+
+// ============= 公司概况 / 基本面 API =============
+
+export interface StockProfileData {
+  date: string | null
+  code: string
+  name: string | null
+  industry: string | null
+  area: string | null
+  concept: string[]
+  style: string[]
+  listing_date: string | null
+  total_operate_income: number | null   // 营业总收入（元）
+  parent_netprofit: number | null        // 归属净利润（元）
+  total_market_cap: number | null        // 总市值（元）
+  free_cap: number | null                // 流通市值（元）
+  pe9: number | null                     // 市盈率TTM
+  pbnewmrq: number | null                // 市净率MRQ
+  roe_weight: number | null              // ROE(%)
+  sale_gpr: number | null                // 毛利率(%)
+  sale_npr: number | null                // 净利率(%)
+  netprofit_yoy_ratio: number | null     // 净利润增长率(%)
+  zxgxl: number | null                   // 最新股息率(%)
+}
+
+export interface StockProfileResp {
+  code: string
+  data: StockProfileData | null
+  reason?: string
+}
+
+export function getStockProfile(code: string) {
+  return request<StockProfileResp>({ url: '/api/stock/profile', method: 'get', params: { code } })
+}
+
+// 主营构成明细单项
+export interface MainOpItem {
+  type: string                       // 行业 / 产品 / 地区 / 其他
+  item: string                       // 项目名称
+  income: number | null              // 主营收入（元）
+  income_ratio: number | null        // 收入占比（0~1）
+  gross_profit_ratio: number | null  // 毛利率（0~1）
+  rank: number | null
+  report_date?: string | null        // 该维度自身报告期（可能与整表 report_date 不同）
+}
+
+export interface StockBusinessData {
+  code: string
+  report_date: string | null
+  business_scope: string | null      // 经营范围
+  business_review: string | null     // 经营评述
+  mainop: MainOpItem[]               // 主营构成明细（最新报告期）
+  update_date: string | null
+}
+
+export interface StockBusinessResp {
+  code: string
+  data: StockBusinessData | null
+  reason?: string
+}
+
+export function getStockBusiness(code: string) {
+  return request<StockBusinessResp>({ url: '/api/stock/business', method: 'get', params: { code } })
 }
 
 // ============= 专利数据 API (Phase 3a/4) =============

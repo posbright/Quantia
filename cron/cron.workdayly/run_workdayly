@@ -8,6 +8,7 @@
 #   Phase 5   AI报告+评分预警  (run_report_alert)
 #   Phase 6   综合指标股票池   (refresh_composite_universe)
 #   Phase 7   AI知识库索引     (refresh_ai_kb)
+#   Phase 8   基金重仓股全覆盖 (run_fund_holding_batch，仅方案C 开启时生效)
 # 等价于分别调度上述独立脚本，但适合单机一键执行（严格串行，单一内存峰值）。
 # 每个阶段失败不影响后续阶段继续执行。
 #
@@ -84,6 +85,10 @@ record_stage "Phase 6: 综合指标股票池刷新" $? warn
 # Phase 7: AI 知识库索引刷新（FULLTEXT 索引，非关键链）
 run_sub "Phase 7: AI知识库索引刷新" "$SCRIPT_DIR/refresh_ai_kb"
 record_stage "Phase 7: AI知识库索引刷新" $? warn
+
+# Phase 8: 基金重仓股全覆盖分批采集（仅前端开启方案C时生效，否则秒级空跑；非关键链）
+run_sub "Phase 8: 基金重仓股全覆盖分批" "$SCRIPT_DIR/run_fund_holding_batch"
+record_stage "Phase 8: 基金重仓股全覆盖分批" $? warn
 
 OVERALL_END=$(date +%s)
 OVERALL_DUR=$((OVERALL_END - OVERALL_START))

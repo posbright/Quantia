@@ -5,7 +5,12 @@
         <span>报告偏好设置</span>
       </template>
 
-      <el-form :model="form" label-width="160px" v-loading="loading">
+      <el-form
+        :model="form"
+        :label-width="isMobile ? 'auto' : '160px'"
+        :label-position="isMobile ? 'top' : 'right'"
+        v-loading="loading"
+      >
         <el-form-item label="侧重维度">
           <el-checkbox-group v-model="form.focus_dimensions">
             <el-checkbox label="technical">技术面</el-checkbox>
@@ -106,7 +111,9 @@
 import { ref, reactive, onMounted, onActivated } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getReportPreference, saveReportPreference } from '@/api/report'
+import { useResponsive } from '@/composables/useResponsive'
 
+const { isMobile } = useResponsive()
 const loading = ref(false)
 const saving = ref(false)
 
@@ -193,5 +200,17 @@ onActivated(() => {
   display: block;
   margin-left: 0;
   margin-top: 6px;
+}
+
+/* 移动端：标签置顶、内边距收窄、提示换行不再左缩进 */
+@media (max-width: 767.98px) {
+  .report-preference-page {
+    padding: 12px;
+  }
+  .hint {
+    display: block;
+    margin-left: 0;
+    margin-top: 4px;
+  }
 }
 </style>

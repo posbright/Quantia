@@ -3,7 +3,7 @@
     v-model="show"
     :title="drawerTitle"
     direction="rtl"
-    size="560px"
+    :size="isMobile ? '100%' : '560px'"
     :destroy-on-close="false"
     @opened="onOpened"
   >
@@ -185,6 +185,7 @@
 import { ref, computed, nextTick, watch } from 'vue'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
+import { useResponsive } from '@/composables/useResponsive'
 import {
   getFundPeerCompare,
   getFundCompositeAnalysis,
@@ -206,6 +207,8 @@ const props = defineProps<{
   name?: string
 }>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void }>()
+
+const { isMobile } = useResponsive()
 
 const show = computed({
   get: () => props.modelValue,
@@ -936,5 +939,27 @@ watch(
   border-radius: 6px;
   padding: 8px 10px;
   line-height: 1.6;
+}
+
+/* ─── 移动端适配 ─── */
+@media (max-width: 767.98px) {
+  .fdd-body {
+    padding: 0 2px 20px;
+  }
+  .fdd-nav-title {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .fdd-nav-ranges {
+    flex-wrap: wrap;
+  }
+  .fdd-kpi-bar {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .fdd-holdings {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
 }
 </style>

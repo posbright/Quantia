@@ -351,7 +351,7 @@ def _load_filter_data(table_name, columns, start_date, end_date):
     cols_sql = ', '.join(['`date`', '`code`'] + [f'`{c}`' for c in columns])
     sql = f"SELECT {cols_sql} FROM `{table_name}` WHERE `date` >= %s AND `date` <= %s"
     try:
-        df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+        df = mdb.read_sql_ro(sql, params=(str(start_date), str(end_date)))
     except Exception as e:
         logger.error(f"加载 {table_name} 失败: {e}", exc_info=True)
         return None
@@ -619,7 +619,7 @@ class FactorLabRunHandler(webBase.BaseHandler):
                   AND `{rate_col}` IS NOT NULL
             """
             try:
-                df = pd.read_sql(sql, con=mdb.engine(),
+                df = mdb.read_sql_ro(sql,
                                  params=(str(start_date), str(end_date)))
             except Exception as e:
                 logger.error(f"加载 {table}: {e}", exc_info=True)

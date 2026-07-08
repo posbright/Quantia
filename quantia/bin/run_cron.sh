@@ -5,9 +5,9 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 
 export PYTHONIOENCODING=utf-8
-export LANG=zh_CN.UTF-8
+export LANG=C.UTF-8
 export PYTHONPATH=$PROJECT_ROOT
-export LC_CTYPE=zh_CN.UTF-8
+export LC_CTYPE=C.UTF-8
 
 # 环境变量输出（用于cron任务）
 # https://stackoverflow.com/questions/27771781/how-can-i-access-docker-set-environment-variables-from-a-cron-job

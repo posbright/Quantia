@@ -190,41 +190,59 @@ $stock-down-color: #67c23a;
 .chart-wrap {
   position: relative;
 }
+html.chart-fs-open,
+html.chart-fs-open body {
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
 /* 原生 Fullscreen API：让 wrapper 自身铺满 */
-.chart-wrap:fullscreen {
+.chart-wrap:fullscreen,
+.chart-wrap:-webkit-full-screen,
+.chart-wrap.chart-fs-fallback {
   width: 100vw;
-  height: 100vh;
+  height: 100dvh;
   background: #fff;
-  padding: 8px;
+  padding: calc(8px + env(safe-area-inset-top, 0px)) calc(8px + env(safe-area-inset-right, 0px)) calc(8px + env(safe-area-inset-bottom, 0px)) calc(8px + env(safe-area-inset-left, 0px));
   display: flex;
   align-items: stretch;
+  justify-content: stretch;
+  box-sizing: border-box;
+  overflow: hidden;
+  touch-action: none;
+  overscroll-behavior: contain;
 }
 .chart-wrap:fullscreen > [ref],
-.chart-wrap:fullscreen > div:not(.chart-fs-btn) {
+.chart-wrap:fullscreen > div:not(.chart-fs-btn),
+.chart-wrap:-webkit-full-screen > [ref],
+.chart-wrap:-webkit-full-screen > div:not(.chart-fs-btn),
+.chart-wrap.chart-fs-fallback > div:not(.chart-fs-btn) {
   width: 100% !important;
   height: 100% !important;
   flex: 1;
   min-height: 0;
+  touch-action: none;
 }
-.chart-wrap:fullscreen .chart-fs-btn {
+.chart-wrap:fullscreen .chart-fs-btn,
+.chart-wrap:-webkit-full-screen .chart-fs-btn,
+.chart-wrap.chart-fs-fallback .chart-fs-btn {
   top: 10px;
   right: 10px;
 }
 
-/* CSS 兜底（浏览器不支持 Fullscreen API）：固定定位 + 90° 旋转模拟横屏 */
+/* CSS 兜底（浏览器不支持 Fullscreen API）与 iOS 竖屏：固定定位 + 按需 90° 旋转模拟横屏 */
 .chart-wrap.chart-fs-fallback {
   position: fixed !important;
   inset: 0;
   z-index: 9999;
-  background: #fff;
+}
+.chart-wrap:fullscreen.chart-fs-rotate,
+.chart-wrap:-webkit-full-screen.chart-fs-rotate,
+.chart-wrap.chart-fs-fallback.chart-fs-rotate {
   width: 100vh !important;
   height: 100vw !important;
+  width: 100dvh !important;
+  height: 100dvw !important;
   transform: rotate(90deg) translate(0, -100%);
   transform-origin: top left;
-  padding: 8px;
-}
-.chart-wrap.chart-fs-fallback > div:not(.chart-fs-btn) {
-  width: 100% !important;
-  height: 100% !important;
 }
 

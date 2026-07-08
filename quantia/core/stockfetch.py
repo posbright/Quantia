@@ -2960,3 +2960,150 @@ def _fallback_kline_from_spot(code, date_start, date_end):
     except Exception as e:
         logging.debug(f"_fallback_kline_from_spot 异常：{code} - {e}")
     return None
+
+
+# 进程级换手率批量索引：{table: (build_start_dash, {code: {YYYY-MM-DD: 换手率%}})}
+# 由 _get_turnover_index 惰性构建。仅在 K 线缓存缺换手率、gate 未命中时才触发一次全表扫描，
+# 之后整轮各股零查询命中内存。稳态（缓存已含换手率）下 gate 短路，索引永不构建、零内存。
+_TURNOVER_INDEX_CACHE = {}
+_TURNOVER_INDEX_LOCK = threading.Lock()
+
+
+def clear_turnover_index_cache():
+    """清空进程级换手率批量索引缓存（供测试隔离 / 长驻进程跨交易日刷新）。"""
+    with _TURNOVER_INDEX_LOCK:
+        _TURNOVER_INDEX_CACHE.clear()
+
+
+def _build_turnover_index(table, start_dash):
+    """一次性扫描 table，构建 {code: {YYYY-MM-DD: 换手率%}}。仅读 MySQL，无外部请求。
+
+    关键：cn_stock_spot 主键为 (date, code)，`code=? AND date>=?` 的按股查询无法用索引定位
+    code（EXPLAIN 实测 range 扫描约 21.6 万行、filtered 仅 9%）。若在流式分析热循环里对 4900+
+    只股票逐股查询即约 10 亿次行检查。改为按 date 一次范围扫描（同样约 21.6 万行、filtered 90%）
+    整轮共享，DB 负载由 O(N) 降为 O(1)。
+
+    约定：表不存在 / 无数据 → 返回空 dict（合法空，可缓存）；DB 连接/查询异常 → 抛出，
+    由 _get_turnover_index 捕获后**不缓存**，下一只股票重试，避免一次瞬时故障毒化整轮。"""
+    import quantia.lib.database as mdb
+    if not mdb.checkTableIsExist(table):
+        return {}
+    sql = (
+        f"SELECT `code`, `date`, `turnoverrate` FROM `{table}` "
+        f"WHERE `date` >= %s AND `turnoverrate` IS NOT NULL"
+    )
+    df = pd.read_sql(sql, mdb.engine(), params=(start_dash,))
+    idx = {}
+    if df is None or len(df) == 0:
+        return idx
+    date_pool = {}  # 复用日期字符串对象，显著降内存（仅约 N 个交易日的去重字符串）
+    for c, d, tr in zip(df['code'], df['date'], df['turnoverrate']):
+        ds = d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10]
+        ds = date_pool.setdefault(ds, ds)
+        try:
+            v = float(tr) if pd.notna(tr) else 0.0
+        except (TypeError, ValueError):
+            v = 0.0
+        m = idx.get(c)
+        if m is None:
+            m = {}
+            idx[c] = m
+        m[ds] = v
+    return idx
+
+
+def _get_turnover_index(table, start_dash):
+    """进程级、线程安全的批量换手率索引访问器（双重检查锁）。
+
+    首次（或需要更早窗口时）触发一次全表扫描构建；后续调用命中内存。多线程并发
+    （流式分析用 ThreadPoolExecutor）下用锁串行化构建，最坏重复构建一次但结果正确。
+    构建抛异常（DB 瞬时故障）时返回空 dict 且**不写缓存**，下一只股票重试。"""
+    cached = _TURNOVER_INDEX_CACHE.get(table)
+    if cached is not None and cached[0] <= start_dash:
+        return cached[1]
+    with _TURNOVER_INDEX_LOCK:
+        cached = _TURNOVER_INDEX_CACHE.get(table)
+        if cached is not None and cached[0] <= start_dash:
+            return cached[1]
+        build_start = start_dash if cached is None else min(cached[0], start_dash)
+        try:
+            idx = _build_turnover_index(table, build_start)
+        except Exception as e:
+            logging.debug(f"_get_turnover_index 构建失败，暂不缓存（下次重试）：{table} - {e}")
+            return {}
+        _TURNOVER_INDEX_CACHE[table] = (build_start, idx)
+        return idx
+
+
+def _load_turnover_map(table, code, start_dash):
+    """返回 code 自 start_dash 起的 {YYYY-MM-DD: 换手率%} 映射。
+
+    背后由进程级批量索引（_get_turnover_index）支撑：整轮首次触发时一次扫描全表，
+    后续各股零查询命中内存。仅读 MySQL，无外部请求。失败/无数据均返回空 dict。"""
+    try:
+        return _get_turnover_index(table, start_dash).get(code, {})
+    except Exception as e:
+        logging.debug(f"_load_turnover_map({table}) 异常：{code} - {e}")
+        return {}
+
+
+def backfill_turnover_from_spot(code, hist_data, tail=None):
+    """按需从 DB 补齐 K 线 DataFrame 的 turnover(换手率%) 列。
+
+    背景：部分本地 qfq 缓存为旧最简格式（仅 OHLCV+amount），或历史行由不提供换手率
+    的数据源（新浪）建立，导致 turnover 缺失/全 0，筹码分布无法计算。DB 的
+    cn_stock_spot / cn_etf_spot 每日快照含完整换手率，可按日期补齐。
+
+    仅读 MySQL，绝不发起外部 API（符合架构规则1：分析管道只读 DB + 缓存）。
+    仅当"近窗口换手率有效样本不足"时才查库；缓存本身已含足够换手率时零开销直接返回。
+
+    Args:
+        code: 股票/ETF 代码
+        hist_data: 含 date 列、时间升序的 K 线 DataFrame
+        tail: 检测/补齐的近窗口长度（缺省 = CYQ lookback + 余量）
+
+    Returns:
+        补齐后的 DataFrame（补不到时原样返回；调用方据 compute 结果决定是否落行）。
+    """
+    try:
+        if hist_data is None or len(hist_data) == 0 or 'date' not in hist_data.columns:
+            return hist_data
+
+        min_bars = _cfg.get_int('QUANTIA_CYQ_MIN_BARS', 20)
+        if tail is None:
+            tail = _cfg.get_int('QUANTIA_CYQ_LOOKBACK', 120) + 10
+        tail = int(tail)
+
+        has_col = 'turnover' in hist_data.columns
+        if has_col:
+            tail_turn = pd.to_numeric(hist_data['turnover'].tail(tail), errors='coerce')
+            if int((tail_turn > 0).sum()) >= min_bars:
+                return hist_data  # 缓存换手率已足够，零查询
+
+        # 内存/负载敏感环境可用开关整体关闭 DB 兜底（仅用缓存自带换手率）
+        if not _cfg.get_bool('QUANTIA_CYQ_TURNOVER_DB', True):
+            return hist_data
+
+        # 规范化日期键（兼容 Timestamp / 'YYYY-MM-DD' / 'YYYYMMDD'）
+        key = hist_data['date'].apply(_to_dash_date_safe)
+        start_dash = str(key.tail(tail).min())
+
+        turnover_map = _load_turnover_map('cn_stock_spot', code, start_dash)
+        if not turnover_map:
+            turnover_map = _load_turnover_map('cn_etf_spot', code, start_dash)
+        if not turnover_map:
+            return hist_data  # 补不到，原样返回
+
+        mapped = key.map(turnover_map)
+        if has_col:
+            existing = pd.to_numeric(hist_data['turnover'], errors='coerce')
+            filled = existing.where(existing > 0, mapped)  # 已有>0 的缓存值优先
+        else:
+            filled = mapped
+
+        hist_data = hist_data.copy()
+        hist_data['turnover'] = pd.to_numeric(filled, errors='coerce').fillna(0.0)
+        return hist_data
+    except Exception as e:
+        logging.debug(f"backfill_turnover_from_spot 异常：{code} - {e}")
+        return hist_data

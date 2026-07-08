@@ -17,6 +17,10 @@ run_job "基金画像采集 (fetch_fund_profile_job)" \
     "quantia/job/fetch_fund_profile_job.py" \
     "${QUANTIA_FUND_PROFILE_TIMEOUT:-3600}" || FAILED=$((FAILED + 1))
 
+# 全覆盖(方案C)开启时，重仓股采集会分层分批全量；设时间预算让其在 funds 之间干净自停，
+# 避免被 timeout SIGTERM 在「删旧持仓→写新持仓」之间打断造成单只基金持仓缺失。
+export QUANTIA_FUND_HOLDING_MAX_SECONDS="${QUANTIA_FUND_HOLDING_MAX_SECONDS:-3300}"
+
 run_job "基金重仓股采集 (fetch_fund_holding_job)" \
     "quantia/job/fetch_fund_holding_job.py" \
     "${QUANTIA_FUND_HOLDING_TIMEOUT:-3600}" || FAILED=$((FAILED + 1))

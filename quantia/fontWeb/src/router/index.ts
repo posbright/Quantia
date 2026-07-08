@@ -192,6 +192,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '指标卖出信号', tableName: 'cn_stock_indicators_sell', isRealtime: false }
       },
       {
+        path: 'chip-distribution',
+        name: 'ChipDistribution',
+        component: () => import('@/views/stock/StockData.vue'),
+        meta: { title: '筹码分布', tableName: 'cn_stock_chip_distribution', isRealtime: false }
+      },
+      {
         path: 'detail',
         name: 'IndicatorDetail',
         component: () => import('@/views/indicator/index.vue'),

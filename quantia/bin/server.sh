@@ -18,8 +18,8 @@ PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 
 export PYTHONPATH="$PROJECT_ROOT"
 export PYTHONIOENCODING=utf-8
-export LANG=zh_CN.UTF-8
-export LC_CTYPE=zh_CN.UTF-8
+export LANG=C.UTF-8
+export LC_CTYPE=C.UTF-8
 
 WEB_PORT=9988
 FRONT_PORT=3000

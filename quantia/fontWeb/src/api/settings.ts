@@ -87,3 +87,17 @@ export const saveAIConfig = (payload: AIDecisionConfig) =>
 
 export const deleteAIConfig = (id: number) =>
   request.post<any, { ok: boolean; error?: string }>('/api/ai/config/delete', { id })
+
+// ─────────── System config (KV) ───────────
+
+export interface SysconfigResult {
+  code: number
+  data?: { key: string; value: string | null }
+  msg?: string
+}
+
+export const getSysconfig = (key: string) =>
+  request.get<any, SysconfigResult>('/api/sysconfig', { params: { key } })
+
+export const setSysconfig = (key: string, value: string) =>
+  request.post<any, SysconfigResult>('/api/sysconfig', { key, value })

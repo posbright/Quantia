@@ -40,6 +40,7 @@ import quantia.web.indicatorParamsHandler as indicatorParamsHandler
 import quantia.web.backtestHandler as backtestHandler
 import quantia.web.backtestDashboardHandler as backtestDashboardHandler
 import quantia.web.klineHandler as klineHandler
+import quantia.web.kpredHandler as kpredHandler
 import quantia.web.portfolioBacktestHandler as portfolioBacktestHandler
 import quantia.web.paperTradingHandler as paperTradingHandler
 import quantia.web.tradeSignalHandler as tradeSignalHandler
@@ -50,6 +51,7 @@ import quantia.web.aiAssistantHandler as aiAssistantHandler
 import quantia.web.aiTokenUsageHandler as aiTokenUsageHandler
 import quantia.web.stockReportHandler as stockReportHandler
 import quantia.web.stockPatentHandler as stockPatentHandler
+import quantia.web.stockProfileHandler as stockProfileHandler
 import quantia.web.imCommandHandler as imCommandHandler
 import quantia.web.liveTradingHandler as liveTradingHandler
 import quantia.web.customIndicatorHandler as customIndicatorHandler
@@ -60,7 +62,9 @@ import quantia.web.factorLabHandler as factorLabHandler
 import quantia.web.fundRankHandler as fundRankHandler
 import quantia.web.fundPeerCompareHandler as fundPeerCompareHandler
 import quantia.web.fundCompositeAnalysisHandler as fundCompositeAnalysisHandler
+import quantia.web.fundHoldingConfigHandler as fundHoldingConfigHandler
 import quantia.web.fundAiAnalysisHandler as fundAiAnalysisHandler
+import quantia.web.sysconfigHandler as sysconfigHandler
 import quantia.web.fundNavHistoryHandler as fundNavHistoryHandler
 import quantia.web.stockFinancialHandler as stockFinancialHandler
 import quantia.web.selectionScoreHandler as selectionScoreHandler
@@ -103,6 +107,8 @@ class Application(tornado.web.Application):
             (r"/quantia/api/indicator/advisor", indicatorParamsHandler.IndicatorAdvisorHandler),
             # K线数据JSON API
             (r"/quantia/api/kline", klineHandler.GetKlineDataHandler),
+            # K线预测（AgentPit kpred 代理）
+            (r"/quantia/api/kpred", kpredHandler.GetKpredHandler),
             # 股票财务数据
             (r"/quantia/api/stock/financial_summary", stockFinancialHandler.StockFinancialSummaryHandler),
             # 回测验证
@@ -217,6 +223,9 @@ class Application(tornado.web.Application):
             (r"/quantia/api/stock/patents", stockPatentHandler.StockPatentsHandler),
             (r"/quantia/api/stock/patents/history", stockPatentHandler.StockPatentsHistoryHandler),
             (r"/quantia/api/stock/patents/compare", stockPatentHandler.StockPatentsCompareHandler),
+            # 公司概况 / 基本面 (cn_stock_selection: 行业/概念/板块/营收总额)
+            (r"/quantia/api/stock/profile", stockProfileHandler.StockProfileHandler),
+            (r"/quantia/api/stock/business", stockProfileHandler.StockBusinessHandler),
             # Phase 6: IM 指令确认（默认关闭，由 QUANTIA_IM_COMMAND_ENABLED=1 启用；仅落库 trade_command，不直接调券商）
             (r"/quantia/api/im/status", imCommandHandler.IMStatusHandler),
             (r"/quantia/api/im/dingtalk/callback", imCommandHandler.DingtalkCallbackHandler),
@@ -295,6 +304,9 @@ class Application(tornado.web.Application):
             (r"/quantia/api/fund/nav_history", fundNavHistoryHandler.FundNavHistoryHandler),
             (r"/quantia/api/fund/nav_peer", fundNavHistoryHandler.FundNavPeerHandler),
             (r"/quantia/api/fund/ai_analysis", fundAiAnalysisHandler.FundAiAnalysisHandler),
+            (r"/quantia/api/fund/holding/config", fundHoldingConfigHandler.FundHoldingConfigHandler),
+            # ── 通用系统配置 ──
+            (r"/quantia/api/sysconfig", sysconfigHandler.SysconfigHandler),
             # ── 性能监控（前端 web-vitals 上报，仅接收不处理）──
             (r"/quantia/api/metric/web_vitals", WebVitalsHandler),
             # ── Vue SPA 路由 ──

@@ -264,7 +264,7 @@ def _load_backtest_data(strategy_table, start_date, end_date, rate_cols=None):
         cols_sql = ', '.join(f'`{c}`' for c in all_cols)
         sql = f"SELECT {cols_sql} FROM `{strategy_table}` WHERE `date` >= %s AND `date` <= %s"
         try:
-            df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+            df = mdb.read_sql_ro(sql, params=(str(start_date), str(end_date)))
         except Exception as e:
             logging.error(f"读取 {strategy_table} 失败: {e}", exc_info=True)
             df = None
@@ -372,7 +372,7 @@ def _load_fallback_stock_universe(max_stocks: int):
             f"WHERE `date` = (SELECT MAX(`date`) FROM `{spot_table}`) "
             f"LIMIT {int(max_stocks)}"
         )
-        df = pd.read_sql(sql, mdb.engine())
+        df = mdb.read_sql_ro(sql)
         if df is None or df.empty:
             return []
         return [tuple(x) for x in df[fk_cols].values]
@@ -1917,7 +1917,7 @@ class SignalQualityHandler(webBase.BaseHandler):
                   AND i.`{indicator}` IS NOT NULL
             """
             try:
-                df = pd.read_sql(sql, con=mdb.engine(), params=(str(start_date), str(end_date)))
+                df = mdb.read_sql_ro(sql, params=(str(start_date), str(end_date)))
             except Exception as e:
                 logging.error(f"信号质量查询失败: {e}", exc_info=True)
                 df = None
@@ -1995,7 +1995,7 @@ class SignalQualityHandler(webBase.BaseHandler):
                     f"WHERE `date` >= %s AND `date` <= %s "
                     f"AND `{indicator}` IS NOT NULL"
                 )
-                ind_df = pd.read_sql(sql, con=mdb.engine(),
+                ind_df = mdb.read_sql_ro(sql,
                                      params=(str(start_date), str(end_date)))
                 if ind_df is not None and len(ind_df) > 0:
                     ind_df['date'] = pd.to_datetime(ind_df['date']).dt.strftime('%Y-%m-%d')

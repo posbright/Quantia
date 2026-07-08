@@ -39,6 +39,7 @@ _PARAM_WIRED_STRATEGIES = {
     'cn_stock_strategy_high_tight_flag': 'high_tight_flag',
     'cn_stock_strategy_climax_limitdown': 'climax_limitdown',
     'cn_stock_strategy_low_atr': 'low_atr',
+    'cn_stock_strategy_low_ma_convergence': 'low_ma_convergence',
 }
 
 

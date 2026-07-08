@@ -47,6 +47,11 @@
               @row-click="onTableRowClick" @row-dblclick="onTableRowDblClick"
               stripe row-key="rowKey" style="width: 100%;">
       <el-table-column type="selection" width="40" />
+      <el-table-column label="编号" width="80" align="center">
+        <template #default="{ row }">
+          <span v-if="row.type === 'strategy'" class="strategy-id">#{{ row.id }}</span>
+        </template>
+      </el-table-column>
       <el-table-column label="" min-width="280">
         <template #default="{ row }">
           <div class="name-cell">
@@ -65,6 +70,19 @@
           <el-tag v-if="row.type === 'strategy'" size="small" type="info" effect="plain">
             {{ categoryLabel(row.category) }}
           </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="模拟交易" width="110" align="center">
+        <template #default="{ row }">
+          <template v-if="row.type === 'strategy'">
+            <el-tag v-if="row.paper_running > 0" size="small" type="success" effect="plain">
+              运行中{{ row.paper_running > 1 ? ` ×${row.paper_running}` : '' }}
+            </el-tag>
+            <el-tag v-else-if="row.has_paper" size="small" type="warning" effect="plain">
+              已关联{{ row.paper_count > 1 ? ` ×${row.paper_count}` : '' }}
+            </el-tag>
+            <span v-else class="no-paper">—</span>
+          </template>
         </template>
       </el-table-column>
       <el-table-column label="最后修改时间" width="180" align="center">
@@ -352,6 +370,8 @@ onMounted(loadData)
 .name-cell { display: flex; align-items: center; gap: 8px; cursor: pointer; width: 100%; min-height: 32px; }
 .name-cell:hover .name-text { color: #409eff; }
 .name-text { color: #303133; font-size: 14px; transition: color 0.15s; }
+.strategy-id { color: #909399; font-size: 13px; font-family: 'Consolas', 'Monaco', monospace; }
+.no-paper { color: #c0c4cc; }
 
 /* 移动端适配（PR-10） */
 @media (max-width: 768px) {
