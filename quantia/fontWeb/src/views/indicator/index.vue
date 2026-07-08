@@ -3,7 +3,7 @@ import { ref, shallowRef, onMounted, onUnmounted, onActivated, onDeactivated, co
 import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
-import { getKlineData, getFinancialSummary, getBacktestHistory, getKpred, type KlineParams, type FinancialSummaryResult, type KpredResult, type KpredPrediction } from '@/api/stock'
+import { getKlineData, getFinancialSummary, getBacktestHistory, getKpred, getChipDistribution, type KlineParams, type FinancialSummaryResult, type KpredResult, type KpredPrediction, type ChipDistributionResult } from '@/api/stock'
 import { getReportHistory, getStockQuote, getAttentionList, setAttention, type ReportHistoryItem, type StockQuote } from '@/api/report'
 import { getStrategyHistory } from '@/api/strategy'
 import { ChatDotRound, ArrowDown, Star, StarFilled } from '@element-plus/icons-vue'
@@ -48,6 +48,7 @@ const mainOverlays = ref<string[]>(['MA'])
 const mainOverlayOptions = [
   { label: '均线', value: 'MA' },
   { label: 'BOLL', value: 'BOLL' },
+  { label: '筹码', value: 'CYQ' },
 ]
 
 // === Sub indicator tabs (East Money style bottom bar) ===
@@ -56,6 +57,40 @@ const subIndicatorOptions = ['MACD', 'KDJ', 'RSI', 'WR', '多空趋势']
 
 // K-line data
 const klineData = ref<any>(null)
+
+// === 筹码分布 (CYQ) ===
+// DB 标量优先 + 直方图现算：勾选"筹码"叠加项时按需拉取，缓存于组件内
+const chipData = ref<ChipDistributionResult | null>(null)
+const chipLoading = ref(false)
+const showChip = computed(() => mainOverlays.value.includes('CYQ'))
+const loadChipData = async () => {
+  if (!code.value) return
+  chipLoading.value = true
+  try {
+    chipData.value = await getChipDistribution({
+      code: code.value, date: date.value, name: stockName.value || '',
+    })
+  } catch {
+    chipData.value = null
+  } finally {
+    chipLoading.value = false
+  }
+}
+
+// 筹码读数条格式化
+const fmtChipNum = (v: number | null | undefined) => (v == null || !isFinite(Number(v))) ? '--' : Number(v).toFixed(2)
+const fmtChipPct = (v: number | null | undefined) => (v == null || !isFinite(Number(v))) ? '--' : Number(v).toFixed(2) + '%'
+const fmtChipConc = (v: number | null | undefined) => (v == null || !isFinite(Number(v))) ? '--' : (Number(v) * 100).toFixed(2) + '%'
+const fmtChipRange = (lo: number | null | undefined, hi: number | null | undefined) =>
+  (lo == null || hi == null || !isFinite(Number(lo)) || !isFinite(Number(hi))) ? '--' : `${Number(lo).toFixed(2)} ~ ${Number(hi).toFixed(2)}`
+const winnerRateCls = computed(() => {
+  const w = chipData.value?.metrics?.winner_rate
+  return (w == null) ? '' : (w >= 50 ? 'kt-up' : 'kt-down')
+})
+const chipSourceLabel = computed(() => {
+  const s = chipData.value?.metrics_source
+  return s === 'db' ? '库存标量' : s === 'compute' ? '实时计算' : s === 'db_stale' ? '库存(历史)' : ''
+})
 
 // === 策略选中标记 (策略选股有效性可视化) ===
 // 该股票被当前策略历史选中的全部日期（来自策略选股结果表），在日K主图上以图钉标注
@@ -556,6 +591,89 @@ const renderChart = () => {
     )
   }
 
+  // === 筹码分布 (CYQ)：Tier A 成本带叠加 + Tier B 右侧横向峰图 ===
+  // 成本带（markArea/markLine，价格轴 yAxis[0]）保证覆盖股均可显示；
+  // 右侧峰图（custom series 叠加主图）需 distribution（含 turnover）方渲染。
+  if (showChip.value && chipData.value?.has_chip && chipData.value.metrics) {
+    const m = chipData.value.metrics
+    const closePrice = chipData.value.close
+    // Tier A：90%/70% 成本区间横带
+    const markAreas: any[] = []
+    if (m.cost_90_low != null && m.cost_90_high != null) {
+      markAreas.push([
+        { yAxis: m.cost_90_low, itemStyle: { color: 'rgba(64,158,255,0.09)' } },
+        { yAxis: m.cost_90_high },
+      ])
+    }
+    if (m.cost_70_low != null && m.cost_70_high != null) {
+      markAreas.push([
+        { yAxis: m.cost_70_low, itemStyle: { color: 'rgba(230,162,60,0.16)' } },
+        { yAxis: m.cost_70_high },
+      ])
+    }
+    if (markAreas.length) {
+      series[0].markArea = { silent: true, data: markAreas }
+    }
+    // Tier A：平均成本水平线（合并进已有 markLine，避免覆盖预测分界线）
+    if (m.avg_cost != null) {
+      const avgLine = {
+        yAxis: m.avg_cost, symbol: 'none',
+        lineStyle: { color: '#8250df', type: 'dashed' as const, width: 1.2 },
+        label: {
+          show: true, formatter: `均价 ${m.avg_cost.toFixed(2)}`,
+          position: 'insideStartTop' as const, color: '#8250df', fontSize: scFs(10),
+        },
+      }
+      if (series[0].markLine) {
+        series[0].markLine.data = [...(series[0].markLine.data || []), avgLine]
+      } else {
+        series[0].markLine = { silent: true, symbol: 'none', data: [avgLine] }
+      }
+    }
+
+    // Tier B：右侧横向筹码峰图（custom series 叠加在主图 gridIndex 0，随价格轴缩放联动）
+    const dist = chipData.value.distribution
+    if (dist && dist.prices?.length) {
+      const cyqPrices = dist.prices
+      const cyqChips = dist.chips
+      const maxChip = Math.max(...cyqChips, 1e-9)
+      const barMaxFrac = isMobile.value ? 0.13 : 0.16  // 峰图最长柱占主图宽度比例
+      series.push({
+        name: '筹码分布',
+        type: 'custom',
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        silent: true,
+        z: 2,
+        // 单元素 data，renderItem 内一次性绘制所有价位柱
+        data: [0],
+        renderItem: (params: any, api: any) => {
+          if (params.dataIndex !== 0) return
+          const cs = params.coordSys
+          if (!cs) return
+          const rightX = cs.x + cs.width
+          const maxLen = cs.width * barMaxFrac
+          const children: any[] = []
+          for (let i = 0; i < cyqPrices.length; i++) {
+            const chip = cyqChips[i]
+            if (!(chip > 0)) continue
+            const pt = api.coord([0, cyqPrices[i]])
+            const y = pt[1]
+            if (y < cs.y || y > cs.y + cs.height) continue  // 裁剪到可视价格区
+            const len = (chip / maxChip) * maxLen
+            const isProfit = closePrice != null && cyqPrices[i] <= closePrice
+            children.push({
+              type: 'rect',
+              shape: { x: rightX - len, y: y - 0.7, width: len, height: 1.5 },
+              style: { fill: isProfit ? 'rgba(236,0,0,0.42)' : 'rgba(0,153,220,0.40)' },
+            })
+          }
+          return { type: 'group', children }
+        },
+      })
+    }
+  }
+
   // Volume bars + volume MA lines
   series.push(
     { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: volData, barMaxWidth: 8 },
@@ -846,6 +964,14 @@ const switchPeriod = (p: string) => {
 
 // Re-render chart (no data reload) when overlay or sub-indicator changes
 watch([currentSubIndicator, mainOverlays], () => { renderChart() }, { deep: true })
+
+// 筹码开关：首次开启时按需拉取，拉取完成后重渲
+watch(showChip, async (on) => {
+  if (on && !chipData.value && !chipLoading.value) {
+    await loadChipData()
+    renderChart()
+  }
+})
 
 // PR-5: 自定义指标叠加变化时重渲
 watch(() => ciOverlay.extension.value, async () => { await nextTick(); renderChart() }, { deep: true })
@@ -1224,6 +1350,8 @@ watch(() => route.query.code, (newCode, oldCode) => {
   if (newCode && newCode !== oldCode) {
     currentPeriod.value = 'daily'
     lastLoadedCode = newCode as string
+    chipData.value = null
+    if (showChip.value) loadChipData().then(() => renderChart())
     loadKlineData()
     loadStockQuote()
     loadFinancialData()
@@ -1423,6 +1551,45 @@ onUnmounted(() => {
       <div ref="klineWrapRef" class="chart-wrap kline-chart-wrap">
         <div ref="klineChartRef" class="chart-main" :style="{ height: chartHeight + 'px' }"></div>
         <ChartFullscreenBtn :is-fullscreen="klineChartFs.isFullscreen.value" @toggle="klineChartFs.toggle" />
+      </div>
+      <!-- 筹码分布读数条（Tier A）：仅在勾选"筹码"叠加项时展示 -->
+      <div v-if="showChip" class="chip-strip" v-loading="chipLoading">
+        <template v-if="chipData?.has_chip && chipData.metrics">
+          <div class="chip-items">
+            <div class="chip-item">
+              <span class="chip-label">获利比例</span>
+              <span class="chip-val" :class="winnerRateCls">{{ fmtChipPct(chipData.metrics.winner_rate) }}</span>
+            </div>
+            <div class="chip-item">
+              <span class="chip-label">平均成本</span>
+              <span class="chip-val">{{ fmtChipNum(chipData.metrics.avg_cost) }}</span>
+            </div>
+            <div class="chip-item">
+              <span class="chip-label">90%成本区间</span>
+              <span class="chip-val">{{ fmtChipRange(chipData.metrics.cost_90_low, chipData.metrics.cost_90_high) }}</span>
+            </div>
+            <div class="chip-item">
+              <span class="chip-label">90%集中度</span>
+              <span class="chip-val">{{ fmtChipConc(chipData.metrics.concentration_90) }}</span>
+            </div>
+            <div class="chip-item">
+              <span class="chip-label">70%成本区间</span>
+              <span class="chip-val">{{ fmtChipRange(chipData.metrics.cost_70_low, chipData.metrics.cost_70_high) }}</span>
+            </div>
+            <div class="chip-item">
+              <span class="chip-label">70%集中度</span>
+              <span class="chip-val">{{ fmtChipConc(chipData.metrics.concentration_70) }}</span>
+            </div>
+          </div>
+          <div class="chip-meta">
+            <span v-if="chipSourceLabel" :class="['chip-src', 'src-' + chipData.metrics_source]">{{ chipSourceLabel }}</span>
+            <span v-if="chipData.metrics_as_of" class="chip-asof">数据日 {{ chipData.metrics_as_of }}</span>
+            <span v-if="chipData.message" class="chip-msg">{{ chipData.message }}</span>
+          </div>
+        </template>
+        <div v-else class="chip-empty">
+          {{ chipData?.message || (chipLoading ? '筹码数据加载中…' : '该股暂无筹码数据') }}
+        </div>
       </div>
       <!-- Sub indicator picker: 桌面用东方财富风格 tab bar；移动端用 el-segmented 节省高度 -->
       <el-segmented
@@ -1719,6 +1886,42 @@ onUnmounted(() => {
   }
 }
 
+/* 筹码分布读数条 */
+.chip-strip {
+  border-top: 1px solid #eee;
+  background: linear-gradient(180deg, #fbfcfe 0%, #f6f8fb 100%);
+  padding: 8px 14px;
+  .chip-items {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 8px 14px;
+  }
+  .chip-item {
+    display: flex; flex-direction: column; gap: 2px;
+    min-width: 0;
+  }
+  .chip-label { font-size: 11px; color: #909399; white-space: nowrap; }
+  .chip-val {
+    font-size: 13px; font-weight: 600; color: #303133;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .chip-val.kt-up { color: #ec0000; }
+  .chip-val.kt-down { color: #00a838; }
+  .chip-meta {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    margin-top: 6px; font-size: 11px; color: #909399;
+  }
+  .chip-src {
+    padding: 1px 7px; border-radius: 9px; font-weight: 600;
+    background: #eef1f6; color: #606266;
+    &.src-compute { background: #e7f6ec; color: #00a838; }
+    &.src-db_stale { background: #fdf0e6; color: #e6a23c; }
+  }
+  .chip-asof { color: #a8abb2; }
+  .chip-msg { color: #e6a23c; }
+  .chip-empty { font-size: 12px; color: #909399; text-align: center; padding: 4px 0; }
+}
+
 /* 移动端：紧凑信息栏与工具栏，避免横向溢出 */
 @media (max-width: 767.98px) {
   .top-bar {
@@ -1732,6 +1935,11 @@ onUnmounted(() => {
   .period-tabs .period-tab { padding: 3px 8px; font-size: 12px; }
   .overlay-checks .label { display: none; }
   .sub-indicator-bar .sub-tab { padding: 6px 0; font-size: 11px; }
+  /* 移动端筹码读数条：改为 2 列，缩小内边距与字号 */
+  .chip-strip { padding: 6px 10px; }
+  .chip-strip .chip-items { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; }
+  .chip-strip .chip-label { font-size: 10px; }
+  .chip-strip .chip-val { font-size: 12px; }
   /* 移动端行情快照：现价缩小，盘口网格改为更窄列 */
   .quote-main { gap: 10px; padding: 8px 12px; }
   .quote-main .quote-price { font-size: 24px; }

@@ -106,5 +106,63 @@ class TestChipDistribution(unittest.TestCase):
         self.assertIsNone(cyqd.compute_chip_metrics(pd.DataFrame()))
 
 
+class TestChipDistributionHistogram(unittest.TestCase):
+    """compute_chip_distribution：直方图 + 标量。"""
+
+    def test_returns_prices_chips_and_metrics(self):
+        d = cyqd.compute_chip_distribution(_make_hist())
+        self.assertIsNotNone(d)
+        self.assertIn('prices', d)
+        self.assertIn('chips', d)
+        self.assertIn('metrics', d)
+        self.assertIn('close', d)
+        # prices/chips 等长
+        self.assertEqual(len(d['prices']), len(d['chips']))
+        self.assertGreater(len(d['prices']), 0)
+
+    def test_prices_ascending(self):
+        d = cyqd.compute_chip_distribution(_make_hist())
+        prices = d['prices']
+        for i in range(1, len(prices)):
+            self.assertGreaterEqual(prices[i], prices[i - 1])
+
+    def test_chips_sum_to_100(self):
+        d = cyqd.compute_chip_distribution(_make_hist())
+        total = sum(d['chips'])
+        self.assertAlmostEqual(total, 100.0, delta=0.5)
+
+    def test_chips_all_finite_nonneg(self):
+        d = cyqd.compute_chip_distribution(_make_hist())
+        for c in d['chips']:
+            self.assertTrue(math.isfinite(c))
+            self.assertGreaterEqual(c, 0.0)
+        for p in d['prices']:
+            self.assertTrue(math.isfinite(p))
+
+    def test_metrics_match_compute_chip_metrics(self):
+        hist = _make_hist()
+        d = cyqd.compute_chip_distribution(hist)
+        m = cyqd.compute_chip_metrics(hist)
+        self.assertIsNotNone(d)
+        self.assertIsNotNone(m)
+        for k in ('winner_rate', 'avg_cost', 'cost_90_low', 'cost_90_high',
+                  'concentration_90', 'cost_70_low', 'cost_70_high', 'concentration_70'):
+            self.assertAlmostEqual(d['metrics'][k], m[k], delta=1e-6, msg=k)
+
+    def test_missing_turnover_returns_none(self):
+        hist = _make_hist().drop(columns=['turnover'])
+        self.assertIsNone(cyqd.compute_chip_distribution(hist))
+
+    def test_zero_turnover_returns_none(self):
+        self.assertIsNone(cyqd.compute_chip_distribution(_make_hist(turnover=0.0)))
+
+    def test_insufficient_bars_returns_none(self):
+        self.assertIsNone(cyqd.compute_chip_distribution(_make_hist(n=5), min_bars=20))
+
+    def test_empty_or_none_input(self):
+        self.assertIsNone(cyqd.compute_chip_distribution(None))
+        self.assertIsNone(cyqd.compute_chip_distribution(pd.DataFrame()))
+
+
 if __name__ == '__main__':
     unittest.main()

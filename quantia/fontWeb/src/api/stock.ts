@@ -219,6 +219,36 @@ export function getKlineData(params: KlineParams) {
   return request({ url: '/api/kline', method: 'get', params })
 }
 
+// ============= 筹码分布 API =============
+
+export interface ChipMetrics {
+  winner_rate: number | null
+  avg_cost: number | null
+  cost_90_low: number | null
+  cost_90_high: number | null
+  concentration_90: number | null
+  cost_70_low: number | null
+  cost_70_high: number | null
+  concentration_70: number | null
+}
+
+export interface ChipDistributionResult {
+  code: string
+  name: string
+  has_chip: boolean
+  metrics_source: 'db' | 'compute' | 'db_stale' | 'none'
+  metrics_as_of: string | null
+  close: number | null
+  metrics: ChipMetrics | null
+  distribution: { prices: number[]; chips: number[]; as_of: string | null } | null
+  message: string
+}
+
+/** 获取筹码分布（DB 标量优先 + 直方图现算） */
+export function getChipDistribution(params: { code: string; date?: string; name?: string }): Promise<ChipDistributionResult> {
+  return request({ url: '/api/chip', method: 'get', params }) as unknown as Promise<ChipDistributionResult>
+}
+
 /** K线预测（AgentPit kpred 代理） */
 export interface KpredParams {
   code: string

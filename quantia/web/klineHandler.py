@@ -14,10 +14,18 @@ import numpy as np
 from abc import ABC
 
 import quantia.core.stockfetch as stf
+import quantia.core.kline.chip_distribution as cyqd
 import quantia.web.base as webBase
+from quantia.lib.database import executeSqlFetch
 
 __author__ = 'Quantia'
 __date__ = '2026/02/14'
+
+# 筹码标量指标字段（与 cn_stock_chip_distribution 表 / compute_chip_metrics 对齐）
+_CHIP_METRIC_KEYS = (
+    'winner_rate', 'avg_cost', 'cost_90_low', 'cost_90_high',
+    'concentration_90', 'cost_70_low', 'cost_70_high', 'concentration_70',
+)
 
 
 def _safe_float(val):
@@ -379,7 +387,9 @@ class GetKlineDataHandler(webBase.BaseHandler, ABC):
                     return [_safe_float(v) for v in stock[col_name].tolist()]
                 return None
 
-            turnover = _col_or_none('turnoverrate')
+            # 缓存标准列名为 turnover（见 CN_STOCK_HIST_DATA），旧代码误用 turnoverrate
+            # 导致换手率恒为 None；此处优先 turnover 并向后兼容旧列名。
+            turnover = _col_or_none('turnover') or _col_or_none('turnoverrate')
             amplitude = _col_or_none('amplitude')
             change_pct = _col_or_none('quote_change')
 
@@ -464,5 +474,166 @@ class GetKlineDataHandler(webBase.BaseHandler, ABC):
 
         except Exception as e:
             logging.error(f"klineHandler.GetKlineDataHandler处理异常", exc_info=True)
+            self.set_status(500)
+            self.write(json.dumps({"error": str(e)}, ensure_ascii=False))
+
+
+def _d10(value):
+    """归一化为 YYYY-MM-DD（截前 10 位），供日期字符串比较。"""
+    return str(value)[:10]
+
+
+def _pick_chip_metrics(source):
+    """从 dict 抽取标准筹码标量字段（缺失置 None）。"""
+    return {k: _safe_float(source.get(k)) for k in _CHIP_METRIC_KEYS}
+
+
+def _query_chip_db(code, target_date):
+    """查最近一条 date<=target_date 的筹码标量行（仅显式列，符合"验证优先"）。
+
+    Returns:
+        dict | None：含 date/name/close + 8 个标量字段。
+    """
+    try:
+        rows = executeSqlFetch(
+            "SELECT date, name, close, winner_rate, avg_cost, cost_90_low, cost_90_high, "
+            "concentration_90, cost_70_low, cost_70_high, concentration_70 "
+            "FROM cn_stock_chip_distribution WHERE code=%s AND date<=%s "
+            "ORDER BY date DESC LIMIT 1",
+            (code, target_date),
+        )
+    except Exception:
+        logging.debug(f"筹码分布 DB 查询失败: {code}", exc_info=True)
+        return None
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        'date': _d10(r[0]),
+        'name': r[1] or '',
+        'close': _safe_float(r[2]),
+        'winner_rate': _safe_float(r[3]),
+        'avg_cost': _safe_float(r[4]),
+        'cost_90_low': _safe_float(r[5]),
+        'cost_90_high': _safe_float(r[6]),
+        'concentration_90': _safe_float(r[7]),
+        'cost_70_low': _safe_float(r[8]),
+        'cost_70_high': _safe_float(r[9]),
+        'concentration_70': _safe_float(r[10]),
+    }
+
+
+class GetChipDistributionHandler(webBase.BaseHandler, ABC):
+    """筹码分布 API（DB 标量优先，直方图现算）。
+
+    参数:
+        code: 股票代码 (必填)
+        date: 目标日期 (可选，默认今天；取 <= 该日的最近一条 DB 标量)
+        name: 股票名称 (可选)
+
+    返回:
+        {
+            code, name, has_chip, metrics_source, metrics_as_of, close,
+            metrics: {winner_rate, avg_cost, cost_90_low/high, concentration_90,
+                      cost_70_low/high, concentration_70} | null,
+            distribution: {prices:[...], chips:[...], as_of} | null,
+            message
+        }
+
+    说明:
+        - metrics 优先取 cn_stock_chip_distribution 表（快）；DB miss 或过期
+          （早于本地缓存最新交易日）则用本地缓存现算。
+        - distribution（筹码峰图直方图）DB 不存储，始终现算，需缓存含 turnover；
+          缺 turnover 的股票（如新浪源）distribution 为 null，仅返回标量。
+    """
+
+    def get(self):
+        self.set_header('Content-Type', 'application/json;charset=UTF-8')
+        code = self.get_argument("code", default=None, strip=True)
+        date = self.get_argument("date", default=None, strip=True)
+        name = self.get_argument("name", default="", strip=True)
+
+        if not code:
+            self.set_status(400)
+            self.write(json.dumps({"error": "缺少 code 参数"}, ensure_ascii=False))
+            return
+
+        try:
+            today = datetime.datetime.now().strftime('%Y-%m-%d')
+            target = _d10(date) if date else today
+
+            db_row = _query_chip_db(code, target)
+
+            # 现算直方图 + 标量（需缓存含 turnover）
+            computed = None
+            cache_last_date = None
+            stock = stf.read_hist_from_cache((today, code), years=50)
+            if stock is not None and not stock.empty:
+                cache_last_date = _d10(stock['date'].iloc[-1])
+                if 'turnover' in stock.columns:
+                    try:
+                        computed = cyqd.compute_chip_distribution(stock)
+                    except Exception:
+                        logging.debug(f"compute_chip_distribution 异常: {code}", exc_info=True)
+                        computed = None
+
+            # DB 行是否过期（早于本地缓存最新交易日）
+            db_stale = (
+                db_row is not None and cache_last_date is not None
+                and db_row['date'] < cache_last_date
+            )
+
+            metrics = None
+            metrics_source = 'none'
+            metrics_as_of = None
+            close = None
+
+            if db_row is not None and not db_stale:
+                metrics = _pick_chip_metrics(db_row)
+                metrics_source = 'db'
+                metrics_as_of = db_row['date']
+                close = db_row['close']
+            elif computed is not None:
+                metrics = _pick_chip_metrics(computed['metrics'])
+                metrics_source = 'compute'
+                metrics_as_of = cache_last_date
+                close = computed['close']
+            elif db_row is not None:
+                # 过期但无法现算（缺 turnover）→ 退回 DB 标量并标注 stale
+                metrics = _pick_chip_metrics(db_row)
+                metrics_source = 'db_stale'
+                metrics_as_of = db_row['date']
+                close = db_row['close']
+
+            distribution = None
+            if computed is not None:
+                distribution = {
+                    'prices': computed['prices'],
+                    'chips': computed['chips'],
+                    'as_of': cache_last_date,
+                }
+
+            has_chip = metrics is not None
+            message = ""
+            if not has_chip:
+                message = "该股暂无筹码数据（缺少历史换手率，无法计算）"
+            elif distribution is None:
+                message = "筹码峰图需换手率数据，该股暂缺，仅显示成本指标"
+
+            result = {
+                'code': code,
+                'name': name or (db_row['name'] if db_row else ''),
+                'has_chip': has_chip,
+                'metrics_source': metrics_source,
+                'metrics_as_of': metrics_as_of,
+                'close': close,
+                'metrics': metrics,
+                'distribution': distribution,
+                'message': message,
+            }
+            self.write(json.dumps(result, ensure_ascii=False))
+
+        except Exception as e:
+            logging.error("klineHandler.GetChipDistributionHandler处理异常", exc_info=True)
             self.set_status(500)
             self.write(json.dumps({"error": str(e)}, ensure_ascii=False))

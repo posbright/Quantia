@@ -107,6 +107,8 @@ class Application(tornado.web.Application):
             (r"/quantia/api/indicator/advisor", indicatorParamsHandler.IndicatorAdvisorHandler),
             # K线数据JSON API
             (r"/quantia/api/kline", klineHandler.GetKlineDataHandler),
+            # 筹码分布 JSON API（DB 标量优先 + 直方图现算）
+            (r"/quantia/api/chip", klineHandler.GetChipDistributionHandler),
             # K线预测（AgentPit kpred 代理）
             (r"/quantia/api/kpred", kpredHandler.GetKpredHandler),
             # 股票财务数据

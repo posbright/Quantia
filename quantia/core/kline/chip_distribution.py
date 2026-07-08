@@ -103,21 +103,8 @@ def _accumulate_distribution(kdata, factor):
     return xdata, min_price, accuracy
 
 
-def compute_chip_metrics(hist_data, lookback=None, factor=None, min_bars=None,
-                         close_override=None):
-    """计算"截止当日"的筹码分布核心指标。
-
-    Args:
-        hist_data: read_stock_hist_from_cache 返回的 DataFrame（时间升序，
-            含 open/high/low/close/turnover）。
-        lookback/factor/min_bars: 覆盖默认参数（缺省读环境变量）。
-        close_override: 用指定收盘价计算获利比例（默认取窗口最后一根 close）。
-
-    Returns:
-        dict | None：非 None 时含
-        close, winner_rate(%), avg_cost, cost_90_low/high, concentration_90,
-        cost_70_low/high, concentration_70。任何退化情形返回 None。
-    """
+def _prepare_kdata(hist_data, lookback, factor, min_bars):
+    """公共预处理：截取窗口、数值化、去脏行。返回 (kdata, factor) | None。"""
     if hist_data is None or len(hist_data) == 0:
         return None
     if not all(c in hist_data.columns for c in _REQUIRED_COLUMNS):
@@ -136,20 +123,14 @@ def compute_chip_metrics(hist_data, lookback=None, factor=None, min_bars=None,
     kdata = kdata.dropna(subset=['open', 'high', 'low', 'close'])
     if len(kdata) < min_bars:
         return None
+    return kdata, factor
 
-    acc = _accumulate_distribution(kdata, factor)
-    if acc is None:
-        return None
-    xdata, min_price, accuracy = acc
 
+def _metrics_from_distribution(xdata, min_price, accuracy, factor, current_price):
+    """由已叠加的筹码分布数组导出核心标量指标。返回 dict | None。"""
     total_chips = math.fsum(xdata)
     if not math.isfinite(total_chips) or total_chips <= 0:
         return None
-
-    if close_override is not None:
-        current_price = _finite_or_none(close_override)
-    else:
-        current_price = _finite_or_none(kdata.iloc[-1]['close'])
     if current_price is None:
         return None
 
@@ -190,4 +171,92 @@ def compute_chip_metrics(hist_data, lookback=None, factor=None, min_bars=None,
         'cost_70_low': _finite_or_none(c70_low),
         'cost_70_high': _finite_or_none(c70_high),
         'concentration_70': _finite_or_none(conc70),
+    }
+
+
+def compute_chip_metrics(hist_data, lookback=None, factor=None, min_bars=None,
+                         close_override=None):
+    """计算"截止当日"的筹码分布核心指标。
+
+    Args:
+        hist_data: read_stock_hist_from_cache 返回的 DataFrame（时间升序，
+            含 open/high/low/close/turnover）。
+        lookback/factor/min_bars: 覆盖默认参数（缺省读环境变量）。
+        close_override: 用指定收盘价计算获利比例（默认取窗口最后一根 close）。
+
+    Returns:
+        dict | None：非 None 时含
+        close, winner_rate(%), avg_cost, cost_90_low/high, concentration_90,
+        cost_70_low/high, concentration_70。任何退化情形返回 None。
+    """
+    prepared = _prepare_kdata(hist_data, lookback, factor, min_bars)
+    if prepared is None:
+        return None
+    kdata, factor = prepared
+
+    acc = _accumulate_distribution(kdata, factor)
+    if acc is None:
+        return None
+    xdata, min_price, accuracy = acc
+
+    if close_override is not None:
+        current_price = _finite_or_none(close_override)
+    else:
+        current_price = _finite_or_none(kdata.iloc[-1]['close'])
+
+    return _metrics_from_distribution(xdata, min_price, accuracy, factor, current_price)
+
+
+def compute_chip_distribution(hist_data, lookback=None, factor=None, min_bars=None,
+                              close_override=None):
+    """计算"截止当日"的筹码分布直方图 + 核心指标（供前端筹码峰图渲染）。
+
+    与 compute_chip_metrics 同源、同窗口口径，额外返回逐价位的筹码占比数组。
+
+    Args:
+        hist_data: 含 open/high/low/close/turnover 的时间升序 DataFrame。
+        lookback/factor/min_bars/close_override: 同 compute_chip_metrics。
+
+    Returns:
+        dict | None：非 None 时含
+        - close: 当前收盘价
+        - prices: list[float] 每个价位桶的价格（升序，长度 = factor）
+        - chips: list[float] 对应价位的筹码占比（%），sum ≈ 100
+        - metrics: 同 compute_chip_metrics 的标量字典
+        任何退化情形（缺 turnover / 停牌 / K 线不足）返回 None。
+    """
+    prepared = _prepare_kdata(hist_data, lookback, factor, min_bars)
+    if prepared is None:
+        return None
+    kdata, factor = prepared
+
+    acc = _accumulate_distribution(kdata, factor)
+    if acc is None:
+        return None
+    xdata, min_price, accuracy = acc
+
+    total_chips = math.fsum(xdata)
+    if not math.isfinite(total_chips) or total_chips <= 0:
+        return None
+
+    if close_override is not None:
+        current_price = _finite_or_none(close_override)
+    else:
+        current_price = _finite_or_none(kdata.iloc[-1]['close'])
+
+    metrics = _metrics_from_distribution(xdata, min_price, accuracy, factor, current_price)
+    if metrics is None:
+        return None
+
+    prices = [_finite_or_none(min_price + i * accuracy) for i in range(factor)]
+    chips = [round(x / total_chips * 100.0, 6) for x in xdata]
+    # 兜底：任一价位非有限则整体判退化（理论上 accuracy/min_price 有限时不会发生）
+    if any(p is None for p in prices):
+        return None
+
+    return {
+        'close': metrics['close'],
+        'prices': prices,
+        'chips': chips,
+        'metrics': metrics,
     }
