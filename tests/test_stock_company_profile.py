@@ -10,7 +10,10 @@
 """
 from unittest import mock
 
+import pytest
+
 import quantia.core.crawling.stock_business_em as sbe
+import quantia.job.fetch_company_profile_job as fcp
 import quantia.web.stockProfileHandler as sph
 
 
@@ -133,9 +136,54 @@ def test_stock_business_composition_empty_returns_none():
         assert sbe.stock_business_composition('000651') is None
 
 
-def test_stock_business_composition_request_failure_returns_none():
+def test_stock_business_composition_request_failure_raises():
+    # 传输层失败（尽管 make_request 已重试）应抛 BusinessFetchError，供上层 job 熔断区分。
     with mock.patch.object(sbe.fetcher, 'make_request', side_effect=RuntimeError('boom')):
-        assert sbe.stock_business_composition('000651') is None
+        with pytest.raises(sbe.BusinessFetchError):
+            sbe.stock_business_composition('000651')
+
+
+def test_run_circuit_breaker_aborts_on_consecutive_failures(monkeypatch):
+    """连续 BusinessFetchError 达阈值时，run() 应提前熔断，不再逐只空转。"""
+    codes = [str(600000 + i) for i in range(200)]
+    calls = {'n': 0}
+
+    def _boom(code, update_date):
+        calls['n'] += 1
+        raise sbe.BusinessFetchError('EM banned')
+
+    monkeypatch.setattr(fcp, 'save_company_profile', _boom)
+    monkeypatch.setattr(fcp, 'record_task_start', lambda *a, **k: 0)
+    monkeypatch.setattr(fcp, 'record_task_end', lambda *a, **k: None)
+    monkeypatch.setattr(fcp.time, 'sleep', lambda *a, **k: None)
+    monkeypatch.setattr(fcp, '_MAX_CONSECUTIVE_FAILURES', 30)
+
+    fcp.run(codes=codes, force=True)
+    # 息于第 30 只连续失败，不会把 200 只全跑完
+    assert calls['n'] == 30
+
+
+def test_run_circuit_breaker_resets_on_success(monkeypatch):
+    """失败中途成功（或空数据）应重置连续计数，不该熔断。"""
+    codes = [str(600000 + i) for i in range(80)]
+    calls = {'n': 0}
+
+    def _flaky(code, update_date):
+        calls['n'] += 1
+        # 每 10 只成功一只，永远不会连续 30 失败
+        if calls['n'] % 10 == 0:
+            return 1
+        raise sbe.BusinessFetchError('flaky')
+
+    monkeypatch.setattr(fcp, 'save_company_profile', _flaky)
+    monkeypatch.setattr(fcp, 'record_task_start', lambda *a, **k: 0)
+    monkeypatch.setattr(fcp, 'record_task_end', lambda *a, **k: None)
+    monkeypatch.setattr(fcp.time, 'sleep', lambda *a, **k: None)
+    monkeypatch.setattr(fcp, '_MAX_CONSECUTIVE_FAILURES', 30)
+
+    fcp.run(codes=codes, force=True)
+    # 未熔断，全部 80 只都处理到
+    assert calls['n'] == 80
 
 
 def test_handler_parse_mainop():

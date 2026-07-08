@@ -42,6 +42,14 @@ _MAINOP_TYPE_MAP = {'1': '行业', '2': '产品', '3': '地区'}
 _MAINOP_STALE_DAYS = 450
 
 
+class BusinessFetchError(Exception):
+    """经营分析抓取传输层失败（网络异常 / 东方财富封禁 / 返回非 JSON 的反爬页）。
+
+    与"响应正常但无经营分析数据"（返回 None）明确区分：上层 job 据此实现熔断——
+    连续多只 BusinessFetchError 视为数据源不可用，提前中止本轮，避免空转 + 加剧封禁。
+    """
+
+
 def to_secid(code):
     """6 位股票代码 → 东方财富 F10 secid（带交易所字母前缀）。
 
@@ -94,7 +102,8 @@ def stock_business_composition(code):
     """抓取单只个股的公司概况（经营范围 / 主营构成 / 经营评述）。
 
     :param code: 6 位股票代码，例如 '000651'
-    :return: dict 或 None（无任何有效字段时返回 None）
+    :raises BusinessFetchError: 传输层失败（网络异常 / 东方财富封禁 / 返回非 JSON）
+    :return: dict 或 None（响应正常但无任何有效字段时返回 None）
         {
           'report_date': '2025-12-31' | None,
           'business_scope': str | None,
@@ -111,11 +120,12 @@ def stock_business_composition(code):
     try:
         r = fetcher.make_request(_BUSINESS_URL, params={"code": secid})
         data_json = r.json()
-    except Exception as exc:  # noqa: BLE001 - 抓取失败降级为 None，由上层记账
-        _logger.warning('[business] 抓取 %s(%s) 失败: %s', code, secid, exc)
-        return None
+    except Exception as exc:  # 传输层失败（make_request 用尽重试 / 返回非 JSON 的封禁反爬页）
+        # 抛出显式异常而非降级 None：让上层 job 能区分"封禁/网络故障"与"无数据"，据此熔断。
+        raise BusinessFetchError(f'{code}({secid}) 抓取失败: {exc}') from exc
 
     if not isinstance(data_json, dict):
+        # 响应可解析但结构异常，视为无数据（非封禁信号），返回 None。
         return None
 
     # 1) 经营范围

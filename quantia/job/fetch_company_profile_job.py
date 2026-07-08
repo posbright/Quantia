@@ -54,8 +54,14 @@ __date__ = '2026/06/26'
 _JOB_NAME = 'run_company_profile'
 _PROFILE_TABLE = tbs.TABLE_CN_STOCK_COMPANY_PROFILE['name']
 _PROFILE_COLS = list(tbs.TABLE_CN_STOCK_COMPANY_PROFILE['columns'])
-# 增量跳过阈值：update_date 在此天数内视为已更新（可用 force 覆盖）
-_SKIP_DAYS = 25
+# 增量跳过阈值：update_date 在此天数内视为已更新（可用 force 覆盖）。
+# 数据为季度级稳定；月度 cron + 80 天跳过 ⇒ 每只个股约每季刷新一轮，把全量刷新自然
+# 摊到 ~3 个月，月度只补新股/过期股，既保新股时效又大幅降负载。
+_SKIP_DAYS = 80
+
+# 熔断阈值：连续失败（BusinessFetchError 等）达此数视为东方财富封禁/不可用，提前中止本轮，
+# 避免对死接口空转 1.5h、并降低进一步被封风险；下月靠增量续跑。<=0 关闭熔断。
+_MAX_CONSECUTIVE_FAILURES = _cfg.get_int('QUANTIA_COMPANY_PROFILE_MAX_FAILS', 30)
 
 
 def _select_target_codes(limit=None):
@@ -115,8 +121,6 @@ def save_company_profile(code, update_date):
     return 1
 
 
-def run(codes=None, limit=None, force=False, job_date=None):
-    job_date = job_date or datetime.date.today()
 def run(codes=None, limit=None, force=False, job_date=None, max_seconds=None):
     job_date = job_date or datetime.date.today()
     update_date = job_date
@@ -141,6 +145,8 @@ def run(codes=None, limit=None, force=False, job_date=None, max_seconds=None):
     ok = 0
     processed = 0
     stopped_early = False
+    aborted = False
+    consecutive_fail = 0
     for code in targets:
         # 时间预算：全量约 4900 只需 1.5~2h，超预算时干净自停（下次运行靠增量续跑），
         # 避免被 cron timeout 的 SIGTERM 在写库中途打断。max_seconds<=0 表示不限时。
@@ -151,14 +157,27 @@ def run(codes=None, limit=None, force=False, job_date=None, max_seconds=None):
             break
         try:
             ok += save_company_profile(code, update_date)
+            consecutive_fail = 0  # 成功或"响应正常但无数据"⇒ 数据源可达，重置熔断计数
         except Exception:
+            consecutive_fail += 1
             logging.warning(f"fetch_company_profile_job: {code} 处理失败，跳过", exc_info=True)
-        finally:
-            processed += 1
-            time.sleep(random.uniform(0.8, 1.5))  # 限速
-    msg = (f"{ok}/{processed} 公司概况更新（跳过 {len(skip)}"
-           f"{'，超时自停' if stopped_early else ''}）")
-    record_task_end(_JOB_NAME, 'profile', job_date, start, success=True,
+        processed += 1
+        # 熔断：连续失败达阈值 ⇒ 疑似东方财富封禁/不可用，提前中止，避免空转 + 加剧封禁
+        if _MAX_CONSECUTIVE_FAILURES and consecutive_fail >= _MAX_CONSECUTIVE_FAILURES:
+            aborted = True
+            logging.error(
+                f"fetch_company_profile_job: 连续 {consecutive_fail} 只抓取失败，"
+                f"疑似东方财富封禁/不可用，提前熔断中止（已处理 {processed}/{len(targets)}），"
+                f"剩余留待下次续跑")
+            break
+        time.sleep(random.uniform(0.8, 1.5))  # 限速
+    tail = ''
+    if stopped_early:
+        tail = '，超时自停'
+    elif aborted:
+        tail = f'，连续失败{consecutive_fail}次熔断中止'
+    msg = f"{ok}/{processed} 公司概况更新（跳过 {len(skip)}{tail}）"
+    record_task_end(_JOB_NAME, 'profile', job_date, start, success=not aborted,
                     message=msg, rows_affected=ok)
     logging.info(f"fetch_company_profile_job 完成：{msg}")
     return ok
