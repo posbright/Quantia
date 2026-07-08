@@ -99,16 +99,16 @@ def _calc_hit_count(data, low_window, low_position_pct, convergence_pct, max_clo
 
 
 def check(code_name, data, date=None, threshold=120, low_window=120,
-                    low_position_pct=80, convergence_pct=5.5, max_close_ma60_dev=8,
-                    enable_trend_filter=1, trend_slope_window=20,
-          min_ma30_slope_pct=-1.5, min_ma60_slope_pct=-2.0):
+                    low_position_pct=80, convergence_pct=6.0, max_close_ma60_dev=8,
+                    enable_trend_filter=1, trend_slope_window=1,
+                    min_ma30_slope_pct=-0.5, min_ma60_slope_pct=-0.1):
     """低位均线粘合策略。
 
     选股条件：
     1. 当前收盘价处于近 low_window 日价格区间的中低位，默认不高于 80% 分位；
-    2. MA5/10/20/30/60 五条均线粘合，最大均线与最小均线的差距不超过均线均值的 5.5%；
+    2. MA5/10/20/30/60 五条均线粘合，最大均线与最小均线的差距不超过均线均值的 6.0%；
     3. 当前收盘价没有明显远离 MA60，默认偏离不超过 8%；
-    4. MA30/MA60 近 trend_slope_window 日不能继续明显下行，过滤下降趋势中的“假粘合”。
+    4. MA60 近 trend_slope_window 日不能继续明显下行，过滤下降趋势中的“假粘合”。
     """
     if date is None:
         end_date = code_name[0]
@@ -124,12 +124,12 @@ def check(code_name, data, date=None, threshold=120, low_window=120,
     low_window = max(60, _to_int(low_window, 120))
     threshold = max(60, _to_int(threshold, low_window))
     low_position_pct = _to_float(low_position_pct, 80.0)
-    convergence_pct = _to_float(convergence_pct, 5.5)
+    convergence_pct = _to_float(convergence_pct, 6.0)
     max_close_ma60_dev = _to_float(max_close_ma60_dev, 8.0)
     enable_trend_filter = _to_bool(enable_trend_filter, True)
-    trend_slope_window = max(1, _to_int(trend_slope_window, 20))
-    min_ma30_slope_pct = _to_float(min_ma30_slope_pct, -1.5)
-    min_ma60_slope_pct = _to_float(min_ma60_slope_pct, -2.0)
+    trend_slope_window = max(1, _to_int(trend_slope_window, 1))
+    min_ma30_slope_pct = _to_float(min_ma30_slope_pct, -0.5)
+    min_ma60_slope_pct = _to_float(min_ma60_slope_pct, -0.1)
 
     if len(data.index) < max(threshold, low_window, max(_MA_PERIODS) + trend_slope_window):
         return False

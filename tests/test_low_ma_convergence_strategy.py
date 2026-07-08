@@ -6,6 +6,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+import pytest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
@@ -98,3 +99,25 @@ def test_low_ma_convergence_can_disable_trend_filter_for_legacy_scan():
 
     assert result
     assert result["ma60_slope"] < 0
+
+
+def test_low_ma_convergence_002558_expected_dates_from_cache():
+    from quantia.web import backtestHandler as bh
+
+    hist = bh._load_single_hist("002558", "2018-09-01", "2026-07-01")
+    if hist is None or hist.empty:
+        pytest.skip("002558 本地K线缓存不存在，跳过缓存型回归")
+
+    expected_dates = [
+        "2019-02-22",
+        "2020-07-02",
+        "2023-01-12",
+        "2024-09-24",
+        "2025-05-30",
+    ]
+    for day in expected_dates:
+        ts = pd.Timestamp(day)
+        result = low_ma_convergence.check((ts, "002558"), hist, date=ts.to_pydatetime())
+        assert result, f"002558 {day} 应命中低位均线粘合"
+        assert result["ma60_slope"] is not None
+        assert result["ma60_slope"] >= -0.1
