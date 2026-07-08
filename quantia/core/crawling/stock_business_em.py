@@ -37,15 +37,16 @@ _MAINOP_TYPE_MAP = {'1': '行业', '2': '产品', '3': '地区'}
 def to_secid(code):
     """6 位股票代码 → 东方财富 F10 secid（带交易所字母前缀）。
 
-    - 6xxxxx / 9xxxxx（沪市 A / B）→ SH
-    - 4xxxxx / 8xxxxx / 92xxxx（北交所）→ BJ
+    - 6xxxxx（沪市 A）/ 9xxxxx（沪市 B，如 900xxx）→ SH
+    - 4xxxxx / 8xxxxx / 920xxx（北交所）→ BJ
     - 其余（0/2/3 开头，深市 A / B / 创业板）→ SZ
     """
     c = str(code).strip().zfill(6)
+    # 北交所新代码段 920xxx 以 9 开头，必须先于「9→沪市 B」判断，否则会误路由到 SH
+    if c.startswith('92') or c[0] in ('4', '8'):
+        return 'BJ' + c
     if c[0] in ('6', '9'):
         return 'SH' + c
-    if c[0] in ('4', '8') or c.startswith('92'):
-        return 'BJ' + c
     return 'SZ' + c
 
 

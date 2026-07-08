@@ -1,0 +1,28 @@
+#!/bin/bash
+# 公司概况月度采集（F10 经营分析：经营范围 / 主营构成明细 / 经营评述，慢 job，东方财富单源）
+# 触发：每月执行一次（主营构成随季报/年报披露更新，季度级稳定；job 内 25 天增量跳过）
+#   - cn_stock_company_profile：单行/股，主键 code
+# 属 fetch 管道；逐个股抓取，失败不互相阻断。
+# 全量约 4900 只需 1.5~2h：设时间预算让其在个股之间干净自停（超时留待下月增量续跑），
+# 避免被 timeout SIGTERM 在写库中途打断。
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/company_profile.log
+
+# job 内部软预算（秒）：到点在个股之间干净自停；run_job 硬 timeout 略高作兜底
+export QUANTIA_COMPANY_PROFILE_MAX_SECONDS="${QUANTIA_COMPANY_PROFILE_MAX_SECONDS:-5400}"
+
+run_job "公司概况采集 (fetch_company_profile_job)" \
+    "quantia/job/fetch_company_profile_job.py" \
+    "${QUANTIA_COMPANY_PROFILE_TIMEOUT:-5700}"
+RC=$?
+
+if [ $RC -eq 0 ]; then
+    log_info "公司概况月度采集完成 ✓"
+else
+    log_warn "公司概况月度采集结束 ✗ (exit=$RC)"
+fi
+exit $RC

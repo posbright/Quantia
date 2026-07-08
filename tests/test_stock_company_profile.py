@@ -52,6 +52,8 @@ def test_to_secid_routing():
     assert sbe.to_secid('300750') == 'SZ300750'
     assert sbe.to_secid('831832') == 'BJ831832'  # 北交所 8 开头
     assert sbe.to_secid('430047') == 'BJ430047'  # 北交所 4 开头
+    assert sbe.to_secid('920819') == 'BJ920819'  # 北交所新代码段 920（须先于 9→SH 判断）
+    assert sbe.to_secid('900957') == 'SH900957'  # 沪市 B 股 900
     assert sbe.to_secid('651') == 'SZ000651'     # 补零
 
 

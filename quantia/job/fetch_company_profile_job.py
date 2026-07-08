@@ -8,10 +8,14 @@
 
 属 fetch 管道（东方财富单源），只有本管道可调用外部 API。低频 cron
 （cron.monthly）或手动触发；全量约 4900 只需较长时间，建议分批。
+超时预算 QUANTIA_COMPANY_PROFILE_MAX_SECONDS（秒，<=0 不限时）到点干净自停，
+下次运行靠 update_date 增量续跑。
 
 用法：
     python fetch_company_profile_job.py [code1 code2 ...]   # 指定股票
     python fetch_company_profile_job.py                     # 全量（增量跳过近期已更新）
+    python fetch_company_profile_job.py --limit=500         # 全量前 500 只
+    python fetch_company_profile_job.py 000651 --force      # 强制刷新指定股票
 """
 import datetime
 import json
@@ -113,8 +117,12 @@ def save_company_profile(code, update_date):
 
 def run(codes=None, limit=None, force=False, job_date=None):
     job_date = job_date or datetime.date.today()
+def run(codes=None, limit=None, force=False, job_date=None, max_seconds=None):
+    job_date = job_date or datetime.date.today()
     update_date = job_date
     explicit = bool(codes)
+    if max_seconds is None:
+        max_seconds = _cfg.get_int('QUANTIA_COMPANY_PROFILE_MAX_SECONDS', 0)
     if not codes:
         codes = _select_target_codes(limit)
     if not codes:
@@ -129,27 +137,45 @@ def run(codes=None, limit=None, force=False, job_date=None):
     targets = [c for c in codes if c not in skip]
 
     start = record_task_start(_JOB_NAME, 'profile', job_date)
+    started_at = time.monotonic()
     ok = 0
+    processed = 0
+    stopped_early = False
     for code in targets:
+        # 时间预算：全量约 4900 只需 1.5~2h，超预算时干净自停（下次运行靠增量续跑），
+        # 避免被 cron timeout 的 SIGTERM 在写库中途打断。max_seconds<=0 表示不限时。
+        if max_seconds and (time.monotonic() - started_at) >= max_seconds:
+            stopped_early = True
+            logging.info(f"fetch_company_profile_job: 达到时间预算 {max_seconds}s，"
+                         f"已处理 {processed}/{len(targets)}，剩余留待下次续跑")
+            break
         try:
             ok += save_company_profile(code, update_date)
         except Exception:
             logging.warning(f"fetch_company_profile_job: {code} 处理失败，跳过", exc_info=True)
         finally:
+            processed += 1
             time.sleep(random.uniform(0.8, 1.5))  # 限速
+    msg = (f"{ok}/{processed} 公司概况更新（跳过 {len(skip)}"
+           f"{'，超时自停' if stopped_early else ''}）")
     record_task_end(_JOB_NAME, 'profile', job_date, start, success=True,
-                    message=f"{ok}/{len(targets)} 公司概况更新（跳过 {len(skip)}）",
-                    rows_affected=ok)
-    logging.info(f"fetch_company_profile_job 完成：{ok}/{len(targets)} 公司概况"
-                 f"（增量跳过 {len(skip)}）")
+                    message=msg, rows_affected=ok)
+    logging.info(f"fetch_company_profile_job 完成：{msg}")
     return ok
 
 
 def main():
     args = [a for a in sys.argv[1:] if a.strip()]
     force = '--force' in args
+    limit = None
+    for a in args:
+        if a.startswith('--limit='):
+            try:
+                limit = int(a.split('=', 1)[1])
+            except ValueError:
+                limit = None
     codes = [a for a in args if not a.startswith('--')]
-    run(codes=codes or None, force=force)
+    run(codes=codes or None, limit=limit, force=force)
 
 
 if __name__ == '__main__':
