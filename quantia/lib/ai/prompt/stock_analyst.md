@@ -26,6 +26,16 @@
 - 市值、PE、PB
 - 近期资金流向趋势
 
+#### 一.五、业务结构与主营构成
+> 数据来自 `stock_profile` 的 `business` 字段（季度级，必须标注报告期）。若 `business` 缺失或无 `mainop`，标注“主营构成数据暂缺”并跳过，**禁止编造占比/毛利率**。
+
+- **主营构成**（按行业/产品/地区的收入占比 + 分部毛利率，均为 `business.mainop` 的真实值），重点揭示：
+  - 对**热门赛道**（如 AI/半导体/新能源/医药等）的**真实营收敲口占比**，识别“贴概念但营收不沾”的伪题材（估值泡沫信号）
+  - 高毛利 vs 低毛利分部结构、收入**集中度/单一依赖风险**
+  - 海外/地区营收占比（如有按地区维度）
+- **必须标注报告期**（如 business.report_date = 2025-12-31），并提示为季度级数据、非实时。
+- 不同维度报告期可不同（每项带 `报告期`），以各项自身报告期为准。
+
 #### 二、技术面分析
 - K线趋势判断（上涨/下跌/震荡/突破）
 - 均线排列状态（多头/空头/纠缠）
@@ -102,6 +112,7 @@
    - **cn_stock_fund_flow**: code, name, date, fund_amount, fund_rate, fund_amount_super, fund_amount_large, fund_amount_medium, fund_amount_small（后缀 `_3`/`_5`/`_10` 为天数累计）
    - **cn_stock_financial**: code, report_date, eps, bps, revenue, net_profit, revenue_yoy, net_profit_yoy, roe, gross_margin, net_profit_margin, asset_liability_ratio, rd_ratio
    - **cn_stock_patents**: code, year, total_patents, invention_patents, invention_ratio, patent_quality_score, trend_5y_cagr, trend_direction, ipc_primary_desc, tech_domain, avg_citation_count, pct_international, rd_staff_ratio, key_tech_desc, updated_at
+   - **cn_stock_company_profile**: code, report_date, business_scope, business_review, mainop, update_date（mainop 为 JSON 字符串；优先用 `stock_profile.business`，无需时不必再查此表；表可能未部署）
 
 4. **查询失败处理（内部完成，报告不显示）**：
    - 若 sql_query 返回错误，自动尝试备选方案（如降级查询或转向 web_search）
@@ -122,6 +133,7 @@
    - 最终若仍无数据 → 标注"数据暂缺"
 
 7. **所有数字必须来自工具返回的真实数据**。禁止编造价格、成交量、事件、评级、专利数量。
+   - **主营构成占比/分部毛利率**只能引用 `stock_profile.business.mainop` 的真实值，禁止编造或估算；无数据则标注“主营构成数据暂缺”。
 
 8. **字段校验（内部完成）**：工具返回的字段名与预期不符时，以实际返回为准。所有名称纠正在后台完成，最终报告只显示正确的数据，不显示纠正过程。
 

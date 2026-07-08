@@ -13,6 +13,7 @@ from unittest import mock
 import pytest
 
 import quantia.core.crawling.stock_business_em as sbe
+import quantia.core.crawling.stock_business_ths as sbt
 import quantia.job.fetch_company_profile_job as fcp
 import quantia.web.stockProfileHandler as sph
 
@@ -195,3 +196,139 @@ def test_handler_parse_mainop():
     assert sph._parse_mainop([{'item': 'y'}]) == [{'item': 'y'}]
     # JSON 对象（非 list）应归一为空 list
     assert sph._parse_mainop('{"a":1}') == []
+
+
+# ---------------------------------------------------------------------------
+# 同花顺备用源（stock_business_ths）
+# ---------------------------------------------------------------------------
+class _FakeThsDF:
+    """极简 DataFrame 替身：iloc[0].to_dict() 返回首行 dict。"""
+    def __init__(self, rows):
+        self._rows = rows
+        self.empty = not rows
+
+    class _ILoc:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def __getitem__(self, idx):
+            class _Row:
+                def __init__(self, d):
+                    self._d = d
+
+                def to_dict(self):
+                    return self._d
+            return _Row(self._rows[idx])
+
+    @property
+    def iloc(self):
+        return self._ILoc(self._rows)
+
+
+def test_ths_composition_success():
+    """同花顺返回定性主营 → 经营范围/主营评述解析成功，mainop 恒空（不编造占比）。"""
+    df = _FakeThsDF([{
+        '股票代码': '000651', '主营业务': '空调、生活电器、工业制品',
+        '产品类型': '家用空调、冰箱', '产品名称': '格力空调', '经营范围': '制冷设备制造；家电销售',
+    }])
+    fake_ak = mock.MagicMock()
+    fake_ak.stock_zyjs_ths.return_value = df
+    with mock.patch.dict('sys.modules', {'akshare': fake_ak}):
+        out = sbt.stock_business_composition_ths('651')
+    assert out is not None
+    assert out['source'] == 'ths'
+    assert out['report_date'] is None
+    assert out['business_scope'].startswith('制冷设备')
+    assert '空调、生活电器' in out['business_review']
+    assert '主要产品：家用空调、冰箱' in out['business_review']
+    # 关键：同花顺无定量占比，mainop 必须为空，绝不编造
+    assert out['mainop'] == []
+    fake_ak.stock_zyjs_ths.assert_called_once_with(symbol='000651')
+
+
+def test_ths_composition_empty_returns_none():
+    fake_ak = mock.MagicMock()
+    fake_ak.stock_zyjs_ths.return_value = _FakeThsDF([])
+    with mock.patch.dict('sys.modules', {'akshare': fake_ak}):
+        assert sbt.stock_business_composition_ths('000651') is None
+
+
+def test_ths_composition_failure_raises():
+    """akshare 抛错（网络/反爬）应转成 BusinessFetchError，供上层熔断。"""
+    fake_ak = mock.MagicMock()
+    fake_ak.stock_zyjs_ths.side_effect = RuntimeError('ths blocked')
+    with mock.patch.dict('sys.modules', {'akshare': fake_ak}):
+        with pytest.raises(sbe.BusinessFetchError):
+            sbt.stock_business_composition_ths('000651')
+
+
+def test_save_falls_back_to_ths_on_em_ban(monkeypatch):
+    """东方财富封禁（BusinessFetchError）时，save_company_profile 降级同花顺并落库。"""
+    monkeypatch.setattr(fcp.sbe, 'stock_business_composition',
+                        mock.Mock(side_effect=sbe.BusinessFetchError('EM banned')))
+    monkeypatch.setattr(fcp.sbt, 'stock_business_composition_ths',
+                        mock.Mock(return_value={
+                            'report_date': None, 'business_scope': '制冷设备制造',
+                            'business_review': '空调业务', 'mainop': [], 'source': 'ths'}))
+    captured = {}
+
+    def _fake_insert(df, table, cols_type, write_index, pk):
+        captured['df'] = df
+    monkeypatch.setattr(fcp.mdb, 'checkTableIsExist', lambda *a, **k: True)
+    monkeypatch.setattr(fcp.mdb, 'insert_db_from_df', _fake_insert)
+
+    rc = fcp.save_company_profile('000651', '2026-07-08')
+    assert rc == 1
+    row = captured['df'].iloc[0]
+    assert row['business_scope'] == '制冷设备制造'
+    # THS 无 mainop → 落库 mainop 为空（None/NaN），不编造
+    import pandas as _pd
+    assert row['mainop'] is None or _pd.isna(row['mainop'])
+
+
+def test_save_returns_zero_when_both_sources_empty(monkeypatch):
+    """EM 封禁且 THS 无数据（None）→ save 返回 0，交由 run() 重置熔断计数。"""
+    monkeypatch.setattr(fcp.sbe, 'stock_business_composition',
+                        mock.Mock(side_effect=sbe.BusinessFetchError('EM banned')))
+    monkeypatch.setattr(fcp.sbt, 'stock_business_composition_ths',
+                        mock.Mock(return_value=None))
+    assert fcp.save_company_profile('000651', '2026-07-08') == 0
+
+
+# ---------------------------------------------------------------------------
+# AI 工具 stock_profile._query_company_profile
+# ---------------------------------------------------------------------------
+def test_stock_profile_query_company_profile_parses_mainop(monkeypatch):
+    import quantia.lib.ai.tools.stock_profile as spt
+    import json as _json
+    mainop = [{'type': '产品', 'item': '消费电器', 'income': 1.3e11,
+               'income_ratio': 0.78, 'gross_profit_ratio': 0.35,
+               'rank': 1, 'report_date': '2025-12-31'}]
+    rows = [('2025-12-31', '制冷设备制造；家电销售', _json.dumps(mainop))]
+    monkeypatch.setattr('quantia.lib.database.executeSqlFetch',
+                        lambda *a, **k: rows)
+    out = spt._query_company_profile('000651')
+    assert out['report_date'] == '2025-12-31'
+    assert out['business_scope'].startswith('制冷设备')
+    assert len(out['mainop']) == 1
+    item = out['mainop'][0]
+    assert item['维度'] == '产品'
+    assert item['项目'] == '消费电器'
+    assert abs(item['收入占比'] - 0.78) < 1e-9
+    assert item['报告期'] == '2025-12-31'
+
+
+def test_stock_profile_query_company_profile_table_missing(monkeypatch):
+    """表未部署 / SQL 异常 → 返回 {}，安全跳过。"""
+    import quantia.lib.ai.tools.stock_profile as spt
+    monkeypatch.setattr('quantia.lib.database.executeSqlFetch',
+                        mock.Mock(side_effect=Exception('no such table')))
+    assert spt._query_company_profile('000651') == {}
+
+
+def test_stock_profile_query_company_profile_no_row(monkeypatch):
+    import quantia.lib.ai.tools.stock_profile as spt
+    monkeypatch.setattr('quantia.lib.database.executeSqlFetch',
+                        lambda *a, **k: [])
+    assert spt._query_company_profile('000651') == {}
+

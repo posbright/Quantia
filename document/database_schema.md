@@ -742,6 +742,42 @@ CREATE TABLE IF NOT EXISTS `cn_stock_financial` (
 
 ---
 
+### 3.17 公司概况表 (cn_stock_company_profile)
+
+存储个股 F10 公司概况：经营范围、经营评述、以及定量主营构成（按行业/产品/地区的
+收入占比与分部毛利率）。为 AI 个股分析（`stock_profile` 工具 → `business` 字段）与
+前端「公司概况」卡片提供数据。季度级稳定，由 `run_company_profile` 月度 job 增量采集。
+
+```sql
+CREATE TABLE IF NOT EXISTS `cn_stock_company_profile` (
+    `code` VARCHAR(6) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '股票代码',
+    `report_date` DATE COMMENT '报告期（主营构成整体最新期，如 2025-12-31）',
+    `business_scope` TEXT COMMENT '经营范围',
+    `business_review` TEXT COMMENT '经营评述',
+    `mainop` TEXT COMMENT '主营构成明细（JSON 数组）',
+    `update_date` DATE COMMENT '本地更新日期',
+    PRIMARY KEY (`code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='公司概况(经营范围/主营构成/经营评述)';
+```
+
+**mainop JSON 结构**（每个维度明细项）：
+
+| 字段 | 说明 |
+|------|------|
+| type | 维度：`行业` / `产品` / `地区` |
+| item | 明细项名称（如 "消费电器"、"内销"） |
+| income | 主营业务收入（元） |
+| income_ratio | 收入占比（0~1 小数） |
+| gross_profit_ratio | 分部毛利率（0~1 小数） |
+| rank | 该维度内排名 |
+| report_date | 该维度自身报告期（不同维度披露期可不同） |
+
+**数据来源**：
+- 主源 东方财富 F10 经营分析（`quantia/core/crawling/stock_business_em.py`），提供完整定量主营构成。
+- 备用源 同花顺 F10 主营介绍（`quantia/core/crawling/stock_business_ths.py`，经 akshare `stock_zyjs_ths`）。**降级源**：仅提供经营范围 + 主营业务定性描述，无定量占比/毛利率（`mainop` 为空、`report_date` 为 NULL），**绝不编造占比**，待东财恢复后下轮补齐。
+
+---
+
 ### 3.16 股票回测数据表 (cn_stock_backtest_data)
 
 存储策略回测收益率数据。
@@ -841,6 +877,7 @@ CREATE TABLE IF NOT EXISTS `cn_stock_backtest_data` (
 | 37 | cn_stock_foreign_key | 股票外键 | 股票代码→市场前缀映射 |
 | 38 | cn_stock_financial | 个股财务分析指标 | 回测用历史财务数据（东方财富） |
 | 39 | cn_stock_trade_date | 交易日历 | A股交易日历表 |
+| 40 | cn_stock_company_profile | 公司概况 | 经营范围/主营构成/经营评述（东财主源+同花顺备用） |
 
 ---
 
@@ -907,6 +944,19 @@ Phase 5 (回测与收尾):
                           → 读所有策略表 → 写 cn_stock_backtest (统计汇总)
   basic_data_after_close_daily_job → 大宗交易 → cn_stock_blocktrade
                                    → 尾盘抢筹 → cn_stock_chip_race_end
+```
+
+**月度增量 job（独立于日频流水线）**：
+
+```
+run_company_profile (fetch_company_profile_job，月度 cron):
+  东方财富 F10 经营分析 (stock_business_em)
+    └─(BusinessFetchError 封禁/传输失败)→ 降级 同花顺 F10 (stock_business_ths, 定性、无占比)
+  → 写 cn_stock_company_profile
+  · 增量跳过：update_date 在 _SKIP_DAYS(80) 天内的个股本轮跳过（force 可覆盖），
+    把全量刷新自然摊到约每季一轮。
+  · 熔断：连续 _MAX_CONSECUTIVE_FAILURES(30) 次 BusinessFetchError 视为被封，提前中止本轮，
+    避免对死接口空转、降低进一步被封风险；下月靠增量续跑。
 ```
 
 > **注意**：Phase 1-3 涉及外部 API 调用（东方财富/腾讯/新浪），Phase 4-5 仅读写本地 DB 和缓存，零 API 调用。

@@ -44,6 +44,7 @@ except Exception:
 
 import quantia.core.tablestructure as tbs
 import quantia.core.crawling.stock_business_em as sbe
+import quantia.core.crawling.stock_business_ths as sbt
 import quantia.lib.database as mdb
 import quantia.lib.envconfig as _cfg
 from quantia.lib.job_tracker import record_task_start, record_task_end
@@ -99,8 +100,18 @@ def _recently_updated_codes(cutoff_date):
 
 
 def save_company_profile(code, update_date):
-    """抓取 + upsert 单只个股公司概况，返回 1（成功）/ 0（无数据/失败）。"""
-    result = sbe.stock_business_composition(code)
+    """抓取 + upsert 单只个股公司概况，返回 1（成功）/ 0（无数据）。
+
+    主源东方财富；传输层失败（BusinessFetchError，如封禁）时降级到同花顺备源
+    （仅经营范围 + 主营业务定性描述，无定量占比）。两源均传输失败时抛出
+    BusinessFetchError 交由上层 run() 熔断计数。
+    """
+    try:
+        result = sbe.stock_business_composition(code)
+    except sbe.BusinessFetchError:
+        # 东方财富封禁/传输故障 → 降级同花顺（独立基础设施）。同花顺也失败则继续抛出。
+        logging.info(f"fetch_company_profile_job: {code} 东方财富抳取失败，降级同花顺备源")
+        result = sbt.stock_business_composition_ths(code)
     if not result:
         return 0
     mainop = result.get('mainop') or []

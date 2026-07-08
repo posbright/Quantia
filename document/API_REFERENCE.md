@@ -310,6 +310,52 @@ K线技术策略的可调参数（保存在 `cn_strategy_params` 表）通过统
 
 ---
 
+### 11. 个股公司概况（F10 经营分析）
+
+#### 请求
+
+```
+GET /quantia/api/stock/profile?code=XXXXXX     # 个股综合画像（行情+指标+资金+形态+主营构成）
+GET /quantia/api/stock/business?code=XXXXXX     # 仅公司概况：经营范围/主营构成/经营评述
+```
+
+#### 参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|-----|------|-----|------|
+| code | string | 是 | 6 位股票代码 |
+
+#### 响应（`/quantia/api/stock/business`）
+
+```json
+{
+  "code": "000651",
+  "report_date": "2025-12-31",
+  "business_scope": "制冷、空调设备制造；家用电器销售 ...",
+  "business_review": "公司是一家多元化科技型全球工业集团 ...",
+  "mainop": [
+    {"type": "行业", "item": "制造业", "income": 1.5e11, "income_ratio": 0.902,
+     "gross_profit_ratio": 0.327, "rank": 1, "report_date": "2025-12-31"},
+    {"type": "产品", "item": "消费电器", "income": 1.33e11, "income_ratio": 0.781,
+     "gross_profit_ratio": 0.353, "rank": 1, "report_date": "2025-12-31"},
+    {"type": "地区", "item": "内销", "income": 1.26e11, "income_ratio": 0.742,
+     "gross_profit_ratio": 0.345, "rank": 1, "report_date": "2025-12-31"}
+  ]
+}
+```
+
+#### 说明
+
+- 数据读自 `cn_stock_company_profile`（由 `run_company_profile` 月度 job 采集，季度级稳定）。
+- `mainop` 为按行业/产品/地区的收入占比 + 分部毛利率明细，`income_ratio`/`gross_profit_ratio` 均为 0~1 小数；不同维度披露期可不同，各带自身 `report_date`。
+- **数据源**：主源东方财富 F10 经营分析（完整定量）；东财封禁时降级同花顺 F10 主营介绍（仅经营范围+主营定性，`mainop` 为空、`report_date` 为 null，**绝不编造占比**），待东财恢复后下轮补齐定量。
+
+#### AI 集成
+
+AI 个股分析工具 `stock_profile`（`quantia/lib/ai/tools/stock_profile.py`）已在返回结构中新增 `business` 字段（含 `report_date`/`business_scope`/`mainop`），供 `stock_analyst` prompt 的「一.五、业务结构与主营构成」小节生成主营敞口/高低毛利分部/收入集中度分析。无数据时标注「主营构成数据暂缺」，禁止编造占比。
+
+---
+
 ## 数据表字段说明
 
 ### cn_stock_spot (每日股票数据)
