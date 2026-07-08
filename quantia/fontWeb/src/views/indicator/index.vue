@@ -122,6 +122,12 @@ const onPatentLoaded = (hasData: boolean) => {
   patentHasData.value = hasData
 }
 
+// === 公司概况卡片是否有数据（非个股如ETF/指数无数据时隐藏）===
+const profileHasData = ref(false)
+const onProfileLoaded = (hasData: boolean) => {
+  profileHasData.value = hasData
+}
+
 // === 关注 / 取消关注（个股详情页入口）===
 const attentionCodes = ref<string[]>([])
 const watchLoading = ref(false)
@@ -1553,8 +1559,8 @@ onUnmounted(() => {
     </div>
 
     <!-- 公司概况 / 基本面 (行业·地区·概念·板块·营收总额，cn_stock_selection 100% 覆盖) -->
-    <div v-if="code" class="section-card">
-      <CompanyProfileCard :code="code" :name="stockName" />
+    <div v-if="code" v-show="profileHasData" class="section-card">
+      <CompanyProfileCard :code="code" :name="stockName" @loaded="onProfileLoaded" />
     </div>
 
     <!-- 知识产权 / 专利护城河 (仅当存在专利数据时显示；无数据自动隐藏) -->

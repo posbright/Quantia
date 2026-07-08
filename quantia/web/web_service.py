@@ -225,6 +225,7 @@ class Application(tornado.web.Application):
             (r"/quantia/api/stock/patents/compare", stockPatentHandler.StockPatentsCompareHandler),
             # 公司概况 / 基本面 (cn_stock_selection: 行业/概念/板块/营收总额)
             (r"/quantia/api/stock/profile", stockProfileHandler.StockProfileHandler),
+            (r"/quantia/api/stock/business", stockProfileHandler.StockBusinessHandler),
             # Phase 6: IM 指令确认（默认关闭，由 QUANTIA_IM_COMMAND_ENABLED=1 启用；仅落库 trade_command，不直接调券商）
             (r"/quantia/api/im/status", imCommandHandler.IMStatusHandler),
             (r"/quantia/api/im/dingtalk/callback", imCommandHandler.DingtalkCallbackHandler),

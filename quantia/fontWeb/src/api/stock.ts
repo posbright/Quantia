@@ -344,6 +344,35 @@ export function getStockProfile(code: string) {
   return request<StockProfileResp>({ url: '/api/stock/profile', method: 'get', params: { code } })
 }
 
+// 主营构成明细单项
+export interface MainOpItem {
+  type: string                       // 行业 / 产品 / 地区 / 其他
+  item: string                       // 项目名称
+  income: number | null              // 主营收入（元）
+  income_ratio: number | null        // 收入占比（0~1）
+  gross_profit_ratio: number | null  // 毛利率（0~1）
+  rank: number | null
+}
+
+export interface StockBusinessData {
+  code: string
+  report_date: string | null
+  business_scope: string | null      // 经营范围
+  business_review: string | null     // 经营评述
+  mainop: MainOpItem[]               // 主营构成明细（最新报告期）
+  update_date: string | null
+}
+
+export interface StockBusinessResp {
+  code: string
+  data: StockBusinessData | null
+  reason?: string
+}
+
+export function getStockBusiness(code: string) {
+  return request<StockBusinessResp>({ url: '/api/stock/business', method: 'get', params: { code } })
+}
+
 // ============= 专利数据 API (Phase 3a/4) =============
 
 export interface PatentTrendItem {
