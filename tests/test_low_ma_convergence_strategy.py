@@ -66,3 +66,35 @@ def test_low_ma_convergence_rejects_diverged_ma():
     )
 
     assert result is False
+
+
+def test_low_ma_convergence_rejects_still_falling_ma_trend():
+    prices = np.linspace(30, 10, 260)
+    data = _make_data(prices)
+
+    result = low_ma_convergence.check(
+        ("2026-07-03", "002558"),
+        data,
+        low_position_pct=100,
+        convergence_pct=20,
+        max_close_ma60_dev=100,
+    )
+
+    assert result is False
+
+
+def test_low_ma_convergence_can_disable_trend_filter_for_legacy_scan():
+    prices = np.linspace(30, 10, 260)
+    data = _make_data(prices)
+
+    result = low_ma_convergence.check(
+        ("2026-07-03", "002558"),
+        data,
+        low_position_pct=100,
+        convergence_pct=20,
+        max_close_ma60_dev=100,
+        enable_trend_filter=0,
+    )
+
+    assert result
+    assert result["ma60_slope"] < 0

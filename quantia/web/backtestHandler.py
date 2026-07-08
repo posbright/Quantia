@@ -24,6 +24,7 @@ import quantia.lib.trade_time as trd
 import quantia.lib.database as mdb
 from quantia.core.backtest.rate_stats import ROUND_TRIP_COST_PCT
 from quantia.web.utils import parse_int_list as _parse_int_list, json_default as _json_default
+from quantia.job.strategy_data_daily_job import _load_strategy_kwargs as _load_strategy_param_kwargs
 
 __author__ = 'Quantia'
 __date__ = '2026/02/14'
@@ -489,6 +490,7 @@ def _compute_batch_backtest_onthefly(strategy_func, strategy_cn, strategy_name, 
 
     # 5. 定义单只股票处理函数
     func_name = strategy_func.__name__
+    strategy_kwargs = _load_strategy_param_kwargs(strategy_name, strategy_func)
 
     def _process_stock(code):
         """加载单只股票缓存，检测策略命中，计算收益"""
@@ -502,9 +504,9 @@ def _compute_batch_backtest_onthefly(strategy_func, strategy_cn, strategy_name, 
             stock = (trade_date, code)
             try:
                 if func_name == 'check_high_tight':
-                    matched = strategy_func(stock, hist, date=trade_date, istop=False)
+                    matched = strategy_func(stock, hist, date=trade_date, istop=False, **strategy_kwargs)
                 else:
-                    matched = strategy_func(stock, hist, date=trade_date)
+                    matched = strategy_func(stock, hist, date=trade_date, **strategy_kwargs)
                 if not matched:
                     continue
             except Exception:
@@ -1006,13 +1008,14 @@ def _resolve_custom_strategy(strategy_key):
     return sid, ((rows[0][0] or '').strip() or f'自定义策略#{sid}')
 
 
-def _strategy_hit(strategy_func, stock, hist, d):
+def _strategy_hit(strategy_func, stock, hist, d, extra_kwargs=None):
     """在日期 d 调用策略函数，命中返回 True。兼容需要 istop 的策略。"""
+    extra_kwargs = extra_kwargs or {}
     try:
-        matched = strategy_func(stock, hist, date=d)
+        matched = strategy_func(stock, hist, date=d, **extra_kwargs)
     except TypeError:
         try:
-            matched = strategy_func(stock, hist, date=d, istop=False)
+            matched = strategy_func(stock, hist, date=d, istop=False, **extra_kwargs)
         except Exception:
             return False
     except Exception:
@@ -1235,6 +1238,7 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
         strategy, code=code, start_date_str=start_date_str, end_date_str=end_date_str, hist=hist)
     if strategy_func is None:
         return {"error": f"策略 {strategy} 暂不支持单股区间回测"}
+    strategy_kwargs = _load_strategy_param_kwargs(strategy, strategy_func)
 
     # 解析持仓周期 / 退出模式
     #   - 显式 hold_days  → 固定持仓（fixed）
@@ -1269,7 +1273,7 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
         d = dates_all[idx]
         if d < start_ts or d > end_ts:
             continue
-        if _strategy_hit(strategy_func, stock, hist, d.to_pydatetime()):
+        if _strategy_hit(strategy_func, stock, hist, d.to_pydatetime(), strategy_kwargs):
             signal_idx.append(idx)
 
     trades = []
@@ -1316,7 +1320,7 @@ def _run_single_backtest(code, strategy, start_date_str, end_date_str, hold_days
                     break
         else:  # strategy_signal：状态型策略，买入后首个入场条件不再成立日离场
             for j in range(buy_i + 1, n):
-                if not _strategy_hit(strategy_func, stock, hist, dates_all[j].to_pydatetime()):
+                if not _strategy_hit(strategy_func, stock, hist, dates_all[j].to_pydatetime(), strategy_kwargs):
                     sell_i = j
                     exit_reason = 'sell_signal'
                     break

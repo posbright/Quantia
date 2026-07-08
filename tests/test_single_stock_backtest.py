@@ -73,6 +73,28 @@ class RunSingleBacktestTests(unittest.TestCase):
                                           '2026-01-01', '2026-03-01', hold_days=5)
         self.assertIn('error', res)
 
+    def test_builtin_strategy_params_are_applied(self):
+        captured = []
+
+        def fake_strategy(stock, hist, date=None, **kw):
+            captured.append(dict(kw))
+            return bool(kw.get('enable_trend_filter'))
+
+        with mock.patch.object(bh, '_resolve_single_strategy',
+                               return_value=(fake_strategy, '测试策略')), \
+             mock.patch.object(bh, '_load_strategy_param_kwargs',
+                               return_value={'enable_trend_filter': 1, 'trend_slope_window': 20}), \
+             mock.patch.object(bh, '_get_stock_name', return_value='测试股'), \
+             mock.patch.object(bh.stf, 'read_stock_hist_from_cache', return_value=self.hist), \
+             mock.patch.object(bh.idr, 'get_indicators', return_value=self.hist):
+            res = bh._run_single_backtest('000001', 'cn_stock_strategy_low_ma_convergence',
+                                          '2026-01-01', '2026-03-31', hold_days=5)
+
+        self.assertNotIn('error', res)
+        self.assertTrue(captured)
+        self.assertEqual(captured[0]['enable_trend_filter'], 1)
+        self.assertEqual(captured[0]['trend_slope_window'], 20)
+
     def test_indicators_buy_supported(self):
         # 单股指标回测在个股自身指标序列上按配置参数重算信号（含回撤闸门）
         signal_day = self.hist['date'].iloc[5].date()
