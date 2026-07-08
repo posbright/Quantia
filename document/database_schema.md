@@ -950,13 +950,17 @@ Phase 5 (回测与收尾):
 
 ```
 run_company_profile (fetch_company_profile_job，月度 cron):
-  东方财富 F10 经营分析 (stock_business_em)
-    └─(BusinessFetchError 封禁/传输失败)→ 降级 同花顺 F10 (stock_business_ths, 定性、无占比)
+  主源 东方财富 F10 经营分析 (stock_business_em, 含定量主营构成)
+    └─(EM 连续 30 次 BusinessFetchError ⇒ 确认被封)→ 整体切换 备用源 同花顺 F10
+       (stock_business_ths, 定性、无占比；确认失败流 + 剩余个股改用同花顺续采)
+         └─(同花顺再连续 30 次失败 ⇒ 确认备源也被封)→ 中止本轮
   → 写 cn_stock_company_profile
   · 增量跳过：update_date 在 _SKIP_DAYS(80) 天内的个股本轮跳过（force 可覆盖），
     把全量刷新自然摊到约每季一轮。
-  · 熔断：连续 _MAX_CONSECUTIVE_FAILURES(30) 次 BusinessFetchError 视为被封，提前中止本轮，
-    避免对死接口空转、降低进一步被封风险；下月靠增量续跑。
+  · 双源熔断：每个源各自计数，连续 _MAX_CONSECUTIVE_FAILURES(30) 次 BusinessFetchError
+    视为该源被封。主源被封 ⇒ 切备用源（不再空转主源、真正发挥备用源作用）；备用源也被封
+    ⇒ 中止本轮（不对死接口空转、降低进一步被封风险）；下月靠增量续跑。切源后 job 结束状态
+    记为 success=True（降级但覆盖），仅两源皆封中止时记 success=False。
 ```
 
 > **注意**：Phase 1-3 涉及外部 API 调用（东方财富/腾讯/新浪），Phase 4-5 仅读写本地 DB 和缓存，零 API 调用。

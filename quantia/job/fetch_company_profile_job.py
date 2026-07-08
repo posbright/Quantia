@@ -99,21 +99,61 @@ def _recently_updated_codes(cutoff_date):
     return {str(r[0]) for r in rows if r and r[0] is not None}
 
 
-def save_company_profile(code, update_date):
-    """抓取 + upsert 单只个股公司概况，返回 1（成功）/ 0（无数据）。
+def _load_existing_profile(code):
+    """读库中已有公司概况的 (report_date, mainop 原始 JSON)，无记录/表不存在时返回 None。
 
-    主源东方财富；传输层失败（BusinessFetchError，如封禁）时降级到同花顺备源
-    （仅经营范围 + 主营业务定性描述，无定量占比）。两源均传输失败时抛出
-    BusinessFetchError 交由上层 run() 熔断计数。
+    用于同花顺降级时判断库中是否已有更完整的东方财富定量记录，避免用降级数据覆盖。
     """
+    if not mdb.checkTableIsExist(_PROFILE_TABLE):
+        return None
     try:
-        result = sbe.stock_business_composition(code)
-    except sbe.BusinessFetchError:
-        # 东方财富封禁/传输故障 → 降级同花顺（独立基础设施）。同花顺也失败则继续抛出。
-        logging.info(f"fetch_company_profile_job: {code} 东方财富抳取失败，降级同花顺备源")
-        result = sbt.stock_business_composition_ths(code)
-    if not result:
-        return 0
+        rows = mdb.executeSqlFetch(
+            f"SELECT `report_date`, `mainop` FROM `{_PROFILE_TABLE}` "
+            f"WHERE `code` = %s LIMIT 1", (str(code).zfill(6),))
+    except Exception:
+        logging.warning("fetch_company_profile_job: 读取既有公司概况失败", exc_info=True)
+        return None
+    if not rows:
+        return None
+    return {'report_date': rows[0][0], 'mainop': rows[0][1]}
+
+
+def save_company_profile(code, update_date, source='em'):
+    """抓取 + upsert 单只个股公司概况（单一数据源，不在函数内做源切换）。
+
+    :param source: 'em'（主源东方财富，含定量主营构成）| 'ths'（备用源同花顺，降级：仅
+        经营范围 + 主营业务定性，无定量占比/毛利率）
+    :return: (rows_written, source_ok)
+        rows_written: 1（落库）/ 0（无数据或跳过覆盖）
+        source_ok: 该数据源传输层是否可达。False = BusinessFetchError（网络/封禁）；
+            供 run() 计数——同一源持续失败达阈值即视为该源被封，据此切源或中止。
+
+    源切换策略由 run() 统一编排（EM 确认被封 → 整体切 THS；THS 也被封 → 中止），
+    本函数只忠实抓取指定源。**同花顺为降级源**：若库中已有完整东财定量记录（含
+    mainop），不用降级数据覆盖，保留原记录（返回 (0, True)），避免季度级定量口径被
+    降级成空；仅无既有定量记录（如新股）时才写入同花顺定性数据。
+    """
+    if source == 'ths':
+        try:
+            result = sbt.stock_business_composition_ths(code)
+        except sbe.BusinessFetchError:
+            return 0, False
+        if not result:
+            return 0, True  # 源可达但无数据
+        # 降级源不覆盖已有完整东财定量记录
+        existing = _load_existing_profile(code)
+        if existing and existing.get('mainop'):
+            logging.info(f"fetch_company_profile_job: {code} 已有东财定量记录，"
+                         f"同花顺降级数据不覆盖，保留原记录")
+            return 0, True
+    else:
+        try:
+            result = sbe.stock_business_composition(code)
+        except sbe.BusinessFetchError:
+            return 0, False
+        if not result:
+            return 0, True
+
     mainop = result.get('mainop') or []
     data = {
         'code': str(code).zfill(6),
@@ -129,7 +169,7 @@ def save_company_profile(code, update_date):
     if not mdb.checkTableIsExist(_PROFILE_TABLE):
         cols_type = tbs.get_field_types(tbs.TABLE_CN_STOCK_COMPANY_PROFILE['columns'])
     mdb.insert_db_from_df(df, _PROFILE_TABLE, cols_type, False, "`code`")
-    return 1
+    return 1, True
 
 
 def run(codes=None, limit=None, force=False, job_date=None, max_seconds=None):
@@ -157,36 +197,69 @@ def run(codes=None, limit=None, force=False, job_date=None, max_seconds=None):
     processed = 0
     stopped_early = False
     aborted = False
+    # 源切换编排：主源 EM，连续失败达阈值 ⇒ 确认 EM 被封 ⇒ 整体切换同花顺备用源续采
+    #（真正发挥备用源作用、且不再空转 EM 重试）；同花顺再连续失败达阈值 ⇒ 确认备源也被封
+    # ⇒ 中止。两源各自独立熔断。
+    queue = list(targets)
+    idx = 0
+    source = 'em'
+    switched_to_ths = False
     consecutive_fail = 0
-    for code in targets:
+    fail_streak = []  # 当前连续失败流的代码（用于确认封禁后转交下一源补采）
+    while idx < len(queue):
         # 时间预算：全量约 4900 只需 1.5~2h，超预算时干净自停（下次运行靠增量续跑），
         # 避免被 cron timeout 的 SIGTERM 在写库中途打断。max_seconds<=0 表示不限时。
         if max_seconds and (time.monotonic() - started_at) >= max_seconds:
             stopped_early = True
             logging.info(f"fetch_company_profile_job: 达到时间预算 {max_seconds}s，"
-                         f"已处理 {processed}/{len(targets)}，剩余留待下次续跑")
+                         f"已处理 {processed}（源={source}），剩余留待下次续跑")
             break
+        code = queue[idx]
+        idx += 1
         try:
-            ok += save_company_profile(code, update_date)
-            consecutive_fail = 0  # 成功或"响应正常但无数据"⇒ 数据源可达，重置熔断计数
+            rows, src_ok = save_company_profile(code, update_date, source=source)
+            ok += rows
         except Exception:
-            consecutive_fail += 1
+            src_ok = False
             logging.warning(f"fetch_company_profile_job: {code} 处理失败，跳过", exc_info=True)
         processed += 1
-        # 熔断：连续失败达阈值 ⇒ 疑似东方财富封禁/不可用，提前中止，避免空转 + 加剧封禁
+        # 当前源可达（即使无数据）⇒ 重置连续失败计数；传输失败 ⇒ 累加
+        if src_ok:
+            consecutive_fail = 0
+            fail_streak = []
+        else:
+            consecutive_fail += 1
+            fail_streak.append(code)
+        # 熔断/切源：同一源连续失败达阈值
         if _MAX_CONSECUTIVE_FAILURES and consecutive_fail >= _MAX_CONSECUTIVE_FAILURES:
-            aborted = True
-            logging.error(
-                f"fetch_company_profile_job: 连续 {consecutive_fail} 只抓取失败，"
-                f"疑似东方财富封禁/不可用，提前熔断中止（已处理 {processed}/{len(targets)}），"
-                f"剩余留待下次续跑")
-            break
+            if source == 'em':
+                # 确认东方财富被封 → 整体切换同花顺备用源，把这批确认失败的代码 + 剩余未处理
+                # 代码改用同花顺续采（避免最靠前的固定一批个股在封禁期被永久饿死）。
+                switched_to_ths = True
+                logging.error(
+                    f"fetch_company_profile_job: 东方财富连续 {consecutive_fail} 只失败，"
+                    f"确认被封，切换同花顺备用源续采（已处理 {processed}）")
+                queue = fail_streak + queue[idx:]
+                idx = 0
+                source = 'ths'
+                consecutive_fail = 0
+                fail_streak = []
+                continue
+            else:
+                # 同花顺备用源也连续失败达阈值 ⇒ 确认备源也被封 ⇒ 中止本轮
+                aborted = True
+                logging.error(
+                    f"fetch_company_profile_job: 同花顺备用源连续 {consecutive_fail} 只失败，"
+                    f"确认备源也被封，中止本轮（已处理 {processed}），剩余留待下次续跑")
+                break
         time.sleep(random.uniform(0.8, 1.5))  # 限速
     tail = ''
     if stopped_early:
         tail = '，超时自停'
     elif aborted:
-        tail = f'，连续失败{consecutive_fail}次熔断中止'
+        tail = f'，两源均被封（同花顺连续失败{consecutive_fail}次）中止'
+    elif switched_to_ths:
+        tail = '，东财被封已降级同花顺备用源'
     msg = f"{ok}/{processed} 公司概况更新（跳过 {len(skip)}{tail}）"
     record_task_end(_JOB_NAME, 'profile', job_date, start, success=not aborted,
                     message=msg, rows_affected=ok)

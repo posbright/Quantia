@@ -144,47 +144,92 @@ def test_stock_business_composition_request_failure_raises():
             sbe.stock_business_composition('000651')
 
 
-def test_run_circuit_breaker_aborts_on_consecutive_failures(monkeypatch):
-    """连续 BusinessFetchError 达阈值时，run() 应提前熔断，不再逐只空转。"""
+def test_run_switches_to_ths_after_em_ban(monkeypatch):
+    """EM 连续失败达阈值 ⇒ 确认被封 ⇒ 整体切换同花顺备用源续采（含失败流重排），
+    不再调用 EM；同花顺正常则全部处理完，不中止。"""
     codes = [str(600000 + i) for i in range(200)]
-    calls = {'n': 0}
+    calls = {'em': 0, 'ths': 0}
 
-    def _boom(code, update_date):
-        calls['n'] += 1
-        raise sbe.BusinessFetchError('EM banned')
+    def _save(code, update_date, source='em'):
+        calls[source] += 1
+        if source == 'em':
+            return (0, False)  # EM 始终传输失败
+        return (1, True)       # 同花顺正常
 
-    monkeypatch.setattr(fcp, 'save_company_profile', _boom)
+    monkeypatch.setattr(fcp, 'save_company_profile', _save)
     monkeypatch.setattr(fcp, 'record_task_start', lambda *a, **k: 0)
     monkeypatch.setattr(fcp, 'record_task_end', lambda *a, **k: None)
     monkeypatch.setattr(fcp.time, 'sleep', lambda *a, **k: None)
     monkeypatch.setattr(fcp, '_MAX_CONSECUTIVE_FAILURES', 30)
 
     fcp.run(codes=codes, force=True)
-    # 息于第 30 只连续失败，不会把 200 只全跑完
-    assert calls['n'] == 30
+    # EM 连续 30 失败即确认被封、停止调用 EM
+    assert calls['em'] == 30
+    # 切换后 THS 处理：重排队列 = 30 失败流 + 剩余 170 = 200 只
+    assert calls['ths'] == 200
 
 
-def test_run_circuit_breaker_resets_on_success(monkeypatch):
-    """失败中途成功（或空数据）应重置连续计数，不该熔断。"""
+def test_run_aborts_when_both_sources_banned(monkeypatch):
+    """EM 被封切换同花顺后，同花顺也连续失败达阈值 ⇒ 确认两源皆封 ⇒ 中止。"""
+    codes = [str(600000 + i) for i in range(200)]
+    calls = {'em': 0, 'ths': 0}
+
+    def _save(code, update_date, source='em'):
+        calls[source] += 1
+        return (0, False)  # 两源都传输失败
+
+    monkeypatch.setattr(fcp, 'save_company_profile', _save)
+    monkeypatch.setattr(fcp, 'record_task_start', lambda *a, **k: 0)
+    monkeypatch.setattr(fcp, 'record_task_end', lambda *a, **k: None)
+    monkeypatch.setattr(fcp.time, 'sleep', lambda *a, **k: None)
+    monkeypatch.setattr(fcp, '_MAX_CONSECUTIVE_FAILURES', 30)
+
+    fcp.run(codes=codes, force=True)
+    assert calls['em'] == 30   # EM 30 失败 → 切换同花顺
+    assert calls['ths'] == 30  # 同花顺 30 失败 → 中止
+
+
+def test_run_no_switch_when_em_healthy(monkeypatch):
+    """EM 全程可达 ⇒ 全部走 EM，绝不切换同花顺。"""
     codes = [str(600000 + i) for i in range(80)]
-    calls = {'n': 0}
+    calls = {'em': 0, 'ths': 0}
 
-    def _flaky(code, update_date):
-        calls['n'] += 1
-        # 每 10 只成功一只，永远不会连续 30 失败
-        if calls['n'] % 10 == 0:
-            return 1
-        raise sbe.BusinessFetchError('flaky')
+    def _save(code, update_date, source='em'):
+        calls[source] += 1
+        return (1, True)
 
-    monkeypatch.setattr(fcp, 'save_company_profile', _flaky)
+    monkeypatch.setattr(fcp, 'save_company_profile', _save)
     monkeypatch.setattr(fcp, 'record_task_start', lambda *a, **k: 0)
     monkeypatch.setattr(fcp, 'record_task_end', lambda *a, **k: None)
     monkeypatch.setattr(fcp.time, 'sleep', lambda *a, **k: None)
     monkeypatch.setattr(fcp, '_MAX_CONSECUTIVE_FAILURES', 30)
 
     fcp.run(codes=codes, force=True)
-    # 未熔断，全部 80 只都处理到
-    assert calls['n'] == 80
+    assert calls['em'] == 80
+    assert calls['ths'] == 0
+
+
+def test_run_em_transient_failures_do_not_switch(monkeypatch):
+    """EM 间歇失败（未连续达阈值）不触发切换，仍走 EM 跑完全部。"""
+    codes = [str(600000 + i) for i in range(80)]
+    calls = {'em': 0, 'ths': 0}
+
+    def _save(code, update_date, source='em'):
+        calls[source] += 1
+        if source == 'em':
+            # 每 10 只可达一只，最大连续失败 9 < 30，不切换
+            return (1, True) if calls['em'] % 10 == 0 else (0, False)
+        return (1, True)
+
+    monkeypatch.setattr(fcp, 'save_company_profile', _save)
+    monkeypatch.setattr(fcp, 'record_task_start', lambda *a, **k: 0)
+    monkeypatch.setattr(fcp, 'record_task_end', lambda *a, **k: None)
+    monkeypatch.setattr(fcp.time, 'sleep', lambda *a, **k: None)
+    monkeypatch.setattr(fcp, '_MAX_CONSECUTIVE_FAILURES', 30)
+
+    fcp.run(codes=codes, force=True)
+    assert calls['em'] == 80
+    assert calls['ths'] == 0  # 未切换
 
 
 def test_handler_parse_mainop():
@@ -262,37 +307,88 @@ def test_ths_composition_failure_raises():
             sbt.stock_business_composition_ths('000651')
 
 
-def test_save_falls_back_to_ths_on_em_ban(monkeypatch):
-    """东方财富封禁（BusinessFetchError）时，save_company_profile 降级同花顺并落库。"""
+def test_save_em_source_success(monkeypatch):
+    """source='em' 且 EM 返回数据 → 落库，返回 (1, True)。"""
+    monkeypatch.setattr(fcp.sbe, 'stock_business_composition',
+                        mock.Mock(return_value={
+                            'report_date': '2025-12-31', 'business_scope': '制冷设备',
+                            'business_review': '经营评述', 'mainop': [{'type': '行业', 'item': '空调'}]}))
+    monkeypatch.setattr(fcp.mdb, 'checkTableIsExist', lambda *a, **k: True)
+    captured = {}
+    monkeypatch.setattr(fcp.mdb, 'insert_db_from_df',
+                        lambda df, *a, **k: captured.__setitem__('df', df))
+
+    rows, src_ok = fcp.save_company_profile('000651', '2026-07-08', source='em')
+    assert (rows, src_ok) == (1, True)
+    assert captured['df'].iloc[0]['mainop'] is not None
+
+
+def test_save_em_source_transport_fail(monkeypatch):
+    """source='em' 且 EM 传输失败 → 返回 (0, False)，不落库。"""
     monkeypatch.setattr(fcp.sbe, 'stock_business_composition',
                         mock.Mock(side_effect=sbe.BusinessFetchError('EM banned')))
+    called = {'n': 0}
+    monkeypatch.setattr(fcp.mdb, 'insert_db_from_df',
+                        lambda *a, **k: called.__setitem__('n', called['n'] + 1))
+    assert fcp.save_company_profile('000651', '2026-07-08', source='em') == (0, False)
+    assert called['n'] == 0
+
+
+def test_save_em_source_no_data(monkeypatch):
+    """source='em' 且 EM 返回 None（源可达但无数据）→ 返回 (0, True)。"""
+    monkeypatch.setattr(fcp.sbe, 'stock_business_composition', mock.Mock(return_value=None))
+    assert fcp.save_company_profile('000651', '2026-07-08', source='em') == (0, True)
+
+
+def test_save_ths_source_new_stock(monkeypatch):
+    """source='ths' 且库中无既有记录 → 写入同花顺定性数据，返回 (1, True)；mainop 恒空。"""
     monkeypatch.setattr(fcp.sbt, 'stock_business_composition_ths',
                         mock.Mock(return_value={
                             'report_date': None, 'business_scope': '制冷设备制造',
                             'business_review': '空调业务', 'mainop': [], 'source': 'ths'}))
-    captured = {}
-
-    def _fake_insert(df, table, cols_type, write_index, pk):
-        captured['df'] = df
     monkeypatch.setattr(fcp.mdb, 'checkTableIsExist', lambda *a, **k: True)
-    monkeypatch.setattr(fcp.mdb, 'insert_db_from_df', _fake_insert)
+    monkeypatch.setattr(fcp.mdb, 'executeSqlFetch', lambda *a, **k: [])  # 无既有记录
+    captured = {}
+    monkeypatch.setattr(fcp.mdb, 'insert_db_from_df',
+                        lambda df, *a, **k: captured.__setitem__('df', df))
 
-    rc = fcp.save_company_profile('000651', '2026-07-08')
-    assert rc == 1
+    rows, src_ok = fcp.save_company_profile('999998', '2026-07-08', source='ths')
+    assert (rows, src_ok) == (1, True)
     row = captured['df'].iloc[0]
     assert row['business_scope'] == '制冷设备制造'
-    # THS 无 mainop → 落库 mainop 为空（None/NaN），不编造
     import pandas as _pd
     assert row['mainop'] is None or _pd.isna(row['mainop'])
 
 
-def test_save_returns_zero_when_both_sources_empty(monkeypatch):
-    """EM 封禁且 THS 无数据（None）→ save 返回 0，交由 run() 重置熔断计数。"""
-    monkeypatch.setattr(fcp.sbe, 'stock_business_composition',
-                        mock.Mock(side_effect=sbe.BusinessFetchError('EM banned')))
+def test_save_ths_source_preserves_existing(monkeypatch):
+    """source='ths' 但库中已有完整东财定量记录（含 mainop）→ 不覆盖，返回 (0, True)。"""
     monkeypatch.setattr(fcp.sbt, 'stock_business_composition_ths',
-                        mock.Mock(return_value=None))
-    assert fcp.save_company_profile('000651', '2026-07-08') == 0
+                        mock.Mock(return_value={
+                            'report_date': None, 'business_scope': '制冷设备制造',
+                            'business_review': '空调业务', 'mainop': [], 'source': 'ths'}))
+    monkeypatch.setattr(fcp.mdb, 'checkTableIsExist', lambda *a, **k: True)
+    monkeypatch.setattr(fcp.mdb, 'executeSqlFetch',
+                        lambda *a, **k: [('2025-12-31', '[{"type":"行业"}]')])
+    insert_called = {'n': 0}
+    monkeypatch.setattr(fcp.mdb, 'insert_db_from_df',
+                        lambda *a, **k: insert_called.__setitem__('n', insert_called['n'] + 1))
+
+    rows, src_ok = fcp.save_company_profile('000651', '2026-07-08', source='ths')
+    assert (rows, src_ok) == (0, True)      # 未覆盖、源可达
+    assert insert_called['n'] == 0          # 绝不写库覆盖
+
+
+def test_save_ths_source_transport_fail(monkeypatch):
+    """source='ths' 且同花顺传输失败 → 返回 (0, False)，供 run() 熔断计数。"""
+    monkeypatch.setattr(fcp.sbt, 'stock_business_composition_ths',
+                        mock.Mock(side_effect=sbe.BusinessFetchError('THS blocked')))
+    assert fcp.save_company_profile('000651', '2026-07-08', source='ths') == (0, False)
+
+
+def test_save_ths_source_no_data(monkeypatch):
+    """source='ths' 且同花顺无数据（None）→ 返回 (0, True)。"""
+    monkeypatch.setattr(fcp.sbt, 'stock_business_composition_ths', mock.Mock(return_value=None))
+    assert fcp.save_company_profile('000651', '2026-07-08', source='ths') == (0, True)
 
 
 # ---------------------------------------------------------------------------

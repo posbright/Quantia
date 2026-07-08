@@ -23,6 +23,7 @@ cron/
     ├── run_monthly                 ← 月度缓存清理
     ├── run_patents_annual          ← 年度专利采集（5月，巨潮年报全量）
     ├── run_patents_quarterly       ← 季度专利增量（1/4/7/10月，Google Patents）
+    ├── run_company_profile         ← 月度公司概况采集（F10 经营范围/主营构成/经营评述）
     └── run_fund_profile_holding    ← 月度基金画像 + 重仓股采集（F10/F12）
 ```
 
@@ -48,6 +49,7 @@ cron/
 | `run_monthly` | 每月1日 | — | 智能清理退市/除权缓存 + 财务数据更新 |
 | `run_patents_annual` | 每年5月 | `fetch_patent_data.py` | 全市场近5年年报专利全量采集（主源） |
 | `run_patents_quarterly` | 季度首月 | `fetch_patent_data.py --source google_patents` | Google Patents 增量补充 IPC/引用/趋势/PCT（备份源，脚本自判 1/4/7/10 月） |
+| `run_company_profile` | 每月 | `fetch_company_profile_job.py` | F10 公司概况（经营范围/主营构成/经营评述）采集；主源东方财富，连续失败30次确认被封则整体切换同花顺备源续采（仅定性、无占比），备源再连续失败30次则中止；两源各自熔断；慢 job，含增量跳过(80天) |
 | `run_fund_profile_holding` | 每月 | `fetch_fund_profile_job.py` + `fetch_fund_holding_job.py` | F10 基金画像（规模/经理/评级）+ F12 季度前十大重仓股采集 |
 | `backfill_fund_all.sh` | 手动（首次） | `fetch_fund_nav_history_job.py` + `fetch_fund_profile_job.py` + `fetch_fund_holding_job.py` + `analysis_fund_score_job.py` | 基金中心一键全量铺底：按依赖顺序 F8 净值→F10 画像→F12 重仓→F7 评分；失败不阻断；TopN 可经环境覆盖（默认 200，`QUANTIA_FUND_NAV_TOPN=0` 为全量回填）。仅服务器本地跑，日常增量仍由上述定时任务维护 |
 
