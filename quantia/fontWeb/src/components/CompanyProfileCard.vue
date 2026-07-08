@@ -70,7 +70,7 @@ const barWidth = (v: number | null | undefined): string => {
 // 主营构成按维度（行业/产品/地区/其他）分组，组内保持后端排序（rank 升序）
 const mainopGroups = computed(() => {
   const list = business.value?.mainop || []
-  if (!list.length) return [] as { type: string; items: MainOpItem[] }[]
+  if (!list.length) return [] as { type: string; items: MainOpItem[]; reportDate: string | null }[]
   const order = ['行业', '产品', '地区', '其他']
   const map = new Map<string, MainOpItem[]>()
   for (const it of list) {
@@ -78,10 +78,10 @@ const mainopGroups = computed(() => {
     if (!map.has(key)) map.set(key, [])
     map.get(key)!.push(it)
   }
+  const idx = (t: string) => { const i = order.indexOf(t); return i < 0 ? order.length : i }
   return Array.from(map.entries())
-    .sort((a, b) => (order.indexOf(a[0]) + 99 * (order.indexOf(a[0]) < 0 ? 1 : 0))
-                  - (order.indexOf(b[0]) + 99 * (order.indexOf(b[0]) < 0 ? 1 : 0)))
-    .map(([type, items]) => ({ type, items }))
+    .sort((a, b) => idx(a[0]) - idx(b[0]))
+    .map(([type, items]) => ({ type, items, reportDate: items[0]?.report_date ?? null }))
 })
 
 const scopeLong = computed(() => (business.value?.business_scope?.length || 0) > LONGTEXT_THRESHOLD)
@@ -202,7 +202,12 @@ onMounted(() => load())
           <span v-if="business?.report_date" class="cp-section-sub">（{{ fmtDate(business.report_date) }}）</span>
         </div>
         <div v-for="g in mainopGroups" :key="g.type" class="cp-mainop-group">
-          <div class="cp-mainop-type">按{{ g.type }}</div>
+          <div class="cp-mainop-type">
+            按{{ g.type }}
+            <span v-if="g.reportDate && g.reportDate !== business?.report_date" class="cp-mainop-period">
+              （{{ fmtDate(g.reportDate) }}）
+            </span>
+          </div>
           <div v-for="it in g.items" :key="g.type + '-' + it.item" class="cp-mainop-item">
             <div class="cp-mainop-row">
               <span class="cp-mainop-name" :title="it.item">{{ it.item }}</span>
@@ -350,6 +355,11 @@ onMounted(() => load())
       font-size: 12px;
       color: #909399;
       margin-bottom: 6px;
+
+      .cp-mainop-period {
+        color: #c0c4cc;
+        font-size: 11px;
+      }
     }
 
     .cp-mainop-item {

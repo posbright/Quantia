@@ -12,7 +12,9 @@ https://emweb.securities.eastmoney.com/PC_HSF10/BusinessAnalysis/index?code=SZ00
 本模块只负责抓取 + 解析为纯 Python 结构，落库由 fetch_company_profile_job 负责
 （遵循 Fetch/Analysis/Web 管道分离：只有 Fetch 管道可调用外部 API）。
 """
+import datetime
 import logging
+from collections import defaultdict
 
 from quantia.core.eastmoney_fetcher import eastmoney_fetcher
 
@@ -32,6 +34,12 @@ _SCOPE_MAX_CHARS = 4000
 
 # 主营构成分类维度：东方财富 MAINOP_TYPE 编码 → 中文
 _MAINOP_TYPE_MAP = {'1': '行业', '2': '产品', '3': '地区'}
+
+# 主营构成维度过期阈值（天）：某维度自身最新披露期距全局最新披露期超过此值即视为
+# 已停止披露而丢弃。取 450 天（约 15 个月）——既能保留「按产品仅在半年报披露、按地区
+# 在年报披露」这类正常错期（如浦发银行按产品 2025-06-30 vs 按地区 2025-12-31），
+# 又能丢弃多年前的僵尸维度（如平安/紫金按行业停留在 2019-12-31）。
+_MAINOP_STALE_DAYS = 450
 
 
 def to_secid(code):
@@ -60,6 +68,16 @@ def _report_date_str(raw):
     return s[:10]
 
 
+def _parse_date(s):
+    """'2025-12-31' → date；失败返回 None。"""
+    if not s:
+        return None
+    try:
+        return datetime.date.fromisoformat(str(s)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
 def _to_float(v):
     if v is None or v == '':
         return None
@@ -84,9 +102,9 @@ def stock_business_composition(code):
           'mainop': [
              {'type': '行业'|'产品'|'地区', 'item': str, 'income': float|None,
               'income_ratio': float|None, 'gross_profit_ratio': float|None,
-              'rank': int|None},
+              'rank': int|None, 'report_date': 'YYYY-MM-DD'},
              ...
-          ]  # 仅最新报告期
+          ]  # 各维度取自身最新披露期（可能不同），已剔除多年未披露的僵尸维度
         }
     """
     secid = to_secid(code)
@@ -118,17 +136,42 @@ def stock_business_composition(code):
             business_review = str(review).strip()[:_REVIEW_MAX_CHARS]
         review_report_date = _report_date_str(jyps[0].get('REPORT_DATE'))
 
-    # 3) 主营构成明细（多报告期，筛选最新报告期）
+    # 3) 主营构成明细（多报告期，多维度）
+    #    关键：不同维度（按行业/产品/地区）的最新披露期可能不同——银行常按产品披露到半年报、
+    #    按地区披露到年报；部分公司某维度多年未再披露（如平安/紫金按行业停在 2019）。
+    #    因此对每个维度取其"自身最新披露期"，但丢弃距全局最新披露期过久（>_MAINOP_STALE_DAYS）
+    #    的僵尸维度，避免既丢失有效近期维度、又混入多年前的陈旧口径。
     mainop = []
     mainop_report_date = None
     zygcfx = data_json.get('zygcfx') or []
     rows = [row for row in zygcfx if isinstance(row, dict)]
-    dates = [_report_date_str(row.get('REPORT_DATE')) for row in rows]
-    dates = [d for d in dates if d]
-    if dates:
-        mainop_report_date = max(dates)
+
+    type_dates = defaultdict(set)
+    for row in rows:
+        d = _report_date_str(row.get('REPORT_DATE'))
+        if d:
+            type_dates[str(row.get('MAINOP_TYPE'))].add(d)
+
+    all_dates = set()
+    for ds in type_dates.values():
+        all_dates |= ds
+    if all_dates:
+        global_max = max(all_dates)          # 全局最新披露期（用作整表 report_date）
+        mainop_report_date = global_max
+        gm_date = _parse_date(global_max)
+        # 每个维度取自身最新披露期，过期维度剔除
+        keep_type_date = {}
+        for t, ds in type_dates.items():
+            d_latest = max(ds)
+            dd = _parse_date(d_latest)
+            if gm_date and dd and (gm_date - dd).days > _MAINOP_STALE_DAYS:
+                continue
+            keep_type_date[t] = d_latest
+
         for row in rows:
-            if _report_date_str(row.get('REPORT_DATE')) != mainop_report_date:
+            t = str(row.get('MAINOP_TYPE'))
+            d = _report_date_str(row.get('REPORT_DATE'))
+            if t not in keep_type_date or d != keep_type_date[t]:
                 continue
             item_name = row.get('ITEM_NAME')
             if not item_name:
@@ -139,12 +182,13 @@ def stock_business_composition(code):
             except (TypeError, ValueError):
                 rank = None
             mainop.append({
-                'type': _MAINOP_TYPE_MAP.get(str(row.get('MAINOP_TYPE')), '其他'),
+                'type': _MAINOP_TYPE_MAP.get(t, '其他'),
                 'item': str(item_name).strip(),
                 'income': _to_float(row.get('MAIN_BUSINESS_INCOME')),
                 'income_ratio': _to_float(row.get('MBI_RATIO')),
                 'gross_profit_ratio': _to_float(row.get('GROSS_RPOFIT_RATIO')),
                 'rank': rank,
+                'report_date': d,  # 该维度自身报告期（可能与整表 report_date 不同）
             })
         # 稳定排序：先按维度（行业→产品→地区→其他），再按 rank
         _type_order = {'行业': 0, '产品': 1, '地区': 2, '其他': 3}

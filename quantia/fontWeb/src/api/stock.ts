@@ -352,6 +352,7 @@ export interface MainOpItem {
   income_ratio: number | null        // 收入占比（0~1）
   gross_profit_ratio: number | null  // 毛利率（0~1）
   rank: number | null
+  report_date?: string | null        // 该维度自身报告期（可能与整表 report_date 不同）
 }
 
 export interface StockBusinessData {

@@ -75,6 +75,56 @@ def test_stock_business_composition_parsing():
     assert manufacturing['income'] == 153781972343.46
     assert abs(manufacturing['income_ratio'] - 0.902227) < 1e-6
     assert abs(manufacturing['gross_profit_ratio'] - 0.327466) < 1e-6
+    # 每个明细项携带其维度自身报告期
+    assert all(it['report_date'] == '2025-12-31' for it in items)
+
+
+def _mixed_period_payload():
+    """模拟真实场景：不同维度最新披露期不同。
+    - 按行业(type1) 最新停在 2019-12-31（多年未再披露，应被剔除）
+    - 按产品(type2) 最新为 2025-06-30（半年报，距全局最新 <450 天，应保留）
+    - 按地区(type3) 最新为 2025-12-31（年报，全局最新）
+    """
+    return {
+        'zyfw': [{'BUSINESS_SCOPE': '银行业务'}],
+        'jyps': [{'REPORT_DATE': '2025-12-31 00:00:00', 'BUSINESS_REVIEW': '经营评述。'}],
+        'zygcfx': [
+            {'REPORT_DATE': '2025-12-31 00:00:00', 'MAINOP_TYPE': '3', 'ITEM_NAME': '华东地区',
+             'MAIN_BUSINESS_INCOME': 5e10, 'MBI_RATIO': 0.5, 'GROSS_RPOFIT_RATIO': 0.4, 'RANK': 1},
+            {'REPORT_DATE': '2025-06-30 00:00:00', 'MAINOP_TYPE': '2', 'ITEM_NAME': '对公业务',
+             'MAIN_BUSINESS_INCOME': 6e10, 'MBI_RATIO': 0.6, 'GROSS_RPOFIT_RATIO': 0.45, 'RANK': 1},
+            {'REPORT_DATE': '2025-06-30 00:00:00', 'MAINOP_TYPE': '2', 'ITEM_NAME': '零售业务',
+             'MAIN_BUSINESS_INCOME': 4e10, 'MBI_RATIO': 0.4, 'GROSS_RPOFIT_RATIO': 0.35, 'RANK': 2},
+            # 陈旧行业维度（2019），应被整体剔除
+            {'REPORT_DATE': '2019-12-31 00:00:00', 'MAINOP_TYPE': '1', 'ITEM_NAME': '金融业',
+             'MAIN_BUSINESS_INCOME': 3e10, 'MBI_RATIO': 1.0, 'GROSS_RPOFIT_RATIO': 0.3, 'RANK': 1},
+        ],
+    }
+
+
+def test_stock_business_composition_per_dimension_latest_period():
+    """回归：不同维度取各自最新期，保留近期错期维度、剔除多年僵尸维度。"""
+    with mock.patch.object(sbe.fetcher, 'make_request',
+                           return_value=_FakeResp(_mixed_period_payload())):
+        out = sbe.stock_business_composition('600000')
+    assert out is not None
+    # 整表报告期 = 全局最新 2025-12-31
+    assert out['report_date'] == '2025-12-31'
+    items = out['mainop']
+    types = {it['type'] for it in items}
+    # 陈旧的“按行业”(2019) 被剔除
+    assert '行业' not in types
+    assert all(it['item'] != '金融业' for it in items)
+    # “按产品”(2025-06-30, 半年报) 被保留，且携带其自身报告期
+    product_items = [it for it in items if it['type'] == '产品']
+    assert len(product_items) == 2
+    assert all(it['report_date'] == '2025-06-30' for it in product_items)
+    # “按地区”(2025-12-31) 保留
+    region_items = [it for it in items if it['type'] == '地区']
+    assert len(region_items) == 1
+    assert region_items[0]['report_date'] == '2025-12-31'
+    # 排序：产品在地区之前
+    assert [it['type'] for it in items] == ['产品', '产品', '地区']
 
 
 def test_stock_business_composition_empty_returns_none():
