@@ -645,10 +645,11 @@ const renderChart = () => {
         yAxisIndex: 0,
         silent: true,
         z: 2,
-        // 单元素 data，renderItem 内一次性绘制所有价位柱
-        data: [0],
+        // data 覆盖整条类目轴（y=null 不影响价格轴 extent），避免 dataZoom(filterMode:'filter')
+        // 把仅有的数据点过滤掉导致 renderItem 不触发；仅在窗口内首个可见类目上一次性绘制所有价位柱
+        data: dates.map((_: any, i: number) => [i, null]),
         renderItem: (params: any, api: any) => {
-          if (params.dataIndex !== 0) return
+          if (params.dataIndexInside !== 0) return
           const cs = params.coordSys
           if (!cs) return
           const rightX = cs.x + cs.width
