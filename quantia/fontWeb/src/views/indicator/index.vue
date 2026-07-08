@@ -1189,27 +1189,6 @@ const priceCls = (v: number | null | undefined): string => {
   return ''
 }
 
-const companyOverviewItems = computed(() => {
-  const q = quoteData.value
-  if (!q) return []
-  return [
-    { label: '行业', value: q.industry },
-    { label: '所属板块', value: q.board },
-    { label: '地区', value: q.area },
-    { label: '总市值', value: fmtWanToYi(q.total_market_cap) },
-    { label: '流通市值', value: fmtWanToYi(q.free_market_cap) },
-    { label: '市盈率(TTM/动)', value: fmtPrice(q.pe) },
-    { label: '市净率', value: fmtPrice(q.pb) },
-    { label: '换手率', value: q.turnover_rate == null ? '--' : `${fmtPrice(q.turnover_rate)}%` },
-    { label: '上市日期', value: q.listing_date },
-  ].filter(item => item.value != null && item.value !== '' && item.value !== '--' && item.value !== '-')
-})
-
-const conceptTags = computed(() => {
-  const raw = quoteData.value?.concept || ''
-  return raw.split(/[;,，、\s]+/).map(item => item.trim()).filter(Boolean).slice(0, 8)
-})
-
 // 加载行情快照（与 K 线/财务并行；带防抖式 stale 守卫，避免切股票时旧响应覆盖）
 const loadStockQuote = async () => {
   if (!code.value) { quoteData.value = null; return }
@@ -1459,23 +1438,6 @@ onUnmounted(() => {
           :class="['sub-tab', { active: currentSubIndicator === ind }]"
           @click="currentSubIndicator = ind"
         >{{ ind }}</span>
-      </div>
-    </div>
-
-    <!-- 公司概况：只展示公司静态属性与估值快照，避免与下方财务报表指标重复 -->
-    <div v-if="quoteData && (companyOverviewItems.length || conceptTags.length)" class="section-card company-card">
-      <div class="section-title">公司概况</div>
-      <div class="company-grid">
-        <div v-for="item in companyOverviewItems" :key="item.label" class="company-item">
-          <span class="company-label">{{ item.label }}</span>
-          <span class="company-value">{{ item.value }}</span>
-        </div>
-      </div>
-      <div v-if="conceptTags.length" class="concept-row">
-        <span class="concept-label">所属概念</span>
-        <div class="concept-tags">
-          <el-tag v-for="tag in conceptTags" :key="tag" size="small" effect="plain">{{ tag }}</el-tag>
-        </div>
       </div>
     </div>
 
@@ -1816,48 +1778,6 @@ onUnmounted(() => {
   border: 1px solid #d9ecff;
   border-radius: 4px;
   padding: 2px 8px;
-}
-.company-card {
-  margin-top: 12px;
-}
-.company-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 10px;
-}
-.company-item {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 8px 10px;
-  background: #fff;
-  border: 1px solid #f0f0f0;
-  border-radius: 6px;
-}
-.company-label {
-  font-size: 12px;
-  color: #909399;
-}
-.company-value {
-  font-size: 14px;
-  font-weight: 600;
-  color: #303133;
-}
-.concept-row {
-  display: flex;
-  gap: 10px;
-  margin-top: 12px;
-}
-.concept-label {
-  flex: none;
-  padding-top: 2px;
-  font-size: 12px;
-  color: #909399;
-}
-.concept-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
 }
 .financial-grid {
   display: grid;
