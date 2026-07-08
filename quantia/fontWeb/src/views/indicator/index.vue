@@ -403,7 +403,10 @@ const renderChart = () => {
       axisLine: { onZero: false, lineStyle: { color: '#ccc' } },
       splitLine: { show: false },
       axisLabel: { fontSize: axisFs, color: '#666' },
-      min: 'dataMin', max: 'dataMax',
+      // 注意：category 轴的可视范围完全由 dataZoom 的 start/end 控制，绝不能再设
+      // min:'dataMin'/max:'dataMax'——那会与 inside 缩放争夺轴 extent，缩放放大再
+      // 缩小后 ordinal 刻度与 dataZoom 窗口失同步，导致 MA/BOLL 折线按全量 extent
+      // 绘制、蜡烛按缩放 extent 绘制，出现均线在右侧扇形发散的残影。
     },
     {
       type: 'category', gridIndex: 1, data: dates,
