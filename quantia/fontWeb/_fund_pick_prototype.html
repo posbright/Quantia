@@ -237,6 +237,18 @@
   .cur-dd { color: var(--c-bad); font-weight: 700; }
   .nav-cell b { font-weight: 700; }
   .nav-cell .acc { font-size: 11px; color: var(--c-muted); }
+  /* 底层持仓位置 */
+  .hold-list { display: flex; flex-direction: column; gap: 6px; }
+  .hold-row { display: grid; grid-template-columns: 1.6fr auto auto; align-items: center; gap: 8px; font-size: 12.5px; }
+  .hold-row .hn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hold-row .hn small { color: var(--c-muted); margin-left: 4px; }
+  .hold-row .hr { color: var(--c-sub); font-variant-numeric: tabular-nums; }
+  .pos-badge { font-size: 11px; border-radius: 8px; padding: 1px 8px; white-space: nowrap; }
+  .pos-low { background: #e8f6ec; color: #16a34a; }
+  .pos-mid { background: #fdf1e0; color: #c47d1a; }
+  .pos-high { background: #fdeaea; color: #d23b3b; }
+  .lt-score { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+  .lt-score b { font-size: 22px; }
 
   /* ============ 钉钉推送预览弹窗 ============ */
   .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: none; align-items: center; justify-content: center; z-index: 60; }
@@ -289,7 +301,7 @@
     <div class="dh-card warn">
       <div class="dh-title">🏭 持仓行业可用性 <span class="lag-tag">防线2</span></div>
       <div class="dh-value" style="color:var(--c-mid)">科创板未分类</div>
-      <div class="dh-desc">6,400+ 条重仓行业断层（688 未回填）；风格漂移暂作雷达展示，不做硬拦截</div>
+      <div class="dh-desc">约 5,100 条重仓行业断层（最新季度 29%，688 未回填）；风格漂移暂作雷达展示，不做硬拦截</div>
     </div>
     <div class="dh-card ok">
       <div class="dh-title">✅ 质量评分覆盖 <span class="lag-tag fresh">主排序</span></div>
@@ -354,7 +366,7 @@ const TYPES = [
   { key: '指数型', timing: true },
   { key: 'QDII', timing: true },
   { key: 'FOF', timing: true },
-  { key: '债券型', timing: false },   // 短债/纯债：不做点位择时
+  { key: '债券型', timing: true },   // 债券：按 acc_nav 是否存在决定是否展示回撤择时（文档 §4复审）
   { key: '货币型', timing: false },   // 货币：只显示七日年化/规模
 ];
 
@@ -394,11 +406,11 @@ const DATA = {
     { code: '004417', name: '兴全添利宝货币', q: 90, yield7: 1.79, scaleE: 380.6, stab: 'A' },
   ],
 };
-// 债券型复用一份精简（不做择时）
+// 债券型：按文档§4复审口径——有 acc_nav 的债基也展示回撤择时，缺 acc_nav/净值滞后则留白
 DATA['债券型'] = [
-  { code: '000187', name: '华安纯债债券A', q: 90, yield7: null, r1: 4.8, mdd: -1.2, scaleE: 88.5, stab: 'A+', style: '纯债', noTiming: true, lag: 36 },
-  { code: '003376', name: '广发汇瑞一年定开债', q: 88, r1: 5.2, mdd: -0.9, scaleE: 64.1, stab: 'A', style: '中长债', noTiming: true, lag: 36 },
-  { code: '070005', name: '嘉实债券', q: 86, r1: 3.9, mdd: -1.6, scaleE: 120.4, stab: 'A', style: '混合债', noTiming: true, lag: 37 },
+  { code: '000187', name: '华安纯债债券A', q: 90, ts: 58, lag: 2, r1: 4.8, mdd: -1.2, dd: 35, trend: 55, val: null, scaleE: 88.5, scale: 88.5, mgr: 6.3, stab: 'A+', style: '纯债', flaw: false },
+  { code: '003376', name: '广发汇瑞一年定开债', q: 88, ts: 42, lag: 3, r1: 5.2, mdd: -0.9, dd: 20, trend: 48, val: null, scaleE: 64.1, scale: 64.1, mgr: 5.1, stab: 'A', style: '中长债', flaw: false },
+  { code: '070005', name: '嘉实债券', q: 86, ts: null, lag: 5, r1: 3.9, mdd: -1.6, dd: null, trend: null, val: null, scaleE: 120.4, scale: 120.4, mgr: 8.0, stab: 'A', style: '混合债', flaw: false, accNull: true },
 ];
 // QDII / FOF 精简
 DATA['QDII'] = [
@@ -632,6 +644,67 @@ function navCardHtml(r, type) {
   </div>`;
 }
 
+/* ===== 底层持仓当前位置（穿透式，参考级，非择时硬因子） =====
+   数据源 cn_fund_holding 前十大重仓股（最新报告期 2026Q1，滞后约 1 季度）。
+   把重仓股当一篮子 A 股，用各自 K 线技术位置（距高点回撤/均线）给「低位/中位/高位」，
+   按 hold_ratio 加权得「底层位置分」（越高=越多底仓处历史低位=越适合分批建仓）。
+   仅覆盖约 18.7% 权益基金；无覆盖/非A股/货币债券基金返回空。 */
+const HOLDINGS = {
+  '011251': { top10: 58.4, ltScore: 71, stocks: [
+    { name: '中芯国际', code: '688981', ratio: 9.8, pos: '低位' },
+    { name: '北方华创', code: '002371', ratio: 8.6, pos: '中位' },
+    { name: '韦尔股份', code: '603501', ratio: 7.2, pos: '低位' },
+    { name: '海光信息', code: '688041', ratio: 6.1, pos: '高位' },
+    { name: '兆易创新', code: '603986', ratio: 5.4, pos: '低位' },
+  ] },
+  '008888': { top10: 62.0, ltScore: 44, stocks: [
+    { name: '寒武纪', code: '688256', ratio: 10.9, pos: '高位' },
+    { name: '中芯国际', code: '688981', ratio: 9.1, pos: '中位' },
+    { name: '澜起科技', code: '688008', ratio: 7.7, pos: '高位' },
+    { name: '北方华创', code: '002371', ratio: 6.8, pos: '中位' },
+  ] },
+  '005827': { top10: 51.2, ltScore: 63, stocks: [
+    { name: '贵州茅台', code: '600519', ratio: 9.9, pos: '中位' },
+    { name: '五粮液', code: '000858', ratio: 8.2, pos: '低位' },
+    { name: '泸州老窖', code: '000568', ratio: 6.5, pos: '低位' },
+    { name: '山西汾酒', code: '600809', ratio: 5.1, pos: '中位' },
+  ] },
+  '110020': { top10: 79.6, ltScore: 58, stocks: [
+    { name: '贵州茅台', code: '600519', ratio: 5.8, pos: '中位' },
+    { name: '宁德时代', code: '300750', ratio: 4.9, pos: '低位' },
+    { name: '招商银行', code: '600036', ratio: 3.6, pos: '中位' },
+    { name: '中国平安', code: '601318', ratio: 3.1, pos: '低位' },
+  ] },
+};
+function posCls(p) { return p === '低位' ? 'pos-low' : (p === '高位' ? 'pos-high' : 'pos-mid'); }
+function holdingsCardHtml(r, type) {
+  const h = HOLDINGS[r.code];
+  if (!h) {
+    // 无季报持仓覆盖（债券/货币/QDII海外/未披露）
+    if (type === '货币型' || type === '债券型' || type === 'QDII' || type === 'FOF')
+      return '';
+    return `<div class="d-card">
+      <div class="d-card-title">🔎 底层持仓当前位置 <span class="hint">2026Q1 季报 · 参考</span></div>
+      <div class="bb-desc" style="color:var(--c-muted)">该基金暂无季报前十大持仓覆盖（全市场仅约 18.7% 权益基金披露），本期不提供穿透式位置参考。</div>
+    </div>`;
+  }
+  const tag = h.ltScore >= 65 ? { t: '底仓多处低位', c: 'var(--c-good)' }
+    : h.ltScore >= 45 ? { t: '底仓位置中性', c: 'var(--c-mid)' }
+    : { t: '底仓偏高位', c: 'var(--c-bad)' };
+  return `<div class="d-card">
+    <div class="d-card-title">🔎 底层持仓当前位置 <span class="hint">2026Q1 季报 · 参考</span></div>
+    <div class="lt-score"><b style="color:${tag.c}">${h.ltScore}</b><span style="color:${tag.c};font-weight:600">${tag.t}</span><span style="color:var(--c-muted);font-size:12px">前十大合计 ${h.top10}% 净值</span></div>
+    <div class="hold-list">
+      ${h.stocks.map(s => `<div class="hold-row">
+        <span class="hn">${s.name}<small>${s.code}</small></span>
+        <span class="hr">${s.ratio}%</span>
+        <span class="pos-badge ${posCls(s.pos)}">${s.pos}</span>
+      </div>`).join('')}
+    </div>
+    <div class="flaw-note">🕒 季报滞后约 1 季度、前十大仅占部分净值、覆盖不足；仅作参考，<b>不进入择时硬计算</b>。</div>
+  </div>`;
+}
+
 function sparkline(seed, up) {  // 生成一条 SVG 迷你净值曲线占位
   let pts = [], y = 45;
   for (let i = 0; i <= 40; i++) {
@@ -711,7 +784,7 @@ function openDrawer(type, idx) {
     ${reasonChips(r.reasons)}
   </div>` : '';
 
-  body.innerHTML = reasonCard + timingCard + navCardHtml(r, type) + qGrid + navCard +
+  body.innerHTML = reasonCard + timingCard + navCardHtml(r, type) + holdingsCardHtml(r, type) + qGrid + navCard +
     `<p class="d-disclaimer">免责声明：以上评分/档位/理由为量化排序与研究辅助，非投资建议。基金有风险，投资需谨慎。</p>`;
 
   document.getElementById('drawer').classList.add('open');
