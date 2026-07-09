@@ -103,6 +103,17 @@ export function getParamsHistory(strategy: string, limit?: number) {
 }
 
 /**
+ * 删除策略参数变更历史
+ */
+export function deleteParamsHistory(strategy: string, ids: number[]) {
+  return request({
+    url: '/api/strategy/params/history/delete',
+    method: 'post',
+    data: { strategy, ids }
+  })
+}
+
+/**
  * 对比两个参数版本的差异
  */
 export function getParamsDiff(strategy: string, v1: number, v2: number) {

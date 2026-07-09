@@ -99,6 +99,7 @@ class Application(tornado.web.Application):
             (r"/quantia/api/strategy/params", strategyParamsHandler.GetStrategyParamsHandler),
             (r"/quantia/api/strategy/params/save", strategyParamsHandler.SaveStrategyParamsHandler),
             (r"/quantia/api/strategy/params/reset", strategyParamsHandler.ResetStrategyParamsHandler),
+            (r"/quantia/api/strategy/params/history/delete", strategyParamsHandler.DeleteParamsHistoryHandler),
             (r"/quantia/api/strategy/params/history", strategyParamsHandler.GetParamsHistoryHandler),
             (r"/quantia/api/strategy/params/diff", strategyParamsHandler.GetParamsDiffHandler),
             (r"/quantia/api/strategy/filter", strategyParamsHandler.FilterStocksHandler),

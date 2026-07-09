@@ -9,6 +9,7 @@ import {
   resetStrategyParams,
   filterStocks,
   getParamsHistory,
+  deleteParamsHistory,
   getParamsDiff
 } from '@/api/strategy'
 import { toggleAttention } from '@/api/stock'
@@ -275,8 +276,10 @@ onMounted(() => {
 // ========== 参数历史 ==========
 const showHistory = ref(false)
 const historyLoading = ref(false)
+const deletingHistory = ref(false)
 const historyList = ref<any[]>([])
 const selectedVersions = ref<number[]>([])
+const selectedHistoryIds = ref<number[]>([])
 const diffResult = ref<any>(null)
 const diffLoading = ref(false)
 
@@ -285,6 +288,7 @@ const loadHistory = async () => {
   showHistory.value = true
   diffResult.value = null
   selectedVersions.value = []
+  selectedHistoryIds.value = []
   try {
     const res: any = await getParamsHistory(activeStrategy.value, 50)
     historyList.value = res.data || []
@@ -297,6 +301,15 @@ const loadHistory = async () => {
 
 const handleSelectionChange = (rows: any[]) => {
   selectedVersions.value = rows.map((r: any) => r.version).sort((a: number, b: number) => a - b)
+  selectedHistoryIds.value = rows.map((r: any) => Number(r.id)).filter((id: number) => Number.isFinite(id))
+}
+
+const formatParamValue = (value: any) => {
+  if (value === null || value === undefined || value === '') return '-'
+  if (typeof value === 'boolean') return value ? '开启' : '关闭'
+  if (Array.isArray(value)) return value.join(', ')
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
 }
 
 const handleDiff = async () => {
@@ -316,6 +329,29 @@ const handleDiff = async () => {
     ElMessage.error('对比失败')
   } finally {
     diffLoading.value = false
+  }
+}
+
+const handleDeleteHistory = async () => {
+  if (selectedHistoryIds.value.length === 0) {
+    ElMessage.warning('请先选择要删除的变更历史')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认删除选中的 ${selectedHistoryIds.value.length} 条变更历史？删除后不可恢复。`,
+      '删除确认',
+      { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' }
+    )
+    deletingHistory.value = true
+    const res: any = await deleteParamsHistory(activeStrategy.value, selectedHistoryIds.value)
+    ElMessage.success(res.message || '删除成功')
+    diffResult.value = null
+    await loadHistory()
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error('删除失败')
+  } finally {
+    deletingHistory.value = false
   }
 }
 </script>
@@ -637,8 +673,8 @@ const handleDiff = async () => {
     </el-card>
 
     <!-- 参数变更历史对话框 -->
-    <el-dialog v-model="showHistory" title="参数变更历史" width="min(800px, 92vw)" destroy-on-close>
-      <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+    <el-dialog v-model="showHistory" title="参数变更历史" width="min(1120px, 94vw)" destroy-on-close>
+      <div class="history-toolbar">
         <el-button
           type="primary"
           size="small"
@@ -648,8 +684,17 @@ const handleDiff = async () => {
         >
           对比选中的两个版本
         </el-button>
+        <el-button
+          type="danger"
+          size="small"
+          :disabled="selectedHistoryIds.length === 0"
+          :loading="deletingHistory"
+          @click="handleDeleteHistory"
+        >
+          删除选中历史
+        </el-button>
         <span v-if="selectedVersions.length > 0" style="font-size: 12px; color: #909399;">
-          已选 {{ selectedVersions.length }} 个版本
+          已选 {{ selectedVersions.length }} 个版本 / {{ selectedHistoryIds.length }} 条历史
         </span>
       </div>
 
@@ -658,21 +703,31 @@ const handleDiff = async () => {
         v-loading="historyLoading"
         border
         stripe
-        max-height="300"
+        max-height="420"
         @selection-change="handleSelectionChange"
       >
         <el-table-column type="selection" width="45" />
         <el-table-column prop="version" label="版本" width="70" align="center" />
-        <el-table-column label="变更参数" min-width="200">
+        <el-table-column label="变更参数" min-width="520">
           <template #default="{ row }">
-            <el-tag
-              v-for="label in (row.changed_labels || row.changed_keys || [])"
-              :key="label"
-              size="small"
-              type="info"
-              effect="plain"
-              style="margin: 2px;"
-            >{{ label }}</el-tag>
+            <div v-if="row.changed_items?.length" class="history-change-list">
+              <div v-for="item in row.changed_items" :key="item.key" class="history-change-item">
+                <span class="change-label">{{ item.label }}</span>
+                <span class="change-value before">{{ formatParamValue(item.before_value) }}</span>
+                <span class="change-arrow">→</span>
+                <span class="change-value after">{{ formatParamValue(item.after_value) }}</span>
+              </div>
+            </div>
+            <div v-else>
+              <el-tag
+                v-for="label in (row.changed_labels || row.changed_keys || [])"
+                :key="label"
+                size="small"
+                type="info"
+                effect="plain"
+                style="margin: 2px;"
+              >{{ label }}</el-tag>
+            </div>
           </template>
         </el-table-column>
         <el-table-column prop="source" label="操作" width="80" align="center">
@@ -694,12 +749,12 @@ const handleDiff = async () => {
           <el-table-column prop="label" label="参数" width="200" />
           <el-table-column :label="'版本' + diffResult.v1" align="right">
             <template #default="{ row }">
-              <span style="color: #f56c6c;">{{ row.v1_value ?? '-' }}</span>
+              <span style="color: #f56c6c;">{{ formatParamValue(row.v1_value) }}</span>
             </template>
           </el-table-column>
           <el-table-column :label="'版本' + diffResult.v2" align="right">
             <template #default="{ row }">
-              <span style="color: #67c23a;">{{ row.v2_value ?? '-' }}</span>
+              <span style="color: #67c23a;">{{ formatParamValue(row.v2_value) }}</span>
             </template>
           </el-table-column>
         </el-table>
@@ -841,6 +896,60 @@ const handleDiff = async () => {
   align-items: center;
   padding: 20px 0;
   flex-wrap: wrap;
+}
+
+.history-toolbar {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.history-change-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.history-change-item {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(70px, 1fr) 20px minmax(70px, 1fr);
+  align-items: center;
+  gap: 6px;
+  line-height: 1.4;
+}
+
+.change-label {
+  color: #606266;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-value {
+  min-width: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &.before {
+    color: #c45656;
+    background: #fef0f0;
+  }
+
+  &.after {
+    color: #529b2e;
+    background: #f0f9eb;
+  }
+}
+
+.change-arrow {
+  color: #909399;
+  text-align: center;
 }
 
 .result-card {

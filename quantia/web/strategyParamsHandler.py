@@ -664,6 +664,90 @@ def _get_params_history(strategy_key, limit=50):
         return []
 
 
+def _delete_params_history(strategy_key, history_ids):
+    """删除指定策略下的参数历史记录"""
+    ids = []
+    for value in history_ids or []:
+        try:
+            ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    ids = sorted(set(ids))
+    if not ids:
+        return 0
+    try:
+        _ensure_history_table()
+        placeholders = ', '.join(['%s'] * len(ids))
+        before = mdb.executeSqlFetch(
+            f"SELECT COUNT(*) FROM `cn_strategy_params_history` "
+            f"WHERE `strategy_key` = %s AND `id` IN ({placeholders})",
+            tuple([strategy_key] + ids))
+        mdb.executeSql(
+            f"DELETE FROM `cn_strategy_params_history` "
+            f"WHERE `strategy_key` = %s AND `id` IN ({placeholders})",
+            tuple([strategy_key] + ids))
+        return int(before[0][0]) if before and before[0] else 0
+    except Exception:
+        logging.error("删除参数历史异常", exc_info=True)
+        return 0
+
+
+def _mask_secret_value(value):
+    """脱敏历史中的密码类参数值。"""
+    if value in (None, ''):
+        return value
+    text = str(value)
+    if len(text) > 8:
+        return text[:4] + '*' * (len(text) - 8) + text[-4:]
+    return '****'
+
+
+def _build_param_type_map(strategy_key):
+    """构建 param_key -> type 映射"""
+    type_map = {}
+    if strategy_key in DEFAULT_STRATEGY_PARAMS:
+        for group in DEFAULT_STRATEGY_PARAMS[strategy_key].get('groups', []):
+            for param in group.get('params', []):
+                type_map[param['key']] = param.get('type')
+    return type_map
+
+
+def _safe_history_value(strategy_key, key, value):
+    """返回可安全展示在历史记录中的参数值。"""
+    if _build_param_type_map(strategy_key).get(key) == 'password':
+        return _mask_secret_value(value)
+    return value
+
+
+def _decorate_params_history(history, strategy_key):
+    """补充历史记录的参数中文名与变更前后值。"""
+    label_map = _build_param_label_map(strategy_key)
+    default_map = _build_default_value_map(strategy_key)
+    ordered = sorted(history or [], key=lambda item: int(item.get('version') or 0))
+    previous_by_version = {}
+    last_snapshot = default_map
+    for item in ordered:
+        previous_by_version[item.get('version')] = last_snapshot
+        last_snapshot = item.get('params_snapshot') or {}
+
+    for item in history or []:
+        previous = previous_by_version.get(item.get('version'), default_map)
+        current = item.get('params_snapshot') or {}
+        changed_items = []
+        for key in item.get('changed_keys', []):
+            before_value = previous.get(key, default_map.get(key))
+            after_value = current.get(key, default_map.get(key))
+            changed_items.append({
+                'key': key,
+                'label': label_map.get(key, key),
+                'before_value': _safe_history_value(strategy_key, key, before_value),
+                'after_value': _safe_history_value(strategy_key, key, after_value),
+            })
+        item['changed_labels'] = [entry['label'] for entry in changed_items]
+        item['changed_items'] = changed_items
+    return history
+
+
 def get_strategy_params(strategy_key):
     """
     获取策略参数（合并默认值和用户自定义值）
@@ -1342,14 +1426,47 @@ class GetParamsHistoryHandler(webBase.BaseHandler, ABC):
             return
 
         limit = min(100, max(1, int(self.get_argument("limit", "50"))))
-        history = _get_params_history(_resolve_storage_key(strategy_key), limit)
-
-        # 为每条记录附加参数标签映射
-        label_map = _build_param_label_map(strategy_key)
-        for h in history:
-            h['changed_labels'] = [label_map.get(k, k) for k in h.get('changed_keys', [])]
+        history = _get_params_history(_resolve_storage_key(strategy_key), limit + 1)
+        _decorate_params_history(history, strategy_key)
+        history = history[:limit]
 
         self.write(json.dumps({"code": 0, "data": history}, ensure_ascii=False))
+
+
+class DeleteParamsHistoryHandler(webBase.BaseHandler, ABC):
+    """批量删除策略参数变更历史"""
+
+    def post(self):
+        self.set_header('Content-Type', 'application/json;charset=UTF-8')
+        try:
+            body = json.loads(self.request.body.decode('utf-8'))
+        except Exception:
+            self.set_status(400)
+            self.write(json.dumps({"error": "请求体JSON解析失败"}, ensure_ascii=False))
+            return
+
+        strategy_key = body.get("strategy")
+        ids = body.get("ids") or []
+        if not strategy_key or strategy_key not in DEFAULT_STRATEGY_PARAMS:
+            self.set_status(400)
+            self.write(json.dumps({"error": "无效的策略标识"}, ensure_ascii=False))
+            return
+        if not isinstance(ids, list) or not ids:
+            self.set_status(400)
+            self.write(json.dumps({"error": "请选择要删除的历史记录"}, ensure_ascii=False))
+            return
+
+        deleted_count = _delete_params_history(_resolve_storage_key(strategy_key), ids)
+        if deleted_count == 0:
+            self.set_status(404)
+            self.write(json.dumps({"error": "未找到可删除的历史记录"}, ensure_ascii=False))
+            return
+        self.write(json.dumps({
+            "code": 0,
+            "success": True,
+            "deleted_count": deleted_count,
+            "message": f"已删除 {deleted_count} 条历史记录",
+        }, ensure_ascii=False))
 
 
 class GetParamsDiffHandler(webBase.BaseHandler, ABC):
@@ -1405,8 +1522,8 @@ class GetParamsDiffHandler(webBase.BaseHandler, ABC):
                 diffs.append({
                     'key': k,
                     'label': label_map.get(k, k),
-                    'v1_value': val1,
-                    'v2_value': val2,
+                    'v1_value': _safe_history_value(strategy_key, k, val1),
+                    'v2_value': _safe_history_value(strategy_key, k, val2),
                 })
 
         self.write(json.dumps({

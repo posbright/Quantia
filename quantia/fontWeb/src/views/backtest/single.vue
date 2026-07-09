@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onActivated, nextTick } from 'vue'
+import { ref, computed, onMounted, onActivated, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { QuestionFilled } from '@element-plus/icons-vue'
@@ -47,16 +47,28 @@ onActivated(() => {
   nextTick(() => chartRef.value?.resize())
 })
 
+watch(
+  () => route.fullPath,
+  () => {
+    _applyQuery()
+  }
+)
+
 // 历史「查看」复现：从 query 回填并自动执行
 const _applyQuery = () => {
   const q = route.query
   let needRun = false
-  if (q.code) { form.value.code = q.code as string; needRun = true }
+  let validStrategy = false
+  result.value = null
+  if (q.code) { form.value.code = q.code as string }
   // 仅接受合法的回测策略名（来源页面可能转发数据表名如 cn_stock_indicators，需校验后再回填）
   if (q.strategy) {
     const sName = q.strategy as string
     if (strategies.value.some((s: any) => s.name === sName)) {
       form.value.strategy = sName
+      validStrategy = true
+    } else {
+      form.value.strategy = ''
     }
   }
   if (q.start_date && q.end_date) {
@@ -66,7 +78,11 @@ const _applyQuery = () => {
   if (q.hold_days !== undefined && q.hold_days !== '') {
     const hd = Number(q.hold_days)
     form.value.hold_days = Number.isFinite(hd) && hd > 0 ? hd : undefined
+  } else {
+    form.value.hold_days = undefined
   }
+  form.value.allow_overlap = q.allow_overlap === '1' || q.allow_overlap === 'true'
+  needRun = Boolean(q.code && validStrategy)
   if (needRun && form.value.strategy) {
     handleRun(false)
   }

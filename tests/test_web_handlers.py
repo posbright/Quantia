@@ -1459,6 +1459,74 @@ class TestGetGptFilterValues(unittest.TestCase):
         self.assertEqual(result['debt_asset_ratio_max'], 60)
 
 
+class TestStrategyParamsHistoryHelpers(unittest.TestCase):
+    """Tests for strategy parameter history helpers."""
+
+    def test_decorate_params_history_adds_changed_items_with_values(self):
+        from quantia.web.strategyParamsHandler import _decorate_params_history
+
+        history = [
+            {
+                'id': 2,
+                'version': 2,
+                'params_snapshot': {'pe_max': 30, 'current_ratio_min': 1.2},
+                'changed_keys': ['pe_max', 'current_ratio_min'],
+            },
+            {
+                'id': 1,
+                'version': 1,
+                'params_snapshot': {'pe_max': 40},
+                'changed_keys': ['pe_max'],
+            },
+        ]
+
+        _decorate_params_history(history, 'gpt_value')
+
+        first = next(item for item in history if item['version'] == 1)
+        second = next(item for item in history if item['version'] == 2)
+
+        self.assertEqual(first['changed_items'][0]['label'], 'PE(TTM)上限')
+        self.assertEqual(first['changed_items'][0]['before_value'], 50)
+        self.assertEqual(first['changed_items'][0]['after_value'], 40)
+
+        by_key = {item['key']: item for item in second['changed_items']}
+        self.assertEqual(by_key['pe_max']['before_value'], 40)
+        self.assertEqual(by_key['pe_max']['after_value'], 30)
+        self.assertEqual(by_key['current_ratio_min']['before_value'], 1.0)
+        self.assertEqual(by_key['current_ratio_min']['after_value'], 1.2)
+
+    def test_decorate_params_history_masks_password_values(self):
+        from quantia.web.strategyParamsHandler import _decorate_params_history
+
+        history = [{
+            'id': 1,
+            'version': 1,
+            'params_snapshot': {'api_key': 'sk-1234567890abcdef'},
+            'changed_keys': ['api_key'],
+        }]
+
+        _decorate_params_history(history, 'ai_model')
+
+        item = history[0]['changed_items'][0]
+
+        self.assertEqual(item['before_value'], '')
+        self.assertEqual(item['after_value'], 'sk-1***********cdef')
+
+    @patch('quantia.web.strategyParamsHandler._ensure_history_table')
+    @patch('quantia.web.strategyParamsHandler.mdb.executeSql')
+    @patch('quantia.web.strategyParamsHandler.mdb.executeSqlFetch', return_value=[(2,)])
+    def test_delete_params_history_scopes_to_strategy_and_unique_ids(
+        self, mock_fetch, mock_execute, _mock_ensure
+    ):
+        from quantia.web.strategyParamsHandler import _delete_params_history
+
+        deleted = _delete_params_history('low_ma_convergence', ['7', 'bad', 8, 7])
+
+        self.assertEqual(deleted, 2)
+        self.assertEqual(mock_fetch.call_args.args[1], ('low_ma_convergence', 7, 8))
+        self.assertEqual(mock_execute.call_args.args[1], ('low_ma_convergence', 7, 8))
+
+
 # ============================================================
 # 9. strategy_params_config.py
 # ============================================================
@@ -1577,6 +1645,7 @@ class TestWebServiceApplication(unittest.TestCase):
             pattern_str = ' '.join(patterns)
             self.assertIn('kline', pattern_str.lower())
             self.assertIn('backtest', pattern_str.lower())
+            self.assertIn('strategy/params/history/delete', pattern_str.lower())
 
 
 class TestRobotsTxtHandler(unittest.TestCase):
