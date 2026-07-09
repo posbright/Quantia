@@ -39,3 +39,33 @@ class TestMapBenchmarkToIndex:
         assert bm.map_benchmark_to_index(None) is None
         assert bm.map_benchmark_to_index('') is None
         assert bm.map_benchmark_to_index('   ') is None
+
+    # ── 风格/行业子指数不得错套宽基估值（边界校验，生产实测 10 例）──
+    def test_hs300_style_growth_not_mapped(self):
+        # 沪深300成长 是风格子指数，无宽基估值覆盖 → None（不得错套 000300）
+        assert bm.map_benchmark_to_index('沪深300成长指数收益率×90%+中债×10%') is None
+
+    def test_zz800_growth_not_mapped(self):
+        assert bm.map_benchmark_to_index('中证800成长指数收益率×85%+中债-总全价指数收益率×15%') is None
+
+    def test_zz500_sector_not_mapped(self):
+        assert bm.map_benchmark_to_index('中证500信息技术指数收益率×95%+银行活期×5%') is None
+
+    def test_hs300_innovation_not_mapped(self):
+        assert bm.map_benchmark_to_index('沪深300创新驱动指数收益率×70%+中证港股通综合指数×15%') is None
+
+    def test_zz800_growth_midstring_not_mapped(self):
+        # 子指数出现在串中部，仍应拒绝
+        assert bm.map_benchmark_to_index('中债-新综合财富指数收益率×80%+中证800成长指数收益率×15%') is None
+
+    def test_zz1000_style_not_shadowed_to_zz100(self):
+        # 中证1000成长：既不是 中证1000 本身，也不能被子串 中证100 误配 → None
+        assert bm.map_benchmark_to_index('中证1000成长指数收益率×90%') is None
+
+    def test_standalone_broad_still_maps_with_income_suffix(self):
+        # 关键词后紧跟“收益率”（无“指数”二字）仍应命中宽基本身
+        assert bm.map_benchmark_to_index('沪深300收益率×95%') == '000300'
+
+    def test_standalone_broad_with_nonchinese_suffix(self):
+        # 关键词后接非汉字（ETF/标点）→ 命中宽基本身
+        assert bm.map_benchmark_to_index('沪深300ETF联接') == '000300'
