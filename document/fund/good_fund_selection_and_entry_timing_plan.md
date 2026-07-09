@@ -13,6 +13,16 @@
 > 历史验证需样本外 go/no-go）——见 §6bis；② 将首期榜单口径优化为"**质量主排序 + 择时标签**"，
 > 不让未验证的 T1/T2 直接主导推荐；③ 新增"每类基金 Top10 综合精选榜 + 每日钉钉推送 + 点击详情深链"
 > 完整设计——见 §7，复用已核实的 `DingTalkChannel` 推送链路。
+>
+> **二次复审补充（2026-07-09）**：修正调度自相矛盾（§7.4 拆为晚间打分 + T+1 清晨榜单/推送两段，对齐 §5.6）；
+> **据实核对现网通知链路**——纠正"按用户逐个推送/逐用户 webhook"的过度乐观假设（现网为**单群广播 + 全局开关**），
+> 幂等/重试改**复用 `cn_stock_notification_event` 的 `dedupe_key`**（不再新建 `cn_fund_push_log`）；澄清 `cn_fund_timing_score` 与
+> `cn_fund_daily_pick.timing_score` 的**单一事实源**关系（禁双算）；明确 `TimingScore` 采**单基金时序绝对刻度**（非截面百分位）；
+> 修正 `setup_date≠经理任职年限`（需新数据源）、`rate_1y` 列来源（在 `cn_fund_rank` 非 rank_score）；补 A/C 去重取数顺序、货币型徽章抑制、推送深链登录态/外网可达性前提。
+>
+> **三次复审补充（2026-07-09，据实核对抓取/打分代码）**：修正 §7.1bis 三处与现网不符的表述——① `cn_fund_nav_history` **fetch 硬排除货币型+债券型**且仅权益桶 Top-N，故债券型 T1/T2 timing **无法计算**（非"权重降低"）；② `compute_scores` 对非货币类型**统一权重仅分桶**，无"债券型夏普/回撤优先"式按类型再加权（首期只用现有 `quality_score`）；③ 风险因子仅对有净值历史者计算，债券型 quality 实为 momentum/费率/规模。§7.2 增 `timing_score/max_drawdown` **NULL 容忍**约束。核实前端路由 `/fund/rank` 深链、`fund_type` 七桶取值均属实。
+>
+> **四次复审补充（2026-07-09，实库覆盖率 + 免费源可获取性验证）**：已用生产库核实最新 `cn_fund_rank`/`cn_fund_rank_score` 日期均为 2026-07-08，`cn_fund_nav_history` 总覆盖约 17.7%（3621/20449），`cn_fund_profile` 覆盖约 7.48%（1530/20449），`cn_fund_holding` 仅覆盖部分权益基金；并小样本验证免费接口：`fund_purchase_em` 可取申购/赎回/限额，`fund_manager_em` 可取经理累计从业与现任基金，`stock_zh_index_value_csindex` 可取中证指数 PE/股息率，`fund_individual_basic_info_xq`/`fund_open_fund_info_em`/`fund_portfolio_hold_em` 已在现有 Fetch 中使用。故文档修正：P1 不再声称全覆盖；profile/规模/成立日硬约束在覆盖率达标前只作“有数据时约束”；风格漂移仅适用于有持仓覆盖的权益基金；暂停申购/限购需新增 Fetch 表；债券型默认不抓但库中已有少量历史，按 `acc_nav` 是否存在决定是否展示 timing。
 
 ---
 
@@ -24,8 +34,8 @@
 |------|------|------|
 | 每日净值 + 多周期收益率 | 表 `cn_fund_rank` | ✅ F1–F6 |
 | 累计净值历史（算夏普/回撤/曲线） | 表 `cn_fund_nav_history`（用 `acc_nav`） | ✅ F8 |
-| 规模 + 画像（公司/经理/评级/成立日） | 表 `cn_fund_profile` | ✅ F10 |
-| 季度前十大重仓股 + 行业 | 表 `cn_fund_holding` | ✅ F12 |
+| 规模 + 画像（公司/经理/评级/成立日） | 表 `cn_fund_profile` | ✅ F10；**当前覆盖约 7.48%，硬过滤前需补覆盖** |
+| 季度前十大重仓股 + 行业 | 表 `cn_fund_holding` | ✅ F12；**仅部分权益基金覆盖，风格漂移不能全市场硬用** |
 | **多因子综合评分**（动量+费率+规模+夏普+Calmar） | 表 `cn_fund_rank_score` / [scoring.py](../../quantia/core/fund/scoring.py) | ✅ F7 |
 | 同类评比雷达 + 价值标签 | `fundPeerCompareHandler` | ✅ F11 |
 | 规则化综合解读（非买卖建议） | `fundCompositeAnalysisHandler` | ✅ F13 |
@@ -41,12 +51,13 @@
 | 业绩持续性（跨周期前 1/3） | `cn_fund_rank.rate_3m/6m/1y/3y` 桶内 `rank(pct)` | ✅ scoring 动量分 |
 | 风险调整收益（夏普/Calmar） | `cn_fund_rank_score.sharpe/calmar_score` | ✅ scoring B2 |
 | 最大回撤 | `cn_fund_rank_score.max_drawdown` | ✅ |
-| 基金经理稳定性 | `cn_fund_profile.manager/setup_date` | ⚠️ 有数据，**未做"任职年限/未跳槽"因子** |
+| 基金经理稳定性 | `cn_fund_profile.manager`（仅当前经理）/`setup_date`（**基金成立日，非经理任职起始日**） | ⚠️ **缺"任职年限/未跳槽"数据**：`setup_date` 是基金成立日、`manager` 只有当前经理、无历史任职链 → 需**新增经理任职历史数据源（新爬取）**，非现成列可拼 |
 | 规模适中（倒 U） | `scoring.scale_inverted_u` | ✅ |
-| 风格一致性 | `cn_fund_holding` 行业/换手 | ⚠️ 有数据，未量化"风格漂移" |
+| 风格一致性 | `cn_fund_holding` 行业/换手 | ⚠️ **仅部分权益基金有覆盖**（实库：股票型约18.69%、混合型约6.87%、指数型约19.48%，债券/货币/QDII/FOF 为 0%），可做权益类有覆盖基金的增量提示，不能作全市场硬因子 |
 | 费率 | `cn_fund_rank.fee` | ✅ 费率分 |
 
-> **结论 A**：选基侧只有两个**小增量**（经理稳定性因子、风格漂移因子），核心已具备。
+> **结论 A**：选基侧核心已具备；两个增量中，**风格漂移因子**可用现有 `cn_fund_holding` 对有覆盖的权益基金做增量量化（非全市场小增量），
+> 而**经理稳定性因子需新增经理任职历史数据源**（非现成列、需新爬取，成本更高，见 §0.2 注），不宜低估。
 > **结论 B**：真正的**主缺口 = 择时**。以下方案对比以"择时"为主，选基以"复用 F7 评分为主 + 可选增量"。
 
 ---
@@ -60,13 +71,15 @@ $$
 - **Quality(f)**：基金 f 是否"好"——直接读 `cn_fund_rank_score.score`（桶内百分位）+ 硬门槛（成立≥N 年、规模区间、回撤上限）。
 - **Timing(f, t)**：t 时点是否"位置合适"——本方案要新建的核心。
 
+> **首期口径提示**：上式是 **V2/V3 的目标模型**（Timing 作硬门槛的 AND 门）。**首期 V1 只用 Quality 主排序，Timing 仅作标签与定投节奏提示，不做硬过滤**（理由见 §6bis 证据强弱与 §3.1bis 三阶段口径）。
+
 场外基金**无 K 线/盘中价**，只有 T+1 每日净值，因此择时**只能基于净值序列 + 其跟踪标的（指数/ETF）**，这决定了候选方案的技术边界。
 
 ---
 
 ## 2. 择时方案候选（横向对比）
 
-以下 5 套择时思路，均可用**现有表**实现，差异在数据依赖、稳健性、实现成本、可回测性。
+以下 5 套择时思路中，T1/T2/T4 可用**已有 `cn_fund_nav_history` 覆盖到的基金**先做，T3 需新增免费指数估值 Fetch 管道后接入；差异在数据依赖、稳健性、实现成本、可回测性。
 
 ### 方案 T1 —— 净值回撤入场（Drawdown-from-High）
 - **信号**：基于 `cn_fund_nav_history.acc_nav`，计算当前相对滚动峰值的回撤 `dd = acc/peak - 1`。当 `dd ≤ -X%`（如 -8%/-15% 分档）视为"回调到位"，越跌越买。
@@ -141,9 +154,9 @@ EntrySignal(f, t):
     # 选基门槛（复用 F7，零新计算）
     q = cn_fund_rank_score.score(f)            # 桶内百分位 0-100
     pass_quality = q >= θ_q(默认70)
-                   AND years_since(setup_date) >= 2
-                   AND max_drawdown 优于桶内中位
-                   AND scale in [下限, 上限]
+                   AND (setup_date 缺失 OR years_since(setup_date) >= 2)  # V1 数据可得时约束
+                   AND (max_drawdown 缺失 OR max_drawdown 优于桶内中位)
+                   AND (scale 缺失 OR scale in [下限, 上限])
 
     # 择时（新建，纯净值底座 + 可选估值）
     dd_score   = f(drawdown_from_high)         # T1，越跌分越高（有上限，防接飞刀）
@@ -155,7 +168,7 @@ EntrySignal(f, t):
     return pass_quality AND TimingScore, tier
 ```
 
-> 上述 `EntrySignal` 是 V2/V3 的目标模型；首期 V1 不用 `TimingScore` 做硬过滤，只展示 timing 标签与定投节奏提示。
+> 上述 `EntrySignal` 是 V2/V3 的目标模型；首期 V1 不用 `TimingScore` 做硬过滤，只展示 timing 标签与定投节奏提示。另因实库 `cn_fund_profile` 当前仅覆盖约 7.48% 最新基金池，`setup_date/scale_yi` 在覆盖率达标前只能“有数据时约束/缺失时保留并提示”，不得作为全市场硬过滤。
 
 ---
 
@@ -172,9 +185,13 @@ EntrySignal(f, t):
 - `valuation_percentile_score(index_pe_or_pb_series) -> float`（输入已由上层取好的指数估值序列）
 - `compose_timing_score(dd, trend, val, weights) -> {score, tier, components}`（缺失维度重归一化，模仿 scoring 缺失填中性）
 
+> **TimingScore 归一化口径（必须先定，否则档位标签不稳定）**：`dd_score`/`trend_score` 按**单基金自身时序**计算原始分（回撤相对自身历史峰值、净值相对自身均线），再映射到 **0–100 绝对刻度**（阈值对齐 §3.2，**不做跨基金截面百分位**）。理由：截面百分位会导致"永远有约 25% 基金被标低吸"（哪怕全市场高位），失去"位置"含义；绝对时序刻度才能表达"这只基金现在相对自己历史便宜/贵"。T3 估值分位（`val_score`）本身即指数 PE/PB 的**历史时序分位**，同属绝对时序口径，三者可比。档位阈值（低吸≥75…）为绝对分固定阈值，纳入 §6bis.4 参数网格做样本外验证，不得全样本调参。
+
 ### 4.2 择时批量 job（可选，新增）
 `quantia/job/analysis_fund_timing_job.py`：读 `cn_fund_nav_history`（+ 可选指数估值）→ 逐基金算 `TimingScore` → 写新表 `cn_fund_timing_score`（主键 `(date, code)`，`chunksize=500`，NaN/inf 源头清洗）。与 `analysis_fund_score_job.py` 同构。
 > 若不想加每日 job，可退化为 Web 端按需实时计算（单基金净值序列量小，实时可接受）——见 §6 分期。
+>
+> **timing 单一事实源（避免与 §7.2 双算漂移）**：`TimingScore` 只在此处（`analysis_fund_timing_job` 落 `cn_fund_timing_score`）或 P1 的 Handler 按需实时计算**二选一**地产生；§7.2 的 `cn_fund_daily_pick.timing_score/timing_tier` 一律**引用/快照**本表（或调用同一 `timing.py` 纯函数），**禁止在 pick_job 里另写一套 timing 公式**。P1 未建批量表时，pick_job 直接调用 `timing.py` 纯函数，口径与 Handler 完全一致。
 
 ### 4.3 Web Handler（新增）
 `quantia/web/fundTimingHandler.py`：`GET /quantia/api/fund/timing?code=` → 返回 `{timing_score, tier, components:{dd,trend,val}, quality_pass, as_of, disclaimer}`。只读表，**禁"买/卖/加仓"措辞**（沿用 F13 免责规范，`labels.py`）。在 `web_service.py` 注册路由（规则 8）。
@@ -193,13 +210,26 @@ EntrySignal(f, t):
 2. **基准文本解析可靠性**：`cn_fund_profile.benchmark` 是"沪深300×80%+..."文本，解析主指数有噪声 → 首期主动基金可退化用 `cn_fund_holding` 主行业代表指数，或直接跳过 T3。
 3. **幸存者/覆盖偏差**：`cn_fund_nav_history` 仅回填 Top-N，回测结论会偏乐观（脚本已有免责）→ 结论页必须同步披露。
 4. **接飞刀风险**：T1 单用会在单边下跌持续抄底 → T5 必须让 T2 趋势维度对"跌破长均线"扣分，形成保护。
-5. **A/C类份额冗余爆屏风险**：同一底层基金的双份额 A 类与 C 类（极值相似、持仓相同）会挤占 Top10 精选榜单。在 `analysis_fund_pick_job.py` 生成榜单阶段，必须执行**类名称正规化去重（AC De-duplication）**，同名同经理只保留主份额（推荐保留规模 AUM 较大或运作时间较长者）。
+5. **A/C类份额冗余爆屏风险**：同一底层基金的双份额 A 类与 C 类（极值相似、持仓相同）会挤占 Top10 精选榜单。在 `analysis_fund_pick_job.py` 生成榜单阶段，必须执行**类名称正规化去重（AC De-duplication）**，同名同经理只保留主份额（推荐保留规模 AUM 较大或运作时间较长者）。**取数顺序须为"先取桶内 Top-N（N 取 20–30，>10）→ 去重 → 再截 Top10"**，不能先截 10 再去重（去重后不足 10 只，榜单缺额）。
 6. **净值更新“时钟差”与“更新不齐”风险**：东财截面排行晚间 18:00–23:00 间逐步更新，若收盘后立刻运行打分，会让“已更新”和“未更新”基金硬组截面排序，造成严重打分偏移。打分时钟须设定**截面完整度看门狗（90%已更新）**，或统一将打分与精选榜生成、历史回测对齐在 **T+1 日清晨早定投/早晨读时段（如早 07:00）**运行，保证数据截面对齐。
-7. **暂停申购/限额申购硬伤**：高分主动/QDII 基金常由于限额或控规模限售。若精选榜主推“看得到买不到”的限购空气，极度影响实操。应将“暂停申购”从推送中降权或屏蔽；“限购/单日限大额”在前端详情卡片打上限额标志。
+7. **暂停申购/限额申购硬伤**：高分主动/QDII 基金常由于限额或控规模限售。若精选榜主推“看得到买不到”的限购空气，极度影响实操。已验证免费源 `akshare.fund_purchase_em()` 可返回 `申购状态/赎回状态/下一开放日/购买起点/日累计限定金额/手续费`，但当前项目尚无对应表和 Fetch job；因此 P5/P6 前必须新增 Fetch 表（如 `cn_fund_purchase_status`）并在 `tablestructure.py` 注册，精选榜按 `申购状态!='开放申购'` 降权或屏蔽，前端详情卡打限购标志。
 8. **新秀黑马冷启动与历史补链延迟**：新冲入 Top50 的优质黑马由于 F8 采用了按需缓存（Top-N ∪ 点开补全），缺少 `cn_fund_nav_history` 会导致 timing 算不出来而拿不到信号。精选工作流落库后须自动拼入一个**逆向追加抓取队列（Cache Sync-back Queue）**，2小时内异步回填新入围基金的全量历史。
 9. **静态元数据注册强制**：新增新表（如 `TABLE_CN_FUND_DAILY_PICK`）**不可绕过元数据校验**，必须在 `quantia/core/tablestructure.py` 中规范注册，严禁为了赶期走 handler/job 动态建表，确保遵循工程规则 7。
-10. **防刷屏悲观锁设计**：防止调度并发、crontab 重复或管理脚本手工干预产生多实例多发钉钉，导致限流和刷屏。在發信程序中启用事务悲观锁（如对 `cn_fund_push_log` 加 `FOR UPDATE`），发信成功后提交事务，严格封死多发可能性。
+10. **防刷屏/防多发**：防止调度并发、crontab 重复或管理脚本手工干预产生多实例多发钉钉，导致限流和刷屏。**优先复用现网 `cn_stock_notification_event` 的 `dedupe_key`（`INSERT IGNORE` 唯一幂等）**——按 `dedupe_key = hash('fund_daily_pick', pick_date[, fund_type])` 先落事件，`rowcount==0`（已存在）即跳过发送，天然封死并发多发（无需自建 `FOR UPDATE` 悲观锁与新表）。仅当确需独立日志表时才另建并在 `tablestructure.py` 注册，避免与既有事件表职责重叠（见 §7.3）。
 11. **合规**：全程"信号/档位"措辞，非投资建议，带风险提示（对齐 F13）。
+12. **推送深链的登录态与外网可达性（"点链接看详情"能否真用的前提）**：① 详情链接回退地址 `http://<host>:9988` 是**内网地址，手机钉钉点开打不开**——生产必须把 `QUANTIA_WEB_BASE_URL` 配成**公网可达域名**，否则深链形同虚设；② 前端有登录鉴权（`login.vue`/auth），钉钉用户点链接大概率**撞登录墙**——需确认基金榜/详情页对已登录 session 或带 token 的深链可访问，必要时给深链加免登 token/SSO 跳转，避免"点了看不到"。此两点须在 P6 推送上线前核实，属功能可用性硬前提（规则 8：前端调用/深链要有对应支撑）。
+13. **缺失数据的免费源可获取性（2026-07-09 小样本验证）**：
+
+| 缺口 | 免费源/现有接口 | 可获取性结论 | 落地建议 |
+|------|----------------|--------------|----------|
+| 净值历史全覆盖 | `akshare.fund_open_fund_info_em`（现封装 `fund_em.fund_nav_history`） | ✅ 可获取净值型基金单位/累计净值；当前实库只覆盖约 17.7%，默认 Top-N 且跳过货币/债券 | 先把 P1 定位为“覆盖已有净值历史基金”；若要全覆盖，新增分层分批全量回填计划与进度表，债券型按实际 `acc_nav` 存在与否展示 timing |
+| 规模/成立日/基准/当前经理 | `akshare.fund_individual_basic_info_xq`（现 `fetch_fund_profile_job`） | ✅ 可获取，但当前实库覆盖约 7.48%，默认各桶 Top-N；接口对部分基金会空 | `setup_date/scale_yi/benchmark` 在覆盖率达标前不得作全市场硬过滤；先提升 `QUANTIA_FUND_PROFILE_TOPN` 或做分层补全 |
+| 申购/赎回/限额 | `akshare.fund_purchase_em` | ✅ 小样本已验证含 `申购状态/赎回状态/下一开放日/购买起点/日累计限定金额` | 新增 `cn_fund_purchase_status` + Fetch job；P5/P6 精选/推送必须接入，避免“看得到买不到” |
+| 经理经验 | `akshare.fund_manager_em` | ⚠️ 可取“经理累计从业时间/现任基金/现任基金规模/最佳回报”，但不是“本基金任职起始日/换手历史” | 可先做经理经验弱因子；“本基金经理稳定性/未跳槽”仍需更细任职历史源或公告解析 |
+| 持仓/风格漂移 | `akshare.fund_portfolio_hold_em`（现 `fetch_fund_holding_job`） | ⚠️ 仅权益类部分基金有披露，当前股票/混合/指数覆盖约 18.69%/6.87%/19.48%，其他类型 0% | 只做权益类有覆盖基金的行业暴露/漂移提示；若要全覆盖需启用现有 full_coverage 分层抓取并接受空披露 |
+| 指数估值 PE/股息率 | `akshare.stock_zh_index_value_csindex` | ✅ 小样本验证沪深300/中证500可返回日频 `市盈率1/市盈率2/股息率1/股息率2`；`stock_index_pe_lg/pb_lg` 当前环境报日期解析错误，暂不作为首选 | 新建 `cn_index_valuation` Fetch 管道，优先中证指数源；PB 若中证源缺失，后续再评估乐咕接口兼容修复或其他免费源 |
+
+> 结论：缺数据并非都不可补。**申购状态、指数 PE、画像、净值历史可用免费源补**；但覆盖扩容是慢 Fetch 工程，需限速、重试、断点续跑、`chunksize=500`。经理“本基金任职稳定性”、全市场风格漂移、指数 PB 全覆盖仍属部分可得/需二次验证，不应在 V1 当硬约束。
 
 ---
 
@@ -207,12 +237,12 @@ EntrySignal(f, t):
 
 | 期 | 内容 | 依赖 | 产出 |
 |----|------|------|------|
-| **P1** | `timing.py`（T1+T2 纯净值）+ 单测；`fundTimingHandler` 按需实时算 + 路由；前端"入场时机"卡片 | 仅 `cn_fund_nav_history`（已有） | 全覆盖基础择时 |
+| **P1** | `timing.py`（T1+T2 纯净值）+ 单测；`fundTimingHandler` 按需实时算 + 路由；前端"入场时机"卡片 | 仅 `cn_fund_nav_history`（已有但当前仅覆盖约 17.7% 最新基金池） | 对已有净值历史基金提供基础择时；未覆盖基金显示“暂无择时数据” |
 | **P2** | 回测对照（T5 vs 定投 vs 一次性），落实验结论 | `fund_backtest.py`（已有） | 数据支撑选型 |
 | **P3（与 P1/P2 并行预研）** | 新建指数估值 Fetch 管道（`cn_index_valuation`）→ 接入 T3 估值维度；`analysis_fund_timing_job` 批量落库 + 列表过滤 | 指数估值序列（**确认缺失，需新抓取**） | 估值锚增强 |
-| **P4（可选）** | 选基增量：经理任职年限因子、风格漂移因子并入 `scoring.py` | `cn_fund_profile`/`cn_fund_holding`（已有） | 选基更严 |
+| **P4（可选）** | 选基增量：经理经验弱因子、权益持仓风格漂移提示；若要硬因子须先补覆盖 | `cn_fund_profile`/`cn_fund_holding`（已有但覆盖不足）+ 可选 `fund_manager_em` | 有覆盖基金选基更严；不得影响无覆盖基金 |
 
-> **首期即可交付且零外部依赖 = P1**：用纯净值把"合适位置入场"从无到有做出来，覆盖所有有净值历史的基金，风险最低。
+> **首期即可交付且零外部依赖 = P1**：用纯净值把"合适位置入场"从无到有做出来，**仅覆盖已有 `cn_fund_nav_history` 的基金**；未覆盖基金不造信号。若业务要求“每类 Top10 都尽量有 timing”，需在 P1 前/并行追加净值历史分层回填。
 
 ---
 
@@ -253,7 +283,7 @@ T1/T2 的阈值（回撤 -8%/-15%、均线 60/120）都是**自由参数**，直
 
 | 项 | 规则 |
 |----|------|
-| 样本池 | 每个 `fund_type` 单独验证；剔除货币型点位择时；仅使用当时已披露且 `acc_nav` 覆盖满足最小点数的基金 |
+| 样本池 | 每个 `fund_type` 单独验证；剔除货币型点位择时；债券型/其他类型按是否真实存在 `acc_nav` 决定是否纳入；仅使用当时已披露且 `acc_nav` 覆盖满足最小点数的基金 |
 | 日期口径 | 所有输入必须满足 `data_as_of <= decision_date`；回测时禁止使用计算日之后补录数据 |
 | 训练/测试 | 滚动 walk-forward：训练 3 年、测试 1 年，逐年或逐半年推进；参数只在训练段选择 |
 | 参数网格 | 回撤阈值、均线窗口、趋势斜率阈值必须预注册；不得根据测试集二次调参 |
@@ -280,23 +310,28 @@ T1/T2 的阈值（回撤 -8%/-15%、均线 60/120）都是**自由参数**，直
 | 口径 | 定义 | 优点 | 缺点 |
 |------|------|------|------|
 | **A. 加权和** | `final = w_q·quality + w_t·timing`（如 0.6/0.4） | 单一分值、易排序 | 差择时可被高 quality 淹没，可能推"好但正高估"的基金，误导入场 |
-| **B. 门槛+排序（V2/V3 推荐）** | 先 `quality≥θ_q ∧ 硬约束(成立≥2y/规模区间/回撤优于中位)` 过滤，再按通过验证的 timing 分桶内排序取 Top10；timing 缺失的基金排在有信号之后 | 与本方案"入场信号=选基门槛×择时"定义一致；不会把"高估的好基金"当"该买"推给用户 | 需要 timing 有效且通过样本外验证，首期不应直接启用 |
+| **B. 门槛+排序（V2/V3 推荐）** | 先 `quality≥θ_q`；`setup_date/scale_yi/max_drawdown` 等只在数据可得时约束，覆盖率达标后再升级为硬过滤；再按通过验证的 timing 分桶内排序取 Top10；timing 缺失的基金排在有信号之后 | 与本方案"入场信号=选基门槛×择时"定义一致；不会把"高估的好基金"当"该买"推给用户 | 需要 timing 有效且通过样本外验证，且 profile/nav 覆盖率足够；首期不应直接启用 |
 | **C. 质量主排序 + 择时标签（V1 推荐）** | 每类基金先按 `quality_score` 排序取 Top10；TimingScore 只作为"回撤/趋势/定投节奏"标签展示，不决定主排序 | 证据最稳、误导风险最低，可立即上线；与 §6bis 的弱择时定位一致 | 不是"到位置"榜，而是"好基金 + 当前位置提示"榜 |
 
 **首期选定 C（质量主排序 + 择时标签）**：它与 §6bis 的证据强弱结论一致，避免用未验证的 T1/T2 主导每日推送。待 §6bis.4 样本外验证通过后，再升级到 B 或 `final = 0.75*quality + 0.25*timing` 的 V2 口径；待 T3 指数估值接入并验证后，升级到 V3。
 
 ### 7.1bis 分基金类型策略口径
 
-不同 `fund_type` 的净值波动、披露滞后和择时有效性差异很大，不能用同一套 T1/T2 权重机械套用：
+不同 `fund_type` 的净值波动、披露滞后和择时有效性差异很大。真实 `fund_type` 取值 = `['股票型','混合型','债券型','指数型','QDII','FOF','货币型']`（已核 `fund_em._NAV_TYPES` + 货币型），与下表一一对应：
+
+> **⚠️ 两条现网硬事实（决定各类型能做什么，已核代码）**：
+> ① **`cn_fund_nav_history` 默认 fetch 硬排除 `货币型` + `债券型`**（`fetch_fund_nav_history_job._EXCLUDE_TYPES`），且仅覆盖净值型桶**近 1 年 Top-N**；实库验证：货币型 0 覆盖，债券型虽默认排除但已有少量历史/手工覆盖（203/4803）。因此 timing 的真实规则是**按 `acc_nav` 是否存在决定**：有足够历史则可算 T1/T2，无历史则 N/A；权益桶里非 Top-N 的基金同样可能无净值历史、timing 为空。
+> ② **`compute_scores` 对所有非货币类型统一走 `_score_nav_bucket`（同一套权重），仅按 `fund_type` 分桶做截面百分位，没有"按类型差异化加权"**；且风险因子（sharpe/calmar/max_drawdown）**仅对有净值历史者**计算，债券型这些列为中性/空，其 `quality_score` 实际只由 momentum/费率/规模构成。**故下表"排序口径"首期一律 = 现有 `quality_score` 桶内排序；"夏普/回撤优先"等按类型再加权属后续增量（需扩 `scoring.py` per-type 权重），首期不具备。**
 
 | 基金类型 | 首期 V1 排序 | Timing 标签 | 备注 |
 |----------|--------------|-------------|------|
-| 股票型 / 混合型 | `quality_score` 主排序 | 可展示 T1 回撤、T2 趋势、定投节奏 | 后续最适合接 T3 估值锚 |
-| 指数型 | `quality_score` + 跟踪误差/费率（如后续补列） | 首期 T1/T2 标签；V3 优先接指数估值 T3 | 最适合估值分位择时 |
-| 债券型 | 夏普/回撤/波动/费率优先 | T1/T2 仅作风险标签，权重显著降低 | 波动小，净值均线容易变成噪音 |
-| 货币型 | 七日年化、万份收益、费率、规模/稳定性 | **不做点位择时** | 不应推"低吸/高估"措辞 |
-| QDII | 质量主排序 + 风险标签 | 注意海外市场交易日与汇率，`data_lag_days` 必须展示 | 净值披露更滞后，严控 as-of |
-| FOF | 质量主排序 + 回撤/波动标签 | 慎用单基金净值趋势择时 | 更像配置产品，趋势信号解释性弱 |
+| 股票型 / 混合型 | `quality_score` 桶内排序 | 可展示 T1 回撤、T2 趋势、定投节奏（仅有净值历史的 Top-N 基金） | 后续最适合接 T3 估值锚 |
+| 指数型 | `quality_score` 桶内排序（跟踪误差/费率为后续补列） | 首期 T1/T2 标签（限有净值历史者）；V3 优先接指数估值 T3 | 最适合估值分位择时 |
+| 债券型 | `quality_score` 桶内排序（绝大多数缺 sharpe/回撤，实为 momentum/费率/规模） | 默认 N/A；若库中该基金已有足够 `acc_nav`，可展示弱 timing 标签 | 默认 fetch 排除，但实库有少量历史覆盖；不可一刀切 |
+| 货币型 | 七日年化、万份收益、费率、规模/稳定性（`_score_money_bucket`） | **不做点位择时** | 不应推"低吸/高估"措辞 |
+| QDII | `quality_score` 桶内排序 + 风险标签 | 注意海外市场交易日与汇率，`data_lag_days` 必须展示 | 净值披露更滞后，严控 as-of |
+| FOF | `quality_score` 桶内排序 + 回撤/波动标签 | 慎用单基金净值趋势择时 | 更像配置产品，趋势信号解释性弱 |
+
 
 ### 7.2 落库（新表，供前端 + 推送共用）
 
@@ -311,11 +346,13 @@ T1/T2 的阈值（回撤 -8%/-15%、均线 60/120）都是**自由参数**，直
 | quality_score | 复用 `cn_fund_rank_score.score` |
 | timing_score / timing_tier | T5 择时分 + 档位（低吸/定投/观望/高估） |
 | final_score | 排序用综合分；V1 = `quality_score`，V2 = `0.75*quality + 0.25*timing` 或通过验证后的辅助排序键 |
-| max_drawdown / rate_1y | 榜单展示辅助列 |
+| max_drawdown / rate_1y | 榜单展示辅助列；**`max_drawdown` 来自 `cn_fund_rank_score`；`rate_1y` 不在 rank_score（它只有 `rate_3y/rate_5y/excess_1y`），需 join 日频表 `cn_fund_rank.rate_1y`**（规则 7：先校验列再取，避免 unknown column） |
 | score_as_of / nav_as_of | 质量评分与净值数据各自的可见日期 |
 | data_lag_days | `date - nav_as_of`，用于提示净值披露滞后 |
 
-> 由 `analysis_fund_pick_job.py`（Analysis 管道）生成：读 `cn_fund_rank_score` + `cn_fund_nav_history` 算 timing → 首期按 §7.1 口径 C 每桶取 Top10 → 落库。**评分为排序辅助，禁落为可交易 strategy_template**（对齐 F7/Phase 9 约束）。
+> 由 `analysis_fund_pick_job.py`（Analysis 管道）生成：读 `cn_fund_rank_score`（quality/max_drawdown）+ `cn_fund_rank`（rate_1y 等展示列）+ `cn_fund_nav_history`（算 timing）→ 首期按 §7.1 口径 C 每桶取 Top10 → 落库。所有 SELECT 显式列且先校验存在（规则 7）。**评分为排序辅助，禁落为可交易 strategy_template**（对齐 F7/Phase 9 约束）。
+>
+> **空值容忍（现网数据约束，见 §7.1bis 硬事实）**：`timing_score/timing_tier` 对**无足够 `acc_nav` 的基金**为 `NULL`（货币型当前必为 NULL；债券型多数 NULL，但已有少量覆盖可算）；`max_drawdown` 对无净值历史者亦为 `NULL`。pick_job 必须允许这些列缺失（`NULL`），不得因缺 timing 而丢弃该基金（V1 口径 C 以 quality 主排序，timing 缺失只是无标签）。落库/前端/推送均按"无 timing 徽章"渲染。
 
 ### 7.2bis as-of 日期对齐与未来函数防线
 
@@ -328,32 +365,43 @@ T1/T2 的阈值（回撤 -8%/-15%、均线 60/120）都是**自由参数**，直
 
 ### 7.3 每日钉钉推送（对齐既有推送链路，不新造轮子）
 
-完全复用现有基础设施（已核实）：
-- `DingTalkChannel.build_markdown_payload(title, markdown)` + `_load_config(user_id, notify_type, 'dingtalk')` + 签名 URL；
-- 用户偏好门控 `push_enabled`（同 `push_report_summary_to_dingtalk` 先例）；
-- 详情链接用 `QUANTIA_WEB_BASE_URL`（未配置回退 `http://<host>:9988`）拼 `_build_*_url`。
+复用现有基础设施（**已核实真实实现，见下方口径修正**）：
+- `DingTalkChannel.build_markdown_payload(title, markdown, at_mobiles=None, is_at_all=False)`（静态方法，签名已核实）；
+- `_load_config(paper_id: int, event_type, 'dingtalk')` 读 `cn_stock_notification_config`（按 `(paper_id, event_type, channel)` 匹配，`paper_id` 缺省用 `0`/`NULL` 表示**全局配置**）；webhook/secret 取自 **`webhook_env`/`secret_env` 指向的环境变量**（默认 `QUANTIA_DINGTALK_WEBHOOK`/`QUANTIA_DINGTALK_SECRET`）；
+- 详情链接用 `QUANTIA_WEB_BASE_URL`（未配置回退 `http://<host>:9988`）拼 `_build_*_url`（同 `stock_report_scheduled._build_report_detail_url`）。
 
-**通知配置与幂等**：
-- 新增 notify type：`fund_daily_pick`；默认关闭，由用户在通知设置中启用，避免未经同意每日触达。
-- 按用户配置逐个推送；不同用户可绑定不同钉钉 webhook。
-- 新增发送日志或复用现有通知表，幂等键建议为 `(user_id, notify_type, pick_date)`，同一用户同一日最多成功推送一次。
-- 发送失败记录错误并可人工重试；自动重试需有次数上限，禁止在钉钉失败时循环刷屏。
+> **⚠️ 口径修正（据实核对现网，避免落地受阻）**：现有推送链路是**单群广播 + 全局开关**模型，**并非 per-user**：
+> ① `_load_config(0, 'report_summary', ...)`（先例 `push_report_summary_to_dingtalk`）取的是 `paper_id=0` 的**全局单群 webhook**（来自单一环境变量），**不支持"不同用户绑不同 webhook"**；
+> ② `_get_user_preference()` 是 `cn_stock_report_preference ORDER BY updated_at DESC LIMIT 1` 的**单条全局 `push_enabled` 开关**，**无 `user_id` 维度**。
+> 因此 **V1 基金精选推送应对齐现网 = 推到既有全局钉钉群**（新增 `event_type='fund_daily_pick'` 的 config 行 + 复用全局 `push_enabled` 门控），文案面向"群订阅者"；
+> **"按用户逐个推送 / 逐用户 webhook 绑定 / 逐用户偏好"属于全新的多租户订阅模型，是独立新工作量，不能算"复用既有链路"**，如确需，另立 Phase 单独设计（新增 `user_id` 维度的订阅表 + fan-out）。
+
+**通知配置与幂等（对齐现网可复用件）**：
+- 新增 `event_type='fund_daily_pick'`（在 `cn_stock_notification_config` 加一行，`enabled` 默认关，运维/用户在通知设置启用），避免未经同意每日触达。
+- **幂等/重试直接复用 `cn_stock_notification_event`**：该表已内置 `dedupe_key`（`INSERT IGNORE` 天然幂等）+ `status(pending/sent/failed)` + `retry_count` + `next_retry_at`，正是所需能力。基金精选按 `dedupe_key = hash(event_type='fund_daily_pick', pick_date[, fund_type])` 落事件，重复调度/并发因 `dedupe_key` 唯一被 `INSERT IGNORE` 挡下（`rowcount==0` 即已存在），**无需另造 `cn_fund_push_log`**（避免重复造轮子；若坚持独立表，须在 `tablestructure.py` 注册且不得与既有事件表职责重叠）。
+- 发送失败走既有 `_update_event_status(..., 'failed')`（写 `next_retry_at`、累加 `retry_count`）；自动重试有次数上限，禁止钉钉失败时循环刷屏。
+
 
 **推送内容设计（防止刷屏 + 钉钉限流 20 条/分、单条 markdown 体积限制）**：
-- **紧凑摘要**，不逐条塞 60 只。每个 `fund_type` 桶只展示 **Top3**（代码/简称/quality/timing 档位徽章），每只带独立详情链接；
+- **紧凑摘要**，不逐条塞 60 只。每个 `fund_type` 桶只展示 **Top3**（代码/简称/quality/timing 档位徽章），每只带独立详情链接；**货币型/短债等不做点位择时的桶不显示"低吸/高估"档位徽章**（对齐 §7.1bis），改显"七日年化/规模稳定性"，避免自相矛盾的择时措辞；
 - 末尾一条"[查看完整每类 Top10 榜单]"链接跳前端榜单页；
 - 标题如 `📈 每日基金精选榜 2026-07-08`；
 - **非买卖措辞**，带风险免责（对齐 F13）。
 
 **详情链接（重要增量，已核实缺口）**：现基金页 `views/fund/index.vue` 用抽屉 `FundDetailDrawer` + `openDetail(row)`，**不读 `route.query.code`**。因此推送里的每只基金链接 = `{{BASE}}/#/fund/rank?code=XXXXXX`，需给基金页加**深链支持**：`onMounted/onActivated` 读 `route.query.code` → 自动 `openDetail`。整榜链接 = `{{BASE}}/#/fund/rank?pick=1`（打开"每日精选"分区）。此改动是"点链接看详情"可用的前提，必须与推送同期交付（规则 8：前端调用/深链要有对应支撑）。
 
-### 7.4 调度
+### 7.4 调度（两段式，对齐 §5.6 净值截面对齐）
 
-在 `cron/cron.workdayly/` 增脚本，**顺序 = 基金抓取 → `analysis_fund_score_job`（F7）→ `analysis_fund_pick_job`（榜单+timing）→ 钉钉推送 job**。推送 job 只读 `cn_fund_daily_pick` + 发 webhook，失败重试/降级不影响其他 job。
+为兼顾 §5.6 的"净值披露时钟差 + T+1 清晨对齐"，**拆成两段调度，不在同一次流水线内跑完**：
+
+- **晚间段（T 日 22:30 后，`cron.workdayly`）**：`基金抓取 → analysis_fund_score_job（F7 打分）`。需过 §5.6 的**截面完整度看门狗（≥90% 已更新）**，否则打分推迟到清晨段。
+- **清晨段（T+1 日 07:00，`cron.workdayly`）**：`analysis_fund_pick_job（榜单+timing）→ 钉钉推送 job`。此时净值截面已齐，避免用半更新截面生成榜单。
+
+推送 job 只读 `cn_fund_daily_pick` + 发 webhook，失败重试/降级不影响其他 job。若晚间段打分因看门狗未达标顺延，则清晨段先补跑打分再生成榜单。
 
 ### 7.5 前端（增量）
 
-`views/fund/` 加"每日精选"分区/Tab：按 `fund_type` 分组展示各桶 Top10（quality + timing 档位徽章 + 回撤/近1年），点行开详情抽屉；`route.query.code` 深链自动开抽屉、`route.query.pick` 定位精选分区。**移动端卡片式适配**（宽表≥5列，AGENTS 移动端规范）。
+`views/fund/` 加"每日精选"分区/Tab：按 `fund_type` 分组展示各桶 Top10（quality + timing 档位徽章 + 回撤/近1年），点行开详情抽屉；**货币型/不做点位择时的桶不显示择时档位徽章**（与 §7.3 推送一致）；`route.query.code` 深链自动开抽屉、`route.query.pick` 定位精选分区。**移动端卡片式适配**（宽表≥5列，AGENTS 移动端规范）。
 
 ### 7.6 该功能的分期落点
 
@@ -369,7 +417,7 @@ T1/T2 的阈值（回撤 -8%/-15%、均线 60/120）都是**自由参数**，直
 
 ## 8. 一句话总结
 
-> **选基**复用已建成的 F7 多因子评分（好基金门槛 `score≥70` + 成立/规模/回撤硬约束，证据强）；
+> **选基**复用已建成的 F7 多因子评分（首期好基金门槛以 `score≥70` 为主；成立/规模/回撤在数据可得时约束，覆盖率达标后再升级为硬过滤）；
 > **择时**新建 `TimingScore = 回撤(T1) + 趋势(T2) + 估值分位(T3, 数据缺失暂缓)` 的**综合信号 T5**，缺维自动降级；
 > **诚实定位**：首期只有弱依据的 T1+T2，故以**定投(T4)为主执行、择时为风险提示**，点位择时须过"样本外 go/no-go"才上线；
 > **每日精选**按 `fund_type` 分桶首期用"**质量主排序 + 择时标签**"口径取每类 Top10，落 `cn_fund_daily_pick`，
