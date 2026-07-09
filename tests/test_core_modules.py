@@ -332,6 +332,9 @@ class TestIsAStock(unittest.TestCase):
     def test_sh_605_is_a_stock(self):
         self.assertTrue(self.is_a_stock('605001'))
 
+    def test_star_market_688_is_a_stock(self):
+        self.assertTrue(self.is_a_stock('688001'))
+
     # SZ A-stock codes
     def test_sz_000_is_a_stock(self):
         self.assertTrue(self.is_a_stock('000001'))
@@ -359,9 +362,6 @@ class TestIsAStock(unittest.TestCase):
     def test_b_share_900_not_a_stock(self):
         self.assertFalse(self.is_a_stock('900001'))
 
-    def test_star_market_688_not_a_stock(self):
-        self.assertFalse(self.is_a_stock('688001'))
-
     def test_neeq_430_not_a_stock(self):
         self.assertFalse(self.is_a_stock('430001'))
 
@@ -370,6 +370,36 @@ class TestIsAStock(unittest.TestCase):
 
     def test_empty_string(self):
         self.assertFalse(self.is_a_stock(''))
+
+
+class TestFetchStocksMarketCoverage(unittest.TestCase):
+    """Tests for daily spot market coverage filtering."""
+
+    @patch('quantia.core.stockfetch.she.stock_zh_a_spot_em')
+    def test_fetch_stocks_keeps_star_market_and_chinext(self, mock_spot_em):
+        from quantia.core import stockfetch
+        from quantia.core import tablestructure as tbs
+
+        source_columns = list(tbs.TABLE_CN_STOCK_SPOT['columns'])[1:]
+
+        def make_row(code, name, price=10.0):
+            row = {column: 0 for column in source_columns}
+            row['code'] = code
+            row['name'] = name
+            row['new_price'] = price
+            return row
+
+        mock_spot_em.return_value = pd.DataFrame([
+            make_row('688001', '华兴源创'),
+            make_row('300750', '宁德时代'),
+            make_row('301001', '凯淳股份'),
+            make_row('430001', '北交示例'),
+            make_row('900901', 'B股示例'),
+        ], columns=source_columns)
+
+        result = stockfetch.fetch_stocks(datetime.date(2026, 7, 9))
+
+        self.assertEqual(set(result['code']), {'688001', '300750', '301001'})
 
 
 class TestIsNotST(unittest.TestCase):

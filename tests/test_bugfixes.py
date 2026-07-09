@@ -338,7 +338,7 @@ def _():
     assert is_a_stock('600000') == True
     assert is_a_stock('000001') == True
     assert is_a_stock('300001') == True
-    assert is_a_stock('688001') == False  # 科创板不在A股列表
+    assert is_a_stock('688001') == True   # 科创板属于上交所A股
     assert is_a_stock('430001') == False  # 北证不在A股列表
 
 
