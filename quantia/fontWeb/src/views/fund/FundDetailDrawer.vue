@@ -159,6 +159,42 @@
           </div>
         </div>
 
+        <!-- 基金经理经验（P4：来源 fund_manager_em，弱因子展示，非硬拦截）-->
+        <div v-if="manager && manager.data_available" class="fdd-section fdd-mgr">
+          <div class="fdd-section-title">
+            👤 经理经验
+            <span class="fdd-muted">（弱因子 · 参考）</span>
+          </div>
+          <div class="fdd-lt-head">
+            <span v-if="manager.experience_label" class="fdd-tier" :class="mgrClass(manager.experience_label)">
+              {{ manager.experience_label }}
+            </span>
+            <span v-if="manager.max_tenure_years != null" class="fdd-timing-score">
+              从业 <b>{{ manager.max_tenure_years.toFixed(1) }}</b> 年
+            </span>
+            <span class="fdd-muted">
+              {{ manager.manager_count }} 位经理
+              <template v-if="manager.best_return != null"> · 最佳回报 {{ manager.best_return.toFixed(0) }}%</template>
+            </span>
+            <span v-if="manager.over_extended" class="fdd-tier tier-high fdd-mgr-warn">
+              一拖多 {{ manager.max_fund_count }} 只
+            </span>
+          </div>
+          <div class="fdd-lt-list">
+            <div v-for="m in manager.managers" :key="m.manager" class="fdd-lt-row fdd-mgr-row">
+              <span class="fdd-lt-name">{{ m.manager }}</span>
+              <span class="fdd-mgr-meta fdd-muted">
+                <template v-if="m.tenure_years != null">从业 {{ m.tenure_years.toFixed(1) }} 年</template>
+                <template v-if="m.fund_count != null"> · 在管 {{ m.fund_count }} 只</template>
+                <template v-if="m.best_return != null"> · 最佳 {{ m.best_return.toFixed(0) }}%</template>
+              </span>
+            </div>
+          </div>
+          <div class="fdd-timing-note">
+            「从业年限」为经理全市场累计从业时间，非本基金任职起始日；经理经验仅弱因子参考、非投资建议。一拖多（单人在管过多）仅提示精力可能分散。
+          </div>
+        </div>
+
         <!-- 净值走势曲线 -->
         <div class="fdd-section">
           <div class="fdd-section-title fdd-nav-title">
@@ -319,6 +355,7 @@ import {
   getFundTiming,
   getFundLookThrough,
   getFundStyle,
+  getFundManager,
   type FundPeerCompare,
   type FundComposite,
   type FundAiSource,
@@ -328,6 +365,7 @@ import {
   type FundTiming,
   type FundLookThrough,
   type FundStyle,
+  type FundManager,
 } from '@/api/fund'
 
 const props = defineProps<{
@@ -351,6 +389,7 @@ const composite = ref<FundComposite | null>(null)
 const timing = ref<FundTiming | null>(null)
 const lookThrough = ref<FundLookThrough | null>(null)
 const style = ref<FundStyle | null>(null)
+const manager = ref<FundManager | null>(null)
 
 const aiLoading = ref(false)
 const aiLoaded = ref(false)
@@ -526,6 +565,14 @@ function industryBarWidth(share: number | null): number {
   const top = style.value?.industries?.[0]?.share ?? null
   if (share == null || top == null || top <= 0) return 0
   return Math.max(4, Math.min(100, (share / top) * 100))
+}
+
+// 经理经验（P4 弱因子卡）：经验档位着色
+function mgrClass(label: string | null): string {
+  if (label === '资深') return 'tier-high'
+  if (label === '成熟') return 'tier-dca'
+  if (label === '新锐') return 'tier-low'
+  return ''
 }
 
 const profileRows = computed(() => {
@@ -772,6 +819,7 @@ async function loadData() {
   timing.value = null
   lookThrough.value = null
   style.value = null
+  manager.value = null
   aiLoaded.value = false
   aiHtml.value = ''
   aiNote.value = ''
@@ -794,6 +842,7 @@ async function loadData() {
     void loadNav()
     void loadLookThrough()
     void loadStyle()
+    void loadManager()
     // 静默查缓存：若已有 AI 结果则直接展示
     void prefetchAi()
   } catch (e) {
@@ -818,6 +867,15 @@ async function loadStyle() {
     style.value = (await getFundStyle(props.code)) as unknown as FundStyle
   } catch {
     style.value = null
+  }
+}
+
+async function loadManager() {
+  manager.value = null
+  try {
+    manager.value = (await getFundManager(props.code)) as unknown as FundManager
+  } catch {
+    manager.value = null
   }
 }
 
@@ -1091,6 +1149,17 @@ watch(
 .fdd-style-chg.down {
   color: #16a34a;
   background: #f0f9eb;
+}
+/* 经理经验卡 */
+.fdd-mgr-warn {
+  margin-left: 2px;
+}
+.fdd-mgr-row {
+  align-items: baseline;
+}
+.fdd-mgr-meta {
+  font-size: 12px;
+  white-space: nowrap;
 }
 .fdd-radar {
   width: 100%;

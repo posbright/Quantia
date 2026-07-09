@@ -341,6 +341,44 @@ export function getFundStyle(code: string) {
   })
 }
 
+// ── 基金经理经验弱因子（P4，来源 fund_manager_em，弱因子展示）──────────
+
+export interface FundManagerDetail {
+  manager: string
+  company: string | null
+  tenure_years: number | null
+  total_aum: number | null
+  best_return: number | null
+  fund_count: number | null
+}
+
+export interface FundManager {
+  code: string
+  name: string | null
+  fund_type: string | null
+  data_available: boolean
+  manager_count: number
+  names: string[]
+  company: string | null
+  max_tenure_years: number | null
+  avg_tenure_years: number | null
+  experience_label: string | null
+  best_return: number | null
+  max_fund_count: number | null
+  over_extended: boolean
+  managers: FundManagerDetail[]
+  disclaimer: string
+  note: string
+}
+
+export function getFundManager(code: string) {
+  return request<FundManager>({
+    url: '/api/fund/manager',
+    method: 'get',
+    params: { code },
+  })
+}
+
 // ── AI 按需分析（F14，懒加载 LLM）──────────────────────────────────
 
 export interface FundAiSource {
