@@ -141,7 +141,7 @@ def tier_of(score) -> str|None
 |----|--------|--------|-----------|
 | **P2** | 回测对照：择时买入 vs 定投 vs 一次性 | 复用 `fund_backtest.simulate_staged_buy` + 择时择点；实验结论落 `document/fund/` | 用真实 acc_nav 切样本内外，禁固定系数造伪 OOS |
 | **P3** | T3 估值维度 | ✅ Fetch：`fetch_index_valuation_job.py` + `crawling/index_valuation_lg.py` + `cn_index_valuation` 表（规则1，chunksize=500）；`benchmark_map.py` 基准→指数映射（**边界校验**：以宽基名开头的风格/行业子指数如「沪深300成长」「中证500信息技术」判定无覆盖→None，生产实测 10 例，不错套宽基估值）；Handler 接入 val 维 | 指数估值源：legulegu 全历史（akshare `stock_index_pe_lg` 已被上游日期格式变更打挂，改直连端点 + 自适应日期解析）；仅 12 只宽基有覆盖，非宽基/无 profile 基金 val=None 自动降维 | 
-| **P4** | 选基增量：经理经验弱因子、权益持仓风格漂移提示、T6 穿透式持仓位置参考卡 | 复用 `cn_fund_holding`（覆盖不足→仅有覆盖基金） | 不得影响无覆盖基金；季报滞后仅作参考 |
+| **P4** | 选基增量：**T6 穿透式持仓位置参考卡（✅ 已交付）**；经理经验弱因子（待办）、权益持仓风格漂移提示（待办） | ✅ `core/fund/lookthrough.py`（纯函数：距高点回撤 / 长均线位置 / RSI 超卖，等权→个股位置分，hold_ratio 加权→底层位置分，复用 `timing.drawdown_from_high` 含 B12 全期滚动峰值修复）+ `fundLookThroughHandler.py`（读 `cn_fund_holding` 最新季度前十大重仓股，逐股用**本地 K 线缓存** `load_stock_data(cache_only=True)` 算位置，规则1 只读不触外部 API；仅 A 股 6 位纯数字有行情，QDII/港股 `priced=false`）+ `/api/fund/look_through` 路由 + 前端 `FundDetailDrawer` T6 卡（条形布局天然适配移动端）；经理经验弱因子需**新建 Fetch 源**（`akshare.fund_manager_em` + 新表），列为独立较重任务 | 不得影响无覆盖基金（无覆盖→`data_available=false` 前端不渲染卡）；`covered_ratio` 透明化（前十大常仅占净值 5–60%）；季报滞后约一季度、**不进入 TimingScore**，仅作参考 |
 | **P5** | 每日精选榜 | `cn_fund_daily_pick` 表 + `analysis_fund_pick_job.py`（AC 去重→先 TopN 后截 Top10；时钟看门狗 90%）+ `/api/fund/daily_pick` Handler + 前端榜单页 | 复用 `timing.py`（B8）；申购状态需 P 前置补表 |
 | **P6** | 钉钉推送 | 复用 `cn_stock_notification_event` dedupe（`hash('fund_daily_pick',pick_date)`）；深链公网可达 + 免登 token | 内网地址/登录墙硬前提（蓝图 §5.12） |
 
