@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>每日基金精选榜 · 原型（good_fund_selection_and_entry_timing_plan）</title>
+<style>
+  /* ============ 设计令牌（对齐现有 fund/index.vue 配色） ============ */
+  :root {
+    --c-good: #16a34a;      /* 质量/低吸 绿 */
+    --c-mid: #e6a23c;       /* 定投/中性 橙 */
+    --c-bad: #d23b3b;       /* 高估/风险 红（A股红涨绿跌，但风险语义用红） */
+    --c-info: #409eff;      /* 链接/信息 蓝 */
+    --c-muted: #909399;     /* 缺失/灰 */
+    --c-text: #303133;
+    --c-sub: #606266;
+    --c-line: #ebeef5;
+    --c-bg: #f5f7fa;
+    --c-card: #ffffff;
+    --radius: 12px;
+    --shadow: 0 2px 12px rgba(0,0,0,.06);
+    --shadow-hover: 0 6px 20px rgba(0,0,0,.1);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--c-bg);
+    color: var(--c-text);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .app { max-width: 1180px; margin: 0 auto; padding: 16px; }
+
+  /* ============ 顶部标题 ============ */
+  .fund-header {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+    background: var(--c-card); border-radius: var(--radius);
+    padding: 16px 20px; box-shadow: var(--shadow); margin-bottom: 12px;
+  }
+  .fund-title { display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 700; }
+  .title-icon { font-size: 24px; }
+  .fund-snapshot { color: var(--c-sub); font-size: 13px; }
+  .fund-snapshot b { color: var(--c-text); }
+  .header-spacer { flex: 1 1 auto; }
+  .push-btn {
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    background: linear-gradient(135deg, #1f6feb, #388bfd); color: #fff;
+    border: none; border-radius: 20px; padding: 8px 16px; font-size: 13px; font-weight: 600;
+    box-shadow: 0 2px 8px rgba(31,111,235,.3); transition: transform .15s;
+  }
+  .push-btn:hover { transform: translateY(-1px); }
+
+  /* ============ 风险提示条 ============ */
+  .risk-tip {
+    background: #fff7e6; border: 1px solid #ffe0a3; color: #b26a00;
+    border-radius: 8px; padding: 8px 14px; font-size: 12.5px; margin-bottom: 12px;
+  }
+
+  /* ============ 数据健康度诊断卡（对应文档 §9 三条数据防线） ============ */
+  .data-health {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px;
+  }
+  .dh-card {
+    background: var(--c-card); border-radius: 10px; padding: 12px 14px;
+    box-shadow: var(--shadow); border-left: 4px solid var(--c-muted);
+  }
+  .dh-card.warn { border-left-color: var(--c-mid); }
+  .dh-card.ok { border-left-color: var(--c-good); }
+  .dh-title { font-size: 12.5px; color: var(--c-sub); display: flex; align-items: center; gap: 6px; }
+  .dh-value { font-size: 20px; font-weight: 700; margin-top: 4px; }
+  .dh-desc { font-size: 11.5px; color: var(--c-muted); margin-top: 2px; }
+
+  /* ============ 基金类型胶囊 ============ */
+  .type-capsules { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .capsule {
+    padding: 6px 16px; border-radius: 18px; background: var(--c-card);
+    border: 1px solid var(--c-line); color: var(--c-sub); font-size: 13px;
+    cursor: pointer; transition: all .15s; user-select: none;
+  }
+  .capsule:hover { border-color: var(--c-info); color: var(--c-info); }
+  .capsule.active { background: var(--c-info); border-color: var(--c-info); color: #fff; font-weight: 600; }
+  .capsule .no-timing-dot { color: var(--c-mid); font-size: 11px; }
+
+  /* ============ 榜单区 ============ */
+  .bucket-head {
+    display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;
+  }
+  .bucket-name { font-size: 17px; font-weight: 700; }
+  .bucket-sub { font-size: 12.5px; color: var(--c-muted); }
+  .bucket-mode {
+    font-size: 11.5px; background: #eef4ff; color: var(--c-info);
+    padding: 2px 8px; border-radius: 10px; border: 1px solid #d6e4ff;
+  }
+
+  /* 桌面表格 */
+  .pick-table { width: 100%; background: var(--c-card); border-radius: var(--radius);
+    box-shadow: var(--shadow); overflow: hidden; border-collapse: collapse; }
+  .pick-table thead th {
+    background: #fafbfc; color: var(--c-sub); font-size: 12.5px; font-weight: 600;
+    text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--c-line);
+    white-space: nowrap;
+  }
+  .pick-table tbody td { padding: 12px 14px; border-bottom: 1px solid var(--c-line); font-size: 13.5px; vertical-align: middle; }
+  .pick-table tbody tr { cursor: pointer; transition: background .12s; }
+  .pick-table tbody tr:hover { background: #f6f9ff; }
+  .pick-table tbody tr:last-child td { border-bottom: none; }
+  .rank-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: 6px; font-weight: 700; font-size: 12px;
+    background: #eef1f5; color: var(--c-sub);
+  }
+  .rank-badge.top1 { background: #fff3cd; color: #b8860b; }
+  .rank-badge.top2 { background: #eef2f7; color: #6b7785; }
+  .rank-badge.top3 { background: #fbe9d9; color: #c0691a; }
+  .fund-name-cell { display: flex; flex-direction: column; }
+  .fund-name-cell .fn { font-weight: 600; }
+  .fund-name-cell .fc { font-size: 11.5px; color: var(--c-muted); }
+
+  /* 质量分环 */
+  .score-pill { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }
+  .score-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+  /* 择时徽章 */
+  .timing-badge {
+    display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px;
+    border-radius: 12px; font-size: 12px; font-weight: 600; white-space: nowrap;
+  }
+  .tb-low { background: #e7f7ee; color: var(--c-good); border: 1px solid #b7e4c7; }
+  .tb-dca { background: #fdf3e2; color: var(--c-mid); border: 1px solid #f5d9a8; }
+  .tb-wait { background: #eef1f5; color: var(--c-sub); border: 1px solid #dfe4ea; }
+  .tb-high { background: #fdeaea; color: var(--c-bad); border: 1px solid #f3c2c2; }
+  .tb-na { background: #f4f4f5; color: var(--c-muted); border: 1px dashed #d3d4d6; }
+
+  /* 数据滞后提示 */
+  .lag-tag {
+    display: inline-flex; align-items: center; gap: 3px; font-size: 11px;
+    color: var(--c-mid); background: #fff8ec; border: 1px solid #ffe4b8;
+    padding: 1px 7px; border-radius: 8px; margin-left: 6px;
+  }
+  .lag-tag.fresh { color: var(--c-good); background: #eefaf2; border-color: #c3ebd2; }
+
+  .ret-up { color: var(--c-bad); font-weight: 600; }   /* A股红涨 */
+  .ret-down { color: var(--c-good); font-weight: 600; } /* A股绿跌 */
+
+  /* 货币/短债 桶的替代展示 */
+  .alt-metric { font-size: 12.5px; color: var(--c-sub); }
+  .alt-metric b { color: var(--c-text); }
+
+  /* ============ 移动端卡片（默认隐藏，窄屏显示） ============ */
+  .pick-card-list { display: none; }
+  .pick-card {
+    background: var(--c-card); border-radius: 10px; box-shadow: var(--shadow);
+    padding: 12px 14px; margin-bottom: 10px; cursor: pointer;
+  }
+  .pc-head { display: flex; align-items: center; gap: 8px; }
+  .pc-head .fn { font-weight: 700; font-size: 15px; }
+  .pc-head .fc { font-size: 11.5px; color: var(--c-muted); }
+  .pc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin-top: 10px; }
+  .pc-field { font-size: 12.5px; color: var(--c-sub); }
+  .pc-field b { color: var(--c-text); }
+  .pc-ops { margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px; }
+
+  /* ============ 详情抽屉 ============ */
+  .drawer-mask {
+    position: fixed; inset: 0; background: rgba(0,0,0,.35); opacity: 0; pointer-events: none;
+    transition: opacity .2s; z-index: 40;
+  }
+  .drawer-mask.open { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed; top: 0; right: 0; height: 100dvh; width: 460px; max-width: 100vw;
+    background: var(--c-bg); box-shadow: -4px 0 24px rgba(0,0,0,.15);
+    transform: translateX(100%); transition: transform .25s; z-index: 50;
+    display: flex; flex-direction: column;
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawer-header {
+    display: flex; align-items: center; gap: 10px; padding: 16px 18px;
+    background: var(--c-card); border-bottom: 1px solid var(--c-line);
+  }
+  .drawer-header .dh-name { font-size: 17px; font-weight: 700; }
+  .drawer-header .dh-code { font-size: 12px; color: var(--c-muted); }
+  .drawer-close { margin-left: auto; cursor: pointer; font-size: 22px; color: var(--c-muted); line-height: 1; border: none; background: none; }
+  .drawer-body { flex: 1 1 auto; overflow-y: auto; padding: 16px 18px; }
+  .d-card { background: var(--c-card); border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow); margin-bottom: 14px; }
+  .d-card-title { font-size: 14px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+  .d-card-title .hint { font-size: 11px; color: var(--c-muted); font-weight: 400; }
+
+  /* 入场时机大徽章 */
+  .timing-hero { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+  .timing-hero .big-badge {
+    width: 84px; height: 84px; border-radius: 16px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; color: #fff; flex: 0 0 auto;
+  }
+  .timing-hero .big-badge .bb-tier { font-size: 15px; font-weight: 700; }
+  .timing-hero .big-badge .bb-score { font-size: 24px; font-weight: 800; line-height: 1; margin-top: 2px; }
+  .timing-hero .bb-desc { font-size: 12.5px; color: var(--c-sub); }
+
+  /* 三维分量条 */
+  .dim-row { margin-bottom: 12px; }
+  .dim-label { display: flex; justify-content: space-between; font-size: 12.5px; margin-bottom: 4px; }
+  .dim-label .dl-name { color: var(--c-sub); }
+  .dim-label .dl-val { font-weight: 700; }
+  .dim-track { height: 8px; border-radius: 4px; background: #eef1f5; overflow: hidden; }
+  .dim-fill { height: 100%; border-radius: 4px; transition: width .4s; }
+  .dim-missing { font-size: 11.5px; color: var(--c-muted); font-style: italic; }
+
+  /* 质量因子小网格 */
+  .q-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+  .q-item { display: flex; flex-direction: column; }
+  .q-item .qi-label { font-size: 11.5px; color: var(--c-muted); }
+  .q-item .qi-val { font-size: 15px; font-weight: 700; }
+
+  /* 净值走势迷你占位图 */
+  .mini-chart { height: 90px; width: 100%; }
+
+  /* 免责 */
+  .d-disclaimer { font-size: 11.5px; color: var(--c-muted); padding: 6px 2px; }
+
+  /* 数据缺陷提示（详情内） */
+  .flaw-note {
+    display: flex; gap: 8px; font-size: 12px; color: #b26a00;
+    background: #fff7e6; border: 1px solid #ffe0a3; border-radius: 8px; padding: 8px 10px; margin-top: 10px;
+  }
+
+  /* 入选理由 chips */
+  .reason-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .reason-chip { font-size: 11.5px; background: #eef4ff; color: var(--c-info); border: 1px solid #d6e4ff; border-radius: 10px; padding: 2px 9px; white-space: nowrap; }
+  .reason-chip.warmtone { background: #fff3e0; color: #c47d1a; border-color: #ffe0b3; }
+  .row-reason { font-size: 11px; color: var(--c-info); margin-top: 2px; }
+  /* 净值/回撤展示 */
+  .nav-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+  .nav-item { display: flex; flex-direction: column; }
+  .nav-item .ni-label { font-size: 11.5px; color: var(--c-muted); }
+  .nav-item .ni-val { font-size: 16px; font-weight: 700; }
+  .cur-dd { color: var(--c-bad); font-weight: 700; }
+  .nav-cell b { font-weight: 700; }
+  .nav-cell .acc { font-size: 11px; color: var(--c-muted); }
+
+  /* ============ 钉钉推送预览弹窗 ============ */
+  .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: none; align-items: center; justify-content: center; z-index: 60; }
+  .modal-mask.open { display: flex; }
+  .dingtalk-preview {
+    width: 360px; max-width: 92vw; background: #f0f2f5; border-radius: 14px; overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0,0,0,.25);
+  }
+  .dt-top { background: #0089ff; color: #fff; padding: 12px 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .dt-body { padding: 14px 16px; max-height: 70vh; overflow-y: auto; }
+  .dt-bubble { background: #fff; border-radius: 10px; padding: 12px 14px; font-size: 13px; }
+  .dt-bubble h4 { font-size: 15px; margin-bottom: 8px; }
+  .dt-bucket { margin: 10px 0 4px; font-weight: 700; color: var(--c-text); font-size: 13px; }
+  .dt-line { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 12.5px; color: var(--c-sub); }
+  .dt-line a { color: var(--c-info); text-decoration: none; }
+  .dt-foot { margin-top: 10px; font-size: 11px; color: var(--c-muted); border-top: 1px dashed var(--c-line); padding-top: 8px; }
+  .modal-close-row { text-align: right; padding: 8px 12px; }
+  .modal-close-row button { background: #fff; border: 1px solid var(--c-line); border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+
+  /* ============ 响应式（对齐 useResponsive: 767.98 断点） ============ */
+  @media (max-width: 767.98px) {
+    .app { padding: 10px; }
+    .data-health { grid-template-columns: 1fr; }
+    .pick-table { display: none; }
+    .pick-card-list { display: block; }
+    .fund-title { font-size: 17px; }
+    .drawer { width: 100vw; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 顶部 -->
+  <div class="fund-header">
+    <div class="fund-title"><span class="title-icon">📈</span><span>每日基金精选榜</span></div>
+    <div class="fund-snapshot">评分快照日 <b>2026-07-08</b> · 净值披露日 <b>2026-07-07</b></div>
+    <div class="header-spacer"></div>
+    <button class="push-btn" onclick="openPush()">🔔 钉钉推送预览</button>
+  </div>
+
+  <div class="risk-tip">⚠️ 本页为量化排序与研究辅助，<b>非投资建议</b>；「入场档位」仅为基于历史净值的技术性位置提示，非买卖信号。基金有风险，历史业绩不代表未来。</div>
+
+  <!-- 数据健康度诊断（文档 §9 三条数据防线的可视化） -->
+  <div class="data-health">
+    <div class="dh-card warn">
+      <div class="dh-title">🕒 净值披露及时性 <span class="lag-tag">防线1</span></div>
+      <div class="dh-value" style="color:var(--c-mid)">1,034 / 3,621</div>
+      <div class="dh-desc">仅 28.6% 基金净值在 5 日内更新；滞后 &gt; 7 日者不产出择时档位</div>
+    </div>
+    <div class="dh-card warn">
+      <div class="dh-title">🏭 持仓行业可用性 <span class="lag-tag">防线2</span></div>
+      <div class="dh-value" style="color:var(--c-mid)">科创板未分类</div>
+      <div class="dh-desc">6,400+ 条重仓行业断层（688 未回填）；风格漂移暂作雷达展示，不做硬拦截</div>
+    </div>
+    <div class="dh-card ok">
+      <div class="dh-title">✅ 质量评分覆盖 <span class="lag-tag fresh">主排序</span></div>
+      <div class="dh-value" style="color:var(--c-good)">当日全量</div>
+      <div class="dh-desc">cn_fund_rank_score 2026-07-08 已就绪，V1 以质量分主排序</div>
+    </div>
+  </div>
+
+  <!-- 基金类型胶囊 -->
+  <div class="type-capsules" id="capsules"></div>
+
+  <!-- 榜单 -->
+  <div class="bucket-head">
+    <span class="bucket-name" id="bucketName">股票型</span>
+    <span class="bucket-sub">每类综合精选 Top10</span>
+    <span class="bucket-mode" id="bucketMode">口径 V1：质量主排序 + 择时标签</span>
+  </div>
+
+  <!-- 桌面表格 -->
+  <table class="pick-table" id="pickTable">
+    <thead><tr id="pickHead"></tr></thead>
+    <tbody id="pickBody"></tbody>
+  </table>
+
+  <!-- 移动端卡片 -->
+  <div class="pick-card-list" id="pickCards"></div>
+
+  <p class="d-disclaimer" style="margin-top:14px">
+    数据来源：cn_fund_rank / cn_fund_rank_score / cn_fund_nav_history（只读）。评分为排序辅助，不作为可交易策略模板。
+  </p>
+</div>
+
+<!-- ============ 详情抽屉 ============ -->
+<div class="drawer-mask" id="drawerMask" onclick="closeDrawer()"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-header">
+    <div>
+      <div class="dh-name" id="drName">—</div>
+      <div class="dh-code" id="drCode">—</div>
+    </div>
+    <button class="drawer-close" onclick="closeDrawer()">×</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+
+<!-- ============ 钉钉推送预览 ============ -->
+<div class="modal-mask" id="pushModal">
+  <div class="dingtalk-preview">
+    <div class="dt-top">💬 钉钉群 · 每日基金精选推送预览</div>
+    <div class="dt-body">
+      <div class="dt-bubble" id="dtBubble"></div>
+    </div>
+    <div class="modal-close-row"><button onclick="closePush()">关闭</button></div>
+  </div>
+</div>
+
+<script>
+/* ================= Mock 数据（口径对齐审计事实） ================= */
+const TYPES = [
+  { key: '股票型', timing: true },
+  { key: '混合型', timing: true },
+  { key: '指数型', timing: true },
+  { key: 'QDII', timing: true },
+  { key: 'FOF', timing: true },
+  { key: '债券型', timing: false },   // 短债/纯债：不做点位择时
+  { key: '货币型', timing: false },   // 货币：只显示七日年化/规模
+];
+
+// tier: 依据 timing_score 绝对刻度 —— 低吸≥75 / 定投50-75 / 观望30-50 / 高估<30
+function tierOf(s) {
+  if (s == null) return { key: 'na', label: '暂无', cls: 'tb-na', color: '#c0c4cc', desc: '净值数据不足或滞后，暂不产出择时档位' };
+  if (s >= 75) return { key: 'low', label: '低吸', cls: 'tb-low', color: '#16a34a', desc: '当前净值处于自身历史相对低位，可考虑分批建仓' };
+  if (s >= 50) return { key: 'dca', label: '定投', cls: 'tb-dca', color: '#e6a23c', desc: '位置中性，适合定投分摊成本' };
+  if (s >= 30) return { key: 'wait', label: '观望', cls: 'tb-wait', color: '#909399', desc: '位置偏高，建议观望或降低定投额' };
+  return { key: 'high', label: '高估勿追', cls: 'tb-high', color: '#d23b3b', desc: '相对自身历史处于高位，注意回撤风险' };
+}
+
+// 各桶 Top10（含真实审计问题：部分净值滞后 -> timing_score=null；科创重仓 -> 行业未分类）
+const DATA = {
+  '股票型': [
+    { code: '011251', name: '国泰半导体ETF联接A', q: 92, ts: 78, lag: 1, r1: 34.2, mdd: -28.4, dd: 82, trend: 70, val: null, scale: 58.3, mgr: 5.2, style: '半导体', flaw: false },
+    { code: '005827', name: '易方达蓝筹精选混合', q: 90, ts: 61, lag: 2, r1: 18.6, mdd: -22.1, dd: 55, trend: 68, val: null, scale: 402.1, mgr: 8.7, style: '大消费', flaw: false },
+    { code: '008888', name: '华夏国证半导体芯片', q: 89, ts: 84, lag: 1, r1: 41.0, mdd: -31.6, dd: 90, trend: 74, val: null, scale: 121.5, mgr: 3.1, style: '科创·未分类', flaw: true },
+    { code: '001630', name: '天弘中证食品饮料', q: 87, ts: 44, lag: 3, r1: 9.2, mdd: -19.8, dd: 40, trend: 52, val: null, scale: 88.0, mgr: 6.5, style: '食品饮料', flaw: false },
+    { code: '110022', name: '易方达消费行业', q: 86, ts: null, lag: 29, r1: 12.4, mdd: -21.0, dd: null, trend: null, val: null, scale: 210.4, mgr: 11.2, style: '大消费', flaw: false },
+    { code: '002190', name: '农银汇理新能源主题', q: 85, ts: 88, lag: 2, r1: 46.8, mdd: -35.2, dd: 92, trend: 78, val: null, scale: 96.7, mgr: 4.4, style: '新能源', flaw: false },
+    { code: '000751', name: '嘉实新兴产业', q: 84, ts: 57, lag: 1, r1: 15.1, mdd: -24.5, dd: 50, trend: 60, val: null, scale: 67.2, mgr: 7.0, style: 'TMT', flaw: false },
+    { code: '007531', name: '广发高端制造', q: 83, ts: 33, lag: 4, r1: 6.0, mdd: -26.8, dd: 30, trend: 38, val: null, scale: 45.9, mgr: 3.8, style: '高端制造', flaw: false },
+    { code: '005669', name: '前海开源公用事业', q: 82, ts: 26, lag: 2, r1: -3.2, mdd: -18.4, dd: 20, trend: 30, val: null, scale: 33.1, mgr: 9.4, style: '公用事业', flaw: false },
+    { code: '009777', name: '汇添富中证芯片产业', q: 81, ts: null, lag: 33, r1: 22.5, mdd: -33.0, dd: null, trend: null, val: null, scale: 74.6, mgr: 2.6, style: '科创·未分类', flaw: true },
+  ],
+  '指数型': [
+    { code: '110020', name: '易方达沪深300ETF联接A', q: 88, ts: 64, lag: 1, r1: 11.2, mdd: -16.8, dd: 55, trend: 62, val: 72, scale: 320.5, mgr: 6.0, style: '宽基', flaw: false },
+    { code: '000478', name: '建信中证500指数增强', q: 86, ts: 71, lag: 1, r1: 14.6, mdd: -19.2, dd: 68, trend: 66, val: 78, scale: 88.4, mgr: 5.5, style: '宽基', flaw: false },
+    { code: '007339', name: '易方达中证科创50ETF联接', q: 84, ts: null, lag: 26, r1: 28.4, mdd: -34.1, dd: null, trend: null, val: 66, scale: 140.2, mgr: 3.0, style: '科创·未分类', flaw: true },
+    { code: '160222', name: '国泰国证有色金属', q: 82, ts: 86, lag: 2, r1: 38.9, mdd: -30.5, dd: 88, trend: 76, val: 81, scale: 52.7, mgr: 4.1, style: '有色', flaw: false },
+    { code: '001594', name: '天弘中证银行ETF联接A', q: 80, ts: 40, lag: 1, r1: 5.4, mdd: -12.3, dd: 38, trend: 45, val: 40, scale: 210.0, mgr: 7.2, style: '银行', flaw: false },
+  ],
+  '货币型': [
+    { code: '000198', name: '天弘余额宝货币', q: 95, yield7: 1.72, scaleE: 6821.4, stab: 'A+' },
+    { code: '000509', name: '建信现金添利货币A', q: 92, yield7: 1.85, scaleE: 512.3, stab: 'A' },
+    { code: '004417', name: '兴全添利宝货币', q: 90, yield7: 1.79, scaleE: 380.6, stab: 'A' },
+  ],
+};
+// 债券型复用一份精简（不做择时）
+DATA['债券型'] = [
+  { code: '000187', name: '华安纯债债券A', q: 90, yield7: null, r1: 4.8, mdd: -1.2, scaleE: 88.5, stab: 'A+', style: '纯债', noTiming: true, lag: 36 },
+  { code: '003376', name: '广发汇瑞一年定开债', q: 88, r1: 5.2, mdd: -0.9, scaleE: 64.1, stab: 'A', style: '中长债', noTiming: true, lag: 36 },
+  { code: '070005', name: '嘉实债券', q: 86, r1: 3.9, mdd: -1.6, scaleE: 120.4, stab: 'A', style: '混合债', noTiming: true, lag: 37 },
+];
+// QDII / FOF 精简
+DATA['QDII'] = [
+  { code: '000834', name: '大成标普500等权重', q: 87, ts: 52, lag: 2, r1: 16.4, mdd: -14.2, dd: 48, trend: 58, val: 55, scale: 42.1, mgr: 5.0, style: '海外宽基', flaw: false },
+  { code: '040046', name: '华安纳斯达克100', q: 85, ts: 35, lag: 3, r1: 24.1, mdd: -20.6, dd: 32, trend: 40, val: 30, scale: 96.8, mgr: 6.1, style: '海外科技', flaw: false },
+  { code: '160140', name: '南方原油A', q: 78, ts: null, lag: 1, r1: -8.2, mdd: -22.4, dd: null, trend: null, val: null, scale: 18.5, mgr: 4.5, style: '商品', flaw: false, accNull: true },
+];
+DATA['FOF'] = [
+  { code: '005218', name: '南方全天候策略FOF', q: 84, ts: 60, lag: 2, r1: 8.4, mdd: -9.6, dd: 55, trend: 62, val: null, scale: 33.2, mgr: 5.8, style: '均衡配置', flaw: false },
+  { code: '006306', name: '兴全安泰平衡养老FOF', q: 82, ts: null, lag: 40, r1: 6.1, mdd: -7.8, dd: null, trend: null, val: null, scale: 58.9, mgr: 7.4, style: '养老目标', flaw: false },
+];
+
+/* ===== 派生字段：净值 / 成立以来 / 目前回撤（距高点）/ 入选理由 =====
+   目前回撤(curDD)对应文档 T1 drawdown_from_high（dd=acc/peak-1），与历史最大回撤(mdd)是两个指标。
+   acc_nav 缺失时按防线3 用单位净值近似（accNull=true）。 */
+const PICK_DATE = '2026-07-08';
+function dateMinus(base, days) {
+  const d = new Date(base + 'T00:00:00');
+  d.setDate(d.getDate() - (days || 0));
+  return d.toISOString().slice(0, 10);
+}
+function yearsBetween(fromStr, toStr) {
+  return ((new Date(toStr) - new Date(fromStr)) / (365.25 * 864e5)).toFixed(1);
+}
+function buildReasons(r, type) {
+  if (type === '货币型') return ['七日年化居同类前列', '规模大流动性好'];
+  if (type === '债券型') return ['同类质量分居前', '回撤极小、持有体验稳'];
+  const out = [];
+  if (r.q >= 88) out.push('同类质量分前列');
+  else if (r.q >= 82) out.push('同类质量分居前');
+  if (r.ts != null && r.ts >= 75) out.push('当前处历史相对低位');
+  else if (r.ts != null && r.ts >= 50) out.push('位置中性适合定投');
+  if (r.trend != null && r.trend >= 70) out.push('净值站上长期均线');
+  if (r.curDD != null && r.curDD <= -25) out.push('距高点回撤较深');
+  if (r.mgr != null && r.mgr >= 8) out.push('经理任职经验丰富');
+  if (r.mdd != null && r.mdd > -20) out.push('历史回撤控制较好');
+  if (r.ts == null && r.lag != null && r.lag > 7) out.push('净值披露滞后、暂不评位');
+  return out.slice(0, 3);
+}
+function enrich() {
+  Object.entries(DATA).forEach(([type, rows]) => {
+    rows.forEach((r, i) => {
+      if (type !== '货币型') {
+        if (r.unitNav == null) r.unitNav = +(1 + (r.q % 25) / 10 + i * 0.11).toFixed(4);
+        if (r.accNav == null && !r.accNull) r.accNav = +(r.unitNav + 0.6 + (r.mgr || 3) * 0.09).toFixed(4);
+        if (r.navDate == null) r.navDate = dateMinus(PICK_DATE, r.lag != null ? r.lag : 1);
+        if (r.setupDate == null) r.setupDate = dateMinus(PICK_DATE, Math.round(Math.max(1.6, (r.mgr || 3) + 1.4) * 365));
+        if (r.inception == null) r.inception = +(((r.r1 || 0) * 2.2) + (r.mgr || 3) * 12 + 15).toFixed(1);
+        // 目前回撤：与 T1 回撤分(dd)正相关（越跌 dd 越高、curDD 越深）；无 dd(净值滞后/缺 acc)则未知
+        // 约束：当前距高点回撤在幅度上不可能超过历史最大回撤(mdd)，故 clamp 到 |mdd| 以内
+        if (r.curDD == null && r.dd != null) {
+          let cd = -((r.dd * 0.34) + 2);
+          if (r.mdd != null) cd = Math.max(cd, r.mdd + 0.3);
+          r.curDD = +cd.toFixed(1);
+        }
+      }
+      r.reasons = buildReasons(r, type);
+    });
+  });
+}
+
+let curType = '股票型';
+
+/* ================= 渲染 ================= */
+function renderCapsules() {
+  const box = document.getElementById('capsules');
+  box.innerHTML = TYPES.map(t =>
+    `<span class="capsule ${t.key === curType ? 'active' : ''}" onclick="selectType('${t.key}')">${t.key}${t.timing ? '' : ' <span class="no-timing-dot">·收益型</span>'}</span>`
+  ).join('');
+}
+
+function lagTag(lag) {
+  if (lag == null) return '';
+  if (lag <= 2) return `<span class="lag-tag fresh">净值T-${lag}</span>`;
+  if (lag <= 5) return `<span class="lag-tag fresh">滞后${lag}天</span>`;
+  return `<span class="lag-tag">⚠滞后${lag}天</span>`;
+}
+function scoreColor(q) { return q >= 75 ? 'var(--c-good)' : q >= 50 ? 'var(--c-mid)' : 'var(--c-bad)'; }
+function retCls(v) { return v >= 0 ? 'ret-up' : 'ret-down'; }
+function timingCell(row, hasTiming) {
+  if (!hasTiming) return `<span class="alt-metric">—</span>`;
+  const t = tierOf(row.ts);
+  return `<span class="timing-badge ${t.cls}">${t.label}${row.ts != null ? ' ' + row.ts : ''}</span>${lagTag(row.lag)}`;
+}
+function navCell(r) {
+  if (r.unitNav == null) return `<span class="alt-metric">—</span>`;
+  return `<span class="nav-cell"><b>${r.unitNav}</b>${r.accNav != null ? `<br><span class="acc">累计 ${r.accNav}</span>` : '<br><span class="acc" style="color:var(--c-mid)">缺累计</span>'}</span>`;
+}
+function curDDCell(r) {
+  if (r.curDD != null) return `<span class="cur-dd">${r.curDD}%</span>`;
+  if (r.ts == null && r.lag != null && r.lag > 7) return `<span class="alt-metric">滞后</span>`;
+  return `<span class="alt-metric">—</span>`;
+}
+
+function renderTable() {
+  const t = TYPES.find(x => x.key === curType);
+  const rows = DATA[curType] || [];
+  const head = document.getElementById('pickHead');
+  const body = document.getElementById('pickBody');
+
+  if (curType === '货币型') {
+    head.innerHTML = `<th>#</th><th>基金</th><th>质量分</th><th>七日年化</th><th>规模(亿)</th><th>稳定性</th>`;
+    body.innerHTML = rows.map((r, i) => `
+      <tr onclick="openDrawer('${curType}',${i})">
+        <td><span class="rank-badge ${i<3?'top'+(i+1):''}">${i+1}</span></td>
+        <td><div class="fund-name-cell"><span class="fn">${r.name}</span><span class="fc">${r.code}</span></div></td>
+        <td><span class="score-pill"><span class="score-dot" style="background:${scoreColor(r.q)}"></span>${r.q}</span></td>
+        <td class="ret-up">${r.yield7}%</td>
+        <td>${r.scaleE}</td>
+        <td><b style="color:var(--c-good)">${r.stab}</b></td>
+      </tr>`).join('');
+    return;
+  }
+  if (!t.timing) { // 债券
+    head.innerHTML = `<th>#</th><th>基金</th><th>净值</th><th>质量分</th><th>近1年</th><th>最大回撤</th><th>成立以来</th><th>类型</th>`;
+    body.innerHTML = rows.map((r, i) => `
+      <tr onclick="openDrawer('${curType}',${i})">
+        <td><span class="rank-badge ${i<3?'top'+(i+1):''}">${i+1}</span></td>
+        <td><div class="fund-name-cell"><span class="fn">${r.name}</span><span class="fc">${r.code}</span><span class="row-reason">${r.reasons[0]||''}</span></div></td>
+        <td>${navCell(r)}</td>
+        <td><span class="score-pill"><span class="score-dot" style="background:${scoreColor(r.q)}"></span>${r.q}</span></td>
+        <td class="${retCls(r.r1)}">${r.r1>0?'+':''}${r.r1}%</td>
+        <td class="ret-down">${r.mdd}%</td>
+        <td class="${retCls(r.inception)}">${r.inception>0?'+':''}${r.inception}%</td>
+        <td class="alt-metric">${r.style}</td>
+      </tr>`).join('');
+    return;
+  }
+  // 权益/择时桶
+  head.innerHTML = `<th>#</th><th>基金</th><th>净值</th><th>质量分</th><th>入场档位</th><th>近1年</th><th>目前回撤</th><th>风格</th>`;
+  body.innerHTML = rows.map((r, i) => `
+    <tr onclick="openDrawer('${curType}',${i})">
+      <td><span class="rank-badge ${i<3?'top'+(i+1):''}">${i+1}</span></td>
+      <td><div class="fund-name-cell"><span class="fn">${r.name}</span><span class="fc">${r.code}</span><span class="row-reason">${r.reasons[0]||''}</span></div></td>
+      <td>${navCell(r)}</td>
+      <td><span class="score-pill"><span class="score-dot" style="background:${scoreColor(r.q)}"></span>${r.q}</span></td>
+      <td>${timingCell(r, true)}</td>
+      <td class="${retCls(r.r1)}">${r.r1>0?'+':''}${r.r1}%</td>
+      <td>${curDDCell(r)}</td>
+      <td class="alt-metric">${r.style}${r.flaw ? ' <span class="lag-tag">⚠断层</span>' : ''}</td>
+    </tr>`).join('');
+}
+
+function renderCards() {
+  const t = TYPES.find(x => x.key === curType);
+  const rows = DATA[curType] || [];
+  const box = document.getElementById('pickCards');
+  box.innerHTML = rows.map((r, i) => {
+    let fields;
+    if (curType === '货币型') {
+      fields = `<div class="pc-field">质量分 <b>${r.q}</b></div>
+                <div class="pc-field">七日年化 <b class="ret-up">${r.yield7}%</b></div>
+                <div class="pc-field">规模 <b>${r.scaleE}亿</b></div>
+                <div class="pc-field">稳定性 <b style="color:var(--c-good)">${r.stab}</b></div>`;
+    } else if (!t.timing) {
+      fields = `<div class="pc-field">质量分 <b>${r.q}</b></div>
+                <div class="pc-field">净值 <b>${r.unitNav}</b></div>
+                <div class="pc-field">近1年 <b class="${retCls(r.r1)}">${r.r1}%</b></div>
+                <div class="pc-field">成立以来 <b class="${retCls(r.inception)}">${r.inception}%</b></div>
+                <div class="pc-field">最大回撤 <b class="ret-down">${r.mdd}%</b></div>
+                <div class="pc-field">规模 <b>${r.scaleE}亿</b></div>`;
+    } else {
+      const tier = tierOf(r.ts);
+      fields = `<div class="pc-field">质量分 <b>${r.q}</b></div>
+                <div class="pc-field">入场 <span class="timing-badge ${tier.cls}">${tier.label}${r.ts!=null?' '+r.ts:''}</span></div>
+                <div class="pc-field">单位净值 <b>${r.unitNav}</b></div>
+                <div class="pc-field">目前回撤 ${curDDCell(r)}</div>
+                <div class="pc-field">近1年 <b class="${retCls(r.r1)}">${r.r1}%</b></div>
+                <div class="pc-field">成立以来 <b class="${retCls(r.inception)}">${r.inception}%</b></div>`;
+    }
+    const rzHtml = (r.reasons && r.reasons.length && curType !== '货币型')
+      ? `<div class="reason-chips" style="margin-top:10px">` + r.reasons.map(x => `<span class="reason-chip ${/回撤较深|滞后|断层/.test(x)?'warmtone':''}">${x}</span>`).join('') + `</div>` : '';
+    return `<div class="pick-card" onclick="openDrawer('${curType}',${i})">
+      <div class="pc-head">
+        <span class="rank-badge ${i<3?'top'+(i+1):''}">${i+1}</span>
+        <div><div class="fn">${r.name}</div><div class="fc">${r.code} ${r.style?'· '+r.style:''}</div></div>
+      </div>
+      <div class="pc-grid">${fields}</div>
+      ${rzHtml}
+    </div>`;
+  }).join('');
+}
+
+function selectType(k) {
+  curType = k;
+  document.getElementById('bucketName').textContent = k;
+  const t = TYPES.find(x => x.key === k);
+  document.getElementById('bucketMode').textContent = t.timing
+    ? '口径 V1：质量主排序 + 择时标签'
+    : '收益型：只展示收益/规模稳定性（不做点位择时）';
+  renderCapsules(); renderTable(); renderCards();
+}
+
+/* ================= 详情抽屉 ================= */
+function dimBar(name, val) {
+  if (val == null) return `<div class="dim-row"><div class="dim-label"><span class="dl-name">${name}</span><span class="dim-missing">数据缺失，未参与</span></div><div class="dim-track"></div></div>`;
+  const c = val >= 75 ? 'var(--c-good)' : val >= 50 ? 'var(--c-mid)' : val >= 30 ? 'var(--c-sub)' : 'var(--c-bad)';
+  return `<div class="dim-row"><div class="dim-label"><span class="dl-name">${name}</span><span class="dl-val" style="color:${c}">${val}</span></div>
+    <div class="dim-track"><div class="dim-fill" style="width:${val}%;background:${c}"></div></div></div>`;
+}
+
+function reasonChips(reasons) {
+  return `<div class="reason-chips">` + reasons.map(t => {
+    const warm = /回撤较深|滞后|断层|高位/.test(t);
+    return `<span class="reason-chip ${warm ? 'warmtone' : ''}">${t}</span>`;
+  }).join('') + `</div>`;
+}
+function navCardHtml(r, type) {
+  if (type === '货币型') {
+    return `<div class="d-card">
+      <div class="d-card-title">💰 收益与规模 <span class="hint">货币基金净值恒为 1</span></div>
+      <div class="nav-grid">
+        <div class="nav-item"><span class="ni-label">七日年化</span><span class="ni-val ret-up">${r.yield7}%</span></div>
+        <div class="nav-item"><span class="ni-label">万份收益(近似)</span><span class="ni-val">${(r.yield7 / 365 * 100).toFixed(4)}</span></div>
+        <div class="nav-item"><span class="ni-label">规模</span><span class="ni-val">${r.scaleE} 亿</span></div>
+        <div class="nav-item"><span class="ni-label">稳定性</span><span class="ni-val" style="color:var(--c-good)">${r.stab}</span></div>
+      </div></div>`;
+  }
+  const years = yearsBetween(r.setupDate, PICK_DATE);
+  return `<div class="d-card">
+    <div class="d-card-title">💵 净值与成立以来 <span class="hint">净值日 ${r.navDate}</span></div>
+    <div class="nav-grid">
+      <div class="nav-item"><span class="ni-label">单位净值</span><span class="ni-val">${r.unitNav}</span></div>
+      <div class="nav-item"><span class="ni-label">累计净值</span><span class="ni-val">${r.accNav != null ? r.accNav : '<span style="color:var(--c-mid);font-size:13px">缺 acc_nav</span>'}</span></div>
+      <div class="nav-item"><span class="ni-label">成立以来</span><span class="ni-val ${r.inception >= 0 ? 'ret-up' : 'ret-down'}">${r.inception > 0 ? '+' : ''}${r.inception}%</span></div>
+      <div class="nav-item"><span class="ni-label">成立日</span><span class="ni-val" style="font-size:13.5px">${r.setupDate}<span style="color:var(--c-muted);font-size:12px"> · ${years}年</span></span></div>
+      <div class="nav-item"><span class="ni-label">目前回撤（距高点）</span><span class="ni-val cur-dd">${r.curDD != null ? r.curDD + '%' : '—'}</span></div>
+      <div class="nav-item"><span class="ni-label">历史最大回撤</span><span class="ni-val ret-down">${r.mdd != null ? r.mdd + '%' : '—'}</span></div>
+    </div>
+    ${r.accNull ? '<div class="flaw-note">🧮 防线3：缺累计净值(acc_nav)，成立以来/回撤用单位净值近似。</div>' : ''}
+  </div>`;
+}
+
+function sparkline(seed, up) {  // 生成一条 SVG 迷你净值曲线占位
+  let pts = [], y = 45;
+  for (let i = 0; i <= 40; i++) {
+    y += (Math.sin(i * 0.6 + seed) * 4) + (up ? -0.4 : 0.5) + (Math.random() - 0.5) * 2;
+    y = Math.max(8, Math.min(82, y));
+    pts.push(`${i * (460/40)},${y}`);
+  }
+  const color = up ? '#d23b3b' : '#16a34a';
+  return `<svg class="mini-chart" viewBox="0 0 460 90" preserveAspectRatio="none">
+    <polyline fill="none" stroke="${color}" stroke-width="2" points="${pts.join(' ')}"/>
+  </svg>`;
+}
+
+function openDrawer(type, idx) {
+  const r = DATA[type][idx];
+  const t = TYPES.find(x => x.key === type);
+  document.getElementById('drName').textContent = r.name;
+  document.getElementById('drCode').textContent = `${r.code} · ${type}${r.style ? ' · ' + r.style : ''}`;
+  const body = document.getElementById('drawerBody');
+
+  let timingCard = '';
+  if (t.timing) {
+    const tier = tierOf(r.ts);
+    if (r.ts == null) {
+      timingCard = `<div class="d-card">
+        <div class="d-card-title">🎯 入场时机 <span class="hint">T1 回撤 · T2 趋势 · T3 估值</span></div>
+        <div class="timing-hero">
+          <div class="big-badge" style="background:${tier.color}"><span class="bb-tier">暂无</span></div>
+          <div class="bb-desc">该基金净值披露滞后 <b style="color:var(--c-mid)">${r.lag} 天</b>，已触发「日历对齐拦截器」（&gt;7 日不产出档位），避免用陈旧净值误导。</div>
+        </div>
+        <div class="flaw-note">🕒 防线1：净值更新滞后。系统宁可留白也不用一个月前的净值判断「当前位置」。</div>
+      </div>`;
+    } else {
+      timingCard = `<div class="d-card">
+        <div class="d-card-title">🎯 入场时机 <span class="hint">绝对时序刻度 0–100</span></div>
+        <div class="timing-hero">
+          <div class="big-badge" style="background:${tier.color}"><span class="bb-tier">${tier.label}</span><span class="bb-score">${r.ts}</span></div>
+          <div class="bb-desc">${tier.desc}<br><span style="color:var(--c-muted);font-size:11.5px">净值披露 T-${r.lag}</span></div>
+        </div>
+        <div style="font-size:12px;color:var(--c-sub);margin:-2px 0 12px">当前距高点回撤 <b class="cur-dd">${r.curDD != null ? r.curDD + '%' : '—'}</b>（对应 T1 回撤位置分 ${r.dd}，区别于历史最大回撤 ${r.mdd}%）。</div>
+        ${dimBar('T1 回撤位置（越跌分越高，有上限防接飞刀）', r.dd)}
+        ${dimBar('T2 趋势（站上长均线 + 斜率）', r.trend)}
+        ${dimBar('T3 指数估值分位' + (r.val==null?'（非宽基/缺指数估值）':''), r.val)}
+        ${r.accNull ? '<div class="flaw-note">🧮 防线3：该基金缺累计净值(acc_nav)，回撤用单位净值近似估算。</div>' : ''}
+        <div class="d-disclaimer">档位为技术性位置提示，非买卖信号；阈值经样本外验证前仅作研究参考。</div>
+      </div>`;
+    }
+  } else {
+    timingCard = `<div class="d-card">
+      <div class="d-card-title">💰 收益型基金说明</div>
+      <div class="bb-desc">${type}不做点位择时，改看收益稳定性与规模。当前
+        ${r.yield7 != null ? `七日年化 <b class="ret-up">${r.yield7}%</b>` : `近1年 <b class="${retCls(r.r1)}">${r.r1}%</b>`}，
+        规模 <b>${r.scaleE} 亿</b>，稳定性评级 <b style="color:var(--c-good)">${r.stab}</b>。</div>
+      ${r.lag ? `<div class="flaw-note">🕒 该桶净值披露频率较低（滞后约 ${r.lag} 天），故不生成择时档位。</div>` : ''}
+    </div>`;
+  }
+
+  const qGrid = `<div class="d-card">
+    <div class="d-card-title">📊 质量评分构成 <span class="hint">F7 多因子（桶内百分位）</span></div>
+    <div class="q-grid">
+      <div class="q-item"><span class="qi-label">综合质量分</span><span class="qi-val" style="color:${scoreColor(r.q)}">${r.q}</span></div>
+      <div class="q-item"><span class="qi-label">近1年收益</span><span class="qi-val ${r.r1!=null?retCls(r.r1):''}">${r.r1!=null?(r.r1>0?'+':'')+r.r1+'%':'—'}</span></div>
+      <div class="q-item"><span class="qi-label">规模</span><span class="qi-val">${(r.scale||r.scaleE||'—')}${(r.scale||r.scaleE)?' 亿':''}</span></div>
+      ${r.mgr?`<div class="q-item"><span class="qi-label">经理年限</span><span class="qi-val">${r.mgr} 年</span></div>`:''}
+      ${r.style?`<div class="q-item"><span class="qi-label">主风格</span><span class="qi-val" style="font-size:13px">${r.style}</span></div>`:''}
+    </div>
+    ${r.flaw ? '<div class="flaw-note">🏭 防线2：该基金重仓含科创板标的，行业因 688 未回填暂标「未分类」，风格暴露仅供参考。</div>' : ''}
+  </div>`;
+
+  const navCard = (t.timing && r.ts != null) ? `<div class="d-card">
+    <div class="d-card-title">📈 累计净值走势（近半年）</div>
+    ${sparkline(r.q, r.r1 >= 0)}
+  </div>` : '';
+
+  const reasonCard = (r.reasons && r.reasons.length) ? `<div class="d-card">
+    <div class="d-card-title">⭐ 入选理由 <span class="hint">客观属性归因，非买卖建议</span></div>
+    ${reasonChips(r.reasons)}
+  </div>` : '';
+
+  body.innerHTML = reasonCard + timingCard + navCardHtml(r, type) + qGrid + navCard +
+    `<p class="d-disclaimer">免责声明：以上评分/档位/理由为量化排序与研究辅助，非投资建议。基金有风险，投资需谨慎。</p>`;
+
+  document.getElementById('drawer').classList.add('open');
+  document.getElementById('drawerMask').classList.add('open');
+}
+function closeDrawer() {
+  document.getElementById('drawer').classList.remove('open');
+  document.getElementById('drawerMask').classList.remove('open');
+}
+
+/* ================= 钉钉推送预览（对齐 §7.3：每桶 Top3 紧凑摘要） ================= */
+function openPush() {
+  const buckets = ['股票型', '指数型', 'QDII'];
+  let html = `<h4>📈 每日基金精选榜 2026-07-08</h4>`;
+  buckets.forEach(b => {
+    html += `<div class="dt-bucket">${b}</div>`;
+    (DATA[b] || []).slice(0, 3).forEach(r => {
+      const tier = tierOf(r.ts);
+      const badge = r.ts != null
+        ? `<span class="timing-badge ${tier.cls}" style="transform:scale(.85)">${tier.label}${r.ts}</span>`
+        : `<span class="timing-badge tb-na" style="transform:scale(.85)">暂无</span>`;
+      const rz = (r.reasons && r.reasons[0]) ? ` · <span style="color:var(--c-muted)">${r.reasons[0]}</span>` : '';
+      html += `<div class="dt-line">· <a href="javascript:demoDeepLink('${r.code}')">${r.name}</a> 质量${r.q} ${badge}${rz}</div>`;
+    });
+  });
+  // 收益型示例
+  html += `<div class="dt-bucket">货币型（收益稳定性）</div>`;
+  DATA['货币型'].slice(0, 2).forEach(r => {
+    html += `<div class="dt-line">· <a href="javascript:demoDeepLink('${r.code}')">${r.name}</a> 七日年化 ${r.yield7}%</div>`;
+  });
+  html += `<div class="dt-line" style="margin-top:8px">📋 <a href="javascript:void(0)">查看完整每类 Top10 榜单 →</a></div>`;
+  html += `<div class="dt-foot">event_type=fund_daily_pick · dedupe_key 幂等防刷屏 · 非买卖建议，基金有风险</div>`;
+  document.getElementById('dtBubble').innerHTML = html;
+  document.getElementById('pushModal').classList.add('open');
+}
+function closePush() { document.getElementById('pushModal').classList.remove('open'); }
+function demoDeepLink(code) {
+  closePush();
+  // 模拟深链 /#/fund/rank?code=XXXXXX 自动开抽屉
+  for (const type of Object.keys(DATA)) {
+    const idx = DATA[type].findIndex(r => r.code === code);
+    if (idx >= 0) { selectType(type); openDrawer(type, idx); return; }
+  }
+}
+
+/* 支持 URL ?code= 深链（对齐文档 §7.3 详情深链） */
+function initDeepLink() {
+  const m = location.search.match(/code=(\w+)/);
+  if (m) demoDeepLink(m[1]);
+}
+
+// 初始化
+enrich();
+selectType('股票型');
+initDeepLink();
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeDrawer(); closePush(); } });
+</script>
+</body>
+</html>
