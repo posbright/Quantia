@@ -169,10 +169,16 @@ Streaming analysis ([quantia/job/streaming_analysis_job.py]) processes 4900+ sto
    - 提交范围：`全部一起提交` / `只提交后端（不含 dist）` / `拆分多个语义化 commit` / `先不提交`
    - 是否 push：`立即 push origin <当前分支>` / `仅本地 commit`
 2. 询问前先 `git status --short` + `git log --oneline -3` 让用户看到上下文。
-3. commit message 用中文，第一行 `<type>: <概要>`（type ∈ fix/feat/chore/docs/refactor/test/perf），后续段落分组列出前端/后端/测试/文档/构建变更，简明扼要。
-4. **绝不**使用 `--force` / `--no-verify` / `git reset --hard` / 删除分支等危险操作，除非用户在当前对话里明确要求。
-5. 仅本机改动（venv / cache / log / .env）不必提示提交；纯讨论 / 纯查询任务也不必提示。
-6. 若 `git status` 没有变化，跳过本流程。
+3. **敏感信息提交前拦截**：任何 commit / push 前，必须检查待提交 diff（先看 `git diff`，暂存后再看 `git diff --cached`）是否包含真实敏感信息，并在提交前替换为占位符，禁止把真实值推到远端：
+  - IP / 主机：真实公网 IP、云服务器 IP、内网固定 IP、数据库/Redis/SSH 主机地址 → `<HOST>` / `<DB_HOST>` / `<REDIS_HOST>` / `<REMOTE_HOST>`。示例文档 IP 可用 `203.0.113.10`、`198.51.100.10`、`192.0.2.10` 等 RFC 5737 保留地址。
+  - 密码 / Token / API Key / Secret / Cookie / Authorization：任何真实凭证 → `<PASSWORD>` / `<API_KEY>` / `<TOKEN>` / `<SECRET>` / `<COOKIE>`。
+  - DSN / URL / 连接串：如 `mysql://user:pass@host:3306/db`、`redis://:pass@host:6379/0`、带 key 的 webhook URL → 用占位符重写用户名、密码、host 与 token。
+  - 私钥 / 证书 / 会话文件：`BEGIN PRIVATE KEY`、`.pem`、`.key`、导出的 cookie/session 等不得提交；若必须提供模板，只提交 `.example` 且内容为占位符。
+  - 发现敏感信息后先修改文件为占位符，再重新运行 diff 检查；若敏感值已经被 commit / push，立即停止并提示需要历史重写，不要继续普通 push。
+4. commit message 用中文，第一行 `<type>: <概要>`（type ∈ fix/feat/chore/docs/refactor/test/perf），后续段落分组列出前端/后端/测试/文档/构建变更，简明扼要。
+5. **绝不**使用 `--force` / `--no-verify` / `git reset --hard` / 删除分支等危险操作，除非用户在当前对话里明确要求。
+6. 仅本机改动（venv / cache / log / .env）不必提示提交；纯讨论 / 纯查询任务也不必提示。
+7. 若 `git status` 没有变化，跳过本流程。
 
 例外：用户明确说"先不要提交"或在本对话里已经回答过"先本地 commit"，本次回合不再追问。
 
