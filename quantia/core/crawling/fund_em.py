@@ -517,3 +517,61 @@ def fund_holding_latest(code, year) -> pd.DataFrame:
     if transient_error is not None:
         raise transient_error
     return None
+
+
+# ── 基金经理经验（P4 弱因子）──────────────────────────────────────
+# 来源 fund_manager_em()：一次全量返回所有在管经理×基金行（约 3.5 万行）。
+# 中文列 → 英文列映射（对齐 TABLE_CN_FUND_MANAGER）。
+
+_MANAGER_COL_MAP = {
+    '姓名': 'manager',
+    '所属公司': 'company',
+    '现任基金代码': 'code',
+    '累计从业时间': 'tenure_days',
+    '现任基金资产总规模': 'total_aum',
+    '现任基金最佳回报': 'best_return',
+}
+
+
+def _map_manager_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """经理全量表列映射 + 数值解析 + 计算每位经理在管基金数（fund_count）。纯函数。
+
+    grain：一行 = (经理, 基金)。同一经理可管多只基金 → 出现多行；同一基金可有多位
+    经理 → 出现多行。主键 (code, manager)，对重复对去重取首行。
+    fund_count 按经理维度统计其去重在管基金数，供上层「一拖多」提示。
+    """
+    if df is None or len(df.index) == 0:
+        return None
+    keep = {cn: en for cn, en in _MANAGER_COL_MAP.items() if cn in df.columns}
+    if 'code' not in keep.values() or 'manager' not in keep.values():
+        return None
+    out = df[list(keep)].rename(columns=keep).copy()
+    out['code'] = out['code'].astype(str).str.zfill(6)
+    out['manager'] = out['manager'].astype(str).str.strip()
+    for col in ('tenure_days', 'total_aum', 'best_return'):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors='coerce')
+    # 去重 (code, manager)，保留首行
+    out = out.drop_duplicates(subset=['code', 'manager'], keep='first')
+    # 每位经理在管去重基金数
+    fund_count = out.groupby('manager')['code'].nunique().rename('fund_count')
+    out = out.merge(fund_count, on='manager', how='left')
+    out['tenure_days'] = out['tenure_days'].astype('Int64')
+    out['fund_count'] = out['fund_count'].astype('Int64')
+    return out.reset_index(drop=True)
+
+
+def fund_manager_all() -> pd.DataFrame:
+    """全量基金经理经验表（一次抓取，映射为英文列 + fund_count）。
+
+    返回列：code, manager, company, tenure_days, total_aum, best_return, fund_count。
+    无数据/抓取失败 → None。属 fetch 管道（akshare 单源）。
+    """
+    import akshare as ak
+
+    try:
+        df = _fetch_with_retry(ak.fund_manager_em, _desc='基金经理全量')
+    except Exception:
+        logging.warning("fund_em.fund_manager_all: 经理全量抓取失败", exc_info=True)
+        return None
+    return _map_manager_columns(df)

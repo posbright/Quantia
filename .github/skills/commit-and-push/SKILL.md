@@ -1,5 +1,5 @@
 ---
-description: 用于 Quantia 仓库每完成一项用户请求后，主动询问用户是否提交并推送变更，规范 commit message 与避免危险操作。AGENTS.md 已强制此流程，本 SKILL 提供询问模板、commit type 选择指南、安全检查清单与常见反模式。无变更 / 纯讨论 / 用户明确说"先不提交"时跳过。
+description: 用于 Quantia 仓库每完成一项用户请求后，主动询问用户是否提交并推送变更，规范 commit message、提交前敏感信息扫描与占位符替换，避免 IP、密码、API-key、token、secret 等泄露到远程仓库。AGENTS.md 已强制此流程，本 SKILL 提供询问模板、commit type 选择指南、安全检查清单与常见反模式。无变更 / 纯讨论 / 用户明确说"先不提交"时跳过。
 ---
 
 # Commit & push workflow
@@ -20,6 +20,49 @@ git branch --show-current
 ```
 
 把结果摘要展示给用户，让其确认范围。
+
+### 1.5 敏感信息提交前检查（强制）
+
+任何 `git add` / `git commit` / `git push` 前都必须检查待提交内容是否包含真实敏感信息。发现后先替换成占位符，再重新检查；不得把真实值提交到本地 commit，更不得 push 到远端。
+
+优先检查当前改动：
+
+```powershell
+git diff -- . ':!db_ha' ':!cache' ':!quantia/log'
+git status --short
+```
+
+暂存后必须复查：
+
+```powershell
+git diff --cached -- . ':!db_ha' ':!cache' ':!quantia/log'
+```
+
+重点拦截类型：
+
+| 类型 | 例子 | 占位符 |
+| --- | --- | --- |
+| IP / 主机地址 | 云服务器公网 IP、数据库 IP、Redis IP、SSH host | `<HOST>` / `<DB_HOST>` / `<REDIS_HOST>` / `<REMOTE_HOST>` |
+| 密码 | DB 密码、Redis 密码、登录密码、`MYSQL_PWD` | `<PASSWORD>` |
+| API Key / Token / Secret | `api_key=...`、`Authorization: Bearer ...`、webhook access token | `<API_KEY>` / `<TOKEN>` / `<SECRET>` |
+| Cookie / Session | `Cookie: ...`、导出的 session 文件 | `<COOKIE>` / 不提交 |
+| 连接串 | `mysql://user:pass@host:3306/db`、`redis://:pass@host:6379/0` | `mysql://<DB_USER>:<PASSWORD>@<DB_HOST>:3306/<DB_NAME>` |
+| 私钥 / 证书 | `BEGIN PRIVATE KEY`、`.pem`、`.key` | 不提交；只保留 `.example` 模板 |
+
+建议使用的搜索词（不替代人工审查 diff）：
+
+```powershell
+git diff --cached --name-only | Select-String -Pattern "env|secret|token|key|password|passwd|pwd|cookie|session|credential|config|yml|yaml|json|ini|conf|sh|bat|ps1"
+git diff --cached | Select-String -Pattern "(?i)(password|passwd|pwd|api[_-]?key|secret|token|authorization|bearer|cookie|mysql_pwd|access[_-]?key|webhook|dsn|redis://|mysql://|BEGIN .*PRIVATE KEY|[0-9]{1,3}(\.[0-9]{1,3}){3})"
+```
+
+替换规则：
+
+- 配置模板使用 `.example` / `.template` 后缀，真实文件加入 `.gitignore` 或 `.git/info/exclude`。
+- 示例 IP 使用 RFC 5737 保留地址：`192.0.2.10`、`198.51.100.10`、`203.0.113.10`。
+- 不能只删除一行绕过功能；应保留配置结构并用占位符表达必填项。
+- 如果敏感值已经进入本地 commit 但未 push，先停下并说明需要 amend / reset / filter-repo 等处理方案。
+- 如果敏感值已经 push，立即停止普通提交流程，提示需要远端历史重写与密钥轮换。
 
 ### 2. 用 vscode_askQuestions 询问
 

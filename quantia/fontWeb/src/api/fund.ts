@@ -255,6 +255,130 @@ export function getFundTiming(code: string) {
   })
 }
 
+// ── T6 穿透式持仓位置（P4，季报前十大重仓股技术位置，仅展示参考卡）──────
+
+export interface FundLookThroughHolding {
+  stock_code: string
+  stock_name: string | null
+  industry: string | null
+  hold_ratio: number | null
+  position_score: number | null
+  dd: number | null
+  ma: number | null
+  rsi: number | null
+  priced: boolean
+}
+
+export interface FundLookThrough {
+  code: string
+  name: string | null
+  fund_type: string | null
+  quarter: string | null
+  data_available: boolean
+  position_score: number | null
+  position_label: string | null
+  covered_ratio: number
+  scored_count: number
+  holdings_count: number
+  holdings: FundLookThroughHolding[]
+  disclaimer: string
+  note: string
+}
+
+export function getFundLookThrough(code: string) {
+  return request<FundLookThrough>({
+    url: '/api/fund/look_through',
+    method: 'get',
+    params: { code },
+  })
+}
+
+// ── 持仓风格暴露 + 前向兼容漂移（P4，季报行业暴露/集中度，风控辅助展示）──────
+
+export interface FundStyleIndustry {
+  industry: string
+  weight: number
+  share: number | null
+}
+
+export interface FundStyleDriftChange {
+  industry: string
+  delta: number
+}
+
+export interface FundStyleDrift {
+  drift_score: number
+  drift_label: string | null
+  top_changes: FundStyleDriftChange[]
+}
+
+export interface FundStyle {
+  code: string
+  name: string | null
+  fund_type: string | null
+  quarter: string | null
+  data_available: boolean
+  industries: FundStyleIndustry[]
+  unclassified_weight: number
+  disclosed_ratio: number
+  unclassified_ratio: number | null
+  hhi: number | null
+  concentration_label: string | null
+  top3_share: number | null
+  n_industries: number
+  drift_available: boolean
+  drift: FundStyleDrift | null
+  prev_quarter: string | null
+  disclaimer: string
+  note: string
+}
+
+export function getFundStyle(code: string) {
+  return request<FundStyle>({
+    url: '/api/fund/style',
+    method: 'get',
+    params: { code },
+  })
+}
+
+// ── 基金经理经验弱因子（P4，来源 fund_manager_em，弱因子展示）──────────
+
+export interface FundManagerDetail {
+  manager: string
+  company: string | null
+  tenure_years: number | null
+  total_aum: number | null
+  best_return: number | null
+  fund_count: number | null
+}
+
+export interface FundManager {
+  code: string
+  name: string | null
+  fund_type: string | null
+  data_available: boolean
+  manager_count: number
+  names: string[]
+  company: string | null
+  max_tenure_years: number | null
+  avg_tenure_years: number | null
+  experience_label: string | null
+  best_return: number | null
+  max_fund_count: number | null
+  over_extended: boolean
+  managers: FundManagerDetail[]
+  disclaimer: string
+  note: string
+}
+
+export function getFundManager(code: string) {
+  return request<FundManager>({
+    url: '/api/fund/manager',
+    method: 'get',
+    params: { code },
+  })
+}
+
 // ── AI 按需分析（F14，懒加载 LLM）──────────────────────────────────
 
 export interface FundAiSource {

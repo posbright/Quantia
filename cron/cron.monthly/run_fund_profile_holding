@@ -1,8 +1,9 @@
 #!/bin/bash
-# 场外基金画像 + 重仓股月度采集（F10 / F12，慢 job，akshare 单源）
-# 触发：每月执行一次（规模/经理/评级季度级稳定，重仓股季频披露）
+# 场外基金画像 + 重仓股 + 经理经验月度采集（F10 / F12 / P4，慢 job，akshare 单源）
+# 触发：每月执行一次（规模/经理/评级季度级稳定，重仓股季频披露，经理经验低频）
 #   - F10 cn_fund_profile：规模/公司/经理/评级/策略/基准
 #   - F12 cn_fund_holding：最新季度前十大重仓股 + 行业回填
+#   - P4 cn_fund_manager：基金经理经验弱因子（fund_manager_em 全量一次抓取）
 # 属 fetch 管道；逐基金抓取，失败不互相阻断。
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
@@ -25,9 +26,14 @@ run_job "基金重仓股采集 (fetch_fund_holding_job)" \
     "quantia/job/fetch_fund_holding_job.py" \
     "${QUANTIA_FUND_HOLDING_TIMEOUT:-3600}" || FAILED=$((FAILED + 1))
 
+# P4 经理经验：一次性全量抓取 fund_manager_em，按 cn_fund_rank 全集过滤 upsert。
+run_job "基金经理经验采集 (fetch_fund_manager_job)" \
+    "quantia/job/fetch_fund_manager_job.py" \
+    "${QUANTIA_FUND_MANAGER_TIMEOUT:-1200}" || FAILED=$((FAILED + 1))
+
 if [ $FAILED -eq 0 ]; then
-    log_info "基金画像 + 重仓股月度采集完成 ✓"
+    log_info "基金画像 + 重仓股 + 经理经验月度采集完成 ✓"
 else
-    log_warn "基金画像 + 重仓股月度采集结束 ✗ ($FAILED/2 失败)"
+    log_warn "基金画像 + 重仓股 + 经理经验月度采集结束 ✗ ($FAILED/3 失败)"
 fi
 exit $FAILED

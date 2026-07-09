@@ -72,6 +72,129 @@
           </template>
         </div>
 
+        <!-- 底层持仓位置（P4 T6：季报前十大重仓股技术位置，仅展示参考，不入择时分）-->
+        <div v-if="lookThrough && lookThrough.data_available" class="fdd-section fdd-lookthrough">
+          <div class="fdd-section-title">
+            🔬 底层持仓位置
+            <span v-if="lookThroughQuarter" class="fdd-muted">（{{ lookThroughQuarter }} · 参考）</span>
+          </div>
+          <div class="fdd-lt-head">
+            <span class="fdd-tier" :class="ltLabelClass(lookThrough.position_label)">
+              {{ lookThrough.position_label }}
+            </span>
+            <span v-if="lookThrough.position_score != null" class="fdd-timing-score">
+              位置分 <b>{{ lookThrough.position_score.toFixed(0) }}</b>
+            </span>
+            <span class="fdd-muted">
+              已评估 {{ lookThrough.scored_count }}/{{ lookThrough.holdings_count }} 只 · 覆盖净值 {{ lookThrough.covered_ratio.toFixed(1) }}%
+            </span>
+          </div>
+          <div class="fdd-lt-list">
+            <div v-for="h in lookThrough.holdings" :key="h.stock_code" class="fdd-lt-row">
+              <span class="fdd-lt-name">
+                {{ h.stock_name || h.stock_code }}
+                <i v-if="h.hold_ratio != null" class="fdd-muted">{{ h.hold_ratio.toFixed(1) }}%</i>
+              </span>
+              <template v-if="h.priced && h.position_score != null">
+                <div class="fdd-timing-track">
+                  <div
+                    class="fdd-timing-fill"
+                    :style="{ width: `${Math.max(0, Math.min(100, h.position_score))}%`, background: timingBarColor(h.position_score) }"
+                  ></div>
+                </div>
+                <span class="fdd-lt-val">{{ h.position_score.toFixed(0) }}</span>
+              </template>
+              <span v-else class="fdd-lt-na fdd-muted">无本地行情</span>
+            </div>
+          </div>
+          <div class="fdd-timing-note">
+            位置分越高＝底仓越处历史低位（距高点回撤深 / 跌破长均线 / RSI 超卖），越适合分批建仓；季报滞后约一季度、穿透不完整，仅供参考、非买卖建议。
+          </div>
+        </div>
+
+        <!-- 持仓风格暴露（P4：季报行业暴露/集中度 + 前向兼容漂移，风控辅助展示，非硬拦截）-->
+        <div v-if="style && style.data_available" class="fdd-section fdd-style">
+          <div class="fdd-section-title">
+            🎯 持仓风格暴露
+            <span v-if="styleQuarter" class="fdd-muted">（{{ styleQuarter }} · 参考）</span>
+          </div>
+          <div class="fdd-lt-head">
+            <span v-if="style.concentration_label" class="fdd-tier" :class="concClass(style.concentration_label)">
+              {{ style.concentration_label }}
+            </span>
+            <span v-if="style.hhi != null" class="fdd-timing-score">
+              集中度 <b>{{ (style.hhi * 100).toFixed(0) }}</b>
+            </span>
+            <span class="fdd-muted">
+              覆盖净值 {{ style.disclosed_ratio.toFixed(1) }}%
+              <template v-if="style.unclassified_ratio != null"> · 未分类 {{ (style.unclassified_ratio * 100).toFixed(0) }}%</template>
+            </span>
+          </div>
+          <div class="fdd-lt-list">
+            <div v-for="ind in style.industries" :key="ind.industry" class="fdd-lt-row">
+              <span class="fdd-lt-name">{{ ind.industry }}</span>
+              <div class="fdd-timing-track">
+                <div class="fdd-timing-fill fdd-style-fill" :style="{ width: `${industryBarWidth(ind.share)}%` }"></div>
+              </div>
+              <span class="fdd-lt-val">{{ ind.weight.toFixed(1) }}%</span>
+            </div>
+          </div>
+          <!-- 风格漂移：需 ≥2 季报，历史累积后自动点亮 -->
+          <div v-if="style.drift_available && style.drift" class="fdd-style-drift">
+            <span class="fdd-tier" :class="driftClass(style.drift.drift_label)">
+              {{ style.drift.drift_label }}
+            </span>
+            <span class="fdd-timing-score">漂移 <b>{{ style.drift.drift_score.toFixed(0) }}</b></span>
+            <span v-if="style.prev_quarter" class="fdd-muted">vs 上季</span>
+            <span
+              v-for="ch in style.drift.top_changes.slice(0, 3)"
+              :key="ch.industry"
+              class="fdd-style-chg"
+              :class="ch.delta >= 0 ? 'up' : 'down'"
+            >{{ ch.industry }} {{ ch.delta >= 0 ? '+' : '' }}{{ (ch.delta * 100).toFixed(0) }}%</span>
+          </div>
+          <div v-else class="fdd-timing-note fdd-muted">风格漂移需 ≥2 期季报，历史累积中，暂不可用。</div>
+          <div class="fdd-timing-note">
+            按季报前十大重仓股行业加权；集中度越高＝越押注单一赛道。「未分类」含科创板等未回填行业个股，仅透明化占比、不计入集中度。仅风控辅助、非买卖建议。
+          </div>
+        </div>
+
+        <!-- 基金经理经验（P4：来源 fund_manager_em，弱因子展示，非硬拦截）-->
+        <div v-if="manager && manager.data_available" class="fdd-section fdd-mgr">
+          <div class="fdd-section-title">
+            👤 经理经验
+            <span class="fdd-muted">（弱因子 · 参考）</span>
+          </div>
+          <div class="fdd-lt-head">
+            <span v-if="manager.experience_label" class="fdd-tier" :class="mgrClass(manager.experience_label)">
+              {{ manager.experience_label }}
+            </span>
+            <span v-if="manager.max_tenure_years != null" class="fdd-timing-score">
+              从业 <b>{{ manager.max_tenure_years.toFixed(1) }}</b> 年
+            </span>
+            <span class="fdd-muted">
+              {{ manager.manager_count }} 位经理
+              <template v-if="manager.best_return != null"> · 最佳回报 {{ manager.best_return.toFixed(0) }}%</template>
+            </span>
+            <span v-if="manager.over_extended" class="fdd-tier tier-high fdd-mgr-warn">
+              一拖多 {{ manager.max_fund_count }} 只
+            </span>
+          </div>
+          <div class="fdd-lt-list">
+            <div v-for="m in manager.managers" :key="m.manager" class="fdd-lt-row fdd-mgr-row">
+              <span class="fdd-lt-name">{{ m.manager }}</span>
+              <span class="fdd-mgr-meta fdd-muted">
+                <template v-if="m.tenure_years != null">从业 {{ m.tenure_years.toFixed(1) }} 年</template>
+                <template v-if="m.fund_count != null"> · 在管 {{ m.fund_count }} 只</template>
+                <template v-if="m.best_return != null"> · 最佳 {{ m.best_return.toFixed(0) }}%</template>
+              </span>
+            </div>
+          </div>
+          <div class="fdd-timing-note">
+            「从业年限」为经理全市场累计从业时间，非本基金任职起始日；经理经验仅弱因子参考、非投资建议。一拖多（单人在管过多）仅提示精力可能分散。
+          </div>
+        </div>
+
         <!-- 净值走势曲线 -->
         <div class="fdd-section">
           <div class="fdd-section-title fdd-nav-title">
@@ -230,6 +353,9 @@ import {
   getFundNavHistory,
   getFundNavPeer,
   getFundTiming,
+  getFundLookThrough,
+  getFundStyle,
+  getFundManager,
   type FundPeerCompare,
   type FundComposite,
   type FundAiSource,
@@ -237,6 +363,9 @@ import {
   type FundNavHistory,
   type FundNavPeer,
   type FundTiming,
+  type FundLookThrough,
+  type FundStyle,
+  type FundManager,
 } from '@/api/fund'
 
 const props = defineProps<{
@@ -258,6 +387,9 @@ const loadError = ref('')
 const peer = ref<FundPeerCompare | null>(null)
 const composite = ref<FundComposite | null>(null)
 const timing = ref<FundTiming | null>(null)
+const lookThrough = ref<FundLookThrough | null>(null)
+const style = ref<FundStyle | null>(null)
+const manager = ref<FundManager | null>(null)
 
 const aiLoading = ref(false)
 const aiLoaded = ref(false)
@@ -394,6 +526,52 @@ function tierClass(tier: string | null): string {
   if (tier === '定投') return 'tier-dca'
   if (tier === '观望') return 'tier-wait'
   if (tier === '高估勿追') return 'tier-high'
+  return ''
+}
+
+// T6 穿透式持仓位置（P4 参考卡）：位置分高=底仓处历史低位（回撤深/破长均线/RSI超卖）
+const lookThroughQuarter = computed(() => {
+  const q = lookThrough.value?.quarter || ''
+  const m = q.match(/^(\d{4}年\d季度)/)
+  return m ? m[1] : q
+})
+function ltLabelClass(label: string | null): string {
+  if (label === '多数处于低位') return 'tier-low'
+  if (label === '中性偏均衡') return 'tier-dca'
+  if (label === '多数处于高位') return 'tier-high'
+  return ''
+}
+
+// 持仓风格暴露（P4 风控辅助卡）：行业条形按权重着色，集中度/漂移仅提示不硬拦
+const styleQuarter = computed(() => {
+  const q = style.value?.quarter || ''
+  const m = q.match(/^(\d{4}年\d季度)/)
+  return m ? m[1] : q
+})
+function concClass(label: string | null): string {
+  if (label === '高度集中') return 'tier-high'
+  if (label === '适度集中') return 'tier-dca'
+  if (label === '行业分散') return 'tier-low'
+  return ''
+}
+function driftClass(label: string | null): string {
+  if (label === '显著漂移') return 'tier-high'
+  if (label === '中等换仓') return 'tier-dca'
+  if (label === '风格稳定') return 'tier-low'
+  return ''
+}
+// 行业条形宽度：以第一大行业为满格，其余按占比归一
+function industryBarWidth(share: number | null): number {
+  const top = style.value?.industries?.[0]?.share ?? null
+  if (share == null || top == null || top <= 0) return 0
+  return Math.max(4, Math.min(100, (share / top) * 100))
+}
+
+// 经理经验（P4 弱因子卡）：经验档位着色
+function mgrClass(label: string | null): string {
+  if (label === '资深') return 'tier-high'
+  if (label === '成熟') return 'tier-dca'
+  if (label === '新锐') return 'tier-low'
   return ''
 }
 
@@ -639,6 +817,9 @@ async function loadData() {
   peer.value = null
   composite.value = null
   timing.value = null
+  lookThrough.value = null
+  style.value = null
+  manager.value = null
   aiLoaded.value = false
   aiHtml.value = ''
   aiNote.value = ''
@@ -659,12 +840,42 @@ async function loadData() {
     await renderRadar()
     await renderPie()
     void loadNav()
+    void loadLookThrough()
+    void loadStyle()
+    void loadManager()
     // 静默查缓存：若已有 AI 结果则直接展示
     void prefetchAi()
   } catch (e) {
     loadError.value = '加载基金分析数据失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function loadLookThrough() {
+  lookThrough.value = null
+  try {
+    lookThrough.value = (await getFundLookThrough(props.code)) as unknown as FundLookThrough
+  } catch {
+    lookThrough.value = null
+  }
+}
+
+async function loadStyle() {
+  style.value = null
+  try {
+    style.value = (await getFundStyle(props.code)) as unknown as FundStyle
+  } catch {
+    style.value = null
+  }
+}
+
+async function loadManager() {
+  manager.value = null
+  try {
+    manager.value = (await getFundManager(props.code)) as unknown as FundManager
+  } catch {
+    manager.value = null
   }
 }
 
@@ -867,6 +1078,88 @@ watch(
   font-size: 11px;
   color: #909399;
   line-height: 1.6;
+}
+/* T6 底层持仓位置参考卡 */
+.fdd-lt-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.fdd-lt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 8px;
+}
+.fdd-lt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fdd-lt-name {
+  flex: 0 0 40%;
+  max-width: 40%;
+  font-size: 12px;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fdd-lt-name i {
+  font-style: normal;
+  margin-left: 4px;
+  font-size: 11px;
+}
+.fdd-lt-val {
+  flex: 0 0 30px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  color: #303133;
+}
+.fdd-lt-na {
+  flex: 1 1 auto;
+  text-align: right;
+  font-size: 11px;
+}
+/* 持仓风格暴露卡 */
+.fdd-style-fill {
+  background: #409eff;
+}
+.fdd-style-drift {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+.fdd-style-chg {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #f0f2f5;
+  color: #606266;
+}
+.fdd-style-chg.up {
+  color: #d23b3b;
+  background: #fef0f0;
+}
+.fdd-style-chg.down {
+  color: #16a34a;
+  background: #f0f9eb;
+}
+/* 经理经验卡 */
+.fdd-mgr-warn {
+  margin-left: 2px;
+}
+.fdd-mgr-row {
+  align-items: baseline;
+}
+.fdd-mgr-meta {
+  font-size: 12px;
+  white-space: nowrap;
 }
 .fdd-radar {
   width: 100%;
