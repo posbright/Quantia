@@ -68,6 +68,7 @@ import quantia.web.sysconfigHandler as sysconfigHandler
 import quantia.web.fundNavHistoryHandler as fundNavHistoryHandler
 import quantia.web.fundTimingHandler as fundTimingHandler
 import quantia.web.fundLookThroughHandler as fundLookThroughHandler
+import quantia.web.fundStyleHandler as fundStyleHandler
 import quantia.web.stockFinancialHandler as stockFinancialHandler
 import quantia.web.selectionScoreHandler as selectionScoreHandler
 import quantia.web.base as webBase
@@ -311,6 +312,7 @@ class Application(tornado.web.Application):
             (r"/quantia/api/fund/ai_analysis", fundAiAnalysisHandler.FundAiAnalysisHandler),
             (r"/quantia/api/fund/timing", fundTimingHandler.FundTimingHandler),
             (r"/quantia/api/fund/look_through", fundLookThroughHandler.FundLookThroughHandler),
+            (r"/quantia/api/fund/style", fundStyleHandler.FundStyleHandler),
             (r"/quantia/api/fund/holding/config", fundHoldingConfigHandler.FundHoldingConfigHandler),
             # ── 通用系统配置 ──
             (r"/quantia/api/sysconfig", sysconfigHandler.SysconfigHandler),
