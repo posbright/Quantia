@@ -72,6 +72,46 @@
           </template>
         </div>
 
+        <!-- 底层持仓位置（P4 T6：季报前十大重仓股技术位置，仅展示参考，不入择时分）-->
+        <div v-if="lookThrough && lookThrough.data_available" class="fdd-section fdd-lookthrough">
+          <div class="fdd-section-title">
+            🔬 底层持仓位置
+            <span v-if="lookThroughQuarter" class="fdd-muted">（{{ lookThroughQuarter }} · 参考）</span>
+          </div>
+          <div class="fdd-lt-head">
+            <span class="fdd-tier" :class="ltLabelClass(lookThrough.position_label)">
+              {{ lookThrough.position_label }}
+            </span>
+            <span v-if="lookThrough.position_score != null" class="fdd-timing-score">
+              位置分 <b>{{ lookThrough.position_score.toFixed(0) }}</b>
+            </span>
+            <span class="fdd-muted">
+              已评估 {{ lookThrough.scored_count }}/{{ lookThrough.holdings_count }} 只 · 覆盖净值 {{ lookThrough.covered_ratio.toFixed(1) }}%
+            </span>
+          </div>
+          <div class="fdd-lt-list">
+            <div v-for="h in lookThrough.holdings" :key="h.stock_code" class="fdd-lt-row">
+              <span class="fdd-lt-name">
+                {{ h.stock_name || h.stock_code }}
+                <i v-if="h.hold_ratio != null" class="fdd-muted">{{ h.hold_ratio.toFixed(1) }}%</i>
+              </span>
+              <template v-if="h.priced && h.position_score != null">
+                <div class="fdd-timing-track">
+                  <div
+                    class="fdd-timing-fill"
+                    :style="{ width: `${Math.max(0, Math.min(100, h.position_score))}%`, background: timingBarColor(h.position_score) }"
+                  ></div>
+                </div>
+                <span class="fdd-lt-val">{{ h.position_score.toFixed(0) }}</span>
+              </template>
+              <span v-else class="fdd-lt-na fdd-muted">无本地行情</span>
+            </div>
+          </div>
+          <div class="fdd-timing-note">
+            位置分越高＝底仓越处历史低位（距高点回撤深 / 跌破长均线 / RSI 超卖），越适合分批建仓；季报滞后约一季度、穿透不完整，仅供参考、非买卖建议。
+          </div>
+        </div>
+
         <!-- 净值走势曲线 -->
         <div class="fdd-section">
           <div class="fdd-section-title fdd-nav-title">
@@ -230,6 +270,7 @@ import {
   getFundNavHistory,
   getFundNavPeer,
   getFundTiming,
+  getFundLookThrough,
   type FundPeerCompare,
   type FundComposite,
   type FundAiSource,
@@ -237,6 +278,7 @@ import {
   type FundNavHistory,
   type FundNavPeer,
   type FundTiming,
+  type FundLookThrough,
 } from '@/api/fund'
 
 const props = defineProps<{
@@ -258,6 +300,7 @@ const loadError = ref('')
 const peer = ref<FundPeerCompare | null>(null)
 const composite = ref<FundComposite | null>(null)
 const timing = ref<FundTiming | null>(null)
+const lookThrough = ref<FundLookThrough | null>(null)
 
 const aiLoading = ref(false)
 const aiLoaded = ref(false)
@@ -394,6 +437,19 @@ function tierClass(tier: string | null): string {
   if (tier === '定投') return 'tier-dca'
   if (tier === '观望') return 'tier-wait'
   if (tier === '高估勿追') return 'tier-high'
+  return ''
+}
+
+// T6 穿透式持仓位置（P4 参考卡）：位置分高=底仓处历史低位（回撤深/破长均线/RSI超卖）
+const lookThroughQuarter = computed(() => {
+  const q = lookThrough.value?.quarter || ''
+  const m = q.match(/^(\d{4}年\d季度)/)
+  return m ? m[1] : q
+})
+function ltLabelClass(label: string | null): string {
+  if (label === '多数处于低位') return 'tier-low'
+  if (label === '中性偏均衡') return 'tier-dca'
+  if (label === '多数处于高位') return 'tier-high'
   return ''
 }
 
@@ -639,6 +695,7 @@ async function loadData() {
   peer.value = null
   composite.value = null
   timing.value = null
+  lookThrough.value = null
   aiLoaded.value = false
   aiHtml.value = ''
   aiNote.value = ''
@@ -659,12 +716,22 @@ async function loadData() {
     await renderRadar()
     await renderPie()
     void loadNav()
+    void loadLookThrough()
     // 静默查缓存：若已有 AI 结果则直接展示
     void prefetchAi()
   } catch (e) {
     loadError.value = '加载基金分析数据失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function loadLookThrough() {
+  lookThrough.value = null
+  try {
+    lookThrough.value = (await getFundLookThrough(props.code)) as unknown as FundLookThrough
+  } catch {
+    lookThrough.value = null
   }
 }
 
@@ -867,6 +934,51 @@ watch(
   font-size: 11px;
   color: #909399;
   line-height: 1.6;
+}
+/* T6 底层持仓位置参考卡 */
+.fdd-lt-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.fdd-lt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 8px;
+}
+.fdd-lt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fdd-lt-name {
+  flex: 0 0 40%;
+  max-width: 40%;
+  font-size: 12px;
+  color: #303133;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fdd-lt-name i {
+  font-style: normal;
+  margin-left: 4px;
+  font-size: 11px;
+}
+.fdd-lt-val {
+  flex: 0 0 30px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  color: #303133;
+}
+.fdd-lt-na {
+  flex: 1 1 auto;
+  text-align: right;
+  font-size: 11px;
 }
 .fdd-radar {
   width: 100%;

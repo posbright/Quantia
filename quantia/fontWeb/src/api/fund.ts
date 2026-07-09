@@ -255,6 +255,44 @@ export function getFundTiming(code: string) {
   })
 }
 
+// ── T6 穿透式持仓位置（P4，季报前十大重仓股技术位置，仅展示参考卡）──────
+
+export interface FundLookThroughHolding {
+  stock_code: string
+  stock_name: string | null
+  industry: string | null
+  hold_ratio: number | null
+  position_score: number | null
+  dd: number | null
+  ma: number | null
+  rsi: number | null
+  priced: boolean
+}
+
+export interface FundLookThrough {
+  code: string
+  name: string | null
+  fund_type: string | null
+  quarter: string | null
+  data_available: boolean
+  position_score: number | null
+  position_label: string | null
+  covered_ratio: number
+  scored_count: number
+  holdings_count: number
+  holdings: FundLookThroughHolding[]
+  disclaimer: string
+  note: string
+}
+
+export function getFundLookThrough(code: string) {
+  return request<FundLookThrough>({
+    url: '/api/fund/look_through',
+    method: 'get',
+    params: { code },
+  })
+}
+
 // ── AI 按需分析（F14，懒加载 LLM）──────────────────────────────────
 
 export interface FundAiSource {
