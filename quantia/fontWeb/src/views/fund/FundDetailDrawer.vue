@@ -112,6 +112,53 @@
           </div>
         </div>
 
+        <!-- 持仓风格暴露（P4：季报行业暴露/集中度 + 前向兼容漂移，风控辅助展示，非硬拦截）-->
+        <div v-if="style && style.data_available" class="fdd-section fdd-style">
+          <div class="fdd-section-title">
+            🎯 持仓风格暴露
+            <span v-if="styleQuarter" class="fdd-muted">（{{ styleQuarter }} · 参考）</span>
+          </div>
+          <div class="fdd-lt-head">
+            <span v-if="style.concentration_label" class="fdd-tier" :class="concClass(style.concentration_label)">
+              {{ style.concentration_label }}
+            </span>
+            <span v-if="style.hhi != null" class="fdd-timing-score">
+              集中度 <b>{{ (style.hhi * 100).toFixed(0) }}</b>
+            </span>
+            <span class="fdd-muted">
+              覆盖净值 {{ style.disclosed_ratio.toFixed(1) }}%
+              <template v-if="style.unclassified_ratio != null"> · 未分类 {{ (style.unclassified_ratio * 100).toFixed(0) }}%</template>
+            </span>
+          </div>
+          <div class="fdd-lt-list">
+            <div v-for="ind in style.industries" :key="ind.industry" class="fdd-lt-row">
+              <span class="fdd-lt-name">{{ ind.industry }}</span>
+              <div class="fdd-timing-track">
+                <div class="fdd-timing-fill fdd-style-fill" :style="{ width: `${industryBarWidth(ind.share)}%` }"></div>
+              </div>
+              <span class="fdd-lt-val">{{ ind.weight.toFixed(1) }}%</span>
+            </div>
+          </div>
+          <!-- 风格漂移：需 ≥2 季报，历史累积后自动点亮 -->
+          <div v-if="style.drift_available && style.drift" class="fdd-style-drift">
+            <span class="fdd-tier" :class="driftClass(style.drift.drift_label)">
+              {{ style.drift.drift_label }}
+            </span>
+            <span class="fdd-timing-score">漂移 <b>{{ style.drift.drift_score.toFixed(0) }}</b></span>
+            <span v-if="style.prev_quarter" class="fdd-muted">vs 上季</span>
+            <span
+              v-for="ch in style.drift.top_changes.slice(0, 3)"
+              :key="ch.industry"
+              class="fdd-style-chg"
+              :class="ch.delta >= 0 ? 'up' : 'down'"
+            >{{ ch.industry }} {{ ch.delta >= 0 ? '+' : '' }}{{ (ch.delta * 100).toFixed(0) }}%</span>
+          </div>
+          <div v-else class="fdd-timing-note fdd-muted">风格漂移需 ≥2 期季报，历史累积中，暂不可用。</div>
+          <div class="fdd-timing-note">
+            按季报前十大重仓股行业加权；集中度越高＝越押注单一赛道。「未分类」含科创板等未回填行业个股，仅透明化占比、不计入集中度。仅风控辅助、非买卖建议。
+          </div>
+        </div>
+
         <!-- 净值走势曲线 -->
         <div class="fdd-section">
           <div class="fdd-section-title fdd-nav-title">
@@ -271,6 +318,7 @@ import {
   getFundNavPeer,
   getFundTiming,
   getFundLookThrough,
+  getFundStyle,
   type FundPeerCompare,
   type FundComposite,
   type FundAiSource,
@@ -279,6 +327,7 @@ import {
   type FundNavPeer,
   type FundTiming,
   type FundLookThrough,
+  type FundStyle,
 } from '@/api/fund'
 
 const props = defineProps<{
@@ -301,6 +350,7 @@ const peer = ref<FundPeerCompare | null>(null)
 const composite = ref<FundComposite | null>(null)
 const timing = ref<FundTiming | null>(null)
 const lookThrough = ref<FundLookThrough | null>(null)
+const style = ref<FundStyle | null>(null)
 
 const aiLoading = ref(false)
 const aiLoaded = ref(false)
@@ -451,6 +501,31 @@ function ltLabelClass(label: string | null): string {
   if (label === '中性偏均衡') return 'tier-dca'
   if (label === '多数处于高位') return 'tier-high'
   return ''
+}
+
+// 持仓风格暴露（P4 风控辅助卡）：行业条形按权重着色，集中度/漂移仅提示不硬拦
+const styleQuarter = computed(() => {
+  const q = style.value?.quarter || ''
+  const m = q.match(/^(\d{4}年\d季度)/)
+  return m ? m[1] : q
+})
+function concClass(label: string | null): string {
+  if (label === '高度集中') return 'tier-high'
+  if (label === '适度集中') return 'tier-dca'
+  if (label === '行业分散') return 'tier-low'
+  return ''
+}
+function driftClass(label: string | null): string {
+  if (label === '显著漂移') return 'tier-high'
+  if (label === '中等换仓') return 'tier-dca'
+  if (label === '风格稳定') return 'tier-low'
+  return ''
+}
+// 行业条形宽度：以第一大行业为满格，其余按占比归一
+function industryBarWidth(share: number | null): number {
+  const top = style.value?.industries?.[0]?.share ?? null
+  if (share == null || top == null || top <= 0) return 0
+  return Math.max(4, Math.min(100, (share / top) * 100))
 }
 
 const profileRows = computed(() => {
@@ -696,6 +771,7 @@ async function loadData() {
   composite.value = null
   timing.value = null
   lookThrough.value = null
+  style.value = null
   aiLoaded.value = false
   aiHtml.value = ''
   aiNote.value = ''
@@ -717,6 +793,7 @@ async function loadData() {
     await renderPie()
     void loadNav()
     void loadLookThrough()
+    void loadStyle()
     // 静默查缓存：若已有 AI 结果则直接展示
     void prefetchAi()
   } catch (e) {
@@ -732,6 +809,15 @@ async function loadLookThrough() {
     lookThrough.value = (await getFundLookThrough(props.code)) as unknown as FundLookThrough
   } catch {
     lookThrough.value = null
+  }
+}
+
+async function loadStyle() {
+  style.value = null
+  try {
+    style.value = (await getFundStyle(props.code)) as unknown as FundStyle
+  } catch {
+    style.value = null
   }
 }
 
@@ -979,6 +1065,32 @@ watch(
   flex: 1 1 auto;
   text-align: right;
   font-size: 11px;
+}
+/* 持仓风格暴露卡 */
+.fdd-style-fill {
+  background: #409eff;
+}
+.fdd-style-drift {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+.fdd-style-chg {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #f0f2f5;
+  color: #606266;
+}
+.fdd-style-chg.up {
+  color: #d23b3b;
+  background: #fef0f0;
+}
+.fdd-style-chg.down {
+  color: #16a34a;
+  background: #f0f9eb;
 }
 .fdd-radar {
   width: 100%;

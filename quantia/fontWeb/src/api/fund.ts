@@ -293,6 +293,54 @@ export function getFundLookThrough(code: string) {
   })
 }
 
+// ── 持仓风格暴露 + 前向兼容漂移（P4，季报行业暴露/集中度，风控辅助展示）──────
+
+export interface FundStyleIndustry {
+  industry: string
+  weight: number
+  share: number | null
+}
+
+export interface FundStyleDriftChange {
+  industry: string
+  delta: number
+}
+
+export interface FundStyleDrift {
+  drift_score: number
+  drift_label: string | null
+  top_changes: FundStyleDriftChange[]
+}
+
+export interface FundStyle {
+  code: string
+  name: string | null
+  fund_type: string | null
+  quarter: string | null
+  data_available: boolean
+  industries: FundStyleIndustry[]
+  unclassified_weight: number
+  disclosed_ratio: number
+  unclassified_ratio: number | null
+  hhi: number | null
+  concentration_label: string | null
+  top3_share: number | null
+  n_industries: number
+  drift_available: boolean
+  drift: FundStyleDrift | null
+  prev_quarter: string | null
+  disclaimer: string
+  note: string
+}
+
+export function getFundStyle(code: string) {
+  return request<FundStyle>({
+    url: '/api/fund/style',
+    method: 'get',
+    params: { code },
+  })
+}
+
 // ── AI 按需分析（F14，懒加载 LLM）──────────────────────────────────
 
 export interface FundAiSource {
