@@ -36,6 +36,42 @@
           </div>
         </div>
 
+        <!-- 入场时机（P1：T1 回撤位置 + T2 趋势确认，读 cn_fund_nav_history）-->
+        <div v-if="timing" class="fdd-section fdd-timing">
+          <div class="fdd-section-title">🎯 入场时机</div>
+          <div v-if="!timing.timing_applicable" class="fdd-empty">货币型不做点位择时。</div>
+          <div v-else-if="!timing.data_available" class="fdd-empty">暂无择时数据（无净值历史）。</div>
+          <template v-else>
+            <div class="fdd-timing-head">
+              <span
+                v-if="!timing.stale && timing.tier"
+                class="fdd-tier"
+                :class="tierClass(timing.tier)"
+              >{{ timing.tier }}</span>
+              <span v-if="!timing.stale && timing.timing_score != null" class="fdd-timing-score">
+                择时分 <b>{{ timing.timing_score.toFixed(0) }}</b>
+              </span>
+              <span v-if="timing.stale" class="fdd-timing-stale">
+                净值滞后（{{ timing.as_of || '—' }}），暂不产出档位
+              </span>
+              <span v-if="timing.acc_null" class="fdd-timing-flag" title="缺累计净值，用单位净值近似">缺累计·近似</span>
+              <span v-if="timing.quality_pass" class="fdd-timing-quality">质量优选</span>
+            </div>
+            <div v-if="timingComponents.length" class="fdd-timing-bars">
+              <div v-for="c in timingComponents" :key="c.key" class="fdd-timing-bar-row">
+                <span class="fdd-timing-bar-label">{{ c.label }}</span>
+                <div class="fdd-timing-track">
+                  <div class="fdd-timing-fill" :style="{ width: c.width, background: c.color }"></div>
+                </div>
+                <span class="fdd-timing-bar-val">{{ c.text }}</span>
+              </div>
+            </div>
+            <div class="fdd-timing-note">
+              低吸≥75 · 定投50–75 · 观望30–50 · 高估勿追&lt;30；回撤越深 / 站稳长均线得分越高，仅供参考、非买卖建议。
+            </div>
+          </template>
+        </div>
+
         <!-- 净值走势曲线 -->
         <div class="fdd-section">
           <div class="fdd-section-title fdd-nav-title">
@@ -193,12 +229,14 @@ import {
   runFundAiAnalysis,
   getFundNavHistory,
   getFundNavPeer,
+  getFundTiming,
   type FundPeerCompare,
   type FundComposite,
   type FundAiSource,
   type FundAiAnalysis,
   type FundNavHistory,
   type FundNavPeer,
+  type FundTiming,
 } from '@/api/fund'
 
 const props = defineProps<{
@@ -219,6 +257,7 @@ const loading = ref(false)
 const loadError = ref('')
 const peer = ref<FundPeerCompare | null>(null)
 const composite = ref<FundComposite | null>(null)
+const timing = ref<FundTiming | null>(null)
 
 const aiLoading = ref(false)
 const aiLoaded = ref(false)
@@ -317,6 +356,46 @@ const kpiItems = computed(() => {
 
 const topHoldings = computed(() => composite.value?.holdings?.top || [])
 const holdingsQuarter = computed(() => composite.value?.holdings?.quarter || '')
+
+// 入场时机三维分量条（P1 仅 dd/trend 非空；val 估值分位 P3 接入）。
+const TIMING_DIM_LABELS: Record<string, string> = {
+  dd: '回撤位置',
+  trend: '趋势确认',
+  val: '估值分位',
+}
+function timingBarColor(v: number): string {
+  // 对齐原型 dimBar：高分=绿（低吸友好）→ 低分=红（高估风险）
+  if (v >= 75) return '#16a34a'
+  if (v >= 50) return '#e6a23c'
+  if (v >= 30) return '#606266'
+  return '#d23b3b'
+}
+const timingComponents = computed(() => {
+  const c = timing.value?.components
+  if (!c) return [] as { key: string; label: string; width: string; text: string; color: string }[]
+  const keys: (keyof typeof c)[] = ['dd', 'trend', 'val']
+  const out: { key: string; label: string; width: string; text: string; color: string }[] = []
+  for (const k of keys) {
+    const v = c[k]
+    if (v === null || v === undefined || Number.isNaN(v)) continue
+    const clamped = Math.max(0, Math.min(100, v))
+    out.push({
+      key: k,
+      label: TIMING_DIM_LABELS[k] || k,
+      width: `${clamped}%`,
+      text: v.toFixed(0),
+      color: timingBarColor(v),
+    })
+  }
+  return out
+})
+function tierClass(tier: string | null): string {
+  if (tier === '低吸') return 'tier-low'
+  if (tier === '定投') return 'tier-dca'
+  if (tier === '观望') return 'tier-wait'
+  if (tier === '高估勿追') return 'tier-high'
+  return ''
+}
 
 const profileRows = computed(() => {
   const p = composite.value?.profile
@@ -559,17 +638,20 @@ async function loadData() {
   loadError.value = ''
   peer.value = null
   composite.value = null
+  timing.value = null
   aiLoaded.value = false
   aiHtml.value = ''
   aiNote.value = ''
   aiSources.value = []
   try {
-    const [peerRes, compRes] = await Promise.allSettled([
+    const [peerRes, compRes, timingRes] = await Promise.allSettled([
       getFundPeerCompare(props.code) as unknown as Promise<FundPeerCompare>,
       getFundCompositeAnalysis(props.code) as unknown as Promise<FundComposite>,
+      getFundTiming(props.code) as unknown as Promise<FundTiming>,
     ])
     if (peerRes.status === 'fulfilled') peer.value = peerRes.value
     if (compRes.status === 'fulfilled') composite.value = compRes.value
+    if (timingRes.status === 'fulfilled') timing.value = timingRes.value
     if (peerRes.status === 'rejected' && compRes.status === 'rejected') {
       loadError.value = '加载基金分析数据失败'
     }
@@ -690,6 +772,101 @@ watch(
   font-size: 12px;
   font-weight: 400;
   color: #909399;
+}
+/* 入场时机卡片 */
+.fdd-timing-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.fdd-tier {
+  font-size: 13px;
+  font-weight: 700;
+  border-radius: 12px;
+  padding: 2px 12px;
+  color: #fff;
+}
+.fdd-tier.tier-low {
+  background: #16a34a;
+}
+.fdd-tier.tier-dca {
+  background: #e6a23c;
+}
+.fdd-tier.tier-wait {
+  background: #909399;
+}
+.fdd-tier.tier-high {
+  background: #d23b3b;
+}
+.fdd-timing-score {
+  font-size: 12px;
+  color: #606266;
+}
+.fdd-timing-score b {
+  font-size: 15px;
+  color: #303133;
+}
+.fdd-timing-stale {
+  font-size: 12px;
+  color: #e6a23c;
+}
+.fdd-timing-flag {
+  font-size: 11px;
+  color: #909399;
+  background: #f4f4f5;
+  border: 1px solid #e9e9eb;
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+.fdd-timing-quality {
+  font-size: 11px;
+  color: #16a34a;
+  background: #f0f9eb;
+  border: 1px solid #c2e7b0;
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+.fdd-timing-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.fdd-timing-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fdd-timing-bar-label {
+  flex: 0 0 60px;
+  font-size: 12px;
+  color: #606266;
+}
+.fdd-timing-track {
+  flex: 1 1 auto;
+  height: 8px;
+  background: #f0f2f5;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.fdd-timing-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+.fdd-timing-bar-val {
+  flex: 0 0 30px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  color: #303133;
+}
+.fdd-timing-note {
+  font-size: 11px;
+  color: #909399;
+  line-height: 1.6;
 }
 .fdd-radar {
   width: 100%;

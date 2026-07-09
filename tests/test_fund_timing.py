@@ -36,6 +36,18 @@ class TestDrawdownFromHigh:
         b = timing.drawdown_from_high([x * 37.0 for x in nav])
         assert abs(a - b) < 1e-9
 
+    def test_rolling_lookback_excludes_ancient_peak(self):
+        # 古老尖峰(50)后一路温和上行到 2.0；全史峰值=50 → 深回撤 → 封顶 100
+        nav = [50.0] + list(np.linspace(1.0, 2.0, 600))
+        assert timing.drawdown_from_high(nav, lookback=None) == 100.0
+        # 滚动窗口只看近端(全在上行段，末点即窗口峰值) → 回撤≈0
+        assert timing.drawdown_from_high(nav, lookback=100) == 0.0
+
+    def test_short_series_falls_back_to_full_history(self):
+        # 样本短于 lookback → 等价全史峰值（保证少净值基金可算）
+        nav = [1.0, 2.0, 1.7]
+        assert abs(timing.drawdown_from_high(nav, lookback=500) - 50.0) < 1e-6
+
 
 class TestNavTrendScore:
     def test_above_ma_uptrend_gt_50(self):

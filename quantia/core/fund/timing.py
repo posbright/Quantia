@@ -30,6 +30,7 @@ TIER_WAIT = 30.0   # 观望 30–50
 
 # ── T1/T2 参数 ────────────────────────────────────────────
 DD_CAP = 0.30          # 回撤映射上限：跌幅 ≥30% → dd_score 封顶 100（防接飞刀无限抄底）
+DD_LOOKBACK = 500      # 回撤滚动峰值窗口（≈ 2 年交易日）；衡量“相对自身近期高点的位置”，而非距古老峰值
 TREND_MA_WINDOW = 60   # 趋势长均线窗口（交易日）
 TREND_R_GAIN = 250.0   # 净值相对均线偏离 → 分数增益系数
 TREND_SLOPE_BONUS = 10.0  # 均线斜率方向加/减分
@@ -48,17 +49,19 @@ def _clip(v, lo=0.0, hi=100.0):
     return float(max(lo, min(hi, v)))
 
 
-def drawdown_from_high(acc_nav, cap=DD_CAP):
+def drawdown_from_high(acc_nav, cap=DD_CAP, lookback=DD_LOOKBACK):
     """T1 回撤入场分（0–100，绝对时序）。
 
-    dd = last / 历史峰值 - 1（≤0）；跌幅 m = -dd。
+    dd = last / 滚动峰值 - 1（≤0）；跌幅 m = -dd。峰值取最近 lookback 个点的最大值
+    （对齐蓝图：“相对自身近期高点”）；lookback=None 或 ≥样本长 → 全史峰值。
     score = clip(m / cap * 100, 0, 100)。m ≥ cap（默认 30%）→ 100（越跌越"低吸"，有封顶）。
     样本 < 2 或清洗后为空 → None。
     """
     nav = _clean_nav(acc_nav)
     if len(nav) < 2:
         return None
-    peak = nav.cummax().iloc[-1]
+    window = nav if not lookback or lookback >= len(nav) else nav.iloc[-int(lookback):]
+    peak = window.max()
     if not math.isfinite(peak) or peak <= 0:
         return None
     dd = nav.iloc[-1] / peak - 1.0  # ≤ 0
