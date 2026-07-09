@@ -27,11 +27,13 @@ __date__ = '2026/02/14'
 #   vol_shrink_ratio   缩量比例下限，默认 2
 #   max_back_ratio     最大回撤比上限，默认 0.8
 #   threshold          寻找最高/最低价的窗口，默认 60
+#   breakout_lookback  最高价前寻找突破年线的回看天数，默认 120
 #   near_ma_ratio      回踩低点接近年线的上限倍数，默认 1.30（低点不得高于年线 30%）；
 #                      设为 None / <= 0 可关闭该约束（退回上游原版“仅不跌破年线”语义）。
 def check(code_name, data, date=None, threshold=60,
           ma_period=250, min_pullback_days=10, max_pullback_days=50,
-          vol_shrink_ratio=2, max_back_ratio=0.8, near_ma_ratio=1.30):
+          vol_shrink_ratio=2, max_back_ratio=0.8, breakout_lookback=120,
+          near_ma_ratio=1.30):
     if date is None:
         end_date = code_name[0]
     else:
@@ -66,6 +68,10 @@ def check(code_name, data, date=None, threshold=60,
         max_back_ratio = float(max_back_ratio)
     except (TypeError, ValueError):
         max_back_ratio = 0.8
+    try:
+        breakout_lookback = max(1, int(breakout_lookback))
+    except (TypeError, ValueError):
+        breakout_lookback = 120
     # near_ma_ratio: None / 非法 / <= 0 视为“关闭接近年线约束”
     if near_ma_ratio is None:
         near_ma_ratio = 0.0
@@ -81,6 +87,7 @@ def check(code_name, data, date=None, threshold=60,
     data.loc[:, 'ma250'] = tl.MA(data['close'].values, timeperiod=ma_period)
     data['ma250'] = data['ma250'].fillna(0.0)
 
+    full_data = data
     data = data.tail(n=threshold)
 
     # 区间最低点
@@ -109,9 +116,19 @@ def check(code_name, data, date=None, threshold=60,
 
     if data_front.empty:
         return False
-    # 前半段由年线以下向上突破
-    if not (data_front.iloc[0]['close'] < data_front.iloc[0]['ma250'] and
-            data_front.iloc[-1]['close'] > data_front.iloc[-1]['ma250']):
+
+    # 高点前的独立回看窗口内必须出现过由年线下方向上突破。
+    # threshold 只控制回踩窗口；突破可能发生得稍早，不能用回踩窗口端点替代。
+    breakout_data = full_data.loc[(full_data['date'] < highest_row[2])].tail(n=breakout_lookback)
+    if len(breakout_data.index) < 2:
+        return False
+    has_breakout = False
+    prev_close = breakout_data['close'].shift(1)
+    prev_ma = breakout_data['ma250'].shift(1)
+    breakout_mask = (prev_close < prev_ma) & (breakout_data['close'] > breakout_data['ma250'])
+    if bool(breakout_mask.fillna(False).any()):
+        has_breakout = True
+    if not has_breakout:
         return False
 
     if not data_end.empty:

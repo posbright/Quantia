@@ -16,6 +16,7 @@ const strategies = ref<any[]>([])
 const loading = ref(false)
 const result = ref<any>(null)
 const chartRef = ref<InstanceType<typeof KlineBacktestChart> | null>(null)
+const syncingQuery = ref(false)
 
 // 内置策略 / 用户自定义策略分组（下拉用 option-group 区分）
 const builtinStrategies = computed(() => strategies.value.filter((s: any) => s.type !== 'custom'))
@@ -50,6 +51,10 @@ onActivated(() => {
 watch(
   () => route.fullPath,
   () => {
+    if (syncingQuery.value) {
+      syncingQuery.value = false
+      return
+    }
     _applyQuery()
   }
 )
@@ -119,6 +124,25 @@ const handleRun = async (save = true) => {
       params.hold_days = form.value.hold_days
     }
     if (save && form.value.save) params.save = 1
+    const query: Record<string, string> = {
+      code: params.code,
+      strategy: params.strategy,
+      start_date: params.start_date,
+      end_date: params.end_date,
+    }
+    if (typeof route.query.name === 'string' && route.query.name) query.name = route.query.name
+    if (params.hold_days != null) query.hold_days = String(params.hold_days)
+    if (params.allow_overlap) query.allow_overlap = '1'
+    const currentQuery = JSON.stringify(route.query)
+    const nextQuery = JSON.stringify(query)
+    if (currentQuery !== nextQuery) {
+      syncingQuery.value = true
+      try {
+        await router.replace({ path: route.path, query })
+      } finally {
+        syncingQuery.value = false
+      }
+    }
     const res: any = await runSingleBacktest(params)
     if (res.error) {
       ElMessage.error(res.error)

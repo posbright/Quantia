@@ -401,6 +401,43 @@ class TestBacktraceMa250:
         code_name = (df.iloc[-1]["date"].strftime("%Y-%m-%d"), "600000")
         assert check(code_name, df, threshold=60) is False
 
+    def test_breakout_lookback_is_separate_from_pullback_window(self):
+        from quantia.core.strategy.backtrace_ma250 import check
+
+        rows = []
+        dates = pd.bdate_range(start="2024-01-01", periods=330)
+        for i, date in enumerate(dates):
+            close = 10.0
+            volume = 1_000_000
+            if i == 250:
+                close = 9.7
+            elif i == 251:
+                close = 10.2
+            elif 252 <= i < 300:
+                close = 10.4 + (i - 252) * (4.4 / 47)
+            elif i == 300:
+                close = 15.0
+                volume = 5_000_000
+            elif 301 <= i <= 325:
+                close = 14.5 - (i - 301) * (3.0 / 24)
+            elif i > 325:
+                close = 11.8
+            rows.append({
+                "date": date,
+                "open": close,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": volume,
+                "p_change": 0.0,
+            })
+        df = pd.DataFrame(rows)
+        code_name = (df.iloc[-1]["date"].strftime("%Y-%m-%d"), "600000")
+
+        result = check(code_name, df, threshold=60, breakout_lookback=120)
+        assert isinstance(result, dict)
+        assert check(code_name, df, threshold=60, breakout_lookback=20) is False
+
 
 # =========================================================================
 # 6. breakthrough_platform.py

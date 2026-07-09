@@ -217,6 +217,8 @@ TECHNICAL_STRATEGY_PARAMS = {
                      "type": "number", "value": 2, "min": 1.2, "max": 5, "step": 0.2, "unit": "倍"},
                     {"key": "max_back_ratio", "label": "最大回撤比", "description": "回踩最低价 / 最高价 需小于此值",
                      "type": "number", "value": 0.8, "min": 0.5, "max": 0.95, "step": 0.05, "unit": ""},
+                    {"key": "near_ma_ratio", "label": "接近年线倍数", "description": "回踩最低价 / 当日均线 需小于等于此值，0表示关闭约束",
+                     "type": "number", "value": 1.3, "min": 0, "max": 2, "step": 0.05, "unit": "倍"},
                 ]
             },
             {
@@ -224,6 +226,8 @@ TECHNICAL_STRATEGY_PARAMS = {
                 "params": [
                     {"key": "threshold", "label": "回溯天数", "description": "寻找最高/最低价的窗口",
                      "type": "number", "value": 60, "min": 20, "max": 120, "step": 10, "unit": "天"},
+                    {"key": "breakout_lookback", "label": "突破回看天数", "description": "在最高价之前回看多少天寻找由年线下方向上突破",
+                     "type": "number", "value": 120, "min": 20, "max": 250, "step": 10, "unit": "天"},
                 ]
             }
         ]
