@@ -78,6 +78,18 @@ TABLE_CN_INDEX_SPOT = {'name': 'cn_index_spot', 'cn': '每日指数数据',
                                    'total_market_cap': {'type': BIGINT, 'cn': '总市值', 'size': 120},
                                    'free_cap': {'type': BIGINT, 'cn': '流通市值', 'size': 120}}}
 
+# 宽基指数估值历史（T3 估值分位择时，legulegu 全历史 PE + 历史分位）。主键 (index_code, date)。
+# 仅走 Fetch 管道（fetch_index_valuation_job）写入；Analysis/Web 只读。pe_ttm_pct 为 0–1 分位。
+TABLE_CN_INDEX_VALUATION = {'name': 'cn_index_valuation', 'cn': '宽基指数估值历史',
+                            'columns': {'index_code': {'type': VARCHAR(12, _COLLATE), 'cn': '指数代码', 'size': 80},
+                                        'date': {'type': DATE, 'cn': '日期', 'size': 90},
+                                        'index_name': {'type': VARCHAR(40, _COLLATE), 'cn': '指数名称', 'size': 120},
+                                        'close': {'type': FLOAT, 'cn': '收盘点位', 'size': 90},
+                                        'pe_ttm': {'type': FLOAT, 'cn': '滚动市盈率', 'size': 90},
+                                        'pe_lyr': {'type': FLOAT, 'cn': '静态市盈率', 'size': 90},
+                                        'pe_ttm_pct': {'type': FLOAT, 'cn': '滚动PE历史分位', 'size': 110},
+                                        'total_mv': {'type': FLOAT, 'cn': '总市值', 'size': 120}}}
+
 # ===== 场外开放式基金（净值型 + 货币型）数据域 =====
 # 每日净值 + 多周期收益率排名（净值型与货币型合一，互斥列 nullable）。
 # date=入库快照日（运行日），nav_date=akshare 披露净值日（可能滞后/各基金不一）。主键 (date, code)。

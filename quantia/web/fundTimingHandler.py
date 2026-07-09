@@ -24,7 +24,7 @@ import math
 import quantia.core.tablestructure as tbs
 import quantia.lib.database as mdb
 import quantia.web.base as webBase
-from quantia.core.fund import labels, timing
+from quantia.core.fund import benchmark_map, labels, timing
 
 __author__ = 'Quantia'
 __date__ = '2026/07/09'
@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 _NAV_TABLE = tbs.TABLE_CN_FUND_NAV_HISTORY['name']
 _RANK_TABLE = tbs.TABLE_CN_FUND_RANK['name']
 _SCORE_TABLE = tbs.TABLE_CN_FUND_RANK_SCORE['name']
+_PROFILE_TABLE = tbs.TABLE_CN_FUND_PROFILE['name']
+_INDEX_VAL_TABLE = tbs.TABLE_CN_INDEX_VALUATION['name']
 
 _STALE_DAYS = 7          # 净值滞后阈值（防线1）
 _QUALITY_PASS = 70.0     # quality_pass 门槛（桶内百分位分）
@@ -96,7 +98,8 @@ class FundTimingHandler(webBase.BaseHandler):
                 'stale': False, 'acc_null': False,
                 'timing_score': None, 'tier': None,
                 'components': {'dd': None, 'trend': None, 'val': None},
-                'dims_used': [], 'quality_pass': None, 'quality_score': None,
+                'dims_used': [], 'index_code': None,
+                'quality_pass': None, 'quality_score': None,
                 'disclaimer': labels.RISK_DISCLAIMER,
             }
 
@@ -151,20 +154,23 @@ class FundTimingHandler(webBase.BaseHandler):
                 # 滞后：产出分量供透明展示，但不产出档位与综合分（防线1）
                 dd = timing.drawdown_from_high(nav_series)
                 trend = timing.nav_trend_score(nav_series)
-                base['components'] = {'dd': _round(dd), 'trend': _round(trend), 'val': None}
+                val = self._valuation_score(code, base)
+                base['components'] = {
+                    'dd': _round(dd), 'trend': _round(trend), 'val': _round(val)}
                 _write_json(self, base)
                 return
 
-            # T1 + T2（P1 val=None，自动降为二维）
+            # T1 + T2 + T3（估值分位；缺维自动降权重归一化）
             dd = timing.drawdown_from_high(nav_series)
             trend = timing.nav_trend_score(nav_series)
-            res = timing.compose_timing_score(dd, trend, None)
+            val = self._valuation_score(code, base)
+            res = timing.compose_timing_score(dd, trend, val)
             base['timing_score'] = _round(res['score'])
             base['tier'] = res['tier']
             base['components'] = {
                 'dd': _round(res['components']['dd']),
                 'trend': _round(res['components']['trend']),
-                'val': None,
+                'val': _round(res['components']['val']),
             }
             base['dims_used'] = res['dims_used']
 
@@ -198,3 +204,39 @@ class FundTimingHandler(webBase.BaseHandler):
                         base['fund_type'] = srows[0][1]
         except Exception:
             logger.warning("读取基金质量分失败 code=%s", code, exc_info=True)
+
+    def _valuation_score(self, code, base):
+        """T3 估值分位分：基金基准 → 宽基指数 → 指数 PE 全历史分位（低估→高分）。
+
+        只读 cn_fund_profile.benchmark + cn_index_valuation（规则1 只读；规则7 显式列）。
+        无 profile / 无法映射到有覆盖的宽基 / 无估值数据 → None（该维缺失，compose 自动降维）。
+        命中时把 index_code 回填 base 供前端透明展示。
+        """
+        try:
+            if not mdb.checkTableIsExist(_PROFILE_TABLE):
+                return None
+            prows = mdb.executeSqlFetch(
+                f"SELECT `benchmark` FROM `{_PROFILE_TABLE}` WHERE `code` = %s LIMIT 1",
+                (code,))
+            if not prows or not prows[0]:
+                return None
+            index_code = benchmark_map.map_benchmark_to_index(prows[0][0])
+            if not index_code:
+                return None
+            base['index_code'] = index_code
+            if not mdb.checkTableIsExist(_INDEX_VAL_TABLE):
+                return None
+            vrows = mdb.read_sql_ro(
+                f"SELECT `pe_ttm` FROM `{_INDEX_VAL_TABLE}` "
+                f"WHERE `index_code` = %s ORDER BY `date` ASC", params=(index_code,))
+            if vrows is None or vrows.empty:
+                return None
+            pe_series = [_num(v) for v in vrows['pe_ttm'].tolist()]
+            pe_series = [v for v in pe_series if v is not None and v > 0]
+            if len(pe_series) < _MIN_SAMPLES:
+                return None
+            return timing.valuation_percentile_score(pe_series)
+        except Exception:
+            logger.warning("估值分位计算失败 code=%s", code, exc_info=True)
+            return None
+

@@ -220,6 +220,41 @@ export function getFundNavPeer(code: string, range = '1y') {
   })
 }
 
+// ── 入场时机（P1，T1 回撤 + T2 趋势，读 cn_fund_nav_history）──────────
+
+export interface FundTimingComponents {
+  dd: number | null
+  trend: number | null
+  val: number | null
+}
+
+export interface FundTiming {
+  code: string
+  name: string | null
+  fund_type: string | null
+  as_of: string | null
+  data_available: boolean
+  timing_applicable: boolean
+  stale: boolean
+  acc_null: boolean
+  timing_score: number | null
+  tier: string | null
+  components: FundTimingComponents
+  dims_used: string[]
+  index_code: string | null
+  quality_pass: boolean | null
+  quality_score: number | null
+  disclaimer: string
+}
+
+export function getFundTiming(code: string) {
+  return request<FundTiming>({
+    url: '/api/fund/timing',
+    method: 'get',
+    params: { code },
+  })
+}
+
 // ── AI 按需分析（F14，懒加载 LLM）──────────────────────────────────
 
 export interface FundAiSource {

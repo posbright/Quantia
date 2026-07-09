@@ -18,11 +18,11 @@
 | 基金 Handler（rank/peer/composite/nav/holding/ai） | ✅ EXISTS | `quantia/web/fund*Handler.py` |
 | 前端基金页 `views/fund/index.vue` + `FundDetailDrawer.vue` + `api/fund.ts` | ✅ EXISTS | fontWeb |
 | 通知事件表 `cn_stock_notification_event`（含 `dedupe_key` 幂等） | ✅ EXISTS | notification |
-| **择时纯函数 `timing.py`** | ❌ MISSING | 本文档 P1 |
-| **`fundTimingHandler` + 路由** | ❌ MISSING | 本文档 P1 |
-| **前端"入场时机"卡片** | ❌ MISSING | 本文档 P1 |
-| **`cn_index_valuation` 表 + 指数估值 Fetch job（T3）** | ❌ MISSING | P3 |
-| **`analysis_fund_timing_job` + `cn_fund_timing_score`** | ❌ MISSING | P3 |
+| **择时纯函数 `timing.py`** | ✅ DONE (P1) | `quantia/core/fund/timing.py` |
+| **`fundTimingHandler` + 路由** | ✅ DONE (P1) | `quantia/web/fundTimingHandler.py` |
+| **前端"入场时机"卡片** | ✅ DONE (P1/P2) | `FundDetailDrawer.vue` |
+| **`cn_index_valuation` 表 + 指数估值 Fetch job（T3）** | ✅ DONE (P3) | `fetch_index_valuation_job.py` + `crawling/index_valuation_lg.py` |
+| **`analysis_fund_timing_job` + `cn_fund_timing_score`** | ⏳ 延后 P5 | 详情页 handler 已按需算 T3，批量预计算归 P5 精选榜 |
 | **`cn_fund_daily_pick` 表 + 精选 job + Handler** | ❌ MISSING | P5 |
 | **`fund_daily_pick` 钉钉推送** | ❌ MISSING | P6 |
 
@@ -42,6 +42,8 @@
 - **B8 timing 单一事实源**：P1 未建批量表时，未来 pick_job 必须**调用同一 `timing.py` 纯函数**，禁止另写一套公式（防双算漂移，蓝图 §4.2）。
 - **B9 路由注册对等（规则 8）**：前端新增 `getFundTiming()` 前，`web_service.py` 必须先注册 `/quantia/api/fund/timing`。
 - **B10 T3 数据确认缺失**：指数 PE/PB 历史分位表不存在 → **P1 只做 T1+T2**，`compose_timing_score` 的 val 维度传 None，自动降为二维。T3 属 P3，须走 Fetch 管道新建 `cn_index_valuation`（规则 1，禁在 Handler 抓取）。
+- **B11 货币型净值近似平坦（误判防护）**：货币型基金 `acc_nav` 近似单调平坦，回撤 `dd≈0 → dd_score≈0`，若照常合成会被误标"高估勿追"。Handler 必须对 `fund_type=='货币型'` 短路返回 `timing_applicable=false`（不适用点位择时），前端据此提示"货币型不做点位择时"。债券型有真实累计净值波动，照常走 timing（与前端原型 `债券型 timing:true` 一致）。
+- **B12 回撤应为滚动峰值而非全史峰值（对齐蓝图 §4.1）**：蓝图 T1 签名 `drawdown_from_high(acc_nav, lookback)` 明确用"滚动峰值"，本 WBS 早期实现误用 `cummax()` 全史峰值。全史口径对"多年阴跌的价值陷阱"会永久判深回撤 → `dd_score=100` → 长期误标"低吸"（仅靠 T2 趋势部分抵消）。已修复为滚动窗口 `peak = nav.iloc[-lookback:].max()`，`DD_LOOKBACK=500`（≈2 年）；`lookback=None` 或 ≥样本长回退全史（保证少净值基金/短序列可算，18 项旧单测因序列 <500 全部回退全史 → 不回归）。Handler 默认取 `DD_LOOKBACK`。
 
 ---
 
@@ -61,9 +63,10 @@ TIER_WAIT = 30   # 观望 30–50
 # 默认权重（三维；缺维时对剩余重归一化到 1）
 DEFAULT_WEIGHTS = {'dd': 0.5, 'trend': 0.3, 'val': 0.2}
 
-def drawdown_from_high(acc_nav, cap=0.30) -> float|None
-    """T1：dd = last/peak - 1（≤0）。映射到 0–100 绝对分：
-       跌幅 m=-dd，score = clip(m/cap*100, 0, 100)。m≥cap(默认30%)→100。
+def drawdown_from_high(acc_nav, cap=0.30, lookback=500) -> float|None
+    """T1：dd = last/peak - 1（≤0），peak 取最近 lookback 个点的最大值（滚动峰值，
+       对齐蓝图 §4.1「相对自身近期高点」；lookback=None 或 ≥样本长 → 全史峰值）。
+       映射到 0–100 绝对分：跌幅 m=-dd，score = clip(m/cap*100, 0, 100)。m≥cap(默认30%)→100。
        样本<2 或全非正 → None。复用 scoring._clean_nav 口径。"""
 
 def nav_trend_score(acc_nav, ma_window=60) -> float|None
@@ -95,16 +98,19 @@ def tier_of(score) -> str|None
 ### 2.2 新增 Handler `quantia/web/fundTimingHandler.py`
 
 - 路由：`GET /quantia/api/fund/timing?code=xxx`
-- 只读 `cn_fund_nav_history`（acc_nav，缺则 unit_nav 兜底 B3）+ `cn_fund_rank_score`（score/fund_type 求 quality_pass）。
+- 只读 `cn_fund_nav_history`（acc_nav，缺则 unit_nav 兜底 B3）+ `cn_fund_rank`（name/fund_type）+ `cn_fund_rank_score`（score/fund_type 求 quality_pass）。
 - 逻辑：
-  1. 取该基金全部净值（按 nav_date 升序），显式列 SELECT（规则 7）。
-  2. `MAX(nav_date)` 与"评分快照日/今日"比对，`> 7 天 → stale=true, tier=None`（B4）。
-  3. 样本不足 → `data_available:false`（B5）。
-  4. 调 `timing.drawdown_from_high` + `nav_trend_score` + `compose_timing_score(val=None)`（P1 二维）。
-  5. quality_pass = `cn_fund_rank_score.score >= 70`（缺则 None，不硬判）。
+  1. 取名称/类型/质量分（best-effort，缺失不阻断）。
+  2. `fund_type=='货币型' → timing_applicable=false` 短路返回（B11）。
+  3. 取该基金全部净值（按 nav_date 升序），显式列 SELECT（规则 7）。
+  4. `MAX(nav_date)` 与"今日"比对，`> 7 天 → stale=true, tier=None`（B4，滞后时仍回传分量供透明展示）。
+  5. 样本不足 / 无净值 → `data_available:false`（B5）。
+  6. 调 `timing.drawdown_from_high` + `nav_trend_score` + `compose_timing_score(val=None)`（P1 二维）。
+  7. quality_pass = `cn_fund_rank_score.score >= 70`（缺则 None，不硬判）。
 - 返回：
   ```json
-  {"code","name","as_of","data_available":true,"stale":false,"acc_null":false,
+  {"code","name","fund_type","as_of","data_available":true,"timing_applicable":true,
+   "stale":false,"acc_null":false,
    "timing_score":78,"tier":"低吸","components":{"dd":82,"trend":66,"val":null},
    "dims_used":["dd","trend"],"quality_pass":true,"quality_score":92,
    "disclaimer":"...F13 免责..."}
@@ -115,9 +121,10 @@ def tier_of(score) -> str|None
 ### 2.3 前端"入场时机"卡片（增量）
 
 - `api/fund.ts` 新增 `getFundTiming(code)`。
-- `FundDetailDrawer.vue` 新增"🎯 入场时机"卡：档位徽章（低吸/定投/观望/高估）+ 三维分量条 + `stale/data_available` 占位文案 + 免责。
+- `FundDetailDrawer.vue` 新增"🎯 入场时机"卡：档位徽章（低吸/定投/观望/高估）+ 三维分量条 + `stale/data_available/timing_applicable` 占位文案 + 免责。
+- 占位优先级：`timing_applicable=false`（货币型）→"货币型不做点位择时"；`data_available=false`→"暂无择时数据"；`stale=true`→"净值滞后，暂不产出档位"（仍可展示分量条）。
 - 移动端卡片式适配（AGENTS 移动端规范，`useResponsive`）。
-- **零桌面回归**；条件只判断 `data_available`，不 gate 在其它状态后。
+- **零桌面回归**；条件只判断数据本身（`data_available`/`timing_applicable`），不 gate 在其它无关状态后。
 
 ### 2.4 P1 验收流程
 
@@ -133,7 +140,7 @@ def tier_of(score) -> str|None
 | 期 | 工作项 | 新建物 | 前置/风险 |
 |----|--------|--------|-----------|
 | **P2** | 回测对照：择时买入 vs 定投 vs 一次性 | 复用 `fund_backtest.simulate_staged_buy` + 择时择点；实验结论落 `document/fund/` | 用真实 acc_nav 切样本内外，禁固定系数造伪 OOS |
-| **P3** | T3 估值维度 | Fetch：`fetch_index_valuation_job.py` + `cn_index_valuation` 表（规则1）；`analysis_fund_timing_job` 落 `cn_fund_timing_score`（chunksize=500） | 指数估值确认缺失；基准文本解析噪声 |
+| **P3** | T3 估值维度 | ✅ Fetch：`fetch_index_valuation_job.py` + `crawling/index_valuation_lg.py` + `cn_index_valuation` 表（规则1，chunksize=500）；`benchmark_map.py` 基准→指数映射；Handler 接入 val 维 | 指数估值源：legulegu 全历史（akshare `stock_index_pe_lg` 已被上游日期格式变更打挂，改直连端点 + 自适应日期解析）；仅 12 只宽基有覆盖，非宽基/无 profile 基金 val=None 自动降维 | 
 | **P4** | 选基增量：经理经验弱因子、权益持仓风格漂移提示、T6 穿透式持仓位置参考卡 | 复用 `cn_fund_holding`（覆盖不足→仅有覆盖基金） | 不得影响无覆盖基金；季报滞后仅作参考 |
 | **P5** | 每日精选榜 | `cn_fund_daily_pick` 表 + `analysis_fund_pick_job.py`（AC 去重→先 TopN 后截 Top10；时钟看门狗 90%）+ `/api/fund/daily_pick` Handler + 前端榜单页 | 复用 `timing.py`（B8）；申购状态需 P 前置补表 |
 | **P6** | 钉钉推送 | 复用 `cn_stock_notification_event` dedupe（`hash('fund_daily_pick',pick_date)`）；深链公网可达 + 免登 token | 内网地址/登录墙硬前提（蓝图 §5.12） |
