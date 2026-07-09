@@ -625,6 +625,7 @@ _low_ma_convergence_columns.update({
     'low_position': {'type': FLOAT, 'cn': '低位百分位(%)', 'size': 110},
     'ma_convergence': {'type': FLOAT, 'cn': '均线粘合度(%)', 'size': 110},
     'close_ma60_dev': {'type': FLOAT, 'cn': '收盘偏离MA60(%)', 'size': 120},
+    'ma20_slope': {'type': FLOAT, 'cn': 'MA20斜率(%)', 'size': 100},
     'ma30_slope': {'type': FLOAT, 'cn': 'MA30斜率(%)', 'size': 100},
     'ma60_slope': {'type': FLOAT, 'cn': 'MA60斜率(%)', 'size': 100},
     'ma5': {'type': FLOAT, 'cn': '5日均线', 'size': 80},

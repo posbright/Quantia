@@ -42,7 +42,7 @@ def test_low_ma_convergence_accepts_low_converged_ma():
     assert result["low_position"] <= 25
     assert result["ma_convergence"] <= 5
     assert result["hit_count"] >= 1
-    assert all(key in result for key in ("ma5", "ma10", "ma20", "ma30", "ma60"))
+    assert all(key in result for key in ("ma5", "ma10", "ma20", "ma30", "ma60", "ma20_slope"))
 
 
 def test_low_ma_convergence_rejects_high_position():
@@ -84,6 +84,32 @@ def test_low_ma_convergence_rejects_still_falling_ma_trend():
     assert result is False
 
 
+def test_low_ma_convergence_rejects_short_term_ma20_downtrend():
+    early_drop = np.linspace(30, 10.2, 190)
+    low_base = 10 + np.sin(np.linspace(0, 6, 65)) * 0.08
+    short_pullback = np.linspace(10.05, 9.85, 5)
+    data = _make_data(np.r_[early_drop, low_base, short_pullback])
+
+    result = low_ma_convergence.check(
+        ("2026-07-03", "002558"),
+        data,
+        min_ma30_slope_pct=-100,
+        min_ma60_slope_pct=-100,
+    )
+
+    assert result is False
+
+    legacy_result = low_ma_convergence.check(
+        ("2026-07-03", "002558"),
+        data,
+        min_ma20_slope_pct=-100,
+        min_ma30_slope_pct=-100,
+        min_ma60_slope_pct=-100,
+    )
+    assert legacy_result
+    assert legacy_result["ma20_slope"] < 0
+
+
 def test_low_ma_convergence_can_disable_trend_filter_for_legacy_scan():
     prices = np.linspace(30, 10, 260)
     data = _make_data(prices)
@@ -119,5 +145,7 @@ def test_low_ma_convergence_002558_expected_dates_from_cache():
         ts = pd.Timestamp(day)
         result = low_ma_convergence.check((ts, "002558"), hist, date=ts.to_pydatetime())
         assert result, f"002558 {day} 应命中低位均线粘合"
+        assert result["ma20_slope"] is not None
+        assert result["ma20_slope"] >= 0
         assert result["ma60_slope"] is not None
         assert result["ma60_slope"] >= -0.1

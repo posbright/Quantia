@@ -106,7 +106,7 @@ TECHNICAL_STRATEGY_PARAMS = {
                        "1. 当前收盘价处于近N日高低价区间的中低位，默认不高于80%位置\n"
                        "2. MA5、MA10、MA20、MA30、MA60 五条均线最大差距 ≤ 均线均值的设定比例\n"
                        "3. 当前收盘价没有明显远离MA60，避免价格已脱离粘合区\n"
-                       "4. MA60 不能继续明显下行，过滤下降趋势中的假粘合\n\n"
+                       "4. MA20/MA30/MA60 不能继续明显下行，过滤下降趋势中的假粘合\n\n"
                        "适用场景：寻找长期下跌或横盘后的低位收敛形态，适合等待方向选择。\n"
                        "风险提示：均线粘合只代表波动收敛，不代表一定向上突破，建议结合成交量和基本面确认。",
         "strategy_func": "cn_stock_strategy_low_ma_convergence",
@@ -134,11 +134,13 @@ TECHNICAL_STRATEGY_PARAMS = {
             {
                 "group_name": "趋势过滤",
                 "params": [
-                    {"key": "enable_trend_filter", "label": "启用趋势过滤", "description": "开启后要求 MA60 近N日不能继续明显下行，过滤下降趋势中的均线粘合",
+                    {"key": "enable_trend_filter", "label": "启用趋势过滤", "description": "开启后要求 MA20/MA30/MA60 近N日不能继续明显下行，过滤下降趋势中的均线粘合",
                      "type": "select", "value": 1,
                      "options": [{"label": "开启（推荐）", "value": 1}, {"label": "关闭", "value": 0}]},
-                    {"key": "trend_slope_window", "label": "趋势斜率回看", "description": "计算 MA30/MA60 斜率的回看交易日数；默认1日用于判断MA60当日是否继续下行",
+                    {"key": "trend_slope_window", "label": "趋势斜率回看", "description": "计算 MA20/MA30/MA60 斜率的回看交易日数；默认1日用于判断短中长期均线是否继续下行",
                      "type": "number", "value": 1, "min": 1, "max": 60, "step": 1, "unit": "天"},
+                    {"key": "min_ma20_slope_pct", "label": "MA20斜率下限(%)", "description": "MA20 近N日涨跌幅不得低于此值；默认要求短期趋势不向下",
+                     "type": "number", "value": 0, "min": -10, "max": 5, "step": 0.1, "unit": "%"},
                     {"key": "min_ma30_slope_pct", "label": "MA30斜率下限(%)", "description": "MA30 近N日涨跌幅不得低于此值；主要过滤短中期均线明显下压",
                      "type": "number", "value": -0.5, "min": -10, "max": 5, "step": 0.1, "unit": "%"},
                     {"key": "min_ma60_slope_pct", "label": "MA60斜率下限(%)", "description": "MA60 近N日涨跌幅不得低于此值；默认允许极小噪声，明显下行则过滤",

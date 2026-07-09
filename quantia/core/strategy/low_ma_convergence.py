@@ -57,7 +57,7 @@ def _calc_ma_slope_pct(series, window):
 
 def _calc_hit_count(data, low_window, low_position_pct, convergence_pct, max_close_ma60_dev,
                     enable_trend_filter, trend_slope_window,
-                    min_ma30_slope_pct, min_ma60_slope_pct):
+                    min_ma20_slope_pct, min_ma30_slope_pct, min_ma60_slope_pct):
     close = data['close'].astype(float)
     low = data['low'].astype(float) if 'low' in data.columns else close
     high = data['high'].astype(float) if 'high' in data.columns else close
@@ -76,11 +76,14 @@ def _calc_hit_count(data, low_window, low_position_pct, convergence_pct, max_clo
 
     trend_ok = pd.Series(True, index=data.index)
     if enable_trend_filter:
+        ma20_slope = (data['ma20'].astype(float) - data['ma20'].astype(float).shift(trend_slope_window)) / data['ma20'].astype(float).shift(trend_slope_window) * 100
         ma30_slope = (data['ma30'].astype(float) - data['ma30'].astype(float).shift(trend_slope_window)) / data['ma30'].astype(float).shift(trend_slope_window) * 100
         ma60_slope = (data['ma60'].astype(float) - data['ma60'].astype(float).shift(trend_slope_window)) / data['ma60'].astype(float).shift(trend_slope_window) * 100
         trend_ok = (
+            ma20_slope.replace([np.inf, -np.inf], np.nan).notna() &
             ma30_slope.replace([np.inf, -np.inf], np.nan).notna() &
             ma60_slope.replace([np.inf, -np.inf], np.nan).notna() &
+            (ma20_slope >= min_ma20_slope_pct) &
             (ma30_slope >= min_ma30_slope_pct) &
             (ma60_slope >= min_ma60_slope_pct)
         )
@@ -101,14 +104,14 @@ def _calc_hit_count(data, low_window, low_position_pct, convergence_pct, max_clo
 def check(code_name, data, date=None, threshold=120, low_window=120,
                     low_position_pct=80, convergence_pct=6.0, max_close_ma60_dev=8,
                     enable_trend_filter=1, trend_slope_window=1,
-                    min_ma30_slope_pct=-0.5, min_ma60_slope_pct=-0.1):
+                    min_ma20_slope_pct=0.0, min_ma30_slope_pct=-0.5, min_ma60_slope_pct=-0.1):
     """低位均线粘合策略。
 
     选股条件：
     1. 当前收盘价处于近 low_window 日价格区间的中低位，默认不高于 80% 分位；
     2. MA5/10/20/30/60 五条均线粘合，最大均线与最小均线的差距不超过均线均值的 6.0%；
     3. 当前收盘价没有明显远离 MA60，默认偏离不超过 8%；
-    4. MA60 近 trend_slope_window 日不能继续明显下行，过滤下降趋势中的“假粘合”。
+    4. MA20/MA30/MA60 近 trend_slope_window 日不能继续明显下行，过滤下降趋势中的“假粘合”。
     """
     if date is None:
         end_date = code_name[0]
@@ -128,6 +131,7 @@ def check(code_name, data, date=None, threshold=120, low_window=120,
     max_close_ma60_dev = _to_float(max_close_ma60_dev, 8.0)
     enable_trend_filter = _to_bool(enable_trend_filter, True)
     trend_slope_window = max(1, _to_int(trend_slope_window, 1))
+    min_ma20_slope_pct = _to_float(min_ma20_slope_pct, 0.0)
     min_ma30_slope_pct = _to_float(min_ma30_slope_pct, -0.5)
     min_ma60_slope_pct = _to_float(min_ma60_slope_pct, -0.1)
 
@@ -166,18 +170,21 @@ def check(code_name, data, date=None, threshold=120, low_window=120,
     if close_ma60_dev > max_close_ma60_dev:
         return False
 
+    ma20_slope = _calc_ma_slope_pct(data['ma20'].astype(float), trend_slope_window)
     ma30_slope = _calc_ma_slope_pct(data['ma30'].astype(float), trend_slope_window)
     ma60_slope = _calc_ma_slope_pct(data['ma60'].astype(float), trend_slope_window)
     if enable_trend_filter:
-        if not (np.isfinite(ma30_slope) and np.isfinite(ma60_slope)):
+        if not (np.isfinite(ma20_slope) and np.isfinite(ma30_slope) and np.isfinite(ma60_slope)):
             return False
-        if ma30_slope < min_ma30_slope_pct or ma60_slope < min_ma60_slope_pct:
+        if (ma20_slope < min_ma20_slope_pct or
+                ma30_slope < min_ma30_slope_pct or
+                ma60_slope < min_ma60_slope_pct):
             return False
 
     hit_count = _calc_hit_count(
         data, low_window, low_position_pct, convergence_pct, max_close_ma60_dev,
         enable_trend_filter, trend_slope_window,
-        min_ma30_slope_pct, min_ma60_slope_pct
+        min_ma20_slope_pct, min_ma30_slope_pct, min_ma60_slope_pct
     )
 
     p_change = last['p_change'] if 'p_change' in data.columns else 0.0
@@ -188,6 +195,7 @@ def check(code_name, data, date=None, threshold=120, low_window=120,
         'low_position': round(float(low_position), 2),
         'ma_convergence': round(float(convergence), 2),
         'close_ma60_dev': round(float(close_ma60_dev), 2),
+        'ma20_slope': round(float(ma20_slope), 2) if np.isfinite(ma20_slope) else None,
         'ma30_slope': round(float(ma30_slope), 2) if np.isfinite(ma30_slope) else None,
         'ma60_slope': round(float(ma60_slope), 2) if np.isfinite(ma60_slope) else None,
         'ma5': round(float(last['ma5']), 3),
