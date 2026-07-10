@@ -16,6 +16,17 @@
     </div>
 
     <template v-else>
+      <!-- 桶标题条（对齐原型 bucket-head） -->
+      <div v-if="activeBucket" class="pick-bucket-head">
+        <span class="pbh-name">{{ activeBucket.fund_type }}</span>
+        <span class="pbh-sub">每类综合精选 Top10</span>
+        <span class="pbh-mode">{{
+          activeBucket.timing_applicable
+            ? '口径 V1：质量主排序 + 择时标签'
+            : '收益型：只展示收益/规模稳定性（不做点位择时）'
+        }}</span>
+      </div>
+
       <div v-if="activeBucket" class="pick-list">
         <!-- 表头（桌面） -->
         <div v-if="!isMobile" class="pick-head">
@@ -23,8 +34,11 @@
           <span class="ph-name">基金</span>
           <span class="ph-quality">质量分</span>
           <span class="ph-timing" v-if="activeBucket.has_timing">入场提示</span>
-          <span class="ph-metric">最大回撤</span>
-          <span class="ph-metric">近1年</span>
+          <template v-if="activeBucket.timing_applicable">
+            <span class="ph-metric">最大回撤</span>
+            <span class="ph-metric">近1年</span>
+          </template>
+          <span v-else class="ph-metric">七日年化</span>
         </div>
 
         <div
@@ -59,14 +73,20 @@
               v-if="p.timing_tier"
               class="tier-badge"
               :class="tierClass(p.timing_tier)"
-            >{{ p.timing_tier }}</span>
-            <span v-else class="tier-na">—</span>
+            >{{ p.timing_tier
+              }}<span v-if="p.timing_score != null" class="tier-score">{{ tierScore(p.timing_score) }}</span></span>
+            <span v-else class="tier-badge tier-na">暂无</span>
           </div>
-          <div class="pr-metric pr-metric--dd" :style="drawdownStyle(p.max_drawdown)">
-            {{ fmtDrawdown(p.max_drawdown) }}
-          </div>
-          <div class="pr-metric pr-metric--r1y" :style="returnStyle(p.rate_1y)">
-            {{ fmtPct(p.rate_1y) }}
+          <template v-if="activeBucket.timing_applicable">
+            <div class="pr-metric pr-metric--dd" :style="drawdownStyle(p.max_drawdown)">
+              {{ fmtDrawdown(p.max_drawdown) }}
+            </div>
+            <div class="pr-metric pr-metric--r1y" :style="returnStyle(p.rate_1y)">
+              {{ fmtPct(p.rate_1y) }}
+            </div>
+          </template>
+          <div v-else class="pr-metric pr-metric--y7">
+            {{ fmtY7(p.seven_day_annual) }}
           </div>
         </div>
 
@@ -135,6 +155,18 @@ function fmtDrawdown(v: number | null | undefined): string {
   return `${(v * 100).toFixed(2)}%`
 }
 
+// 七日年化（货币型）：cn_fund_rank.seven_day_annual，已是百分数值
+function fmtY7(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  return `${v.toFixed(2)}%`
+}
+
+// 择时分数（对齐原型「低吸 78」）
+function tierScore(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return ''
+  return ` ${Math.round(v)}`
+}
+
 function scoreColor(v: number | null | undefined): string {
   if (v === null || v === undefined || Number.isNaN(v)) return '#909399'
   if (v >= 75) return '#16a34a'
@@ -159,12 +191,12 @@ function drawdownStyle(v: number | null | undefined): Record<string, string> {
   return {}
 }
 
-// 低吸(强)>定投>观望>高估(弱)
+// 低吸(强)>定投>观望>高估勿追(弱)，色语义对齐原型 tierOf()
 function tierClass(tier: string | null): string {
   if (tier === '低吸') return 'tier-low'
   if (tier === '定投') return 'tier-dca'
   if (tier === '观望') return 'tier-wait'
-  if (tier === '高估') return 'tier-high'
+  if (tier === '高估勿追' || tier === '高估') return 'tier-high'
   return ''
 }
 
@@ -213,6 +245,32 @@ defineExpose({ reload: load })
   padding: 40px 0;
   text-align: center;
   color: #909399;
+}
+.pick-bucket-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 2px 8px;
+  border-bottom: 1px solid #ebeef5;
+  margin-bottom: 2px;
+}
+.pbh-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #303133;
+}
+.pbh-sub {
+  font-size: 12px;
+  color: #909399;
+}
+.pbh-mode {
+  margin-left: auto;
+  font-size: 12px;
+  color: #909399;
+  background: #f4f6f9;
+  border-radius: 10px;
+  padding: 2px 10px;
 }
 .pick-head {
   display: flex;
@@ -336,24 +394,34 @@ defineExpose({ reload: load })
   font-size: 12px;
   font-weight: 600;
 }
+.tier-score {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
 .tier-low {
-  background: #e6f7ee;
+  background: #e7f7ee;
   color: #16a34a;
+  border: 1px solid #b7e4c7;
 }
 .tier-dca {
-  background: #e8f2ff;
-  color: #2563eb;
+  background: #fdf3e2;
+  color: #e6a23c;
+  border: 1px solid #f5d9a8;
 }
 .tier-wait {
-  background: #fdf3e6;
-  color: #e6a23c;
+  background: #eef1f5;
+  color: #606266;
+  border: 1px solid #dfe4ea;
 }
 .tier-high {
   background: #fdeaea;
   color: #d23b3b;
+  border: 1px solid #f3c2c2;
 }
 .tier-na {
-  color: #c0c4cc;
+  background: #f4f4f5;
+  color: #a8abb2;
+  border: 1px dashed #d3d4d6;
 }
 .pr-metric {
   width: 88px;
@@ -417,6 +485,16 @@ defineExpose({ reload: load })
   }
   .pr-metric--r1y::before {
     content: '近1年 ';
+  }
+  .pr-metric--y7::before {
+    content: '七日年化 ';
+  }
+  .pick-bucket-head {
+    gap: 6px;
+  }
+  .pbh-mode {
+    margin-left: 0;
+    flex-basis: 100%;
   }
 }
 </style>

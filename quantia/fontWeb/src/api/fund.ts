@@ -391,6 +391,7 @@ export interface FundDailyPickItem {
   final_score: number | null
   max_drawdown: number | null
   rate_1y: number | null
+  seven_day_annual: number | null
   nav_as_of: string | null
   data_lag_days: number | null
 }
