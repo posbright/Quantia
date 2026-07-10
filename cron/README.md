@@ -303,6 +303,8 @@ source /etc/cron/_common.sh
   | K线缓存 | `QUANTIA_KLINE_TIMEOUT` | 21600 |
   | 数据分析（含回测，最长 ~2h） | `QUANTIA_ANALYSIS_TIMEOUT` | 14400 |
   | 基金综合评分 | `QUANTIA_FUND_SCORE_TIMEOUT` | 1800 |
+  | 基金每日精选榜 | `QUANTIA_FUND_PICK_TIMEOUT` | 600 |
+  | 基金精选榜推送（钉钉） | `QUANTIA_FUND_PICK_PUSH_TIMEOUT` | 180 |
   | 模拟交易 | `QUANTIA_PAPER_TIMEOUT` | 3600 |
   | AI报告+评分预警（LLM 调用） | `QUANTIA_REPORT_TIMEOUT` | 7200 |
   | 综合指标股票池 | `QUANTIA_COMPOSITE_TIMEOUT` | 1800 |
@@ -673,11 +675,13 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 | `QUANTIA_ANALYSIS_TIMEOUT` | 14400 | 数据分析超时秒数 |
 | `QUANTIA_FUND_SCORE_TIMEOUT` | 1800 | 基金综合评分超时秒数 |
 | `QUANTIA_FUND_PICK_TIMEOUT` | 600 | 基金每日精选榜超时秒数 |
+| `QUANTIA_FUND_PICK_PUSH_TIMEOUT` | 180 | 基金精选榜钉钉推送超时秒数（`notify_fund_pick_job`） |
 | `QUANTIA_PAPER_TIMEOUT` | 3600 | 模拟交易超时秒数 |
 | `QUANTIA_REPORT_TIMEOUT` | 7200 | AI 报告 + 评分预警超时秒数；调大分析股票数时需同步放宽 |
 | `QUANTIA_COMPOSITE_TIMEOUT` | 1800 | 综合指标股票池刷新超时秒数 |
 | `QUANTIA_AIKB_TIMEOUT` | 1800 | AI 知识库索引刷新超时秒数 |
 | `QUANTIA_FUND_PROFILE_TIMEOUT` | 3600 | 基金画像月度采集超时秒数 |
+| `QUANTIA_FUND_MANAGER_TIMEOUT` | 1200 | 基金经理经验月度采集超时秒数（P4 `fetch_fund_manager_job`，`fund_manager_em` 全量一次抓取） |
 | `QUANTIA_FUND_HOLDING_MAX_SECONDS` | 3300 | 基金重仓股月度采集软预算；到点在基金之间干净自停 |
 | `QUANTIA_FUND_HOLDING_TIMEOUT` | 3600 | 基金重仓股月度采集硬超时秒数 |
 | `QUANTIA_FUND_HOLDING_BATCH_SECONDS` | 3000 | 基金重仓股每日全覆盖分批软预算 |

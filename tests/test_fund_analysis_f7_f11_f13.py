@@ -90,6 +90,25 @@ class TestScoringMetrics:
         assert m['001'] == '银行'
         assert m['002'] == '半导体'
 
+    def test_main_industry_ignores_unknown(self):
+        # 大量未分类(数据缺口)不应压过真实行业倾向：半导体 13.7% > 未分类 45% 也应判半导体
+        df = pd.DataFrame([
+            {'code': '020470', 'industry': '未分类', 'hold_ratio': 45.71},
+            {'code': '020470', 'industry': '半导体', 'hold_ratio': 13.70},
+            {'code': '020470', 'industry': '汽车', 'hold_ratio': 5.94},
+        ])
+        m = scoring.compute_main_industry(df)
+        assert m['020470'] == '半导体'
+
+    def test_main_industry_all_unknown_omitted(self):
+        # 全部未分类 → 无已知行业 → 不返回该基金（前端保持空，诚实）
+        df = pd.DataFrame([
+            {'code': '111', 'industry': '未分类', 'hold_ratio': 60.0},
+            {'code': '111', 'industry': None, 'hold_ratio': 10.0},
+        ])
+        m = scoring.compute_main_industry(df)
+        assert '111' not in m
+
 
 class TestComputeScores:
 

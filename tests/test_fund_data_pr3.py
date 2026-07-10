@@ -241,6 +241,45 @@ class TestHoldingJob(unittest.TestCase):
         self.assertEqual(out['industry'].iloc[0], '银行')
         self.assertEqual(out['industry'].iloc[1], self.job._UNKNOWN_INDUSTRY)
 
+    def test_join_industry_name_guard_blocks_code_collision(self):
+        # 港股 00981 zfill→000981 撞 A 股山子高科(汽车)；持仓名为中芯国际 → 应拒配为未分类
+        df = pd.DataFrame({
+            'stock_code': ['000981', '300054'],
+            'stock_name': ['中芯国际', '鼎龙股份'],
+        })
+        imap = {'000981': ('汽车', '山子高科'), '300054': ('半导体', '鼎龙股份')}
+        out = self.job._join_industry(df, imap)
+        self.assertEqual(out['industry'].iloc[0], self.job._UNKNOWN_INDUSTRY)  # 名称不符 → 未分类
+        self.assertEqual(out['industry'].iloc[1], '半导体')                     # 名称一致 → 保留
+
+    def test_join_industry_name_guard_tolerates_prefix(self):
+        # 名称仅差 ST/XD 等前后缀 → 视为一致，保留行业
+        df = pd.DataFrame({'stock_code': ['600000'], 'stock_name': ['XD浦发银行']})
+        out = self.job._join_industry(df, {'600000': ('银行', '浦发银行')})
+        self.assertEqual(out['industry'].iloc[0], '银行')
+
+    def test_augment_star_bj_fills_gaps_only(self):
+        # 补全只填补缺口（688 科创板），不覆盖 cn_stock_selection 已有映射
+        base = {'600000': ('银行', '浦发银行')}
+        sup = pd.DataFrame({
+            'code': ['688981', '600000'],
+            'name': ['中芯国际', '浦发银行(改)'],
+            'industry': ['半导体', '错误行业'],
+        })
+        with mock.patch.object(self.job.sel_crawler, 'stock_industry_supplement',
+                               return_value=sup):
+            out = self.job._augment_industry_map_star_bj(dict(base))
+        self.assertEqual(out['688981'], ('半导体', '中芯国际'))  # 缺口被补
+        self.assertEqual(out['600000'], ('银行', '浦发银行'))    # 已有不被覆盖
+
+    def test_augment_star_bj_degrades_on_fetch_error(self):
+        # 抓取异常 → 静默降级，返回原 map
+        base = {'600000': ('银行', '浦发银行')}
+        with mock.patch.object(self.job.sel_crawler, 'stock_industry_supplement',
+                               side_effect=RuntimeError('net down')):
+            out = self.job._augment_industry_map_star_bj(dict(base))
+        self.assertEqual(out, base)
+
     def test_save_holding_deletes_old_then_writes(self):
         held = pd.DataFrame({
             'code': ['000001'], 'stock_code': ['600000'], 'stock_name': ['浦发银行'],
@@ -267,6 +306,7 @@ class TestHoldingJob(unittest.TestCase):
     def test_run_uses_equity_types(self):
         with mock.patch.object(self.job, '_select_target_codes', return_value=['000001']) as sel, \
              mock.patch.object(self.job, '_load_industry_map', return_value={}), \
+             mock.patch.object(self.job, '_augment_industry_map_star_bj', side_effect=lambda m: m), \
              mock.patch.object(self.job, 'save_fund_holding', return_value=10), \
              mock.patch.object(self.job, 'record_task_start', return_value=0.0), \
              mock.patch.object(self.job, 'record_task_end'):

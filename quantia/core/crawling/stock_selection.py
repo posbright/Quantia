@@ -110,6 +110,70 @@ def stock_selection() -> pd.DataFrame:
     return temp_df
 
 
+def stock_industry_supplement() -> pd.DataFrame:
+    """东方财富选股器-科创板/北交所行业补全（主选股器 stock_selection 的 MARKET 过滤
+    只含「上交所主板/深交所主板/深交所创业板」，故 688 科创板与北交所 8xx/4xx 全库无行业）。
+
+    本函数用同一 xuangu 接口、只取 (代码,名称,行业) 三列，过滤到科创板+北交所，作为
+    「补充映射」供基金持仓行业回填等场景填补空缺——**不写 cn_stock_selection、不改动
+    全库选股口径**，仅按需读取补齐 688/北交所行业。taxonomy 与主选股器同源（东财行业）。
+
+    抓取失败（代理不稳/限流）时返回已获取的部分或空 DataFrame，调用方须容忍降级。
+    :return: DataFrame[code, name, industry]
+    """
+    sty = "SECURITY_CODE,SECURITY_NAME_ABBR,INDUSTRY"
+    page_size = 500
+    url = "https://data.eastmoney.com/dataapi/xuangu/list"
+    params = {
+        "sty": sty,
+        "filter": "(MARKET+in+(\"上交所科创板\",\"北京证券交易所\"))(NEW_PRICE>0)",
+        "p": 1,
+        "ps": page_size,
+        "source": "SELECT_SECURITIES",
+        "client": "WEB",
+    }
+    data = None
+    data_count = 0
+    for first_attempt in range(3):
+        try:
+            r = fetcher.make_request(url, params=params)
+            data_json = r.json()
+            data = data_json["result"]["data"]
+            data_count = data_json["result"]["count"]
+            break
+        except Exception as e:
+            logging.warning(f"科创板/北交所行业补全首页获取失败(第{first_attempt+1}次): {e}")
+            if first_attempt < 2:
+                time.sleep(random.uniform(2, 5))
+    if not data:
+        return pd.DataFrame(columns=['code', 'name', 'industry'])
+    total_pages = math.ceil(data_count / page_size)
+    for page in range(2, total_pages + 1):
+        time.sleep(random.uniform(0.5, 1.5))
+        params["p"] = page
+        for attempt in range(3):
+            try:
+                r = fetcher.make_request(url, params=params)
+                page_data = r.json()["result"]["data"]
+                if page_data:
+                    data.extend(page_data)
+                break
+            except Exception as e:
+                logging.warning(f"科创板/北交所行业补全第 {page}/{total_pages} 页失败(第{attempt+1}次): {e}")
+                if attempt < 2:
+                    time.sleep(random.uniform(2, 4))
+    temp_df = pd.DataFrame(data)
+    if temp_df.empty:
+        return pd.DataFrame(columns=['code', 'name', 'industry'])
+    out = pd.DataFrame({
+        'code': temp_df.get('SECURITY_CODE'),
+        'name': temp_df.get('SECURITY_NAME_ABBR'),
+        'industry': temp_df.get('INDUSTRY'),
+    })
+    out = out[out['code'].notna()]
+    return out.reset_index(drop=True)
+
+
 def stock_selection_params():
     """
     东方财富网-个股-选股器-选股指标
@@ -117,7 +181,6 @@ def stock_selection_params():
     :return: 选股器-选股指标
     :rtype: pandas.DataFrame
     """
-    url = "https://datacenter-web.eastmoney.com/wstock/selection/api/data/get"
     params = {
         "type": "RPTA_PCNEW_WHOLE",
         "sty": "ALL",
