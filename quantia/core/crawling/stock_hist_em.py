@@ -202,7 +202,7 @@ def code_id_map_em() -> dict:
     使用代码前缀规则推断市场ID（无需网络请求，秒级完成）:
     - 6xx: 上交所 (market_id=1)
     - 0xx, 3xx: 深交所 (market_id=0)
-    - 4xx, 8xx: 北交所 (market_id=0)
+    - 4xx, 8xx, 920xxx: 北交所 (market_id=0)
 
     :return: 股票代码 -> 市场ID 的映射字典
     :rtype: dict
@@ -218,7 +218,7 @@ class _CodeIdMapProxy(dict):
     规则：
     - 6开头 → 上交所 (1)
     - 0、3开头 → 深交所 (0)
-    - 4、8开头 → 北交所 (0)
+    - 4、8、920开头 → 北交所 (0)
     """
 
     def __getitem__(self, symbol):
@@ -239,6 +239,8 @@ class _CodeIdMapProxy(dict):
         """根据股票/ETF代码前缀推断市场ID"""
         if not symbol or len(symbol) < 1:
             raise KeyError(symbol)
+        if symbol.startswith('920'):
+            return 0  # 北交所新代码段
         prefix = symbol[0]
         if prefix in ('6', '5'):
             return 1  # 上交所（含5开头的沪市ETF: 510xxx, 511xxx, 512xxx, 515xxx等）
