@@ -366,6 +366,12 @@ const routes: RouteRecordRaw[] = [
         name: 'AIModelConfig',
         component: () => import('@/views/strategy/StrategyConfig.vue'),
         meta: { title: 'AI模型设置', icon: 'Cpu', defaultStrategy: 'ai_model' }
+      },
+      {
+        path: 'custom-indicator',
+        name: 'CustomIndicatorEditor',
+        component: () => import('@/views/customIndicator/index.vue'),
+        meta: { title: '指标编辑器', icon: 'EditPen' }
       }
     ]
   },
@@ -450,14 +456,13 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/custom-indicator',
     component: Layout,
-    redirect: '/custom-indicator/editor',
-    meta: { title: '自定义指标', icon: 'MagicStick' },
+    redirect: '/config/custom-indicator',
+    meta: { hidden: true },
     children: [
       {
         path: 'editor',
-        name: 'CustomIndicatorEditor',
-        component: () => import('@/views/customIndicator/index.vue'),
-        meta: { title: '指标编辑器', icon: 'EditPen' }
+        redirect: '/config/custom-indicator',
+        meta: { hidden: true }
       }
     ]
   },
