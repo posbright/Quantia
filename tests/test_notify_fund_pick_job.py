@@ -14,11 +14,13 @@ from quantia.job import notify_fund_pick_job as job
 
 
 def _pick(code, name, quality=80.0, tier='定投', rate_1y=12.3,
-          mdd=-0.15, lag=0, nav_as_of=None):
+          mdd=-0.15, lag=0, nav_as_of=None, tscore=None, seven_day_annual=None):
     return {
         'code': code, 'name': name, 'quality_score': quality,
-        'timing_tier': tier, 'rate_1y': rate_1y, 'max_drawdown': mdd,
-        'data_lag_days': lag, 'nav_as_of': nav_as_of or datetime.date(2026, 7, 8),
+        'timing_tier': tier, 'timing_score': tscore, 'rate_1y': rate_1y,
+        'max_drawdown': mdd, 'data_lag_days': lag,
+        'nav_as_of': nav_as_of or datetime.date(2026, 7, 8),
+        'seven_day_annual': seven_day_annual,
     }
 
 
@@ -52,9 +54,9 @@ class TestBuildMarkdown(unittest.TestCase):
     def _buckets(self):
         return [
             {'fund_type': '股票型', 'timing_applicable': True,
-             'picks': [_pick('017730', '华夏A', 82, '低吸'),
-                       _pick('018230', '易方达B', 80, '定投'),
-                       _pick('016721', '广发C', 78, '观望')]},
+             'picks': [_pick('017730', '华夏A', 82, '低吸', tscore=78),
+                       _pick('018230', '易方达B', 80, '定投', tscore=61),
+                       _pick('016721', '广发C', 78, '观望', tscore=42)]},
             {'fund_type': '货币型', 'timing_applicable': False,
              'picks': [_pick('000198', '天弘余额宝', 75, None, rate_1y=2.1)]},
         ]
@@ -71,7 +73,35 @@ class TestBuildMarkdown(unittest.TestCase):
         self.assertIn('**股票型** · Top3', md)
         self.assertIn('[017730 华夏A](https://q.example.com/#/fund/rank?code=017730', md)
         self.assertIn('质量82', md)
-        self.assertIn('🟢低吸', md)
+        # 徽章含择时分数（对齐原型「低吸78」）
+        self.assertIn('🟢低吸78', md)
+        self.assertIn('🟠定投61', md)
+
+    def test_null_tier_shows_placeholder(self):
+        buckets = [{'fund_type': '债券型', 'timing_applicable': True,
+                    'picks': [_pick('016699', '某短债', 88, None, lag=37)]}]
+        _, md = job.build_fund_pick_markdown(
+            datetime.date(2026, 7, 9), buckets, base='https://q.example.com')
+        self.assertIn('择时暂无', md)
+        self.assertIn('净值滞后37天', md)
+
+    def test_name_bracket_escaped(self):
+        buckets = [{'fund_type': '股票型', 'timing_applicable': True,
+                    'picks': [_pick('017730', '华夏[A]份额', 82, '低吸', tscore=78)]}]
+        _, md = job.build_fund_pick_markdown(
+            datetime.date(2026, 7, 9), buckets, base='https://q.example.com')
+        # 链接显示文本里的方括号被转义，避免破坏 markdown 结构
+        self.assertIn('华夏【A】份额', md)
+        self.assertNotIn('华夏[A]份额', md)
+
+    def test_money_bucket_seven_day_annual(self):
+        buckets = [{'fund_type': '货币型', 'timing_applicable': False,
+                    'picks': [_pick('000198', '天弘余额宝', 75, None,
+                                    rate_1y=2.1, seven_day_annual=1.83)]}]
+        _, md = job.build_fund_pick_markdown(
+            datetime.date(2026, 7, 9), buckets, base='https://q.example.com')
+        self.assertIn('七日年化1.83%', md)
+        self.assertNotIn('近1年', md)
 
     def test_money_bucket_no_timing_badge(self):
         _, md = job.build_fund_pick_markdown(

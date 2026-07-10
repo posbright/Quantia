@@ -64,12 +64,14 @@ _JOB_NAME = 'run_fund_pick_push'
 _EVENT_TYPE = 'fund_daily_pick'
 _CHANNEL = 'dingtalk'
 _PICK_TABLE = tbs.TABLE_CN_FUND_DAILY_PICK['name']
+_RANK_TABLE = tbs.TABLE_CN_FUND_RANK['name']
 _MONEY_TYPE = '货币型'
 _TOP_N_PER_BUCKET = 3
+_LAG_WARN_DAYS = 5
 # 桶展示顺序（与 fundDailyPickHandler._TYPE_ORDER 一致，其余类型按字典序追加）
 _TYPE_ORDER = ['股票型', '混合型', '指数型', 'QDII', 'FOF', '债券型', '货币型']
-# 档位徽章 emoji（对齐 timing.tier_of 输出）
-_TIER_EMOJI = {'低吸': '🟢', '定投': '🔵', '观望': '🟡', '高估勿追': '🔴'}
+# 档位徽章 emoji（对齐 timing.tier_of 输出与原型色语义：低吸绿/定投橙/观望灰/高估红）
+_TIER_EMOJI = {'低吸': '🟢', '定投': '🟠', '观望': '⚪', '高估勿追': '🔴'}
 
 
 def _to_date(v):
@@ -131,13 +133,42 @@ def _dedupe_key(pick_date):
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:64]
 
 
+def _safe_link_text(s):
+    """转义 markdown 链接显示文本里的方括号，避免破坏 [text](url) 结构。"""
+    return str(s).replace('[', '【').replace(']', '】')
+
+
+def _fetch_seven_day_annual(codes):
+    """读货币型基金最新 7 日年化（cn_fund_rank.seven_day_annual）。
+
+    只读 MySQL（规则 1），SELECT 显式列（规则 7）。返回 {code: float}。
+    取每只基金 cn_fund_rank 中最新 date 的 seven_day_annual。
+    """
+    codes = [c for c in (codes or []) if c]
+    if not codes or not mdb.checkTableIsExist(_RANK_TABLE):
+        return {}
+    placeholders = ', '.join(['%s'] * len(codes))
+    rows = mdb.executeSqlFetch(
+        f"SELECT r.`code`, r.`seven_day_annual` FROM `{_RANK_TABLE}` r "
+        f"JOIN (SELECT `code`, MAX(`date`) AS d FROM `{_RANK_TABLE}` "
+        f"WHERE `code` IN ({placeholders}) GROUP BY `code`) m "
+        f"ON r.`code` = m.`code` AND r.`date` = m.d",
+        tuple(codes)) or []
+    out = {}
+    for code, sda in rows:
+        v = _num(sda)
+        if v is not None:
+            out[code] = v
+    return out
+
+
 def read_latest_picks(pick_date=None):
     """读 cn_fund_daily_pick 指定/最新运行日，按桶返回 Top-N（默认 Top3）。
 
     返回 (pick_date, buckets)。buckets 为 [{fund_type, timing_applicable,
-    picks:[{code,name,quality_score,timing_tier,rate_1y,max_drawdown,
-    data_lag_days,nav_as_of}]}]，按 _TYPE_ORDER 排序。无数据返回 (None, [])。
-    只读 MySQL（规则 1），SELECT 显式列（规则 7）。
+    picks:[{code,name,quality_score,timing_tier,timing_score,rate_1y,
+    max_drawdown,data_lag_days,nav_as_of,seven_day_annual}]}]，按 _TYPE_ORDER
+    排序。无数据返回 (None, [])。只读 MySQL（规则 1），SELECT 显式列（规则 7）。
     """
     if not mdb.checkTableIsExist(_PICK_TABLE):
         return None, []
@@ -150,13 +181,15 @@ def read_latest_picks(pick_date=None):
 
     rows = mdb.executeSqlFetch(
         f"SELECT `fund_type`, `rank_in_type`, `code`, `name`, `quality_score`, "
-        f"`timing_tier`, `rate_1y`, `max_drawdown`, `data_lag_days`, `nav_as_of` "
+        f"`timing_tier`, `timing_score`, `rate_1y`, `max_drawdown`, "
+        f"`data_lag_days`, `nav_as_of` "
         f"FROM `{_PICK_TABLE}` WHERE `date` = %s "
         f"ORDER BY `fund_type`, `rank_in_type`", (pd,)) or []
 
     groups = {}
     for r in rows:
-        (ftype, rank, code, name, quality, tier, rate_1y, mdd, lag, nav_as_of) = r
+        (ftype, rank, code, name, quality, tier, tscore,
+         rate_1y, mdd, lag, nav_as_of) = r
         bucket = groups.setdefault(ftype, [])
         if len(bucket) >= _TOP_N_PER_BUCKET:
             continue
@@ -165,11 +198,20 @@ def read_latest_picks(pick_date=None):
             'name': name,
             'quality_score': _num(quality),
             'timing_tier': tier,
+            'timing_score': _num(tscore),
             'rate_1y': _num(rate_1y),
             'max_drawdown': _num(mdd),
             'data_lag_days': int(lag) if lag is not None else None,
             'nav_as_of': _to_date(nav_as_of),
+            'seven_day_annual': None,
         })
+
+    # 货币型桶：补 7 日年化（cn_fund_rank），对齐原型「收益稳定性」展示
+    money_codes = [p['code'] for p in groups.get(_MONEY_TYPE, []) if p.get('code')]
+    if money_codes:
+        sda_map = _fetch_seven_day_annual(money_codes)
+        for p in groups.get(_MONEY_TYPE, []):
+            p['seven_day_annual'] = sda_map.get(p.get('code'))
 
     ordered = [t for t in _TYPE_ORDER if t in groups]
     ordered += sorted(t for t in groups if t not in _TYPE_ORDER)
@@ -184,11 +226,11 @@ def read_latest_picks(pick_date=None):
 
 
 def _fmt_pick_line(pick, timing_applicable, base):
-    """单只基金一行 markdown：[代码 简称](深链) 质量XX · 徽章/近1年。"""
+    """单只基金一行 markdown：[代码 简称](深链) 质量XX · 徽章/收益。"""
     code = pick.get('code') or ''
     name = pick.get('name') or code
     url = _fund_detail_url(code, name, base)
-    parts = [f"[{code} {name}]({url})"]
+    parts = [f"[{code} {_safe_link_text(name)}]({url})"]
     q = pick.get('quality_score')
     if q is not None:
         parts.append(f"质量{q:.0f}")
@@ -196,15 +238,24 @@ def _fmt_pick_line(pick, timing_applicable, base):
         tier = pick.get('timing_tier')
         if tier:
             emoji = _TIER_EMOJI.get(tier, '')
-            parts.append(f"{emoji}{tier}")
+            tscore = pick.get('timing_score')
+            badge = f"{emoji}{tier}{tscore:.0f}" if tscore is not None else f"{emoji}{tier}"
+            parts.append(badge)
+        else:
+            # 净值数据不足/滞后无法定档：显式标注「暂无」，对齐原型
+            parts.append("择时暂无")
         lag = pick.get('data_lag_days')
-        if lag is not None and lag >= 5:
+        if lag is not None and lag >= _LAG_WARN_DAYS:
             parts.append(f"净值滞后{lag}天")
     else:
-        # 货币型/不做点位择时：改显近1年收益，避免自相矛盾的择时措辞
-        r = pick.get('rate_1y')
-        if r is not None:
-            parts.append(f"近1年{r:.2f}%")
+        # 货币型/不做点位择时：优先显示 7 日年化，回退近1年，避免择时措辞
+        sda = pick.get('seven_day_annual')
+        if sda is not None:
+            parts.append(f"七日年化{sda:.2f}%")
+        else:
+            r = pick.get('rate_1y')
+            if r is not None:
+                parts.append(f"近1年{r:.2f}%")
     return "- " + " · ".join(parts)
 
 
