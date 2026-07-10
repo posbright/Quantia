@@ -403,10 +403,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.entry_window = 60
@@ -474,10 +474,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.max_positions = 5
@@ -571,10 +571,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.max_positions = 5
@@ -680,10 +680,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.max_positions = 5
@@ -803,10 +803,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.max_positions = 5
@@ -908,10 +908,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.max_positions = 5
@@ -1011,10 +1011,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.max_positions = 5
@@ -1135,10 +1135,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.max_positions = 5
@@ -1267,10 +1267,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.max_positions = 5
@@ -1383,10 +1383,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.max_positions = 5
@@ -1479,10 +1479,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.max_positions = 5
@@ -1588,10 +1588,10 @@ def initialize(context):
     set_order_cost(OrderCost(open_tax=0, close_tax=0.001,
                              open_commission=0.0003, close_commission=0.0003,
                              close_today_commission=0, min_commission=5), type='stock')
-    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式 XXXXXX.XSHG/XSHE）
+    # 动态股票池：从本地缓存/聚宽获取全部可用股票（统一为聚宽格式）
     try:
         _raw = get_all_cached_stocks()
-        g.stocks = [c + ('.XSHG' if c[0] == '6' else '.XSHE') for c in _raw]
+        g.stocks = [c + ('.XSHG' if c.startswith(('6', '5')) else '.BJ' if c.startswith(('4', '8', '920')) else '.XSHE') for c in _raw]
     except Exception:
         g.stocks = list(get_all_securities().index)
     g.max_positions = 5

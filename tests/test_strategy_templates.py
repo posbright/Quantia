@@ -170,6 +170,17 @@ class TestTemplateRegistry(unittest.TestCase):
             self.assertIn(sid, tpl['description'],
                           f"模板 {tid} 描述未引用策略编号 {sid}")
 
+    def test_dynamic_pool_formats_bj_suffix(self):
+        """动态股票池模板不应把北交所代码拼成深市后缀。"""
+        for tid in ALL_STRATEGY_TEMPLATES:
+            tpl = _get_template(tid)
+            if 'get_all_cached_stocks' not in tpl['code']:
+                continue
+            self.assertIn("'.BJ' if c.startswith(('4', '8', '920'))", tpl['code'],
+                          f"模板 {tid} 未正确处理北交所股票后缀")
+            self.assertNotIn("c + ('.XSHG' if c[0] == '6' else '.XSHE')", tpl['code'],
+                             f"模板 {tid} 仍使用旧的沪深二分后缀逻辑")
+
 
 class TestTemplateSandbox(unittest.TestCase):
     """测试模板代码安全性：可通过沙箱校验"""

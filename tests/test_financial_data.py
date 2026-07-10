@@ -75,6 +75,8 @@ class TestStockFinancialDataModule(unittest.TestCase):
         self.assertEqual(_code_to_secucode('300001'), '300001.SZ')
         self.assertEqual(_code_to_secucode('688001'), '688001.SH')
         self.assertEqual(_code_to_secucode('830001'), '830001.BJ')
+        self.assertEqual(_code_to_secucode('920819'), '920819.BJ')
+        self.assertEqual(_code_to_secucode('900001'), '900001.SH')
 
     def test_clean_nan(self):
         """NaN 应被替换为 None"""
