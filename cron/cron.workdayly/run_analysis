@@ -41,6 +41,12 @@ run_job "基金综合评分 (analysis_fund_score_job)" \
     "quantia/job/analysis_fund_score_job.py" "${QUANTIA_FUND_SCORE_TIMEOUT:-1800}"
 record_stage "基金综合评分 (analysis_fund_score_job)" $? warn
 
+# ── P5 场外基金每日精选榜（零 API，读 cn_fund_rank_score + cn_fund_rank + cn_fund_nav_history）──
+# 依赖上一步基金评分已落库当日截面；桶内 Top-N→AC 去重→Top10，timing 弱标签。失败不阻断。
+run_job "基金每日精选榜 (analysis_fund_pick_job)" \
+    "quantia/job/analysis_fund_pick_job.py" "${QUANTIA_FUND_PICK_TIMEOUT:-600}"
+record_stage "基金每日精选榜 (analysis_fund_pick_job)" $? warn
+
 # 在 workdayly.log 记录本次各子任务成功/失败 + 耗时（拆分模式下生产可见）
 print_stage_summary
 

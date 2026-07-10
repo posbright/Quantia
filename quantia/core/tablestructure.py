@@ -195,6 +195,27 @@ TABLE_CN_FUND_MANAGER = {'name': 'cn_fund_manager', 'cn': '基金经理经验',
                                      'fund_count': {'type': Integer, 'cn': '在管基金数', 'size': 90},
                                      'update_date': {'type': DATE, 'cn': '更新日', 'size': 100}}}
 
+# 每日精选榜（P5，Analysis 管道生成，只读 MySQL）。主键 (date, fund_type, code)。
+# 每个 fund_type 桶内 Top10：先取桶内 Top-N by quality → AC 份额去重 → 截 Top10。
+# quality_score=cn_fund_rank_score.score（V1 主排序），timing_* 由 timing.py 计算（弱标签、
+# 不参与排序、货币型/债券型多为 NULL），final_score V1=quality_score。max_drawdown/rate_1y/
+# timing_* 均 NULL 容忍。score_as_of/nav_as_of 记录数据截面，data_lag_days=date-nav_as_of。
+TABLE_CN_FUND_DAILY_PICK = {'name': 'cn_fund_daily_pick', 'cn': '基金每日精选榜',
+                            'columns': {'date': {'type': DATE, 'cn': '运行日', 'size': 100},
+                                        'fund_type': {'type': VARCHAR(20, _COLLATE), 'cn': '基金类型', 'size': 90},
+                                        'rank_in_type': {'type': Integer, 'cn': '桶内名次', 'size': 80},
+                                        'code': {'type': VARCHAR(6, _COLLATE), 'cn': '基金代码', 'size': 70},
+                                        'name': {'type': VARCHAR(60, _COLLATE), 'cn': '基金名称', 'size': 160},
+                                        'quality_score': {'type': FLOAT, 'cn': '质量分', 'size': 90},
+                                        'timing_score': {'type': FLOAT, 'cn': '择时分', 'size': 90},
+                                        'timing_tier': {'type': VARCHAR(10, _COLLATE), 'cn': '择时档位', 'size': 90},
+                                        'final_score': {'type': FLOAT, 'cn': '综合分', 'size': 90},
+                                        'max_drawdown': {'type': FLOAT, 'cn': '最大回撤', 'size': 90},
+                                        'rate_1y': {'type': FLOAT, 'cn': '近1年', 'size': 70},
+                                        'score_as_of': {'type': DATE, 'cn': '质量分截面日', 'size': 100},
+                                        'nav_as_of': {'type': DATE, 'cn': '净值截面日', 'size': 100},
+                                        'data_lag_days': {'type': Integer, 'cn': '净值滞后天数', 'size': 90}}}
+
 TABLE_CN_STOCK_SPOT = {'name': 'cn_stock_spot', 'cn': '每日股票数据',
                        'columns': {'date': {'type': DATE, 'cn': '日期', 'size': 0},
                                    'code': {'type': VARCHAR(6, _COLLATE), 'cn': '代码', 'size': 60},
