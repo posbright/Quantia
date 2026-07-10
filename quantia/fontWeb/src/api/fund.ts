@@ -390,7 +390,11 @@ export interface FundDailyPickItem {
   timing_tier: string | null
   final_score: number | null
   max_drawdown: number | null
+  current_drawdown: number | null
+  main_industry: string | null
   rate_1y: number | null
+  unit_nav: number | null
+  acc_nav: number | null
   seven_day_annual: number | null
   nav_as_of: string | null
   data_lag_days: number | null
@@ -403,9 +407,16 @@ export interface FundDailyPickBucket {
   picks: FundDailyPickItem[]
 }
 
+export interface FundDataHealth {
+  timeliness: { fresh: number; total: number; pct: number | null } | null
+  holdings: { available: boolean; covered?: number; total?: number; pct?: number | null }
+  quality_coverage: { status: string; score_as_of: string | null }
+}
+
 export interface FundDailyPick {
   date: string | null
   score_as_of: string | null
+  data_health: FundDataHealth | null
   buckets: FundDailyPickBucket[]
   disclaimer: string
 }

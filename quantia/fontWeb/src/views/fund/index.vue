@@ -573,9 +573,8 @@ async function loadRank() {
 
 // 布局使用 keep-alive，用 onActivated 而非 onMounted 保证回到页面时刷新
 onActivated(async () => {
-  if (!metaLoaded.value) await loadMeta()
-  await Promise.all([loadRank(), loadIndustries(), loadHoldingConfig()])
-  // 深链：?pick=1 打开每日精选 tab；?code=xxx 自动打开详情抽屉
+  // 深链优先：?pick=1 打开每日精选 tab；?code=xxx 自动打开详情抽屉。
+  // 先于数据加载处理，避免任一列表请求失败（如未登录）导致抽屉不弹出。
   const q = route.query
   if (q.pick !== undefined && q.pick !== null && q.pick !== '0') {
     activeTab.value = 'pick'
@@ -585,6 +584,8 @@ onActivated(async () => {
     const qName = typeof q.name === 'string' ? q.name : ''
     openDetailByCode({ code: qCode, name: qName || qCode })
   }
+  if (!metaLoaded.value) await loadMeta()
+  await Promise.all([loadRank(), loadIndustries(), loadHoldingConfig()])
 })
 </script>
 

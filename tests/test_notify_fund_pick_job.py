@@ -28,18 +28,18 @@ class TestUrls(unittest.TestCase):
     def test_detail_url_with_base_env(self):
         with mock.patch.dict(os.environ, {'QUANTIA_WEB_BASE_URL': 'https://q.example.com'}):
             url = job._fund_detail_url('017730', '华夏基金')
-            self.assertTrue(url.startswith('https://q.example.com/#/fund/rank?code=017730'))
+            self.assertTrue(url.startswith('https://q.example.com/fund/rank?code=017730'))
             self.assertIn('name=', url)
 
     def test_detail_url_strips_quantia_suffix(self):
         with mock.patch.dict(os.environ, {'QUANTIA_WEB_BASE_URL': 'https://q.example.com/quantia'}):
             url = job._fund_detail_url('000300')
-            self.assertTrue(url.startswith('https://q.example.com/#/fund/rank?code=000300'))
-            self.assertNotIn('/quantia/#', url)
+            self.assertTrue(url.startswith('https://q.example.com/fund/rank?code=000300'))
+            self.assertNotIn('/quantia/fund', url)
 
     def test_list_url(self):
         with mock.patch.dict(os.environ, {'QUANTIA_WEB_BASE_URL': 'https://q.example.com'}):
-            self.assertEqual(job._pick_list_url(), 'https://q.example.com/#/fund/rank?pick=1')
+            self.assertEqual(job._pick_list_url(), 'https://q.example.com/fund/rank?pick=1')
 
     def test_base_fallback_no_env(self):
         env = dict(os.environ)
@@ -71,7 +71,7 @@ class TestBuildMarkdown(unittest.TestCase):
         _, md = job.build_fund_pick_markdown(
             datetime.date(2026, 7, 9), self._buckets(), base='https://q.example.com')
         self.assertIn('**股票型** · Top3', md)
-        self.assertIn('[017730 华夏A](https://q.example.com/#/fund/rank?code=017730', md)
+        self.assertIn('[017730 华夏A](https://q.example.com/fund/rank?code=017730', md)
         self.assertIn('质量82', md)
         # 徽章含择时分数（对齐原型「低吸78」）
         self.assertIn('🟢低吸78', md)
@@ -123,7 +123,7 @@ class TestBuildMarkdown(unittest.TestCase):
         _, md = job.build_fund_pick_markdown(
             datetime.date(2026, 7, 9), self._buckets(), base='https://q.example.com')
         self.assertIn('查看完整每类 Top10 榜单', md)
-        self.assertIn('https://q.example.com/#/fund/rank?pick=1', md)
+        self.assertIn('https://q.example.com/fund/rank?pick=1', md)
         self.assertIn('历史业绩不代表未来', md)
 
     def test_empty_bucket_skipped(self):
