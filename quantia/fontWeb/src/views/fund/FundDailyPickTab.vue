@@ -16,17 +16,6 @@
     </div>
 
     <template v-else>
-      <!-- 桶选择胶囊 -->
-      <div class="pick-capsules">
-        <span
-          v-for="b in buckets"
-          :key="b.fund_type"
-          class="pick-cap"
-          :class="{ active: b.fund_type === activeType }"
-          @click="activeType = b.fund_type"
-        >{{ b.fund_type }}</span>
-      </div>
-
       <div v-if="activeBucket" class="pick-list">
         <!-- 表头（桌面） -->
         <div v-if="!isMobile" class="pick-head">
@@ -88,6 +77,9 @@
           该类暂无净值历史（未回填），入场提示暂缺；质量分与收益仍可参考。
         </div>
       </div>
+      <div v-else class="pick-empty">
+        当前基金类型暂无精选榜数据。
+      </div>
     </template>
 
     <div class="pick-disclaimer" v-if="data?.disclaimer">⚠️ {{ data.disclaimer }}</div>
@@ -101,15 +93,15 @@ import { getFundDailyPick, type FundDailyPick, type FundDailyPickBucket } from '
 import { useResponsive } from '@/composables/useResponsive'
 
 const emit = defineEmits<{ (e: 'open', v: { code: string; name: string }): void }>()
+const props = defineProps<{ fundType: string }>()
 
 const { isMobile } = useResponsive()
 const data = ref<FundDailyPick | null>(null)
 const loading = ref(false)
-const activeType = ref('')
 
 const buckets = computed<FundDailyPickBucket[]>(() => data.value?.buckets || [])
 const activeBucket = computed<FundDailyPickBucket | null>(
-  () => buckets.value.find((b) => b.fund_type === activeType.value) || null,
+  () => buckets.value.find((b) => b.fund_type === props.fundType) || null,
 )
 
 function medal(rank: number | null): string {
@@ -181,9 +173,6 @@ async function load() {
   try {
     const res = (await getFundDailyPick()) as unknown as FundDailyPick
     data.value = res
-    if (res.buckets?.length) {
-      activeType.value = res.buckets[0].fund_type
-    }
   } catch {
     ElMessage.error('加载每日精选榜失败')
     data.value = null
@@ -224,28 +213,6 @@ defineExpose({ reload: load })
   padding: 40px 0;
   text-align: center;
   color: #909399;
-}
-.pick-capsules {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-.pick-cap {
-  padding: 4px 14px;
-  border-radius: 14px;
-  background: #f0f2f5;
-  color: #606266;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.pick-cap:hover {
-  background: #e4e7ed;
-}
-.pick-cap.active {
-  background: #409eff;
-  color: #fff;
 }
 .pick-head {
   display: flex;

@@ -313,7 +313,7 @@
       </el-tab-pane>
 
       <el-tab-pane label="每日精选" name="pick">
-        <FundDailyPickTab @open="openDetailByCode" />
+        <FundDailyPickTab :fund-type="fundType" @open="openDetailByCode" />
       </el-tab-pane>
 
       <el-tab-pane label="同类对比" name="compare">
