@@ -312,6 +312,10 @@
     </div>
       </el-tab-pane>
 
+      <el-tab-pane label="每日精选" name="pick">
+        <FundDailyPickTab @open="openDetailByCode" />
+      </el-tab-pane>
+
       <el-tab-pane label="同类对比" name="compare">
         <FundCompareTab :fund-type="fundType" :period="period" />
       </el-tab-pane>
@@ -324,6 +328,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onActivated } from 'vue'
+import { useRoute } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import {
@@ -341,8 +346,10 @@ import {
 } from '@/api/fund'
 import FundDetailDrawer from './FundDetailDrawer.vue'
 import FundCompareTab from './FundCompareTab.vue'
+import FundDailyPickTab from './FundDailyPickTab.vue'
 import { useResponsive } from '@/composables/useResponsive'
 
+const route = useRoute()
 const { isMobile } = useResponsive()
 const meta = ref<FundRankMeta | null>(null)
 const fundTypes = ref<string[]>([])
@@ -399,6 +406,13 @@ const detailName = ref('')
 function openDetail(row: FundRankItem) {
   detailCode.value = row.code
   detailName.value = row.name
+  detailVisible.value = true
+}
+
+// 供每日精选/深链按代码直接打开详情
+function openDetailByCode(v: { code: string; name: string }) {
+  detailCode.value = v.code
+  detailName.value = v.name || v.code
   detailVisible.value = true
 }
 
@@ -561,6 +575,16 @@ async function loadRank() {
 onActivated(async () => {
   if (!metaLoaded.value) await loadMeta()
   await Promise.all([loadRank(), loadIndustries(), loadHoldingConfig()])
+  // 深链：?pick=1 打开每日精选 tab；?code=xxx 自动打开详情抽屉
+  const q = route.query
+  if (q.pick !== undefined && q.pick !== null && q.pick !== '0') {
+    activeTab.value = 'pick'
+  }
+  const qCode = typeof q.code === 'string' ? q.code.trim() : ''
+  if (qCode) {
+    const qName = typeof q.name === 'string' ? q.name : ''
+    openDetailByCode({ code: qCode, name: qName || qCode })
+  }
 })
 </script>
 

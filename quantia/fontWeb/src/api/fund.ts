@@ -379,6 +379,44 @@ export function getFundManager(code: string) {
   })
 }
 
+// ── 每日精选榜（P5，analysis 管道预生成，桶内 Top10）────────────────
+
+export interface FundDailyPickItem {
+  rank_in_type: number | null
+  code: string
+  name: string | null
+  quality_score: number | null
+  timing_score: number | null
+  timing_tier: string | null
+  final_score: number | null
+  max_drawdown: number | null
+  rate_1y: number | null
+  nav_as_of: string | null
+  data_lag_days: number | null
+}
+
+export interface FundDailyPickBucket {
+  fund_type: string
+  timing_applicable: boolean
+  has_timing: boolean
+  picks: FundDailyPickItem[]
+}
+
+export interface FundDailyPick {
+  date: string | null
+  score_as_of: string | null
+  buckets: FundDailyPickBucket[]
+  disclaimer: string
+}
+
+export function getFundDailyPick() {
+  return request<FundDailyPick>({
+    url: '/api/fund/daily_pick',
+    method: 'get',
+  })
+}
+
+
 // ── AI 按需分析（F14，懒加载 LLM）──────────────────────────────────
 
 export interface FundAiSource {

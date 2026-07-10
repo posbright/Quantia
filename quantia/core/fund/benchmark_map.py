@@ -9,7 +9,11 @@
 匹配口径（保守，宁缺毋滥）：
 - 关键词按**长度降序**匹配，避免「中证1000」被「中证100」截断误配。
 - 主动混合基金基准是文本表达式（噪声大）：只做**明确指数名**的字面命中，不做行业推断。
+- **权重主导**：基准是多成分加权表达式（如「MSCI全球×75%＋沪深300×20%」）时，只取
+  **最大权重成分**对应的宽基；若主导成分不可映射（全球/海外/债券等），返回 None，避免用
+  少数权重的境内宽基给以海外资产为主的 QDII 错套估值分位。
 """
+import re
 
 __author__ = 'Quantia'
 __date__ = '2026/07/09'
@@ -37,6 +41,10 @@ _ORDERED_KEYWORDS = sorted(_BENCHMARK_KEYWORDS.items(), key=lambda kv: len(kv[0]
 # 关键词后紧跟这些串 → 判定为“对该宽基本身的引用”（如 沪深300指数收益率）。
 _STANDALONE_SUFFIXES = ('指数', '收益')
 
+# 基准多成分分隔符（＋/+）与「×NN%」权重提取。
+_WEIGHT_SPLIT_RE = re.compile(r'[＋+]')
+_WEIGHT_RE = re.compile(r'[×*＊xX]\s*([0-9]+(?:\.[0-9]+)?)\s*[%％]')
+
 
 def _is_cjk(ch):
     return '\u4e00' <= ch <= '\u9fff'
@@ -61,29 +69,8 @@ def _valid_boundary(text, end_idx):
     return any(rest.startswith(s) for s in _STANDALONE_SUFFIXES)
 
 
-def map_benchmark_to_index(benchmark_text):
-    """基准文本 → 指数代码（命中 12 只有估值覆盖的宽基之一），无命中返回 None。
-
-    仅当关键词是对**宽基本身**的引用才命中；以宽基名开头的风格/行业子指数
-    （如「沪深300成长指数」「中证500信息技术指数」）判定为无覆盖 → None，避免错套宽基估值。
-
-    >>> map_benchmark_to_index('沪深300指数收益率×95%＋银行活期存款利率×5%')
-    '000300'
-    >>> map_benchmark_to_index('中证1000指数收益率×90%')
-    '000852'
-    >>> map_benchmark_to_index('沪深300成长指数收益率×90%') is None  # 风格子指数，无宽基估值覆盖
-    True
-    >>> map_benchmark_to_index('创业板指数收益率') is None  # 创业板指非创业板50，无估值覆盖
-    True
-    """
-    if not benchmark_text:
-        return None
-    try:
-        text = str(benchmark_text)
-    except (TypeError, ValueError):
-        return None
-    if not text.strip():
-        return None
+def _first_literal_match(text):
+    """全文按关键词长度降序取首个边界合法命中的宽基代码；无则 None。"""
     for keyword, code in _ORDERED_KEYWORDS:
         start = 0
         while True:
@@ -94,3 +81,56 @@ def map_benchmark_to_index(benchmark_text):
                 return code
             start = i + 1
     return None
+
+
+def _component_weight(component):
+    """取成分内首个「×NN%」权重（浮点百分数）；无则 None。"""
+    m = _WEIGHT_RE.search(component)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def map_benchmark_to_index(benchmark_text):
+    """基准文本 → 指数代码（命中 12 只有估值覆盖的宽基之一），无命中返回 None。
+
+    仅当关键词是对**宽基本身**的引用才命中；以宽基名开头的风格/行业子指数
+    （如「沪深300成长指数」「中证500信息技术指数」）判定为无覆盖 → None，避免错套宽基估值。
+    多成分加权基准取**最大权重成分**对应的宽基；主导成分不可映射（全球/海外/债券）→ None，
+    避免给以海外资产为主的 QDII 错套境内宽基估值分位。
+
+    >>> map_benchmark_to_index('沪深300指数收益率×95%＋银行活期存款利率×5%')
+    '000300'
+    >>> map_benchmark_to_index('中证1000指数收益率×90%')
+    '000852'
+    >>> map_benchmark_to_index('沪深300成长指数收益率×90%') is None  # 风格子指数，无宽基估值覆盖
+    True
+    >>> map_benchmark_to_index('创业板指数收益率') is None  # 创业板指非创业板50，无估值覆盖
+    True
+    >>> map_benchmark_to_index('MSCI全球指数收益率×75%＋沪深300指数收益率×20%') is None  # 主导海外，勿套境内估值
+    True
+    """
+    if not benchmark_text:
+        return None
+    try:
+        text = str(benchmark_text)
+    except (TypeError, ValueError):
+        return None
+    if not text.strip():
+        return None
+    # 拆成分并取各自权重；有显式权重时按「最大权重成分」定锚。
+    weighted = []
+    for comp in _WEIGHT_SPLIT_RE.split(text):
+        w = _component_weight(comp)
+        if w is None:
+            continue
+        weighted.append((w, _first_literal_match(comp)))
+    if not weighted:
+        # 无显式权重结构（单指数/无权重基准）→ 退化为全文字面命中。
+        return _first_literal_match(text)
+    # 权重降序；并列时优先可映射成分。主导成分不可映射 → None。
+    weighted.sort(key=lambda t: (t[0], t[1] is not None), reverse=True)
+    return weighted[0][1]

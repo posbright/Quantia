@@ -22,9 +22,10 @@
 | **`fundTimingHandler` + 路由** | ✅ DONE (P1) | `quantia/web/fundTimingHandler.py` |
 | **前端"入场时机"卡片** | ✅ DONE (P1/P2) | `FundDetailDrawer.vue` |
 | **`cn_index_valuation` 表 + 指数估值 Fetch job（T3）** | ✅ DONE (P3) | `fetch_index_valuation_job.py` + `crawling/index_valuation_lg.py` |
-| **`analysis_fund_timing_job` + `cn_fund_timing_score`** | ⏳ 延后 P5 | 详情页 handler 已按需算 T3，批量预计算归 P5 精选榜 |
-| **`cn_fund_daily_pick` 表 + 精选 job + Handler** | ❌ MISSING | P5 |
-| **`fund_daily_pick` 钉钉推送** | ❌ MISSING | P6 |
+| **`analysis_fund_timing_job` + `cn_fund_timing_score`** | ⛔ 不新建（改由 pick_job 内联算） | 批量预计算未建独立表；`analysis_fund_pick_job._compute_timing` 逐只调 `timing.py` 算 T1+T2+**T3**，与 Handler 共用 `valuation_lookup.py` 单一事实源 |
+| **T3 估值查询单一事实源 `valuation_lookup.py`** | ✅ DONE (P5 QA) | `quantia/core/fund/valuation_lookup.py`：Handler `_valuation_score` 与 pick_job 共用，消除「列表徽章 T1+T2 vs 抽屉档位 T1+T2+T3」漂移 |
+| **`cn_fund_daily_pick` 表 + 精选 job + Handler** | ✅ DONE (P5) | `tablestructure.TABLE_CN_FUND_DAILY_PICK` + `analysis_fund_pick_job.py` + `fundDailyPickHandler.py` + 前端「每日精选」tab |
+| **`fund_daily_pick` 钉钉推送** | ✅ DONE (P6) | `quantia/job/notify_fund_pick_job.py`（复用 `notification.service` 幂等/门控 + `DingTalkChannel` + 深链）+ cron.workdayly 编排 + 通知设置 UI 事件类型 |
 
 ---
 
@@ -44,6 +45,12 @@
 - **B10 T3 数据确认缺失**：指数 PE/PB 历史分位表不存在 → **P1 只做 T1+T2**，`compose_timing_score` 的 val 维度传 None，自动降为二维。T3 属 P3，须走 Fetch 管道新建 `cn_index_valuation`（规则 1，禁在 Handler 抓取）。
 - **B11 货币型净值近似平坦（误判防护）**：货币型基金 `acc_nav` 近似单调平坦，回撤 `dd≈0 → dd_score≈0`，若照常合成会被误标"高估勿追"。Handler 必须对 `fund_type=='货币型'` 短路返回 `timing_applicable=false`（不适用点位择时），前端据此提示"货币型不做点位择时"。债券型有真实累计净值波动，照常走 timing（与前端原型 `债券型 timing:true` 一致）。
 - **B12 回撤应为滚动峰值而非全史峰值（对齐蓝图 §4.1）**：蓝图 T1 签名 `drawdown_from_high(acc_nav, lookback)` 明确用"滚动峰值"，本 WBS 早期实现误用 `cummax()` 全史峰值。全史口径对"多年阴跌的价值陷阱"会永久判深回撤 → `dd_score=100` → 长期误标"低吸"（仅靠 T2 趋势部分抵消）。已修复为滚动窗口 `peak = nav.iloc[-lookback:].max()`，`DD_LOOKBACK=500`（≈2 年）；`lookback=None` 或 ≥样本长回退全史（保证少净值基金/短序列可算，18 项旧单测因序列 <500 全部回退全史 → 不回归）。Handler 默认取 `DD_LOOKBACK`。
+
+### P5 QA 复审修复（2026-07-10，二次对照文档 ↔ 代码）
+
+- **B13 pick_job 丢 T3 → 列表徽章与抽屉档位漂移**：`analysis_fund_pick_job._compute_timing` 早期传 `compose_timing_score(dd, trend, None)`，而抽屉 Handler 算 T3，导致有估值覆盖的 25/70 只基金"列表(T1+T2) vs 抽屉(T1+T2+T3)"档位不符（违反蓝图 §4.2 单一事实源）。已抽出 **`quantia/core/fund/valuation_lookup.py`** 供 Handler `_valuation_score` 与 pick_job 共用；pick_job 纳入 T3（货币/滞后/样本不足短路跳过），黑盒核对逐只一致。
+- **B14 benchmark 映射无权重感知 → QDII 错套境内估值（逻辑 bug，根因）**：`benchmark_map.map_benchmark_to_index` 早期取首个字面命中的境内宽基，**忽略权重**。如"MSCI全球×75%＋沪深300×20%"被映射为 `000300`，给以海外资产为主的 QDII 套沪深300 PE 分位，属误导信号（违背模块自身"宁缺毋滥"约束）。已改为**权重主导**：按 `＋/+` 拆成分取"最大权重成分"定锚；主导成分不可映射（全球/海外/债券）→ None。修复后 017730/018230（MSCI 主导 QDII）、018304（中债 50% 主导 FOF）不再套境内估值；020795（沪深300 55.2%）、015084（中证800 75%）仍正确映射。新增 6 例单测覆盖真实 QDII/FOF 基准；Handler 与 pick_job 因共用同一函数一并修正。
+- **B15 净值滞后未在榜单前端展示（完成性缺口，§7.1bis/§7.2bis）**：榜单接口已返回 `data_lag_days/nav_as_of` 但前端 `FundDailyPickTab.vue` 未渲染。已加"净值滞后 N 天"标签：QDII 桶必须展示（§7.1bis），其余桶仅在 `data_lag_days ≥ 5` 自然日时以警示色提示（§7.2bis），`nav_as_of` 作 title 悬浮。
 
 ---
 
@@ -143,7 +150,14 @@ def tier_of(score) -> str|None
 | **P3** | T3 估值维度 | ✅ Fetch：`fetch_index_valuation_job.py` + `crawling/index_valuation_lg.py` + `cn_index_valuation` 表（规则1，chunksize=500）；`benchmark_map.py` 基准→指数映射（**边界校验**：以宽基名开头的风格/行业子指数如「沪深300成长」「中证500信息技术」判定无覆盖→None，生产实测 10 例，不错套宽基估值）；Handler 接入 val 维 | 指数估值源：legulegu 全历史（akshare `stock_index_pe_lg` 已被上游日期格式变更打挂，改直连端点 + 自适应日期解析）；仅 12 只宽基有覆盖，非宽基/无 profile 基金 val=None 自动降维 | 
 | **P4** | 选基增量：**T6 穿透式持仓位置参考卡（✅ 已交付）**、**权益持仓风格暴露卡 + 前向兼容漂移（✅ 已交付）**、**经理经验弱因子（✅ 已交付）** | ✅ **T6**：`core/fund/lookthrough.py`（纯函数：距高点回撤 / 长均线位置 / RSI 超卖，等权→个股位置分，hold_ratio 加权→底层位置分，复用 `timing.drawdown_from_high` 含 B12 全期滚动峰值修复）+ `fundLookThroughHandler.py`（读 `cn_fund_holding` 最新季度前十大重仓股，逐股用**本地 K 线缓存** `load_stock_data(cache_only=True)` 算位置，规则1 只读不触外部 API；仅 A 股 6 位纯数字有行情，QDII/港股 `priced=false`）+ `/api/fund/look_through` + 前端 T6 卡（条形天然适配移动端）。✅ **风格暴露**：`core/fund/style_drift.py`（`industry_exposure` 按 hold_ratio 加权行业分布 + 集中度 HHI + `未分类`透明化；`style_drift` 相邻季 L1 漂移，前向兼容）+ `fundStyleHandler.py`（读 `cn_fund_holding` 各季，最新季算暴露、≥2 季自动算漂移）+ `/api/fund/style` + 前端风格卡。**实测生产库每基金仅 1 季 → `drift_available=false`，历史累积后自动点亮**（非伪造）。✅ **经理经验**：Fetch `crawling/fund_em.py::fund_manager_all`（`akshare.fund_manager_em` 全量→英文列 + 计算每位经理在管基金数 fund_count）+ `fetch_fund_manager_job.py`（按 `cn_fund_rank` 全集过滤 upsert `cn_fund_manager`，主键 (code,manager)，规则1 只读回填、chunksize=500）+ 纯函数 `core/fund/manager_factor.py`（团队最大/平均从业年限、经验档位、最佳回报、一拖多 max_fund_count≥15 提示）+ `fundManagerHandler.py` `/api/fund/manager` + 前端经理卡。**实测生产库 26515 条 / 20449 只基金覆盖**（黑盒 015495 资深12.7y 一拖多25、001092 一拖多57、011251/012466 成熟）| 不得影响无覆盖基金（无覆盖/全 `未分类`/无经理→`data_available=false` 前端不渲染卡）；风格暴露/漂移/经理经验**均仅风控辅助/弱因子展示、不硬拦截、不进入 TimingScore**（蓝图 §9.2）；`未分类`（科创板断层）仅透明化占比、不计入集中度/漂移；「累计从业时间」是经理全市场累计从业、**非本基金任职起始日**；`disclosed_ratio` 透明化穿透覆盖；季报滞后约一季度 |
 | **P5** | 每日精选榜 | `cn_fund_daily_pick` 表 + `analysis_fund_pick_job.py`（AC 去重→先 TopN 后截 Top10；时钟看门狗 90%）+ `/api/fund/daily_pick` Handler + 前端榜单页 | 复用 `timing.py`（B8）；申购状态需 P 前置补表 |
+
+> **P5 已交付（2026-07-09）**：① `tablestructure.TABLE_CN_FUND_DAILY_PICK`（PK `(date,fund_type,code)`，15 列，NaN/inf 源头清洗、`chunksize=500`）。② `quantia/core/fund/pick_selection.py` 纯函数（`normalize_fund_name` 份额正规化、`dedup_ac` AC 去重保留主份额、`select_bucket_top` **先 Top-N(25) by quality → 去重 → 重排 → 截 Top10**，并写 `rank_in_type`）+ 19 单测。③ `quantia/job/analysis_fund_pick_job.py`（Analysis 只读：读 `cn_fund_rank_score`(quality/max_drawdown) 与 `cn_fund_rank`(name/rate_1y) 对齐 as-of 截面，逐桶选 Top10，批量读 `cn_fund_nav_history` 用 `timing.py` 纯函数算弱标签，NULL 容忍：货币型/债券型无净值→timing 空、滞后>7 天→档位空；`final_score` V1=quality_score；删当日旧榜后写入）。④ `quantia/web/fundDailyPickHandler.py` + 路由 `/quantia/api/fund/daily_pick`（读最新运行日、按 fund_type 分桶 Top10、`timing_applicable`/`has_timing` 供前端抑制徽章）。⑤ 前端 `FundDailyPickTab.vue`（桶胶囊 + 条形质量分 + 入场档位徽章 + 回撤/近1年，移动端网格自适应，点击行开详情抽屉）挂载到 `views/fund/index.vue` 「每日精选」tab；`?pick=1` 深链切 tab、`?code=xxx` 自动开详情抽屉。**验证**：作业落库 70 行/7 桶（2026-07-09，score_as_of 2026-07-08），黑盒 `/api/fund/daily_pick` 200，7 桶有序、股票/混合/指数/QDII/FOF has_timing=true、债券 has_timing=false、货币 timing_applicable=false；混合型质量分严格降序；`npm run build`(vue-tsc) 通过；53 基金纯函数单测通过。
 | **P6** | 钉钉推送 | 复用 `cn_stock_notification_event` dedupe（`hash('fund_daily_pick',pick_date)`）；深链公网可达 + 免登 token | 内网地址/登录墙硬前提（蓝图 §5.12） |
+
+> **P6 已交付（2026-07-10）**：① `quantia/job/notify_fund_pick_job.py`（Analysis/Web 管道，只读 `cn_fund_daily_pick` + 发 webhook，**不触外部行情 API**）。纯函数 `build_fund_pick_markdown(pick_date, buckets, base)` 构建**紧凑摘要**（每桶 Top3，代码/简称/质量分 + 择时档位徽章；货币型不显示"低吸/高估"徽章改显近1年收益，对齐 §7.1bis/§7.3；`data_lag_days≥5` 追加"净值滞后N天"）+ 末尾整榜链接 + `labels.RISK_DISCLAIMER`。② **幂等/门控复用现网 `notification.service`**：`_load_config(0,'fund_daily_pick','dingtalk')` 门控（enabled/webhook 缺 → 记 `skipped` 不发，避免未同意触达）；`_insert_event`（`cn_stock_notification_event` 唯一 `dedupe_key = sha256('fund_daily_pick|dingtalk|<pick_date>')` → `INSERT IGNORE` 天然幂等，并发/重复调度 `rowcount==0` 幂等跳过）；`_send_payload_for_event` 发送 + 失败 `next_retry_at` 退避（`process_pending_notifications` 复用重试）。③ 深链：详情 `{BASE}/#/fund/rank?code=XXXXXX`、整榜 `?pick=1`（前端 `views/fund/index.vue` P5 已支持 `route.query.code/pick`）；`BASE` 取 `QUANTIA_WEB_BASE_URL`（未配回退 `http://<host>:9988`，剥离误配 `/quantia`；**生产须配公网域名 + 免登**，蓝图 §5.12/规则 8）。④ 编排：`cron.workdayly/run_analysis` 在 `analysis_fund_pick_job` 后追加推送 job（`record_stage ... warn`，失败不阻断）。⑤ 通知设置 UI（`views/settings/notification.vue`）事件类型下拉新增「每日基金精选榜 (fund_daily_pick)」，运维可开关。**验证**：`--dry-run` 用真实 2026-07-09 榜单构建 7 桶 markdown 正确（货币型显示近1年、债券型显示净值滞后、其余显示档位徽章）；16 单测通过（URL/markdown/货币型无徽章/幂等跳过/门控 skipped/发送/dry-run）。**默认不发送**——生产开启需在通知设置启用 `fund_daily_pick` + 配置公网 webhook。
+
+> **P6 原型对齐补充（2026-07-10）**：QA 复核推送 markdown 与原型 `_fund_pick_prototype.html` 钉钉预览逐字段比对后修正 4 处差异：① **档位徽章带择时分数**（原型「低吸78」）——`read_latest_picks` 增读 `timing_score` 列，徽章渲染为 `emoji+档位+分数`（如 `🟢低吸78`）。② **档位色语义对齐原型**——`_TIER_EMOJI` 改为 低吸🟢/定投🟠/观望⚪/高估勿追🔴（原橙灰蓝错配）。③ **货币型显示 7 日年化**（原型「七日年化 X%」/§7.3「收益稳定性」）——`_fetch_seven_day_annual` 只读 `cn_fund_rank.seven_day_annual`（规则1/规则7，按 code 取最新 date），优先显示 `七日年化X.XX%`，无则回退近1年。④ **无档位显式标注「择时暂无」**（原型 null→「暂无」徽章），并对链接显示文本转义 `[`/`]`→全角，避免破坏 markdown。**验证**：`--dry-run` 真实 2026-07-09 榜单——权益桶显示 `🟠定投61`/`⚪观望46`、债券桶 `择时暂无 · 净值滞后37天`、货币桶 `七日年化1.24%`；19 单测通过（新增分数徽章/暂无占位/方括号转义/七日年化 3 例）。
+
 
 ---
 

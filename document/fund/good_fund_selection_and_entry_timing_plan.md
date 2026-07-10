@@ -204,6 +204,8 @@ EntrySignal(f, t):
 > 若不想加每日 job，可退化为 Web 端按需实时计算（单基金净值序列量小，实时可接受）——见 §6 分期。
 >
 > **timing 单一事实源（避免与 §7.2 双算漂移）**：`TimingScore` 只在此处（`analysis_fund_timing_job` 落 `cn_fund_timing_score`）或 P1 的 Handler 按需实时计算**二选一**地产生；§7.2 的 `cn_fund_daily_pick.timing_score/timing_tier` 一律**引用/快照**本表（或调用同一 `timing.py` 纯函数），**禁止在 pick_job 里另写一套 timing 公式**。P1 未建批量表时，pick_job 直接调用 `timing.py` 纯函数，口径与 Handler 完全一致。
+>
+> **落地现状（已交付并核对）**：未新建 `analysis_fund_timing_job`/`cn_fund_timing_score` 批量表；`analysis_fund_pick_job._compute_timing` 直接调 `timing.py` 纯函数逐只算 T1 回撤 + T2 趋势 + **T3 估值分位**。T3 与抽屉 Handler 共用 **`quantia/core/fund/valuation_lookup.py`**（唯一事实源：`benchmark → 宽基指数 → cn_index_valuation PE 全历史分位`），`fundTimingHandler._valuation_score` 亦委托同一函数，彻底消除"列表徽章(T1+T2) vs 抽屉档位(T1+T2+T3)"漂移。已黑盒核对：估值覆盖基金的 `/api/fund/timing` 分值与 `cn_fund_daily_pick.timing_score` 逐只一致（如 016721=48.8 / 005825=51.0 / 017730=53.5，`dims_used=dd,trend,val`）。
 
 ### 4.3 Web Handler（新增）
 `quantia/web/fundTimingHandler.py`：`GET /quantia/api/fund/timing?code=` → 返回 `{timing_score, tier, components:{dd,trend,val}, quality_pass, as_of, disclaimer}`。只读表，**禁"买/卖/加仓"措辞**（沿用 F13 免责规范，`labels.py`）。在 `web_service.py` 注册路由（规则 8）。
@@ -344,6 +346,10 @@ T1/T2 的阈值（回撤 -8%/-15%、均线 60/120）都是**自由参数**，直
 | QDII | `quality_score` 桶内排序 + 风险标签 | 注意海外市场交易日与汇率，`data_lag_days` 必须展示 | 净值披露更滞后，严控 as-of |
 | FOF | `quality_score` 桶内排序 + 回撤/波动标签 | 慎用单基金净值趋势择时 | 更像配置产品，趋势信号解释性弱 |
 
+> **落地补充（P5 QA 已实现，2026-07-10）**：
+> - **T3 估值锚按权重主导选取**：`benchmark_map` 解析业绩基准时取**最大权重成分**对应的宽基；主导成分为全球/海外/债券（如「MSCI全球×75%＋沪深300×20%」）→ 不映射（返回 None），避免给以海外资产为主的 QDII/债券主导 FOF 错套境内宽基 PE 分位（对齐模块"宁缺毋滥"）。
+> - **净值滞后已在榜单前端展示**：`FundDailyPickTab.vue` 对 QDII 桶必须展示"净值滞后 N 天"；其余桶仅在 `data_lag_days ≥ 5` 自然日时警示（对齐 §7.2bis），`nav_as_of` 悬浮可见。
+
 
 ### 7.2 落库（新表，供前端 + 推送共用）
 
@@ -420,7 +426,7 @@ T1/T2 的阈值（回撤 -8%/-15%、均线 60/120）都是**自由参数**，直
 | 期 | 内容 |
 |----|------|
 | **P5** | `analysis_fund_pick_job` + `cn_fund_daily_pick` 表（V1 口径 C：质量主排序 + 择时标签）；前端"每日精选"分区 + `?code=` 深链自动开抽屉 |
-| **P6** | 每日钉钉推送 job（复用 `DingTalkChannel` + `push_enabled` 门控 + 紧凑摘要 + 详情链接）+ cron.workdayly 编排 |
+| **P6** | 每日钉钉推送 job（复用 `DingTalkChannel` + `push_enabled` 门控 + 紧凑摘要 + 详情链接）+ cron.workdayly 编排 ✅ **已交付（2026-07-10）**：`quantia/job/notify_fund_pick_job.py`（每桶 Top3 + 深链，复用 `notification.service` 幂等 `dedupe_key`/门控/重试；货币型不显示择时徽章），通知设置 UI 加 `fund_daily_pick` 事件类型。**默认关**，生产启用须配公网域名 + 免登（§5.12）|
 | **P7** | 通过 §6bis.4 样本外验证后，才允许将 timing 升级为辅助排序权重；若不通过则维持 V1 |
 
 > 依赖 P1（timing.py）先落地；首期榜单明确为"好基金+当前位置提示"，待 §6bis.4 go/no-go 通过后再强化 timing 权重。
