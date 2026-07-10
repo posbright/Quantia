@@ -924,6 +924,24 @@ TABLE_CN_STOCK_STRATEGY_GPT_VALUE = {
     'columns': _gpt_value_columns
 }
 
+# 综合多因子选股 composite_alpha_v1（横截面打分策略，独立 job 落库，非逐票 check；
+# 见 core/strategy/document/综合选股策略方案_多因子融合与回测优化_V1.md 6.5 修订）
+_composite_alpha_columns = TABLE_CN_STOCK_FOREIGN_KEY['columns'].copy()
+_composite_alpha_columns.update({
+    'composite_score': {'type': FLOAT, 'cn': '综合得分', 'size': 90},
+    'fund_score': {'type': FLOAT, 'cn': '基本面分', 'size': 80},
+    'tech_score': {'type': FLOAT, 'cn': '技术分', 'size': 80},
+    'chip_score': {'type': FLOAT, 'cn': '筹码分', 'size': 80},
+    'flow_score': {'type': FLOAT, 'cn': '资金流分', 'size': 80},
+    'available_dims': {'type': VARCHAR(40, _COLLATE), 'cn': '可用维度', 'size': 120},
+    'close': {'type': FLOAT, 'cn': '收盘价', 'size': 80},
+})
+_composite_alpha_columns.update(TABLE_CN_STOCK_BACKTEST_DATA['columns'])
+TABLE_CN_STOCK_STRATEGY_COMPOSITE_ALPHA = {
+    'name': 'cn_stock_strategy_composite_alpha_v1', 'cn': '综合多因子选股', 'size': 70,
+    'columns': _composite_alpha_columns
+}
+
 STOCK_KLINE_PATTERN_DATA = {'name': 'cn_stock_pattern_recognitions', 'cn': 'K线形态',
                             'columns': {
                                 'tow_crows': {'type': SmallInteger, 'cn': '两只乌鸦', 'size': 70, 'func': tl.CDL2CROWS},
