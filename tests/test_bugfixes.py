@@ -339,7 +339,10 @@ def _():
     assert is_a_stock('000001') == True
     assert is_a_stock('300001') == True
     assert is_a_stock('688001') == True   # 科创板属于上交所A股
-    assert is_a_stock('430001') == False  # 北证不在A股列表
+    assert is_a_stock('430001') == True   # 北交所A股
+    assert is_a_stock('830001') == True   # 北交所A股
+    assert is_a_stock('920819') == True   # 北交所新代码段
+    assert is_a_stock('400001') == False  # 三板不纳入A股列表
 
 
 # ============================================================

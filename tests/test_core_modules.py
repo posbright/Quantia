@@ -362,11 +362,24 @@ class TestIsAStock(unittest.TestCase):
     def test_b_share_900_not_a_stock(self):
         self.assertFalse(self.is_a_stock('900001'))
 
-    def test_neeq_430_not_a_stock(self):
-        self.assertFalse(self.is_a_stock('430001'))
+    # Beijing Stock Exchange (北交所/北证A股)
+    def test_bj_430_is_a_stock(self):
+        self.assertTrue(self.is_a_stock('430001'))
 
-    def test_neeq_830_not_a_stock(self):
-        self.assertFalse(self.is_a_stock('830001'))
+    def test_bj_83_is_a_stock(self):
+        self.assertTrue(self.is_a_stock('830001'))
+
+    def test_bj_87_is_a_stock(self):
+        self.assertTrue(self.is_a_stock('870001'))
+
+    def test_bj_88_is_a_stock(self):
+        self.assertTrue(self.is_a_stock('880001'))
+
+    def test_bj_920_is_a_stock(self):
+        self.assertTrue(self.is_a_stock('920819'))
+
+    def test_neeq_400_not_a_stock(self):
+        self.assertFalse(self.is_a_stock('400001'))
 
     def test_empty_string(self):
         self.assertFalse(self.is_a_stock(''))
@@ -394,12 +407,17 @@ class TestFetchStocksMarketCoverage(unittest.TestCase):
             make_row('300750', '宁德时代'),
             make_row('301001', '凯淳股份'),
             make_row('430001', '北交示例'),
+            make_row('830001', '北交83示例'),
+            make_row('870001', '北交87示例'),
+            make_row('880001', '北交88示例'),
+            make_row('920819', '北交新码示例'),
+            make_row('400001', '三板示例'),
             make_row('900901', 'B股示例'),
         ], columns=source_columns)
 
         result = stockfetch.fetch_stocks(datetime.date(2026, 7, 9))
 
-        self.assertEqual(set(result['code']), {'688001', '300750', '301001'})
+        self.assertEqual(set(result['code']), {'688001', '300750', '301001', '430001', '830001', '870001', '880001', '920819'})
 
 
 class TestIsNotST(unittest.TestCase):
