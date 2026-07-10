@@ -54,7 +54,7 @@
         }}</span>
       </div>
 
-      <div v-if="activeBucket" class="pick-list">
+      <div v-if="activeBucket" class="pick-list" :style="{ '--pick-cols': gridCols }">
         <!-- 表头（桌面） -->
         <div v-if="!isMobile" class="pick-head">
           <span class="ph-rank">#</span>
@@ -184,6 +184,27 @@ const buckets = computed<FundDailyPickBucket[]>(() => data.value?.buckets || [])
 const activeBucket = computed<FundDailyPickBucket | null>(
   () => buckets.value.find((b) => b.fund_type === props.fundType) || null,
 )
+
+// 桌面网格列模板：根据当前桶的展示开关动态拼接，确保表头与行逐列对齐、
+// 剩余宽度按比例分配到各列（而非全部塑给基金名列），避免孽单侧。
+// 顺序必须与 DOM 中列的渲染顺序一致。
+const gridCols = computed<string>(() => {
+  const b = activeBucket.value
+  if (!b) return ''
+  const cols: string[] = ['40px'] // #
+  cols.push('minmax(140px, 2.2fr)') // 基金名
+  if (b.timing_applicable) cols.push('minmax(72px, 0.85fr)') // 净值
+  cols.push('minmax(120px, 1.5fr)') // 质量分
+  if (b.has_timing) cols.push('minmax(116px, 1.35fr)') // 入场档位
+  if (b.timing_applicable) {
+    cols.push('minmax(70px, 0.85fr)') // 近1年
+    cols.push('minmax(74px, 0.85fr)') // 目前回撤
+    cols.push('minmax(60px, 0.9fr)') // 风格
+  } else {
+    cols.push('minmax(90px, 1fr)') // 七日年化
+  }
+  return cols.join(' ')
+})
 
 function medal(rank: number | null): string {
   if (rank === 1) return '🥇'
@@ -568,43 +589,41 @@ defineExpose({ reload: load })
   padding: 2px 10px;
 }
 .pick-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--pick-cols);
   align-items: center;
+  column-gap: 14px;
   padding: 6px 10px;
   font-size: 12px;
   color: #909399;
   border-bottom: 1px solid #ebeef5;
 }
 .ph-rank {
-  width: 40px;
   text-align: center;
 }
 .ph-name {
-  flex: 1;
   min-width: 0;
 }
 .ph-nav {
-  width: 82px;
+  text-align: left;
 }
 .ph-quality {
-  width: 130px;
+  text-align: left;
 }
 .ph-timing {
-  width: 132px;
   text-align: left;
 }
 .ph-metric {
-  width: 78px;
   text-align: right;
 }
 .ph-style {
-  width: 72px;
   text-align: left;
-  padding-left: 10px;
 }
 .pick-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--pick-cols);
   align-items: center;
+  column-gap: 14px;
   padding: 10px;
   border-bottom: 1px solid #f5f6f8;
   cursor: pointer;
@@ -620,15 +639,12 @@ defineExpose({ reload: load })
   background: #fef8e8;
 }
 .pr-rank {
-  width: 40px;
   text-align: center;
   font-size: 15px;
   font-weight: 600;
   color: #606266;
-  flex-shrink: 0;
 }
 .pr-name-wrap {
-  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -654,8 +670,7 @@ defineExpose({ reload: load })
   white-space: nowrap;
 }
 .pr-nav {
-  width: 82px;
-  flex-shrink: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -670,11 +685,10 @@ defineExpose({ reload: load })
   color: #e6a23c;
 }
 .pr-quality {
-  width: 130px;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
 }
 .pr-bar-track {
   flex: 1;
@@ -695,9 +709,8 @@ defineExpose({ reload: load })
   color: #303133;
 }
 .pr-timing {
-  width: 132px;
+  min-width: 0;
   text-align: left;
-  flex-shrink: 0;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -753,16 +766,13 @@ defineExpose({ reload: load })
   border: 1px dashed #d3d4d6;
 }
 .pr-metric {
-  width: 78px;
+  min-width: 0;
   text-align: right;
   font-size: 13px;
   color: #606266;
-  flex-shrink: 0;
 }
 .pr-style {
-  width: 72px;
-  flex-shrink: 0;
-  padding-left: 10px;
+  min-width: 0;
   font-size: 12.5px;
   color: #606266;
 }
@@ -870,6 +880,7 @@ defineExpose({ reload: load })
     display: none;
   }
   .pick-row {
+    display: flex;
     flex-wrap: wrap;
     row-gap: 8px;
     padding: 12px 10px;

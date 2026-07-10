@@ -9,7 +9,7 @@ cron/
 ├── cron.hourly/
 │   └── run_hourly                  ← 盘中/收盘行情快照
 ├── cron.workdayly/
-│   ├── run_fetch                   ← Phase 1: API 数据获取
+│   ├── run_fetch                   ← Phase 1: API 数据获取（附 F8 基金净值回填 + T3 指数估值）
 │   ├── run_kline_cache             ← Phase 2: K线缓存增量更新
 │   ├── run_analysis                ← Phase 3: 本地数据分析
 │   ├── run_paper_trading           ← Phase 4: 模拟交易执行
@@ -36,7 +36,7 @@ cron/
 | 脚本 | 频率 | Python 入口 | 说明 |
 |------|------|-------------|------|
 | `run_hourly` | 盘中/收盘 | `basic_data_daily_job.py` | 实时行情快照 |
-| `run_fetch` | 工作日 | `fetch_daily_job.py` + `fetch_fund_nav_history_job.py` | API 数据采集（行情+选股+资金流向）；附 F8 基金净值历史回填 |
+| `run_fetch` | 工作日 | `fetch_daily_job.py` + `fetch_fund_nav_history_job.py` + `fetch_index_valuation_job.py` | API 数据采集（行情+选股+资金流向）；附 F8 基金净值历史回填 + T3 宽基指数估值（PE/PB 历史分位 → `cn_index_valuation`，供每日精选榜择时） |
 | `run_kline_cache` | 工作日 | `kline_cache_daily_job.py` | K线缓存增量更新（~5000只股票） |
 | `run_analysis` | 工作日 | `analysis_daily_job.py` + `analysis_fund_score_job.py` + `analysis_fund_pick_job.py` + `notify_fund_pick_job.py` | 本地分析（GPT+指标+策略+回测）；附 F7 基金多因子综合评分 + P5 每日精选榜 + P6 精选榜钉钉推送 |
 | `run_paper_trading` | 工作日 | `paper_trading_daily_job.py` | 模拟交易每日执行 |
@@ -297,12 +297,15 @@ source /etc/cron/_common.sh
   |------|----------|------|
   | 数据获取 fetch_daily | `QUANTIA_FETCH_TIMEOUT` | 7200 |
   | 基金净值回填 | `QUANTIA_FUND_NAV_TIMEOUT` | 3600 |
+  | 指数估值采集（T3） | `QUANTIA_INDEX_VALUATION_TIMEOUT` | 1800 |
   | 公告采集 | `QUANTIA_ANNOUNCE_TIMEOUT` | 1800 |
   | 专利采集 | `QUANTIA_PATENT_CRAWL_TIMEOUT` | 3600 |
   | 专利聚合 | `QUANTIA_PATENT_AGG_TIMEOUT` | 1800 |
   | K线缓存 | `QUANTIA_KLINE_TIMEOUT` | 21600 |
   | 数据分析（含回测，最长 ~2h） | `QUANTIA_ANALYSIS_TIMEOUT` | 14400 |
   | 基金综合评分 | `QUANTIA_FUND_SCORE_TIMEOUT` | 1800 |
+  | 基金每日精选榜 | `QUANTIA_FUND_PICK_TIMEOUT` | 600 |
+  | 基金精选榜推送（钉钉） | `QUANTIA_FUND_PICK_PUSH_TIMEOUT` | 180 |
   | 模拟交易 | `QUANTIA_PAPER_TIMEOUT` | 3600 |
   | AI报告+评分预警（LLM 调用） | `QUANTIA_REPORT_TIMEOUT` | 7200 |
   | 综合指标股票池 | `QUANTIA_COMPOSITE_TIMEOUT` | 1800 |
@@ -666,6 +669,7 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 | `QUANTIA_SETTLEMENT_HOUR` | 18 | API 数据结算时间（小时） |
 | `QUANTIA_FETCH_TIMEOUT` | 7200 | `run_fetch` 超时秒数（默认 2 小时） |
 | `QUANTIA_FUND_NAV_TIMEOUT` | 3600 | 基金净值历史回填超时秒数 |
+| `QUANTIA_INDEX_VALUATION_TIMEOUT` | 1800 | T3 宽基指数估值采集超时秒数（`fetch_index_valuation_job`，附于 `run_fetch`；首次全历史铺底较慢可临时放大） |
 | `QUANTIA_ANNOUNCE_TIMEOUT` | 1800 | 公告采集超时秒数 |
 | `QUANTIA_PATENT_CRAWL_TIMEOUT` | 3600 | 专利采集超时秒数 |
 | `QUANTIA_PATENT_AGG_TIMEOUT` | 1800 | 专利聚合超时秒数 |
@@ -673,11 +677,13 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 | `QUANTIA_ANALYSIS_TIMEOUT` | 14400 | 数据分析超时秒数 |
 | `QUANTIA_FUND_SCORE_TIMEOUT` | 1800 | 基金综合评分超时秒数 |
 | `QUANTIA_FUND_PICK_TIMEOUT` | 600 | 基金每日精选榜超时秒数 |
+| `QUANTIA_FUND_PICK_PUSH_TIMEOUT` | 180 | 基金精选榜钉钉推送超时秒数（`notify_fund_pick_job`） |
 | `QUANTIA_PAPER_TIMEOUT` | 3600 | 模拟交易超时秒数 |
 | `QUANTIA_REPORT_TIMEOUT` | 7200 | AI 报告 + 评分预警超时秒数；调大分析股票数时需同步放宽 |
 | `QUANTIA_COMPOSITE_TIMEOUT` | 1800 | 综合指标股票池刷新超时秒数 |
 | `QUANTIA_AIKB_TIMEOUT` | 1800 | AI 知识库索引刷新超时秒数 |
 | `QUANTIA_FUND_PROFILE_TIMEOUT` | 3600 | 基金画像月度采集超时秒数 |
+| `QUANTIA_FUND_MANAGER_TIMEOUT` | 1200 | 基金经理经验月度采集超时秒数（P4 `fetch_fund_manager_job`，`fund_manager_em` 全量一次抓取） |
 | `QUANTIA_FUND_HOLDING_MAX_SECONDS` | 3300 | 基金重仓股月度采集软预算；到点在基金之间干净自停 |
 | `QUANTIA_FUND_HOLDING_TIMEOUT` | 3600 | 基金重仓股月度采集硬超时秒数 |
 | `QUANTIA_FUND_HOLDING_BATCH_SECONDS` | 3000 | 基金重仓股每日全覆盖分批软预算 |

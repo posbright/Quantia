@@ -92,7 +92,13 @@
           <div class="fdd-lt-list">
             <div v-for="h in lookThrough.holdings" :key="h.stock_code" class="fdd-lt-row">
               <span class="fdd-lt-name">
-                {{ h.stock_name || h.stock_code }}
+                <span
+                  v-if="isAStock(h.stock_code)"
+                  class="fdd-stock-link"
+                  title="点击查看该股 K 线/技术指标详情"
+                  @click="goStockDetail(h.stock_code, h.stock_name)"
+                >{{ h.stock_name || h.stock_code }}</span>
+                <template v-else>{{ h.stock_name || h.stock_code }}</template>
                 <i v-if="h.hold_ratio != null" class="fdd-muted">{{ h.hold_ratio.toFixed(1) }}%</i>
               </span>
               <template v-if="h.priced && h.position_score != null">
@@ -270,7 +276,15 @@
                 </thead>
                 <tbody>
                   <tr v-for="h in topHoldings" :key="h.name + (h.stock_code || '')">
-                    <td>{{ h.name }}</td>
+                    <td>
+                      <span
+                        v-if="isAStock(h.stock_code)"
+                        class="fdd-stock-link"
+                        title="点击查看该股 K 线/技术指标详情"
+                        @click="goStockDetail(h.stock_code, h.name)"
+                      >{{ h.name }}</span>
+                      <span v-else>{{ h.name }}</span>
+                    </td>
                     <td class="fdd-muted">{{ h.stock_code || '—' }}</td>
                     <td>{{ h.industry || '—' }}</td>
                     <td class="r">{{ h.hold_ratio != null ? h.hold_ratio.toFixed(2) + '%' : '—' }}</td>
@@ -342,6 +356,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
 import { useResponsive } from '@/composables/useResponsive'
@@ -376,6 +391,21 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void }>()
 
 const { isMobile } = useResponsive()
+const router = useRouter()
+
+// 重仓股跳转：仅 A 股 6 位纯数字代码可进入 K 线/技术指标详情页；QDII 海外持仓
+// （如 000JNJ 强生、00EQIX）代码含字母、本地无行情，保持纯文本不可点。
+function isAStock(code?: string | null): boolean {
+  return !!code && /^\d{6}$/.test(code)
+}
+function goStockDetail(code?: string | null, name?: string | null) {
+  if (!isAStock(code)) return
+  show.value = false
+  router.push({
+    path: '/indicator/detail',
+    query: { code: code as string, name: name || undefined },
+  })
+}
 
 const show = computed({
   get: () => props.modelValue,
@@ -1255,6 +1285,13 @@ watch(
 }
 .fdd-holdings .r {
   text-align: right;
+}
+.fdd-stock-link {
+  color: #2979ff;
+  cursor: pointer;
+}
+.fdd-stock-link:hover {
+  text-decoration: underline;
 }
 .fdd-profile th {
   width: 84px;

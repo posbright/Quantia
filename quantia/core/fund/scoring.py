@@ -21,6 +21,7 @@ __author__ = 'Quantia'
 __date__ = '2026/06/01'
 
 MONEY_TYPE = '货币型'
+_UNKNOWN_INDUSTRY_LABEL = '未分类'
 
 # ── 计算常量 ─────────────────────────────────────────────
 RISK_FREE_ANNUAL = 0.02     # 无风险年化（夏普分母基准，可由 job 覆盖）
@@ -148,12 +149,22 @@ def compute_rate_5y(nav_dates, acc_nav):
 
 
 def compute_main_industry(holding_df):
-    """由前十大重仓股 industry 按 hold_ratio 加权得各基金主行业。返回 {code: industry}。"""
+    """由前十大重仓股 industry 按 hold_ratio 加权得各基金主行业。返回 {code: industry}。
+
+    只在「已披露的已知行业」中取加权最大者，忽略 '未分类'：行业数据缺口（如科创板/
+    北交所暂无库内行业）不应压过基金真实的行业倾向，否则半导体主题基金会因大量重仓
+    落在未分类而被判为「未分类」→ 前端风格为空。忽略未分类后仍是「加权最大已知行业」，
+    对已有已知主行业的基金结果不变（严格增量，不会抹掉原有标注）。
+    """
     if holding_df is None or len(holding_df.index) == 0:
         return {}
     df = holding_df[['code', 'industry', 'hold_ratio']].copy()
     df['hold_ratio'] = pd.to_numeric(df['hold_ratio'], errors='coerce').fillna(0.0)
-    df['industry'] = df['industry'].fillna('未分类')
+    df['industry'] = df['industry'].fillna(_UNKNOWN_INDUSTRY_LABEL)
+    # 忽略未分类：只在已知行业中判定主行业（数据缺口不参与 argmax）
+    df = df[df['industry'].astype(str).str.strip() != _UNKNOWN_INDUSTRY_LABEL]
+    if df.empty:
+        return {}
     agg = df.groupby(['code', 'industry'], as_index=False)['hold_ratio'].sum()
     if agg.empty:
         return {}

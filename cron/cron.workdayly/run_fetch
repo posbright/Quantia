@@ -39,6 +39,14 @@ run_job "基金净值回填 (fetch_fund_nav_history_job)" \
     "${QUANTIA_FUND_NAV_TIMEOUT:-3600}"
 record_stage "基金净值回填 (fetch_fund_nav_history_job)" $? warn
 
+# ── T3 宽基指数估值采集（legulegu 全历史 PE/PB + 历史分位 → cn_index_valuation）──
+# 供 fundTimingHandler 的 T3 估值分位择时（每日精选榜 timing）。增量抓取，日常成本极低；
+# 首次全历史铺底较慢，可临时放大 QUANTIA_INDEX_VALUATION_TIMEOUT。失败不阻断主链。
+run_job "指数估值采集 (fetch_index_valuation_job)" \
+    "quantia/job/fetch_index_valuation_job.py" \
+    "${QUANTIA_INDEX_VALUATION_TIMEOUT:-1800}"
+record_stage "指数估值采集 (fetch_index_valuation_job)" $? warn
+
 # 在 workdayly.log 记录本次各子任务成功/失败 + 耗时（拆分模式下生产可见）
 print_stage_summary
 

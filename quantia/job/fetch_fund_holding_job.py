@@ -39,6 +39,7 @@ except Exception:
 
 import quantia.core.tablestructure as tbs
 import quantia.core.crawling.fund_em as fem
+import quantia.core.crawling.stock_selection as sel_crawler
 import quantia.lib.database as mdb
 import quantia.lib.envconfig as _cfg
 import quantia.lib.sysconfig as sysconfig
@@ -166,30 +167,104 @@ def _count_remaining_full_coverage(cycle_floor):
 
 
 def _load_industry_map():
-    """读 cn_stock_selection 的 (stock_code → industry) 映射（只读 MySQL，不调外部 API）。"""
+    """读 cn_stock_selection 的 (stock_code → (industry, name)) 映射（只读 MySQL，不调外部 API）。
+
+    额外带回该 code 在库内对应的股票名，供 `_join_industry` 做「名称一致性校验」——
+    港股/两地上市代码经 zfill 后可能与 A 股代码碰撞（如港股 00981 → 000981 撞上 A 股
+    山子高科），若仅按代码回填会把「中芯国际」错标成「汽车」。带名校验可拦截此类误配。
+    """
     if not mdb.checkTableIsExist(_SELECTION_TABLE):
         return {}
     try:
         rows = mdb.executeSqlFetch(
-            f"SELECT `code`, `industry` FROM `{_SELECTION_TABLE}`")
+            f"SELECT `code`, `industry`, `name` FROM `{_SELECTION_TABLE}`")
     except Exception:
         logging.warning("fetch_fund_holding_job: 读取行业映射失败，全部归未分类", exc_info=True)
         return {}
     out = {}
     for r in rows:
         if r and r[0] is not None:
-            out[str(r[0]).zfill(6)] = r[1]
+            out[str(r[0]).zfill(6)] = (r[1], r[2] if len(r) > 2 else None)
     return out
 
 
+def _norm_stock_name(name):
+    """标准化股票名以做一致性比较：去空白 + 去常见前后缀（ST/*ST/XD/XR/DR/-U/-W）。"""
+    if name is None:
+        return ''
+    s = str(name).strip().upper().replace(' ', '')
+    for pre in ('*ST', 'ST', 'XD', 'XR', 'DR'):
+        if s.startswith(pre):
+            s = s[len(pre):]
+    for suf in ('-U', '-W', '-UW', 'U', 'W'):
+        if s.endswith(suf):
+            s = s[:-len(suf)]
+    return s
+
+
+def _names_consistent(hold_name, ref_name):
+    """两个股票名是否可视为同一标的：任一为空则不拦截；标准化后相等，或一方是另一方
+    的子串（≥2 字，兼容「铖昌科技/*ST铖昌」「联创股份/ST联创」等简称/更名）视为一致。
+    完全不同（中芯国际 vs 山子高科、腾讯控股 vs 某汽车股）→ 判为代码碰撞误配。"""
+    a = _norm_stock_name(hold_name)
+    b = _norm_stock_name(ref_name)
+    if not a or not b:
+        return True
+    if a == b:
+        return True
+    if len(a) >= 2 and len(b) >= 2 and (a in b or b in a):
+        return True
+    return False
+
+
 def _join_industry(df, industry_map):
-    """按 stock_code 回填 industry，缺失填 未分类。纯函数。"""
-    def _lookup(sc):
-        ind = industry_map.get(str(sc).zfill(6)) if sc is not None else None
-        return ind if ind else _UNKNOWN_INDUSTRY
+    """按 stock_code 回填 industry，缺失或名称不一致填 未分类。纯函数。
+
+    industry_map: {code_zfill6: (industry, sel_name)}。当库内该代码对应的股票名与持仓
+    披露的 stock_name 明显不一致（代码碰撞）时，判定为误配 → 归未分类，避免张冠李戴。
+    """
+    def _lookup(row):
+        sc = row.get('stock_code')
+        entry = industry_map.get(str(sc).zfill(6)) if sc is not None else None
+        if not entry:
+            return _UNKNOWN_INDUSTRY
+        ind, sel_name = entry if isinstance(entry, tuple) else (entry, None)
+        if not ind:
+            return _UNKNOWN_INDUSTRY
+        # 名称一致性校验：两边都有名且明显不同 → 代码碰撞误配，弃用该行业
+        if not _names_consistent(row.get('stock_name'), sel_name):
+            return _UNKNOWN_INDUSTRY
+        return ind
     df = df.copy()
-    df['industry'] = df['stock_code'].map(_lookup)
+    df['industry'] = df.apply(_lookup, axis=1)
     return df
+
+
+def _augment_industry_map_star_bj(industry_map):
+    """用东财选股器补全 科创板/北交所 行业（属 fetch 管道，允许外网），只填 cn_stock_selection
+    未覆盖的代码，不覆盖已有映射。抓取失败时静默降级（保持原 map）。返回补全后的 map。"""
+    try:
+        sup = sel_crawler.stock_industry_supplement()
+    except Exception:
+        logging.warning("fetch_fund_holding_job: 科创板/北交所行业补全抓取失败，跳过补全", exc_info=True)
+        return industry_map
+    if sup is None or len(sup.index) == 0:
+        return industry_map
+    added = 0
+    for _, r in sup.iterrows():
+        code = str(r.get('code')).zfill(6)
+        ind = r.get('industry')
+        name = r.get('name')
+        if not ind:
+            continue
+        existing = industry_map.get(code)
+        existing_ind = existing[0] if isinstance(existing, tuple) else existing
+        # 仅填补：cn_stock_selection 未覆盖或该代码行业为空时才补
+        if not existing_ind:
+            industry_map[code] = (ind, name)
+            added += 1
+    logging.info(f"fetch_fund_holding_job: 科创板/北交所行业补全 +{added} 只")
+    return industry_map
 
 
 def save_fund_holding(code, year, industry_map, update_date):
@@ -261,7 +336,7 @@ def run(codes=None, limit_per_type=None, job_date=None):
         logging.warning("fetch_fund_holding_job: 无目标基金（cn_fund_rank 为空？）")
         return 0
 
-    industry_map = _load_industry_map()
+    industry_map = _augment_industry_map_star_bj(_load_industry_map())
     start = record_task_start(_JOB_NAME, 'holding', job_date)
     ok, total_rows, _, _ = _crawl_codes(codes, year, industry_map, update_date)
     record_task_end(_JOB_NAME, 'holding', job_date, start, success=True,
@@ -287,7 +362,7 @@ def run_full_coverage(batch_per_type=None, max_seconds=None, job_date=None):
         max_seconds = _cfg.get_int('QUANTIA_FUND_HOLDING_MAX_SECONDS', 0)  # 0=不限时
     deadline = time.monotonic() + max_seconds if max_seconds and max_seconds > 0 else None
 
-    industry_map = _load_industry_map()
+    industry_map = _augment_industry_map_star_bj(_load_industry_map())
     start = record_task_start(_JOB_NAME, 'holding_full', job_date)
     grand_total = 0
     grand_ok = 0
