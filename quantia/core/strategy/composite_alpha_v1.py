@@ -214,7 +214,7 @@ def select_candidates(
     if scores is None:
         scores = compute_composite_scores(df, weights=weights)
     merged = df.copy()
-    for col in ('fund_score', 'tech_score', 'chip_score', 'flow_score',
+    for col in ('fund_score', 'value_score', 'tech_score', 'chip_score', 'flow_score',
                 'available_dims', 'composite_score'):
         if col in scores.columns:
             merged[col] = scores[col]

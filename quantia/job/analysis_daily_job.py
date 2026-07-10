@@ -49,6 +49,7 @@ except Exception:
 import quantia.lib.database as mdb
 import quantia.lib.trade_time as trd
 import gpt_value_data_job as gptj
+import composite_alpha_data_job as caj
 import streaming_analysis_job as saj
 # 注：backtest_data_daily_job 通过子进程调用，不在此导入
 from quantia.lib.job_tracker import record_task_start, record_task_end, record_task_skipped
@@ -285,6 +286,16 @@ def main():
     except Exception as e:
         logging.error("数据分析 gpt_value 异常", exc_info=True)
         record_task_end(_JOB_NAME, 'gpt_value', run_date_nph, t1, success=False, message=str(e))
+    gc.collect()
+
+    # Step 1b: 综合多因子选股（cn_stock_selection 截面 + 候选池 K 线技术因子，纯本地无 API）
+    t1b = record_task_start(_JOB_NAME, 'composite_alpha', run_date_nph)
+    try:
+        caj.main()
+        record_task_end(_JOB_NAME, 'composite_alpha', run_date_nph, t1b, success=True)
+    except Exception as e:
+        logging.error("数据分析 composite_alpha 异常", exc_info=True)
+        record_task_end(_JOB_NAME, 'composite_alpha', run_date_nph, t1b, success=False, message=str(e))
     gc.collect()
 
     # Step 2: 基本面选股（从 cn_stock_spot 筛选 PE/PB/ROE）

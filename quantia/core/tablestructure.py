@@ -930,6 +930,7 @@ _composite_alpha_columns = TABLE_CN_STOCK_FOREIGN_KEY['columns'].copy()
 _composite_alpha_columns.update({
     'composite_score': {'type': FLOAT, 'cn': '综合得分', 'size': 90},
     'fund_score': {'type': FLOAT, 'cn': '基本面分', 'size': 80},
+    'value_score': {'type': FLOAT, 'cn': '估值分', 'size': 80},
     'tech_score': {'type': FLOAT, 'cn': '技术分', 'size': 80},
     'chip_score': {'type': FLOAT, 'cn': '筹码分', 'size': 80},
     'flow_score': {'type': FLOAT, 'cn': '资金流分', 'size': 80},
