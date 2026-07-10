@@ -25,7 +25,7 @@
 | **`analysis_fund_timing_job` + `cn_fund_timing_score`** | ⛔ 不新建（改由 pick_job 内联算） | 批量预计算未建独立表；`analysis_fund_pick_job._compute_timing` 逐只调 `timing.py` 算 T1+T2+**T3**，与 Handler 共用 `valuation_lookup.py` 单一事实源 |
 | **T3 估值查询单一事实源 `valuation_lookup.py`** | ✅ DONE (P5 QA) | `quantia/core/fund/valuation_lookup.py`：Handler `_valuation_score` 与 pick_job 共用，消除「列表徽章 T1+T2 vs 抽屉档位 T1+T2+T3」漂移 |
 | **`cn_fund_daily_pick` 表 + 精选 job + Handler** | ✅ DONE (P5) | `tablestructure.TABLE_CN_FUND_DAILY_PICK` + `analysis_fund_pick_job.py` + `fundDailyPickHandler.py` + 前端「每日精选」tab |
-| **`fund_daily_pick` 钉钉推送** | ❌ MISSING | P6 |
+| **`fund_daily_pick` 钉钉推送** | ✅ DONE (P6) | `quantia/job/notify_fund_pick_job.py`（复用 `notification.service` 幂等/门控 + `DingTalkChannel` + 深链）+ cron.workdayly 编排 + 通知设置 UI 事件类型 |
 
 ---
 
@@ -153,6 +153,8 @@ def tier_of(score) -> str|None
 
 > **P5 已交付（2026-07-09）**：① `tablestructure.TABLE_CN_FUND_DAILY_PICK`（PK `(date,fund_type,code)`，15 列，NaN/inf 源头清洗、`chunksize=500`）。② `quantia/core/fund/pick_selection.py` 纯函数（`normalize_fund_name` 份额正规化、`dedup_ac` AC 去重保留主份额、`select_bucket_top` **先 Top-N(25) by quality → 去重 → 重排 → 截 Top10**，并写 `rank_in_type`）+ 19 单测。③ `quantia/job/analysis_fund_pick_job.py`（Analysis 只读：读 `cn_fund_rank_score`(quality/max_drawdown) 与 `cn_fund_rank`(name/rate_1y) 对齐 as-of 截面，逐桶选 Top10，批量读 `cn_fund_nav_history` 用 `timing.py` 纯函数算弱标签，NULL 容忍：货币型/债券型无净值→timing 空、滞后>7 天→档位空；`final_score` V1=quality_score；删当日旧榜后写入）。④ `quantia/web/fundDailyPickHandler.py` + 路由 `/quantia/api/fund/daily_pick`（读最新运行日、按 fund_type 分桶 Top10、`timing_applicable`/`has_timing` 供前端抑制徽章）。⑤ 前端 `FundDailyPickTab.vue`（桶胶囊 + 条形质量分 + 入场档位徽章 + 回撤/近1年，移动端网格自适应，点击行开详情抽屉）挂载到 `views/fund/index.vue` 「每日精选」tab；`?pick=1` 深链切 tab、`?code=xxx` 自动开详情抽屉。**验证**：作业落库 70 行/7 桶（2026-07-09，score_as_of 2026-07-08），黑盒 `/api/fund/daily_pick` 200，7 桶有序、股票/混合/指数/QDII/FOF has_timing=true、债券 has_timing=false、货币 timing_applicable=false；混合型质量分严格降序；`npm run build`(vue-tsc) 通过；53 基金纯函数单测通过。
 | **P6** | 钉钉推送 | 复用 `cn_stock_notification_event` dedupe（`hash('fund_daily_pick',pick_date)`）；深链公网可达 + 免登 token | 内网地址/登录墙硬前提（蓝图 §5.12） |
+
+> **P6 已交付（2026-07-10）**：① `quantia/job/notify_fund_pick_job.py`（Analysis/Web 管道，只读 `cn_fund_daily_pick` + 发 webhook，**不触外部行情 API**）。纯函数 `build_fund_pick_markdown(pick_date, buckets, base)` 构建**紧凑摘要**（每桶 Top3，代码/简称/质量分 + 择时档位徽章；货币型不显示"低吸/高估"徽章改显近1年收益，对齐 §7.1bis/§7.3；`data_lag_days≥5` 追加"净值滞后N天"）+ 末尾整榜链接 + `labels.RISK_DISCLAIMER`。② **幂等/门控复用现网 `notification.service`**：`_load_config(0,'fund_daily_pick','dingtalk')` 门控（enabled/webhook 缺 → 记 `skipped` 不发，避免未同意触达）；`_insert_event`（`cn_stock_notification_event` 唯一 `dedupe_key = sha256('fund_daily_pick|dingtalk|<pick_date>')` → `INSERT IGNORE` 天然幂等，并发/重复调度 `rowcount==0` 幂等跳过）；`_send_payload_for_event` 发送 + 失败 `next_retry_at` 退避（`process_pending_notifications` 复用重试）。③ 深链：详情 `{BASE}/#/fund/rank?code=XXXXXX`、整榜 `?pick=1`（前端 `views/fund/index.vue` P5 已支持 `route.query.code/pick`）；`BASE` 取 `QUANTIA_WEB_BASE_URL`（未配回退 `http://<host>:9988`，剥离误配 `/quantia`；**生产须配公网域名 + 免登**，蓝图 §5.12/规则 8）。④ 编排：`cron.workdayly/run_analysis` 在 `analysis_fund_pick_job` 后追加推送 job（`record_stage ... warn`，失败不阻断）。⑤ 通知设置 UI（`views/settings/notification.vue`）事件类型下拉新增「每日基金精选榜 (fund_daily_pick)」，运维可开关。**验证**：`--dry-run` 用真实 2026-07-09 榜单构建 7 桶 markdown 正确（货币型显示近1年、债券型显示净值滞后、其余显示档位徽章）；16 单测通过（URL/markdown/货币型无徽章/幂等跳过/门控 skipped/发送/dry-run）。**默认不发送**——生产开启需在通知设置启用 `fund_daily_pick` + 配置公网 webhook。
 
 ---
 

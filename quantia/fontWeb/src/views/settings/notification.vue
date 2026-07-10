@@ -97,6 +97,7 @@
             <el-option label="运行失败 (run_failed)" value="run_failed" />
             <el-option label="每日汇总 (run_summary)" value="run_summary" />
             <el-option label="风险提醒 (risk_alert)" value="risk_alert" />
+            <el-option label="每日基金精选榜 (fund_daily_pick)" value="fund_daily_pick" />
           </el-select>
         </el-form-item>
         <el-form-item label="启用">

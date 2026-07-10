@@ -38,7 +38,7 @@ cron/
 | `run_hourly` | 盘中/收盘 | `basic_data_daily_job.py` | 实时行情快照 |
 | `run_fetch` | 工作日 | `fetch_daily_job.py` + `fetch_fund_nav_history_job.py` | API 数据采集（行情+选股+资金流向）；附 F8 基金净值历史回填 |
 | `run_kline_cache` | 工作日 | `kline_cache_daily_job.py` | K线缓存增量更新（~5000只股票） |
-| `run_analysis` | 工作日 | `analysis_daily_job.py` + `analysis_fund_score_job.py` + `analysis_fund_pick_job.py` | 本地分析（GPT+指标+策略+回测）；附 F7 基金多因子综合评分 + P5 每日精选榜 |
+| `run_analysis` | 工作日 | `analysis_daily_job.py` + `analysis_fund_score_job.py` + `analysis_fund_pick_job.py` + `notify_fund_pick_job.py` | 本地分析（GPT+指标+策略+回测）；附 F7 基金多因子综合评分 + P5 每日精选榜 + P6 精选榜钉钉推送 |
 | `run_paper_trading` | 工作日 | `paper_trading_daily_job.py` | 模拟交易每日执行 |
 | `run_report_alert` | 工作日 | `stock_report_scheduled.py` | AI 定时报告分析 + 评分预警推送（模拟交易后） |
 | `run_events_patents` | 工作日 | `stock_announcement_em` + `stock_patent_crawler` + `aggregate_patent_data` | 公告事件采集 + 专利挖掘采集 + 专利含金量聚合（轻量 API/计算，非关键链） |

@@ -426,7 +426,7 @@ T1/T2 的阈值（回撤 -8%/-15%、均线 60/120）都是**自由参数**，直
 | 期 | 内容 |
 |----|------|
 | **P5** | `analysis_fund_pick_job` + `cn_fund_daily_pick` 表（V1 口径 C：质量主排序 + 择时标签）；前端"每日精选"分区 + `?code=` 深链自动开抽屉 |
-| **P6** | 每日钉钉推送 job（复用 `DingTalkChannel` + `push_enabled` 门控 + 紧凑摘要 + 详情链接）+ cron.workdayly 编排 |
+| **P6** | 每日钉钉推送 job（复用 `DingTalkChannel` + `push_enabled` 门控 + 紧凑摘要 + 详情链接）+ cron.workdayly 编排 ✅ **已交付（2026-07-10）**：`quantia/job/notify_fund_pick_job.py`（每桶 Top3 + 深链，复用 `notification.service` 幂等 `dedupe_key`/门控/重试；货币型不显示择时徽章），通知设置 UI 加 `fund_daily_pick` 事件类型。**默认关**，生产启用须配公网域名 + 免登（§5.12）|
 | **P7** | 通过 §6bis.4 样本外验证后，才允许将 timing 升级为辅助排序权重；若不通过则维持 V1 |
 
 > 依赖 P1（timing.py）先落地；首期榜单明确为"好基金+当前位置提示"，待 §6bis.4 go/no-go 通过后再强化 timing 权重。

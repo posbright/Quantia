@@ -47,6 +47,13 @@ run_job "基金每日精选榜 (analysis_fund_pick_job)" \
     "quantia/job/analysis_fund_pick_job.py" "${QUANTIA_FUND_PICK_TIMEOUT:-600}"
 record_stage "基金每日精选榜 (analysis_fund_pick_job)" $? warn
 
+# ── P6 基金精选榜钉钉推送（零 API，只读 cn_fund_daily_pick + 发 webhook）──
+# 依赖上一步榜单已落库；复用 cn_stock_notification_event 幂等（dedupe_key）+ 通知配置门控
+# （event_type=fund_daily_pick，enabled 默认关，运维在通知设置启用）。未启用记 skipped，失败不阻断。
+run_job "基金精选榜推送 (notify_fund_pick_job)" \
+    "quantia/job/notify_fund_pick_job.py" "${QUANTIA_FUND_PICK_PUSH_TIMEOUT:-180}"
+record_stage "基金精选榜推送 (notify_fund_pick_job)" $? warn
+
 # 在 workdayly.log 记录本次各子任务成功/失败 + 耗时（拆分模式下生产可见）
 print_stage_summary
 
