@@ -51,6 +51,9 @@ class TestStockHistEM(unittest.TestCase):
         proxy = mod._CodeIdMapProxy()
         self.assertEqual(proxy['430001'], 0)
         self.assertEqual(proxy['830001'], 0)
+        self.assertEqual(proxy['870001'], 0)
+        self.assertEqual(proxy['880001'], 0)
+        self.assertEqual(proxy['920819'], 0)
 
     def test_code_id_map_proxy_contains(self):
         mod = self._import()
@@ -185,6 +188,14 @@ class TestStockHistSina(unittest.TestCase):
         self.assertEqual(mod._get_market_prefix('300001'), 'sz')
         self.assertEqual(mod._get_market_prefix('159001'), 'sz')
 
+    def test_get_market_prefix_bj(self):
+        mod = self._import()
+        self.assertEqual(mod._get_market_prefix('430001'), 'bj')
+        self.assertEqual(mod._get_market_prefix('830001'), 'bj')
+        self.assertEqual(mod._get_market_prefix('870001'), 'bj')
+        self.assertEqual(mod._get_market_prefix('880001'), 'bj')
+        self.assertEqual(mod._get_market_prefix('920819'), 'bj')
+
     def test_safe_float_normal(self):
         mod = self._import()
         self.assertEqual(mod._safe_float('3.14'), 3.14)
@@ -266,6 +277,11 @@ class TestStockHistTencent(unittest.TestCase):
         self.assertEqual(mod._get_market_prefix('000001'), 'sz')
         self.assertEqual(mod._get_market_prefix('300001'), 'sz')
         self.assertEqual(mod._get_market_prefix('510050'), 'sh')
+        self.assertEqual(mod._get_market_prefix('430001'), 'bj')
+        self.assertEqual(mod._get_market_prefix('830001'), 'bj')
+        self.assertEqual(mod._get_market_prefix('870001'), 'bj')
+        self.assertEqual(mod._get_market_prefix('880001'), 'bj')
+        self.assertEqual(mod._get_market_prefix('920819'), 'bj')
 
     def test_safe_float(self):
         mod = self._import()

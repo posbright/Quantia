@@ -49,10 +49,12 @@ MAX_RECORDS_PER_REQUEST = 300
 def _get_market_prefix(code):
     """获取市场前缀（支持股票和ETF）"""
     code = str(code)
+    if code.startswith(('4', '8', '920')):
+        return 'bj'  # 北交所
     if code.startswith(('6', '5', '9')):
         return 'sh'  # 上交所（含5开头的沪市ETF: 510xxx, 511xxx, 512xxx等）
     else:
-        return 'sz'  # 深交所/北交所（含1开头的深市ETF: 159xxx）
+        return 'sz'  # 深交所（含1开头的深市ETF: 159xxx）
 
 
 def _safe_float(value):
