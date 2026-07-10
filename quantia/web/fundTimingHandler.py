@@ -24,7 +24,7 @@ import math
 import quantia.core.tablestructure as tbs
 import quantia.lib.database as mdb
 import quantia.web.base as webBase
-from quantia.core.fund import benchmark_map, labels, timing
+from quantia.core.fund import labels, timing, valuation_lookup
 
 __author__ = 'Quantia'
 __date__ = '2026/07/09'
@@ -34,8 +34,6 @@ logger = logging.getLogger(__name__)
 _NAV_TABLE = tbs.TABLE_CN_FUND_NAV_HISTORY['name']
 _RANK_TABLE = tbs.TABLE_CN_FUND_RANK['name']
 _SCORE_TABLE = tbs.TABLE_CN_FUND_RANK_SCORE['name']
-_PROFILE_TABLE = tbs.TABLE_CN_FUND_PROFILE['name']
-_INDEX_VAL_TABLE = tbs.TABLE_CN_INDEX_VALUATION['name']
 
 _STALE_DAYS = 7          # 净值滞后阈值（防线1）
 _QUALITY_PASS = 70.0     # quality_pass 门槛（桶内百分位分）
@@ -208,35 +206,11 @@ class FundTimingHandler(webBase.BaseHandler):
     def _valuation_score(self, code, base):
         """T3 估值分位分：基金基准 → 宽基指数 → 指数 PE 全历史分位（低估→高分）。
 
-        只读 cn_fund_profile.benchmark + cn_index_valuation（规则1 只读；规则7 显式列）。
-        无 profile / 无法映射到有覆盖的宽基 / 无估值数据 → None（该维缺失，compose 自动降维）。
-        命中时把 index_code 回填 base 供前端透明展示。
+        委托 valuation_lookup（单一事实源，与 analysis_fund_pick_job 榜单择时口径完全一致，
+        蓝图 §4.2）。命中映射时把 index_code 回填 base 供前端透明展示。
         """
-        try:
-            if not mdb.checkTableIsExist(_PROFILE_TABLE):
-                return None
-            prows = mdb.executeSqlFetch(
-                f"SELECT `benchmark` FROM `{_PROFILE_TABLE}` WHERE `code` = %s LIMIT 1",
-                (code,))
-            if not prows or not prows[0]:
-                return None
-            index_code = benchmark_map.map_benchmark_to_index(prows[0][0])
-            if not index_code:
-                return None
+        index_code, score = valuation_lookup.valuation_score_for_fund(code)
+        if index_code:
             base['index_code'] = index_code
-            if not mdb.checkTableIsExist(_INDEX_VAL_TABLE):
-                return None
-            vrows = mdb.read_sql_ro(
-                f"SELECT `pe_ttm` FROM `{_INDEX_VAL_TABLE}` "
-                f"WHERE `index_code` = %s ORDER BY `date` ASC", params=(index_code,))
-            if vrows is None or vrows.empty:
-                return None
-            pe_series = [_num(v) for v in vrows['pe_ttm'].tolist()]
-            pe_series = [v for v in pe_series if v is not None and v > 0]
-            if len(pe_series) < _MIN_SAMPLES:
-                return None
-            return timing.valuation_percentile_score(pe_series)
-        except Exception:
-            logger.warning("估值分位计算失败 code=%s", code, exc_info=True)
-            return None
+        return score
 

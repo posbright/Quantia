@@ -22,7 +22,8 @@
 | **`fundTimingHandler` + 路由** | ✅ DONE (P1) | `quantia/web/fundTimingHandler.py` |
 | **前端"入场时机"卡片** | ✅ DONE (P1/P2) | `FundDetailDrawer.vue` |
 | **`cn_index_valuation` 表 + 指数估值 Fetch job（T3）** | ✅ DONE (P3) | `fetch_index_valuation_job.py` + `crawling/index_valuation_lg.py` |
-| **`analysis_fund_timing_job` + `cn_fund_timing_score`** | ⏳ 延后 P5 | 详情页 handler 已按需算 T3，批量预计算归 P5 精选榜 |
+| **`analysis_fund_timing_job` + `cn_fund_timing_score`** | ⛔ 不新建（改由 pick_job 内联算） | 批量预计算未建独立表；`analysis_fund_pick_job._compute_timing` 逐只调 `timing.py` 算 T1+T2+**T3**，与 Handler 共用 `valuation_lookup.py` 单一事实源 |
+| **T3 估值查询单一事实源 `valuation_lookup.py`** | ✅ DONE (P5 QA) | `quantia/core/fund/valuation_lookup.py`：Handler `_valuation_score` 与 pick_job 共用，消除「列表徽章 T1+T2 vs 抽屉档位 T1+T2+T3」漂移 |
 | **`cn_fund_daily_pick` 表 + 精选 job + Handler** | ✅ DONE (P5) | `tablestructure.TABLE_CN_FUND_DAILY_PICK` + `analysis_fund_pick_job.py` + `fundDailyPickHandler.py` + 前端「每日精选」tab |
 | **`fund_daily_pick` 钉钉推送** | ❌ MISSING | P6 |
 
@@ -44,6 +45,12 @@
 - **B10 T3 数据确认缺失**：指数 PE/PB 历史分位表不存在 → **P1 只做 T1+T2**，`compose_timing_score` 的 val 维度传 None，自动降为二维。T3 属 P3，须走 Fetch 管道新建 `cn_index_valuation`（规则 1，禁在 Handler 抓取）。
 - **B11 货币型净值近似平坦（误判防护）**：货币型基金 `acc_nav` 近似单调平坦，回撤 `dd≈0 → dd_score≈0`，若照常合成会被误标"高估勿追"。Handler 必须对 `fund_type=='货币型'` 短路返回 `timing_applicable=false`（不适用点位择时），前端据此提示"货币型不做点位择时"。债券型有真实累计净值波动，照常走 timing（与前端原型 `债券型 timing:true` 一致）。
 - **B12 回撤应为滚动峰值而非全史峰值（对齐蓝图 §4.1）**：蓝图 T1 签名 `drawdown_from_high(acc_nav, lookback)` 明确用"滚动峰值"，本 WBS 早期实现误用 `cummax()` 全史峰值。全史口径对"多年阴跌的价值陷阱"会永久判深回撤 → `dd_score=100` → 长期误标"低吸"（仅靠 T2 趋势部分抵消）。已修复为滚动窗口 `peak = nav.iloc[-lookback:].max()`，`DD_LOOKBACK=500`（≈2 年）；`lookback=None` 或 ≥样本长回退全史（保证少净值基金/短序列可算，18 项旧单测因序列 <500 全部回退全史 → 不回归）。Handler 默认取 `DD_LOOKBACK`。
+
+### P5 QA 复审修复（2026-07-10，二次对照文档 ↔ 代码）
+
+- **B13 pick_job 丢 T3 → 列表徽章与抽屉档位漂移**：`analysis_fund_pick_job._compute_timing` 早期传 `compose_timing_score(dd, trend, None)`，而抽屉 Handler 算 T3，导致有估值覆盖的 25/70 只基金"列表(T1+T2) vs 抽屉(T1+T2+T3)"档位不符（违反蓝图 §4.2 单一事实源）。已抽出 **`quantia/core/fund/valuation_lookup.py`** 供 Handler `_valuation_score` 与 pick_job 共用；pick_job 纳入 T3（货币/滞后/样本不足短路跳过），黑盒核对逐只一致。
+- **B14 benchmark 映射无权重感知 → QDII 错套境内估值（逻辑 bug，根因）**：`benchmark_map.map_benchmark_to_index` 早期取首个字面命中的境内宽基，**忽略权重**。如"MSCI全球×75%＋沪深300×20%"被映射为 `000300`，给以海外资产为主的 QDII 套沪深300 PE 分位，属误导信号（违背模块自身"宁缺毋滥"约束）。已改为**权重主导**：按 `＋/+` 拆成分取"最大权重成分"定锚；主导成分不可映射（全球/海外/债券）→ None。修复后 017730/018230（MSCI 主导 QDII）、018304（中债 50% 主导 FOF）不再套境内估值；020795（沪深300 55.2%）、015084（中证800 75%）仍正确映射。新增 6 例单测覆盖真实 QDII/FOF 基准；Handler 与 pick_job 因共用同一函数一并修正。
+- **B15 净值滞后未在榜单前端展示（完成性缺口，§7.1bis/§7.2bis）**：榜单接口已返回 `data_lag_days/nav_as_of` 但前端 `FundDailyPickTab.vue` 未渲染。已加"净值滞后 N 天"标签：QDII 桶必须展示（§7.1bis），其余桶仅在 `data_lag_days ≥ 5` 自然日时以警示色提示（§7.2bis），`nav_as_of` 作 title 悬浮。
 
 ---
 

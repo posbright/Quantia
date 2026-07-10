@@ -41,7 +41,7 @@ except Exception:
 
 import quantia.core.tablestructure as tbs
 import quantia.lib.database as mdb
-from quantia.core.fund import pick_selection, timing
+from quantia.core.fund import pick_selection, timing, valuation_lookup
 from quantia.lib.job_tracker import record_task_start, record_task_end
 
 __author__ = 'Quantia'
@@ -141,10 +141,13 @@ def _load_nav_map(codes, pick_date):
     return nav_map
 
 
-def _compute_timing(nav_rows, fund_type, pick_date):
+def _compute_timing(nav_rows, fund_type, pick_date, code=None, val_cache=None):
     """用 timing.py 纯函数算 timing 弱标签。返回 (score, tier, nav_as_of, lag_days)。
 
     NULL 容忍：货币型/样本不足/滞后 → score/tier 置空但仍保留基金与 nav 截面。
+    口径与 fundTimingHandler 完全一致（蓝图 §4.2）：T1 回撤 + T2 趋势 + T3 估值分位
+    （valuation_lookup 共用），非货币且有净值历史时才纳入 T3；val_cache 按宽基缓存避免
+    重复全表扫描 cn_index_valuation。
     """
     if not nav_rows:
         return None, None, None, None
@@ -168,7 +171,9 @@ def _compute_timing(nav_rows, fund_type, pick_date):
 
     dd = timing.drawdown_from_high(nav_series)
     trend = timing.nav_trend_score(nav_series)
-    res = timing.compose_timing_score(dd, trend, None)
+    # T3 估值分位（与抽屉 Handler 同一事实源，映射到宽基有覆盖时才非空）
+    _, val = valuation_lookup.valuation_score_for_fund(code, val_cache)
+    res = timing.compose_timing_score(dd, trend, val)
     score = res.get('score')
     return (round(score, 1) if score is not None else None), res.get('tier'), nav_as_of, lag
 
@@ -196,12 +201,13 @@ def build_pick_df(pick_date):
     has_nav = mdb.checkTableIsExist(_NAV_TABLE)
     nav_map = _load_nav_map([r['code'] for r in selected], pick_date) if has_nav else {}
 
+    val_cache = {}  # 按宽基缓存 T3 估值分位，避免重复全表扫描
     records = []
     for r in selected:
         code = r['code']
         fund_type = r['fund_type']
         tscore, tier, nav_as_of, lag = _compute_timing(
-            nav_map.get(code, []), fund_type, pick_date)
+            nav_map.get(code, []), fund_type, pick_date, code, val_cache)
         quality = r.get('quality_score')
         records.append({
             'date': pick_date,

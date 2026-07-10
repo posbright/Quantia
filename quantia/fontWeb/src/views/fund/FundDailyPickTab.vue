@@ -48,7 +48,16 @@
           <span class="pr-rank">{{ medal(p.rank_in_type) }}</span>
           <div class="pr-name-wrap">
             <span class="pr-name">{{ p.name || p.code }}</span>
-            <span class="pr-code">{{ p.code }}</span>
+            <span class="pr-code"
+              >{{ p.code
+              }}<span
+                v-if="showLag(p.data_lag_days)"
+                class="pr-lag"
+                :class="{ 'pr-lag--warn': lagWarn(p.data_lag_days) }"
+                :title="p.nav_as_of ? `净值披露日 ${p.nav_as_of}` : ''"
+                >净值滞后{{ p.data_lag_days }}天</span
+              ></span
+            >
           </div>
           <div class="pr-quality">
             <div class="pr-bar-track">
@@ -108,6 +117,15 @@ function medal(rank: number | null): string {
   if (rank === 2) return '🥈'
   if (rank === 3) return '🥉'
   return String(rank ?? '')
+}
+
+// 净值披露滞后：QDII 必须展示（蓝图 §7.1bis）；其余档仅在滞后≥5 自然日时提示（§7.2bis）。
+function lagWarn(lag: number | null | undefined): boolean {
+  return lag !== null && lag !== undefined && lag >= 5
+}
+function showLag(lag: number | null | undefined): boolean {
+  if (lag === null || lag === undefined) return false
+  return activeBucket.value?.fund_type === 'QDII' || lag >= 5
 }
 
 function fmtPct(v: number | null | undefined): string {
@@ -299,6 +317,20 @@ defineExpose({ reload: load })
 .pr-code {
   font-size: 12px;
   color: #909399;
+}
+.pr-lag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #6b7785;
+  background: #eef1f5;
+  white-space: nowrap;
+}
+.pr-lag--warn {
+  color: #b8860b;
+  background: #fdf6e3;
 }
 .pr-quality {
   width: 160px;
