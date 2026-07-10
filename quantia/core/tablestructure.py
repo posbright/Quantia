@@ -769,6 +769,10 @@ _low_atr_columns.update({
     'highest_close': {'type': FLOAT, 'cn': '区间最高价', 'size': 90},
     'lowest_close': {'type': FLOAT, 'cn': '区间最低价', 'size': 90},
     'range_ratio': {'type': FLOAT, 'cn': '振幅比(%)', 'size': 90},
+    'total_return': {'type': FLOAT, 'cn': '区间涨幅(%)', 'size': 90},
+    'up_days_ratio': {'type': FLOAT, 'cn': '上涨天数占比(%)', 'size': 110},
+    'max_drawdown': {'type': FLOAT, 'cn': '最大回撤(%)', 'size': 90},
+    'amount': {'type': BIGINT, 'cn': '成交额', 'size': 110},
 })
 _low_atr_columns.update(TABLE_CN_STOCK_BACKTEST_DATA['columns'])
 

@@ -392,31 +392,50 @@ TECHNICAL_STRATEGY_PARAMS = {
     },
     "low_atr": {
         "name": "低ATR成长",
-        "description": "低波动率中存在上涨空间的股票。\n\n"
+        "description": "低波动率中仍保持温和上行的股票（默认参数经历史回测寻优，兼顾夏普与收益）。\n\n"
                        "选股条件：\n"
                        "1. 需至少上市交易N天\n"
-                       "2. 近期平均日波动 ≤ ATR上限\n"
-                       "3. 区间最高价 / 最低价 ≥ 价格振幅比\n\n"
+                       "2. 近期平均日波动 ≤ 波动上限（默认≤4%，越低越防守）\n"
+                       "3. 区间最高价 / 最低价 ≥ 价格振幅比\n"
+                       "4. 区间最大回撤、成交额满足阈值；区间涨幅、上涨天数占比为可选过滤\n\n"
                        "适用场景：寻找波动平稳但悄然上涨的标的。\n"
-                       "风险提示：低波动可能因为缺乏关注，流动性可能不足。",
+                       "风险提示：低波动可能来自成交低迷，建议保留成交额过滤并结合基本面确认。",
         "strategy_func": "cn_stock_strategy_low_atr",
         "groups": [
             {
                 "group_name": "波动条件",
                 "params": [
-                    {"key": "max_atr", "label": "ATR上限(%)", "description": "期间平均每日绝对涨跌幅上限",
-                     "type": "number", "value": 10, "min": 3, "max": 20, "step": 1, "unit": "%"},
-                    {"key": "min_price_range", "label": "最低价格振幅", "description": "最高/最低价比值需大于此值",
-                     "type": "number", "value": 1.1, "min": 1.02, "max": 1.5, "step": 0.02, "unit": "倍"},
+                    {"key": "max_atr", "label": "平均波动上限(%)", "description": "近N日平均绝对涨跌幅上限，越低越偏防守；寻优默认 4%（最高夏普），建议 3%-8%",
+                     "type": "number", "value": 4, "min": 1, "max": 20, "step": 0.5, "unit": "%"},
+                    {"key": "min_price_range", "label": "最低价格振幅", "description": "近N日最高/最低收盘价比值，默认要求至少约8%的价格空间",
+                     "type": "number", "value": 1.08, "min": 1.02, "max": 1.5, "step": 0.01, "unit": "倍"},
+                    {"key": "max_drawdown", "label": "最大回撤上限(%)", "description": "近N日从阶段高点回撤不得超过此值，过滤波动虽低但持续走弱的标的；100 表示关闭",
+                     "type": "number", "value": 12, "min": 1, "max": 100, "step": 0.5, "unit": "%"},
+                ]
+            },
+            {
+                "group_name": "成长确认（可选）",
+                "params": [
+                    {"key": "min_total_return", "label": "区间最低涨幅(%)", "description": "近N日首尾收盘价涨幅下限，避免只因振幅达标但没有向上推进；0 表示关闭（寻优默认关闭以最大化夏普）",
+                     "type": "number", "value": 0, "min": 0, "max": 30, "step": 0.5, "unit": "%"},
+                    {"key": "min_up_days_ratio", "label": "上涨天数占比", "description": "近N日上涨天数 / 交易天数，下限越高趋势越连续；0 表示关闭（寻优默认关闭）",
+                     "type": "number", "value": 0, "min": 0, "max": 1, "step": 0.05, "unit": ""},
+                ]
+            },
+            {
+                "group_name": "流动性过滤",
+                "params": [
+                    {"key": "min_turnover", "label": "最低成交额(亿)", "description": "最近一日成交额下限，过滤流动性不足股票；0 表示关闭",
+                     "type": "number", "value": 0.3, "min": 0, "max": 20, "step": 0.1, "unit": "亿"},
                 ]
             },
             {
                 "group_name": "窗口设置",
                 "params": [
                     {"key": "analysis_days", "label": "分析天数", "description": "近期分析窗口长度",
-                     "type": "number", "value": 10, "min": 5, "max": 30, "step": 1, "unit": "天"},
+                     "type": "number", "value": 20, "min": 5, "max": 60, "step": 1, "unit": "天"},
                     {"key": "min_listing_days", "label": "最少上市天数", "description": "股票需至少上市多少天",
-                     "type": "number", "value": 250, "min": 60, "max": 500, "step": 10, "unit": "天"},
+                     "type": "number", "value": 120, "min": 60, "max": 500, "step": 10, "unit": "天"},
                 ]
             }
         ]

@@ -579,6 +579,31 @@ class TestLowAtr:
         code_name = (df.iloc[-1]["date"].strftime("%Y-%m-%d"), "600000")
         assert check_low_increase(code_name, df, ma_long=250, threshold=10) is False
 
+    def test_max_drawdown_filter(self):
+        from quantia.core.strategy.low_atr import check_low_increase
+        df = make_ohlcv(300, base_price=20.0, daily_return=0.002,
+                        volatility=0.003, seed=78)
+        tail_idx = df.index[-10:]
+        prices = [20, 21, 22, 23, 24, 25, 23, 22.5, 23.5, 24]
+        for idx, price in zip(tail_idx, prices):
+            df.loc[idx, "close"] = price
+        df.loc[tail_idx, "p_change"] = [0, 5, 4.76, 4.55, 4.35, 4.17, -8, -2.17, 4.44, 2.13]
+        code_name = (df.iloc[-1]["date"].strftime("%Y-%m-%d"), "600000")
+        assert check_low_increase(code_name, df, threshold=10, max_drawdown=5) is False
+
+    def test_min_turnover_filter(self):
+        from quantia.core.strategy.low_atr import check_low_increase
+        df = make_ohlcv(300, base_price=10.0, daily_return=0.003,
+                        volatility=0.003, base_volume=100_000, seed=79)
+        tail_idx = df.index[-10:]
+        base = df.loc[tail_idx[0], "close"]
+        for i, idx in enumerate(tail_idx):
+            df.loc[idx, "close"] = round(base * (1 + 0.015 * i), 2)
+            df.loc[idx, "p_change"] = 1.5
+            df.loc[idx, "volume"] = 100_000
+        code_name = (df.iloc[-1]["date"].strftime("%Y-%m-%d"), "600000")
+        assert check_low_increase(code_name, df, threshold=10, min_turnover=1) is False
+
 
 # =========================================================================
 # 11. high_tight_flag.py

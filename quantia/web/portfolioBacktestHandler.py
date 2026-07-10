@@ -1370,9 +1370,9 @@ def market_open(context):
         'id': 'low_atr_growth',
         'name': '低ATR成长',
         'category': 'stock',
-        'description': '低波动成长策略：上市满250日，近10日ATR≤10%且最高/最低价比>1.1。对应策略选股 S10。',
+        'description': '低波动成长策略：上市满120日，近20日平均波动较低，且涨幅、回撤、上涨天数占比达标。对应策略选股 S10。',
         'code': '''# 低ATR成长（策略选股模板 S10）
-# 买入：上市满250日 + 近10日ATR≤10% + 近10日最高/最低收盘价比>1.1
+    # 买入：上市满120日 + 近20日平均波动≤6% + 价格空间/涨幅/回撤/上涨天数占比达标
 # 卖出：止盈+15%，止损-7%，最长持有20日
 # 兼容聚宽 + 本地回测引擎
 import jqdata
@@ -1394,11 +1394,16 @@ def initialize(context):
     g.stop_loss = -0.07
     g.max_hold_days = 20
     g.hold_days = {}
-    g.atr_window = 10
-    g.atr_threshold = 10
+    g.atr_window = 20
+    g.atr_threshold = 4
+    g.min_price_range = 1.08
+    g.min_total_return = 0
+    g.min_up_days_ratio = 0
+    g.max_drawdown = 12
     run_daily(market_open, time='every_bar')
 
-def _check_low_atr(h, window=10, atr_max=10):
+def _check_low_atr(h, window=10, atr_max=10, min_price_range=1.1,
+                   min_total_return=0, min_up_days_ratio=0, max_drawdown=100):
     """检测低ATR成长条件"""
     if len(h) < window:
         return False
@@ -1414,9 +1419,23 @@ def _check_low_atr(h, window=10, atr_max=10):
     atr = total_change / window
     if atr > atr_max:
         return False
-    # 最高/最低收盘价比 > 1.1
+    up_days_ratio = 0
+    if window > 1:
+        up_days_ratio = sum(1 for i in range(1, len(closes)) if closes.iloc[i] > closes.iloc[i - 1]) / window
+    if min_up_days_ratio > 0 and up_days_ratio < min_up_days_ratio:
+        return False
+    first_close = closes.iloc[0]
+    last_close = closes.iloc[-1]
+    total_return = (last_close - first_close) / first_close * 100 if first_close > 0 else 0
+    if min_total_return > 0 and total_return < min_total_return:
+        return False
+    rolling_peak = closes.cummax()
+    drawdown = ((rolling_peak - closes) / rolling_peak * 100).max()
+    if max_drawdown < 100 and drawdown > max_drawdown:
+        return False
+    # 最高/最低收盘价比达到阈值
     ratio = (closes.max() - closes.min()) / closes.min()
-    if ratio <= 0.1:
+    if ratio <= (min_price_range - 1):
         return False
     return True
 
@@ -1451,10 +1470,11 @@ def market_open(context):
     for code in g.stocks:
         if code in context.portfolio.positions or current_count >= g.max_positions:
             continue
-        h = attribute_history(code, 11, '1d', ['close'])
+        h = attribute_history(code, g.atr_window + 1, '1d', ['close'])
         if len(h) < g.atr_window:
             continue
-        if _check_low_atr(h, g.atr_window, g.atr_threshold):
+        if _check_low_atr(h, g.atr_window, g.atr_threshold, g.min_price_range,
+                          g.min_total_return, g.min_up_days_ratio, g.max_drawdown):
             cash_per = context.portfolio.total_value / g.max_positions
             order_value(code, min(cash_per, context.portfolio.available_cash * 0.95))
             g.hold_days[code] = 0
