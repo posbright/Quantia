@@ -48,14 +48,15 @@ def _should_route_stock_loader_to_index(code):
     return clean in _STOCK_LOADER_INDEX_CODES or clean.startswith('399')
 
 
-# A 股代码合法前缀（沪市6/5；深市/北交所 0/1/3/4/8）。
-# 用于在调用东方财富前过滤明显非法的代码（如 999999），避免日志噪声和无谓重试。
+# A 股代码合法前缀（沪市6/5；深市/北交所 0/1/3/4/8/920）。
+# 用于在调用东方财富前过滤明显非法的代码（如 900001/999999），避免日志噪声和无谓重试。
 _VALID_STOCK_PREFIXES = ('0', '1', '3', '4', '5', '6', '8')
 
 
 def _is_likely_stock_code(code):
     clean = _normalize_code(code)
-    return len(clean) == 6 and clean.isdigit() and clean[0] in _VALID_STOCK_PREFIXES
+    return (len(clean) == 6 and clean.isdigit()
+            and (clean[0] in _VALID_STOCK_PREFIXES or clean.startswith('920')))
 
 
 def _normalize_em_df(raw, code):

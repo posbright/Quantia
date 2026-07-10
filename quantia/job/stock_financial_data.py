@@ -111,11 +111,13 @@ _NUMERIC_FIELDS = set(_DB_FIELDS) - {'code', 'report_date', 'report_name'}
 def _code_to_secucode(code):
     """将6位股票代码转为东方财富格式（如 000001 → 000001.SZ）"""
     code = str(code).zfill(6)
-    if code.startswith(('6', '5')):
+    if code.startswith('920'):
+        return f"{code}.BJ"
+    if code.startswith(('6', '5', '9')):
         return f"{code}.SH"
     elif code.startswith(('0', '3', '2')):
         return f"{code}.SZ"
-    elif code.startswith(('4', '8', '9')):
+    elif code.startswith(('4', '8')):
         return f"{code}.BJ"
     return f"{code}.SZ"
 

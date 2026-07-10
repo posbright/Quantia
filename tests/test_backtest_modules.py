@@ -614,6 +614,7 @@ class TestCreateSafeNamespace(unittest.TestCase):
 from quantia.core.backtest.data_feed import (
     _normalize_cache_df, load_stock_data, load_multiple_stocks,
     get_trading_dates, load_benchmark_data, _load_from_cache,
+    _is_likely_stock_code,
 )
 
 
@@ -689,6 +690,22 @@ class TestLoadStockData(unittest.TestCase):
         self.assertIsNotNone(df)
         mock_fetch.assert_called_once()
         mock_save.assert_called_once()
+
+    @patch('quantia.core.backtest.data_feed._load_from_cache')
+    @patch('quantia.core.backtest.data_feed._fetch_stock_from_eastmoney')
+    @patch('quantia.core.backtest.data_feed._save_cache')
+    def test_bj_920_code_can_fallback_to_api(self, mock_save, mock_fetch, mock_cache):
+        mock_cache.return_value = None
+        mock_fetch.return_value = self._make_cache_df('920819')
+        df = load_stock_data('920819', '2024-01-02', '2024-03-01')
+        self.assertIsNotNone(df)
+        mock_fetch.assert_called_once_with('920819', '2024-01-02', '2024-03-01')
+        mock_save.assert_called_once()
+
+    def test_920_is_valid_but_900_is_not_likely_stock_code(self):
+        self.assertTrue(_is_likely_stock_code('920819'))
+        self.assertFalse(_is_likely_stock_code('900001'))
+        self.assertFalse(_is_likely_stock_code('999999'))
 
     @patch('quantia.core.backtest.data_feed._load_from_cache')
     @patch('quantia.core.backtest.data_feed._fetch_stock_from_eastmoney')

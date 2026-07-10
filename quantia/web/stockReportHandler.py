@@ -71,7 +71,7 @@ def _derive_stock_board(code: str, is_hs300=None, is_sz50=None, is_zz500=None):
         boards.append('创业板')
     elif code.startswith('688'):
         boards.append('科创板')
-    elif code.startswith(('8', '4', '9')):
+    elif code.startswith(('8', '4', '920')):
         boards.append('北交所')
 
     index_flags = ((is_hs300, '沪深300'), (is_sz50, '上证50'), (is_zz500, '中证500'))

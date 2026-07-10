@@ -36,6 +36,16 @@ import numpy as np
 import pandas as pd
 
 
+class TestStockReportBoardHelpers(unittest.TestCase):
+    """Tests for stock report board derivation helpers."""
+
+    def test_derive_stock_board_bj_920_not_all_9_prefix(self):
+        from quantia.web.stockReportHandler import _derive_stock_board
+
+        self.assertEqual(_derive_stock_board('920819'), '北交所')
+        self.assertIsNone(_derive_stock_board('900001'))
+
+
 # ============================================================
 # 1. base.py
 # ============================================================
