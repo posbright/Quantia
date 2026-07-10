@@ -13,8 +13,8 @@
   'fund_daily_pick|dingtalk|<pick_date>')；并发/重复调度被挡下（rowcount==0）。
 - 发送：`DingTalkChannel`（单群广播 + 全局开关模型，非 per-user，对齐蓝图口径修正）。
 
-深链：详情 `{BASE}/#/fund/rank?code=XXXXXX`（前端已支持 `route.query.code` 自动开
-抽屉、`route.query.pick` 定位精选分区）；整榜 `{BASE}/#/fund/rank?pick=1`。
+深链：详情 `{BASE}/fund/rank?code=XXXXXX`（前端已支持 `route.query.code` 自动开
+抽屉、`route.query.pick` 定位精选分区；路由为 history 模式、无 # 前缀）；整榜 `{BASE}/fund/rank?pick=1`。
 BASE 取 `QUANTIA_WEB_BASE_URL`（未配置回退 `http://<host>:9988`，生产须配公网域名）。
 
 **非买卖措辞**，带风险免责（对齐 F13 / labels.RISK_DISCLAIMER）。货币型不做点位
@@ -117,7 +117,7 @@ def _base_url():
 
 def _fund_detail_url(code, name='', base=None):
     base = base or _base_url()
-    url = f"{base}/#/fund/rank?code={quote(str(code))}"
+    url = f"{base}/fund/rank?code={quote(str(code))}"
     if name:
         url += f"&name={quote(str(name))}"
     return url
@@ -125,7 +125,7 @@ def _fund_detail_url(code, name='', base=None):
 
 def _pick_list_url(base=None):
     base = base or _base_url()
-    return f"{base}/#/fund/rank?pick=1"
+    return f"{base}/fund/rank?pick=1"
 
 
 def _dedupe_key(pick_date):
