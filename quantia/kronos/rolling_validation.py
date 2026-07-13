@@ -201,7 +201,7 @@ def run_rolling_validation(
     ]
 
     records: list[dict[str, Any]] = []
-    for code in codes:
+    for code in dict.fromkeys(codes):
         frame = data_loader(code, end_date=normalized_dates[-1], cache_only=True)
         if frame is None or len(frame) == 0:
             continue

@@ -144,3 +144,21 @@ def test_rolling_validation_rejects_terminal_date_mismatch_as_provider_error():
     )
 
     assert result["records"][0]["status"] == "provider_error"
+
+
+def test_rolling_validation_deduplicates_repeated_codes():
+    frame = _frame()
+    anchor = frame.iloc[40]["date"]
+
+    result = run_rolling_validation(
+        ["300308", "300308"], frame["date"], lambda *args, **kwargs: frame,
+        lambda payload: {"predictions": [{
+            "date": payload["future_timestamps"][0],
+            "open": 150.0, "high": 152.0, "low": 149.0, "close": 151.0,
+        }]},
+        anchor_start=anchor, anchor_end=anchor,
+        lookbacks=[32], horizons=[1], anchor_step=1,
+    )
+
+    assert len(result["records"]) == 1
+    assert result["summary"]["lookback=32,horizon=1"]["n_observed"] == 1
