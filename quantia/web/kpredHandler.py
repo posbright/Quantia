@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-K线预测代理 Handler
+K 线预测 Provider Handler
 
-转发前端请求至 AgentPit kpred API，将 API Key 保持在服务端。
-内置当日缓存：同一股票+天数在同一天内只请求一次上游 API，后续所有用户直接返回缓存。
+转发前端请求至 AgentPit 或兼容的本地服务，将 API Key 保持在服务端。
+内置当日缓存：同一 provider+股票+天数在同一天内只请求一次供应商 API。
 
 可配置项（.env / 环境变量）：
-  QUANTIA_AGENTPIT_API_KEY  — 必填，AgentPit API Key
-  QUANTIA_KPRED_API_URL     — 可选，API 端点 URL（默认 https://api.agentpit.io/v1/open-api/kpred）
-  QUANTIA_KPRED_TIMEOUT     — 可选，请求超时秒数（默认 300，范围 1~600）
+    QUANTIA_KPRED_PROVIDER       — agentpit / local（默认 agentpit）
+    QUANTIA_AGENTPIT_API_KEY     — AgentPit 模式必填
+    QUANTIA_KPRED_API_URL        — AgentPit API 端点
+    QUANTIA_KPRED_LOCAL_URL      — 本地部署 API 端点
+    QUANTIA_KPRED_LOCAL_API_KEY  — 本地部署鉴权（可选）
+    QUANTIA_KPRED_TIMEOUT        — 请求超时秒数（默认 300，范围 1~600）
 
 前端请求体也可传入 timeout 参数覆盖超时。
 """
@@ -28,18 +31,19 @@ import quantia.lib.envconfig  # noqa: F401 — 确保 .env 已加载
 logger = logging.getLogger(__name__)
 
 _DEFAULT_API_URL = 'https://api.agentpit.io/v1/open-api/kpred'
+_DEFAULT_LOCAL_URL = 'http://127.0.0.1:18081/v1/open-api/kpred'
 _DEFAULT_TIMEOUT = 300  # seconds
 _executor = ThreadPoolExecutor(max_workers=4)
 
 # ===== 服务端当日缓存 =====
-# key: "code_days_YYYYMMDD"  value: (timestamp, response_dict)
+# key: "provider_code_days_YYYYMMDD"  value: response_dict
 # 同一股票+天数+日期的预测结果是确定性的（同模型、同输入数据），与用户无关。
 # 缓存在进程内存中，web_service 重启或跨天自动失效。
 _pred_cache: dict = {}
 _pred_cache_date: str = ''  # 当前缓存所属日期，跨天时清空全部缓存
 
 
-def _get_cache(code: str, days: int) -> dict | None:
+def _get_cache(code: str, days: int, provider: str = 'agentpit') -> dict | None:
     """查询当日缓存，命中返回 response dict，未命中返回 None"""
     global _pred_cache, _pred_cache_date
     today = time.strftime('%Y%m%d')
@@ -48,30 +52,40 @@ def _get_cache(code: str, days: int) -> dict | None:
         _pred_cache.clear()
         _pred_cache_date = today
         return None
-    key = f'{code}_{days}_{today}'
+    key = f'{provider}_{code}_{days}_{today}'
     return _pred_cache.get(key)
 
 
-def _set_cache(code: str, days: int, data: dict):
+def _set_cache(code: str, days: int, data: dict, provider: str = 'agentpit'):
     """写入当日缓存"""
     global _pred_cache, _pred_cache_date
     today = time.strftime('%Y%m%d')
     if _pred_cache_date != today:
         _pred_cache.clear()
         _pred_cache_date = today
-    key = f'{code}_{days}_{today}'
+    key = f'{provider}_{code}_{days}_{today}'
     _pred_cache[key] = data
 
 
-def _get_api_key() -> str:
-    """从 .env / 环境变量读取 QUANTIA_AGENTPIT_API_KEY"""
-    return (os.environ.get('QUANTIA_AGENTPIT_API_KEY') or '').strip()
+def _get_provider() -> str:
+    """返回当前预测供应商；非法配置直接报错，避免静默走错服务。"""
+    provider = (os.environ.get('QUANTIA_KPRED_PROVIDER') or 'agentpit').strip().lower()
+    if provider not in ('agentpit', 'local'):
+        raise ValueError('QUANTIA_KPRED_PROVIDER 仅支持 agentpit/local')
+    return provider
 
 
-def _get_api_url() -> str:
-    """从 .env / 环境变量读取 QUANTIA_KPRED_API_URL，缺省用官方地址"""
-    url = (os.environ.get('QUANTIA_KPRED_API_URL') or '').strip()
-    return url if url else _DEFAULT_API_URL
+def _get_api_key(provider: str = 'agentpit') -> str:
+    """读取供应商鉴权；本地部署默认允许无 Key。"""
+    env_name = 'QUANTIA_KPRED_LOCAL_API_KEY' if provider == 'local' else 'QUANTIA_AGENTPIT_API_KEY'
+    return (os.environ.get(env_name) or '').strip()
+
+
+def _get_api_url(provider: str = 'agentpit') -> str:
+    """按 provider 读取 API 地址。"""
+    if provider == 'local':
+        return (os.environ.get('QUANTIA_KPRED_LOCAL_URL') or '').strip() or _DEFAULT_LOCAL_URL
+    return (os.environ.get('QUANTIA_KPRED_API_URL') or '').strip() or _DEFAULT_API_URL
 
 
 def _get_timeout(request_timeout=None) -> int:
@@ -94,16 +108,16 @@ def _get_timeout(request_timeout=None) -> int:
     return _DEFAULT_TIMEOUT
 
 
-def _do_upstream_request(api_url: str, api_key: str, code: str, days: int, timeout: int) -> dict:
-    """同步执行上游 HTTP 请求（在线程池中调用，不阻塞 IO 循环）"""
+def _do_provider_request(api_url: str, api_key: str, code: str, days: int, timeout: int) -> dict:
+    """同步执行供应商 HTTP 请求（在线程池中调用，不阻塞 IO 循环）。"""
     payload = json.dumps({'code': code, 'days': days}).encode('utf-8')
+    headers = {'Content-Type': 'application/json'}
+    if api_key:
+        headers['Authorization'] = f'Bearer {api_key}'
     req = urllib.request.Request(
         api_url,
         data=payload,
-        headers={
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {api_key}',
-        },
+        headers=headers,
         method='POST',
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -114,8 +128,35 @@ def _do_upstream_request(api_url: str, api_key: str, code: str, days: int, timeo
             raise ValueError(f'上游返回非 JSON 响应 (HTTP {resp.status}, body[:200]={resp_body[:200]})')
 
 
+def _do_upstream_request(api_url: str, api_key: str, code: str, days: int, timeout: int) -> dict:
+    """兼容旧调用名。"""
+    return _do_provider_request(api_url, api_key, code, days, timeout)
+
+
+def _normalize_provider_response(response: dict, provider: str) -> dict:
+    """把直接业务对象或 {code, data} 包装统一成前端所需的单层对象。"""
+    if not isinstance(response, dict):
+        raise ValueError('预测服务返回格式无效：顶层必须是 JSON object')
+
+    nested = response.get('data')
+    wrapped = isinstance(nested, dict)
+    has_predictions = isinstance(response.get('predictions'), list)
+    if 'code' in response and response.get('code') not in (0, '0', None) and (wrapped or not has_predictions):
+        raise ValueError(str(response.get('msg') or response.get('message') or '预测服务返回失败'))
+
+    data = nested if wrapped else response
+    if not isinstance(data.get('predictions'), list):
+        raise ValueError('预测服务返回格式无效：缺少 predictions 数组')
+    if data.get('pro') is not None and not isinstance(data.get('pro'), dict):
+        raise ValueError('预测服务返回格式无效：pro 必须是 object 或 null')
+
+    normalized = dict(data)
+    normalized.setdefault('provider', provider)
+    return normalized
+
+
 class GetKpredHandler(tornado.web.RequestHandler):
-    """POST /quantia/api/kpred — 代理转发 AgentPit K线预测请求"""
+    """POST /quantia/api/kpred — 转发 AgentPit / 本地 K 线预测请求。"""
 
     def set_default_headers(self):
         self.set_header('Content-Type', 'application/json; charset=UTF-8')
@@ -128,8 +169,15 @@ class GetKpredHandler(tornado.web.RequestHandler):
         self.finish()
 
     async def post(self):
-        api_key = _get_api_key()
-        if not api_key:
+        try:
+            provider = _get_provider()
+        except ValueError as e:
+            self.set_status(500)
+            self.write(json.dumps({'code': -1, 'msg': str(e)}, ensure_ascii=False))
+            return
+
+        api_key = _get_api_key(provider)
+        if provider == 'agentpit' and not api_key:
             self.set_status(500)
             self.write(json.dumps({'code': -1, 'msg': '服务端未配置 QUANTIA_AGENTPIT_API_KEY'},
                                   ensure_ascii=False))
@@ -165,22 +213,23 @@ class GetKpredHandler(tornado.web.RequestHandler):
         # === 服务端缓存命中：同一股票+天数+日期直接返回，无需调用上游 ===
         refresh = body.get('refresh', False)  # 前端"刷新"按钮传 refresh:true 绕过缓存
         if not refresh:
-            cached = _get_cache(code, days)
+            cached = _get_cache(code, days, provider)
             if cached is not None:
-                logger.debug('kpred cache hit: %s days=%d', code, days)
+                logger.debug('kpred cache hit: provider=%s code=%s days=%d', provider, code, days)
                 self.write(json.dumps({'code': 0, 'data': cached, '_cached': True},
                                       ensure_ascii=False))
                 return
 
         timeout = _get_timeout(body.get('timeout'))
-        api_url = _get_api_url()
+        api_url = _get_api_url(provider)
 
         # 在线程池中执行同步 HTTP 请求，不阻塞 Tornado IO 循环
         loop = IOLoop.current()
         try:
-            data = await loop.run_in_executor(
-                _executor, _do_upstream_request, api_url, api_key, code, days, timeout
+            response = await loop.run_in_executor(
+                _executor, _do_provider_request, api_url, api_key, code, days, timeout
             )
+            data = _normalize_provider_response(response, provider)
         except urllib.error.HTTPError as e:
             status = e.code
             err_body = ''
@@ -210,4 +259,4 @@ class GetKpredHandler(tornado.web.RequestHandler):
 
         self.write(json.dumps({'code': 0, 'data': data}, ensure_ascii=False))
         # 缓存成功的预测结果（当天有效）
-        _set_cache(code, days, data)
+        _set_cache(code, days, data, provider)

@@ -173,7 +173,7 @@ const klineDates = computed<string[]>(() => klineData.value?.dates || [])
 const codeStr = computed(() => code.value || '')
 const ciOverlay = useCustomIndicatorOverlay(codeStr, currentPeriod, klineDates)
 
-// === K线预测（AgentPit kpred） ===
+// === K线预测（AgentPit / 本地兼容服务） ===
 const predEnabled = ref(false)
 const predDays = ref(5)
 const predDaysOptions = [3, 5, 10]
@@ -182,6 +182,20 @@ const predData = ref<KpredResult | null>(null)
 const predError = ref('')  // 预测失败时的错误信息（持久显示，直到下次成功或关闭开关）
 let predRequestSeq = 0  // 请求序列号，防止快速切股时旧请求覆盖新数据
 
+const predPro = computed(() => predData.value?.pro || null)
+const predFactors = computed(() => predPro.value?.factors || [])
+const toPredNumber = (value: unknown): number => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+const fmtPredNumber = (value: unknown, digits = 2): string => toPredNumber(value).toFixed(digits)
+const fmtPredSigned = (value: unknown, digits = 3): string => {
+  const parsed = toPredNumber(value)
+  return `${parsed >= 0 ? '+' : ''}${parsed.toFixed(digits)}`
+}
+const predValueClass = (value: unknown): string => toPredNumber(value) >= 0 ? 'is-up' : 'is-down'
+const predProviderLabel = computed(() => predData.value?.provider === 'local' ? '本地模型' : 'AgentPit')
+
 const loadPrediction = async (forceRefresh = false) => {
   if (!code.value) return
   predLoading.value = true
@@ -189,7 +203,7 @@ const loadPrediction = async (forceRefresh = false) => {
   predError.value = ''
   const seq = ++predRequestSeq
   try {
-    // 服务端缓存：同一股票+天数+日期只请求一次上游 API，全局共享。
+    // 服务端缓存：同一 provider+股票+天数+日期只请求一次供应商 API，全局共享。
     // forceRefresh=true 时传 refresh 参数绕过服务端缓存。
     const params: any = { code: code.value, days: predDays.value }
     if (forceRefresh) params.refresh = true
@@ -845,20 +859,23 @@ const renderChart = () => {
       const predItem = predPredictions[predIdx]
       let proHtml = ''
       if (pro) {
-        const ratingCls = pro.composite_score >= 0 ? 'kt-up' : 'kt-down'
+        const compositeScore = toPredNumber(pro.composite_score)
+        const ratingCls = compositeScore >= 0 ? 'kt-up' : 'kt-down'
         const factorsHtml = (pro.factors || []).slice(0, 6).map(f => {
-          const sCls = f.contribution >= 0 ? 'kt-up' : 'kt-down'
-          return `<div class="kt-row"><span class="kt-label">${f.label}</span><span class="kt-val ${sCls}">${f.score >= 0 ? '+' : ''}${(f.score * 100).toFixed(0)}分</span><span class="kt-sub">${f.contribution >= 0 ? '+' : ''}${(f.contribution * 100).toFixed(1)}%</span></div>`
+          const factorScore = toPredNumber(f.score)
+          const contribution = toPredNumber(f.contribution)
+          const sCls = contribution >= 0 ? 'kt-up' : 'kt-down'
+          return `<div class="kt-row"><span class="kt-label">${f.label}</span><span class="kt-val ${sCls}">${factorScore >= 0 ? '+' : ''}${(factorScore * 100).toFixed(0)}分</span><span class="kt-sub">${contribution >= 0 ? '+' : ''}${(contribution * 100).toFixed(1)}%</span></div>`
         }).join('')
         proHtml = `
           <div class="kt-sep"></div>
           <div class="kt-pred-header">Pro 多因子评分</div>
-          <div class="kt-row"><span class="kt-label">综合评分</span><span class="kt-val ${ratingCls}">${pro.composite_score.toFixed(3)}</span></div>
+          <div class="kt-row"><span class="kt-label">综合评分</span><span class="kt-val ${ratingCls}">${compositeScore.toFixed(3)}</span></div>
           <div class="kt-row"><span class="kt-label">评级</span><span class="kt-val ${ratingCls}">${pro.rating}</span></div>
           <div class="kt-row"><span class="kt-label">置信度</span><span class="kt-val">${pro.confidence}</span></div>
           <div class="kt-row"><span class="kt-label">因子一致性</span><span class="kt-val">${pro.conflict_level}</span></div>
-          <div class="kt-row"><span class="kt-label">预期收益</span><span class="kt-val ${pro.adj_return_pct >= 0 ? 'kt-up' : 'kt-down'}">${pro.adj_return_pct >= 0 ? '+' : ''}${pro.adj_return_pct.toFixed(2)}%</span></div>
-          <div class="kt-row"><span class="kt-label">日波动率</span><span class="kt-val">${pro.sigma_daily_pct.toFixed(2)}%</span></div>
+          <div class="kt-row"><span class="kt-label">预期收益</span><span class="kt-val ${toPredNumber(pro.adj_return_pct) >= 0 ? 'kt-up' : 'kt-down'}">${fmtPredSigned(pro.adj_return_pct, 2)}%</span></div>
+          <div class="kt-row"><span class="kt-label">日波动率</span><span class="kt-val">${fmtPredNumber(pro.sigma_daily_pct, 2)}%</span></div>
           ${factorsHtml ? `<div class="kt-sep"></div><div class="kt-pred-header">因子明细</div>${factorsHtml}` : ''}`
       }
       return `
@@ -1547,6 +1564,49 @@ onUnmounted(() => {
       />
     </div>
 
+    <section v-if="predEnabled && predPro && !predLoading" class="pred-score-panel">
+      <div class="pred-score-summary">
+        <div class="pred-score-heading">
+          <span class="pred-score-title">Pro 多因子评分</span>
+          <span class="pred-provider">{{ predProviderLabel }}</span>
+        </div>
+        <div class="pred-summary-item">
+          <span>综合评分</span>
+          <b :class="predValueClass(predPro.composite_score)">{{ fmtPredSigned(predPro.composite_score) }}</b>
+        </div>
+        <div class="pred-summary-item">
+          <span>评级</span>
+          <b :class="predValueClass(predPro.composite_score)">{{ predPro.rating }}</b>
+        </div>
+        <div class="pred-summary-item">
+          <span>置信度</span>
+          <b>{{ predPro.confidence }}</b>
+        </div>
+        <div class="pred-summary-item">
+          <span>因子一致性</span>
+          <b>{{ predPro.conflict_level }}</b>
+        </div>
+        <div class="pred-summary-item">
+          <span>预期收益</span>
+          <b :class="predValueClass(predPro.adj_return_pct)">{{ fmtPredSigned(predPro.adj_return_pct, 2) }}%</b>
+        </div>
+        <div class="pred-summary-item">
+          <span>日波动率</span>
+          <b>{{ fmtPredNumber(predPro.sigma_daily_pct, 2) }}%</b>
+        </div>
+      </div>
+      <div v-if="predFactors.length" class="pred-factor-grid">
+        <div v-for="factor in predFactors" :key="factor.key || factor.label" class="pred-factor-item">
+          <span class="pred-factor-name">{{ factor.label }}</span>
+          <span class="pred-factor-score" :class="predValueClass(factor.score)">{{ fmtPredSigned(factor.score) }}</span>
+          <span class="pred-factor-meta">权重 {{ fmtPredNumber(toPredNumber(factor.weight) * 100, 0) }}%</span>
+          <span class="pred-factor-contribution" :class="predValueClass(factor.contribution)">
+            贡献 {{ fmtPredSigned(factor.contribution) }}
+          </span>
+        </div>
+      </div>
+    </section>
+
     <!-- Chart area -->
     <div class="chart-wrapper" v-loading="loading">
       <div ref="klineWrapRef" class="chart-wrap kline-chart-wrap">
@@ -1796,6 +1856,65 @@ onUnmounted(() => {
   display: flex; align-items: center; margin-left: 12px;
 }
 
+.pred-score-panel {
+  border-bottom: 1px solid #dfe4ea;
+  background: #f7f9fb;
+  padding: 10px 16px 12px;
+}
+.pred-score-summary {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.35fr) repeat(6, minmax(82px, 1fr));
+  gap: 8px 14px;
+  align-items: center;
+}
+.pred-score-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pred-score-title { font-size: 14px; font-weight: 700; color: #303133; }
+.pred-provider {
+  padding: 1px 6px;
+  border: 1px solid #d9a441;
+  border-radius: 3px;
+  color: #9a6413;
+  background: #fff8e8;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.pred-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  span { color: #909399; font-size: 10px; white-space: nowrap; }
+  b { color: #303133; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+.pred-factor-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 9px;
+  border-top: 1px solid #e3e7ed;
+  border-left: 1px solid #e3e7ed;
+}
+.pred-factor-item {
+  display: grid;
+  grid-template-columns: minmax(72px, 1fr) auto;
+  gap: 2px 10px;
+  padding: 7px 9px;
+  border-right: 1px solid #e3e7ed;
+  border-bottom: 1px solid #e3e7ed;
+  min-width: 0;
+  background: #fff;
+}
+.pred-factor-name, .pred-factor-score { font-size: 12px; font-weight: 600; color: #303133; }
+.pred-factor-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pred-factor-score, .pred-factor-contribution { text-align: right; }
+.pred-factor-meta, .pred-factor-contribution { color: #909399; font-size: 10px; white-space: nowrap; }
+.pred-score-panel .is-up { color: #ec0000; }
+.pred-score-panel .is-down { color: #00a838; }
+
 /* 行情快照栏（实时盘口）—— 扁平、密排，贴合本页东方财富风格 */
 .quote-bar {
   border-bottom: 1px solid #f0f0f0;
@@ -1933,6 +2052,11 @@ onUnmounted(() => {
   }
   .toolbar { padding: 6px 8px; }
   .toolbar-left { gap: 12px; }
+  .pred-score-panel { padding: 8px 10px 10px; }
+  .pred-score-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px 10px; }
+  .pred-score-heading { grid-column: 1 / -1; }
+  .pred-factor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pred-factor-item { padding: 6px 7px; grid-template-columns: minmax(64px, 1fr) auto; gap: 2px 6px; }
   .period-tabs .period-tab { padding: 3px 8px; font-size: 12px; }
   .overlay-checks .label { display: none; }
   .sub-indicator-bar .sub-tab { padding: 6px 0; font-size: 11px; }
@@ -1957,7 +2081,7 @@ onUnmounted(() => {
 
 /* PR-09 C: 移动端横屏 —— 隐藏信息栏 / 工具栏，把整个高度让给图表 */
 @media (max-width: 991.98px) and (orientation: landscape) and (max-height: 540px) {
-  .top-bar, .toolbar, .quote-bar { display: none; }
+  .top-bar, .toolbar, .quote-bar, .pred-score-panel { display: none; }
   .chart-wrapper .chart-main { height: calc(100dvh - 40px) !important; }
   .sub-indicator-bar, .sub-indicator-segmented { padding: 2px 6px; }
 }

@@ -287,7 +287,9 @@ export interface KpredResult {
   last_close: number
   last_date: string
   predictions: KpredPrediction[]
-  pro: KpredPro
+  pro: KpredPro | null
+  provider?: 'agentpit' | 'local' | string
+  model_version?: string
   latencyMs?: number
 }
 export function getKpred(params: KpredParams) {

@@ -892,11 +892,15 @@ GET /quantia/api/trade_date
 
 ---
 
-### K线预测（AgentPit kpred 代理）
+### K线预测（AgentPit / 本地服务）
 
 #### POST `/quantia/api/kpred`
 
-代理转发 K 线预测请求至 AgentPit kpred API，服务端保管 API Key。
+按 `QUANTIA_KPRED_PROVIDER` 把 K 线预测请求转发至 AgentPit 或兼容的本地服务。服务端统一归一化供应商响应，前端始终收到单层 `data` 业务对象。
+
+- `agentpit`：使用 AgentPit Pro 多因子模型，需要服务端 API Key。
+- `local`：调用 `QUANTIA_KPRED_LOCAL_URL`，默认不需要 Key，可选配置本地 Bearer Key。
+- 本地服务必须兼容 `POST {"code":"300308","days":5}`；可直接返回业务对象，也可返回 `{code:0,data:{...}}`。
 
 **内置当日缓存**：同一股票+天数在同一天内只调用一次上游 API，后续所有用户请求直接返回缓存结果（<10ms）。缓存与用户无关，按 `{code}_{days}_{YYYYMMDD}` 维度全局共享，跨天自动清空。
 
@@ -916,6 +920,7 @@ GET /quantia/api/trade_date
   "code": 0,
   "data": {
     "name": "中际联合",
+    "provider": "agentpit",
     "last_close": 45.98,
     "last_date": "2026-07-03",
     "predictions": [
@@ -936,31 +941,37 @@ GET /quantia/api/trade_date
 }
 ```
 
-`_cached: true` 表示命中服务端缓存（未调用上游 API）。
+`_cached: true` 表示命中服务端缓存（未调用供应商 API）。缓存按 provider 隔离，切换 AgentPit / 本地服务不会串用结果。
+
+`pro` 为 Pro 多因子评分。指标详情页会在预测开启后常驻展示综合评分、评级、置信度、因子一致性、预期收益、日波动率和全部因子明细；悬浮预测蜡烛时仍显示精简评分。只提供 K 线、不提供多因子评分的本地模型可返回 `"pro": null`。
 
 **失败响应**:
 
 | HTTP 状态码 | msg | 说明 |
 |------------|-----|------|
 | 400 | 缺少 code 参数 / code 格式无效 | 参数校验失败 |
-| 401 | API Key 无效 | QUANTIA_AGENTPIT_API_KEY 错误 |
+| 401 | API Key 无效 | 当前 provider 的 API Key 错误 |
 | 429 | 月度额度已用完 | AgentPit 配额耗尽 |
-| 500 | 服务端未配置 QUANTIA_AGENTPIT_API_KEY | 未配置环境变量 |
+| 500 | 服务端未配置 QUANTIA_AGENTPIT_API_KEY | AgentPit 模式未配置环境变量 |
 | 502 | 预测服务异常/连接失败 | 上游不可达 |
 
 **环境变量**:
 
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
-| QUANTIA_AGENTPIT_API_KEY | 是 | - | AgentPit API Key |
-| QUANTIA_KPRED_API_URL | 否 | `https://api.agentpit.io/v1/open-api/kpred` | API 端点 |
-| QUANTIA_KPRED_TIMEOUT | 否 | 300 | 上游超时（秒） |
+| QUANTIA_KPRED_PROVIDER | 否 | `agentpit` | `agentpit` / `local` |
+| QUANTIA_AGENTPIT_API_KEY | AgentPit 是 | - | AgentPit API Key |
+| QUANTIA_KPRED_API_URL | 否 | `https://api.agentpit.io/v1/open-api/kpred` | AgentPit API 端点 |
+| QUANTIA_KPRED_LOCAL_URL | 否 | `http://127.0.0.1:18081/v1/open-api/kpred` | 本地兼容服务端点 |
+| QUANTIA_KPRED_LOCAL_API_KEY | 否 | - | 本地服务可选 Bearer Key |
+| QUANTIA_KPRED_TIMEOUT | 否 | 300 | 供应商请求超时（秒） |
 
 **前端交互**:
 
 - 指标详情页日K模式下显示"预测"开关，开启后请求本接口
 - 历史K线始终正常渲染，预测失败时显示 `el-alert` 持久提示
 - 预测K线用半透明虚线橙色蜡烛图渲染，与历史K线视觉区分
+- Pro 多因子评分在图表上方常驻展示，因子明细无需悬浮即可查看
 - "刷新"按钮传 `refresh: true` 强制绕过缓存重新预测
 - ECharts 5 candlestick 空数据使用 `'-'`（非 null，避免 getInitialData 崩溃）
 

@@ -201,7 +201,7 @@ Content-Type: application/json
       }
     ],
     "pro": null,
-    "provider": "kronos",
+    "provider": "local",
     "model_version": "kronos-base:<sha256-prefix>",
     "history_last_date": "2026-07-10",
     "stale": false,
@@ -387,18 +387,24 @@ Quantia/quantia/web/kpred/
 
 ### 6.3 配置建议
 
+本次已实现 AgentPit 与兼容本地接口的直接切换：
+
 ```dotenv
-# agentpit | kronos | shadow
+# agentpit | local
+QUANTIA_KPRED_PROVIDER=local
+
+# 与 AgentPit 请求/响应兼容的本地服务
+QUANTIA_KPRED_LOCAL_URL=http://127.0.0.1:18081/v1/open-api/kpred
+QUANTIA_KPRED_LOCAL_API_KEY=
+QUANTIA_KPRED_TIMEOUT=15
+```
+
+本地接口需接受 `POST {"code":"300308","days":5}`，并直接返回业务对象或 `{code:0,data:{...}}`。后续引入历史数据传输、shadow 和自动回退时，再扩展为完整的 `KpredService`：
+
+```dotenv
+# 后续规划，当前版本尚未实现
 QUANTIA_KPRED_PROVIDER=shadow
 
-# Kronos 本地服务
-QUANTIA_KRONOS_URL=http://127.0.0.1:18081
-QUANTIA_KRONOS_TIMEOUT=15
-QUANTIA_KRONOS_LOOKBACK=256
-QUANTIA_KRONOS_SAMPLE_COUNT=1
-QUANTIA_KRONOS_MAX_INFLIGHT=2
-
-# 回退策略
 QUANTIA_KPRED_FALLBACK_AGENTPIT=1
 QUANTIA_KPRED_REJECT_STALE_HISTORY=1
 QUANTIA_KPRED_CACHE_TTL=86400
