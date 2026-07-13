@@ -2,6 +2,8 @@
 import datetime
 from unittest import mock
 
+import pytest
+
 from quantia.core.fund import data_readiness
 from quantia.job import analysis_fund_score_job as score_job
 
@@ -21,6 +23,13 @@ def test_readiness_rejects_old_snapshot_and_89_percent():
         89, [100, 100, 100], 890, 1000)
     assert result['ready'] is False
     assert len(result['reasons']) == 3
+
+
+@pytest.mark.parametrize('value', ['nan', 'inf', '0', '-0.1', '1.1'])
+def test_completeness_threshold_rejects_unsafe_values(value):
+    with mock.patch.dict('os.environ', {'QUANTIA_FUND_COMPLETENESS_THRESHOLD': value}):
+        with pytest.raises(ValueError):
+            score_job._completeness_threshold()
 
 
 def test_check_rank_readiness_t_plus_one_uses_previous_trade_day():

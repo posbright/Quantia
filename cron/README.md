@@ -193,9 +193,9 @@ print('score', mdb.executeSqlFetch('SELECT COUNT(*) FROM cn_fund_rank_score'))"
 | `start_services_after_memory` | 恢复之前停止的服务 |
 
 > **任务汇总（`record_stage` + `print_stage_summary`）**：多任务脚本在末尾汇总各子任务结果，便于运维核对与按耗时编排。
-> 已接入：`run_workdayly`（8 阶段统一汇总）、`run_fetch`（数据获取 + 基金净值回填）、`run_analysis`（数据分析 + 基金评分）。
+> 已接入：`run_workdayly`（8 阶段统一汇总）、`run_fetch`（数据获取 + 基金净值回填 + 申购状态 + 指数估值）、`run_analysis`（数据分析 + 基金评分 + 精选 + 推送）。
 > 单任务脚本（`run_kline_cache` / `run_paper_trading`）的 `run_job` 行已含「✓/✗ + 耗时」，无需额外汇总。
-> `record_stage` 第三参数为 `warn` 时，失败记为 ⚠ 警告（非关键，不计入失败数）——用于基金回填/评分等非阻断子任务。
+> `record_stage` 第三参数为 `warn` 时，失败记为 ⚠ 警告（非关键，不计入失败数）——用于基金回填、申购状态、评分/精选/推送等非阻断子任务。
 
 ### 脚本模板
 
@@ -297,6 +297,7 @@ source /etc/cron/_common.sh
   |------|----------|------|
   | 数据获取 fetch_daily | `QUANTIA_FETCH_TIMEOUT` | 7200 |
   | 基金净值回填 | `QUANTIA_FUND_NAV_TIMEOUT` | 3600 |
+  | 基金申购状态 | `QUANTIA_FUND_PURCHASE_TIMEOUT` | 600 |
   | 指数估值采集（T3） | `QUANTIA_INDEX_VALUATION_TIMEOUT` | 1800 |
   | 公告采集 | `QUANTIA_ANNOUNCE_TIMEOUT` | 1800 |
   | 专利采集 | `QUANTIA_PATENT_CRAWL_TIMEOUT` | 3600 |
@@ -323,7 +324,18 @@ source /etc/cron/_common.sh
 
 - **退出码透传**：关键子脚本（`run_fetch`/`run_kline_cache`/`run_analysis`/`run_paper_trading`/
   `run_report_alert`）以**关键作业的退出码**退出，确保编排器 `FAILED/5` 计数与真实失败一致；
-  各脚本内附的非关键作业（基金净值/评分等）失败不改写主退出码。
+  各脚本内附的非关键作业（基金净值、申购状态、评分/精选/推送等）失败不改写主退出码。
+  基金子作业用退出码 `3` 表示“数据未就绪或零产出”：申购状态源返回空数据时保留旧表并在
+  `run_fetch` 中记 ⚠；评分门禁未通过时跳过精选与推送；精选零产出时同样返回 `3` 并跳过推送，
+  防止通知作业按 `MAX(date)` 误读并推送历史榜单。超时仍使用 `124`，未捕获异常使用普通非零码。
+
+### 基金 P0 链路状态（2026-07-13）
+
+- **P0-A 已完成**：Fetch 抓取当前申购/赎回/限额；源空时不清表；精选剔除暂停申购，保留限额与未知并快照；前端和推送展示状态。
+- **P0-B 自动链路已完成**：评分前检查快照规模与核心类型净值新鲜度，默认门槛 90%；门槛必须是 `(0, 1]` 内有限数，非法配置直接失败关闭；QDII/FOF 暂不进入首版硬门槛。
+- **链路门控已完成**：评分未就绪不生成精选；精选零产出不触发推送，禁止回退旧分或旧榜伪装当日结果。
+- **P0-B 运维增强待审核**：手工 `--date` + `--allow-stale` 历史回放入口与可选 06:30 补偿任务尚未实现，生产 cron 当前不依赖这两项。
+- **P1 及以后未开发**：Top50 净值补链、持仓季度历史保留、walk-forward go/no-go 与 timing 档位过滤仍待单独审核。
 
 ---
 
@@ -673,6 +685,7 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 | `QUANTIA_FUND_SETTLEMENT_HOUR` | 23 | 基金快照可信结算时间；到点且当日数据完整时才允许跳过重复抓取 |
 | `QUANTIA_FETCH_TIMEOUT` | 7200 | `run_fetch` 超时秒数（默认 2 小时） |
 | `QUANTIA_FUND_NAV_TIMEOUT` | 3600 | 基金净值历史回填超时秒数 |
+| `QUANTIA_FUND_PURCHASE_TIMEOUT` | 600 | 基金申购/赎回/限额当前状态抓取超时秒数；空源退出 3、保留旧表，在 `run_fetch` 中仅记警告 |
 | `QUANTIA_INDEX_VALUATION_TIMEOUT` | 1800 | T3 宽基指数估值采集超时秒数（`fetch_index_valuation_job`，附于 `run_fetch`；首次全历史铺底较慢可临时放大） |
 | `QUANTIA_ANNOUNCE_TIMEOUT` | 1800 | 公告采集超时秒数 |
 | `QUANTIA_PATENT_CRAWL_TIMEOUT` | 3600 | 专利采集超时秒数 |
@@ -680,7 +693,7 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 | `QUANTIA_KLINE_TIMEOUT` | 21600 | K线缓存增量更新超时秒数 |
 | `QUANTIA_ANALYSIS_TIMEOUT` | 14400 | 数据分析超时秒数 |
 | `QUANTIA_FUND_SCORE_TIMEOUT` | 1800 | 基金综合评分超时秒数 |
-| `QUANTIA_FUND_COMPLETENESS_THRESHOLD` | 0.90 | 基金快照规模与核心类型净值新鲜度硬门槛；未达标时宁缺勿旧 |
+| `QUANTIA_FUND_COMPLETENESS_THRESHOLD` | 0.90 | 基金快照规模与核心类型净值新鲜度硬门槛；必须是 `(0, 1]` 内有限数，未达标或配置非法时宁缺勿旧 |
 | `QUANTIA_FUND_PICK_TIMEOUT` | 600 | 基金每日精选榜超时秒数 |
 | `QUANTIA_FUND_PICK_PUSH_TIMEOUT` | 180 | 基金精选榜钉钉推送超时秒数（`notify_fund_pick_job`） |
 | `QUANTIA_PAPER_TIMEOUT` | 3600 | 模拟交易超时秒数 |

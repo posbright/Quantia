@@ -14,6 +14,7 @@
 """
 import datetime
 import logging
+import math
 import os.path
 import sys
 
@@ -60,6 +61,13 @@ _RANK_FACTOR_COLS = [
 ]
 
 
+def _completeness_threshold():
+    value = float(os.environ.get('QUANTIA_FUND_COMPLETENESS_THRESHOLD', '0.90'))
+    if not math.isfinite(value) or not 0 < value <= 1:
+        raise ValueError('QUANTIA_FUND_COMPLETENESS_THRESHOLD 必须是 (0, 1] 内的有限数')
+    return value
+
+
 def _load_rank_latest():
     """读 cn_fund_rank 最新快照日的截面因子。"""
     if not mdb.checkTableIsExist(_RANK_TABLE):
@@ -81,7 +89,7 @@ def _load_rank_latest():
 def check_rank_readiness(job_date=None):
     """只读 DB 评估基金排名截面；QDII/FOF 不进入首版硬门槛。"""
     job_date = job_date or datetime.date.today()
-    threshold = float(os.environ.get('QUANTIA_FUND_COMPLETENESS_THRESHOLD', '0.90'))
+    threshold = _completeness_threshold()
     same_day = os.environ.get('QUANTIA_ANALYSIS_SAME_DAY', '').strip().lower() in (
         '1', 'true', 'yes', 'on')
     snapshots = mdb.executeSqlFetch(
@@ -244,7 +252,7 @@ def run(score_date=None, job_date=None):
         logging.info('基金评分截面门控通过：%s', readiness)
         scored, eff_date = build_score_df(score_date)
         if scored is None or len(scored.index) == 0:
-            record_task_end(_JOB_NAME, 'score', job_date, start, success=True,
+            record_task_end(_JOB_NAME, 'score', job_date, start, success=False,
                             message='无可评分基金（cn_fund_rank 为空？）', rows_affected=0)
             logging.warning("analysis_fund_score_job: 无可评分基金")
             return 0

@@ -53,5 +53,10 @@ def run(fetched_at=None, job_date=None):
         raise
 
 
+def main():
+    if run() <= 0:
+        raise SystemExit(3)
+
+
 if __name__ == '__main__':
-    run()
+    main()

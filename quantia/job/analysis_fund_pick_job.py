@@ -332,7 +332,7 @@ def run(pick_date=None, job_date=None):
     try:
         df, score_as_of = build_pick_df(pick_date)
         if df is None or len(df.index) == 0:
-            record_task_end(_JOB_NAME, 'pick', job_date, start, success=True,
+            record_task_end(_JOB_NAME, 'pick', job_date, start, success=False,
                             message='无可入选基金（cn_fund_rank_score 为空？）',
                             rows_affected=0)
             logging.warning("analysis_fund_pick_job: 无可入选基金")
@@ -357,7 +357,8 @@ def main():
     for arg in sys.argv[1:]:
         if arg.startswith('--date='):
             pick_date = arg.split('=', 1)[1].strip()
-    run(pick_date=pick_date)
+    if run(pick_date=pick_date) <= 0:
+        raise SystemExit(3)
 
 
 if __name__ == '__main__':

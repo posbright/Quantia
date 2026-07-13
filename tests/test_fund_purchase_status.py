@@ -3,6 +3,7 @@ import datetime
 from unittest import mock
 
 import pandas as pd
+import pytest
 
 import quantia.core.tablestructure as tbs
 from quantia.core.fund import purchase_status
@@ -57,6 +58,13 @@ def test_fetch_job_empty_source_preserves_table():
     insert.assert_not_called()
 
 
+def test_fetch_job_main_exits_nonzero_when_source_is_empty():
+    with mock.patch.object(job, 'run', return_value=0):
+        with pytest.raises(SystemExit) as exc:
+            job.main()
+    assert exc.value.code == 3
+
+
 def test_pick_filter_removes_unavailable_and_keeps_limited_unknown():
     pick_date = datetime.date(2026, 7, 13)
     candidates = [
@@ -74,6 +82,17 @@ def test_pick_filter_removes_unavailable_and_keeps_limited_unknown():
     assert out[0]['purchase_availability'] == 'limited'
     assert out[0]['daily_limit'] == 100.0
     assert out[1]['purchase_availability'] == 'unknown'
+
+
+def test_pick_main_exits_nonzero_when_no_picks_generated():
+    with mock.patch.object(pick_job, 'run', return_value=0), \
+         mock.patch.object(pick_job.sys, 'argv', ['analysis_fund_pick_job.py']):
+        try:
+            pick_job.main()
+        except SystemExit as exc:
+            assert exc.code == 3
+        else:
+            raise AssertionError('zero-pick main must exit nonzero')
 
 
 def test_pick_schema_migration_adds_only_missing_columns():
