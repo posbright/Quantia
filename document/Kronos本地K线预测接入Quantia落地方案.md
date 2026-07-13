@@ -1,6 +1,6 @@
 # Kronos 本地 K 线预测接入 Quantia 落地方案
 
-> 文档状态：审查完成，待按阶段实施  
+> 文档状态：第一阶段本地链路已实现并验证，C1 仅完成实验性接入
 > 审查日期：2026-07-13  
 > 适用仓库：`Kronos/` 与 `Quantia/`  
 > 目标：使用本地 Kronos 替换 Quantia 当前 AgentPit K 线预测 API，同时保留方案 C（C1）作为可选的收益评分增强层。
@@ -34,6 +34,41 @@
 ---
 
 ## 2. 审查范围与实测证据
+
+### 2.0 2026-07-13 本地接入复验
+
+已新增 `Kronos/finetune_csv/local_kpred_service.py`，并完成 Quantia 到 Kronos 的真实 HTTP 黑盒验证：
+
+```powershell
+$env:KRONOS_C1_ENABLED='1'
+$env:KRONOS_DEVICE='cpu'
+C:\xapproject\Quantia\Kronos\.venv\Scripts\python.exe `
+  C:\xapproject\Quantia\Kronos\finetune_csv\local_kpred_service.py
+```
+
+Quantia 配置：
+
+```dotenv
+QUANTIA_KPRED_PROVIDER=local
+QUANTIA_KPRED_LOCAL_URL=http://127.0.0.1:18081/v1/open-api/kpred
+KRONOS_LOOKBACK=256
+QUANTIA_KPRED_MAX_DAYS=10
+KRONOS_REJECT_STALE_HISTORY=1
+```
+
+实测结果：
+
+| 验证项 | 结果 |
+| --- | --- |
+| 本地权重加载 | tokenizer/base 均从 `model/pretrained` 加载，6.349 秒 |
+| Quantia 公开接口 | `POST /quantia/api/kpred` 返回 `code=0`、`provider=local` |
+| `300308` 本地缓存 | 2359 行，发送最近 90 行，基准日 2026-07-01 |
+| 3 日 CPU 推理 | 376~483 ms，3/3 根 OHLC 合法 |
+| 新鲜度 | 缓存落后，正确返回 `stale=true` |
+| C1 默认质量门禁 | `test IC_by_date=-0.0961`，正确阻断并保持 `pro=null` |
+| C1 实验开关 | `300528` 成功返回 Pro，5 日延迟 674 ms，标记 `confidence=实验` |
+
+C1 实验验证使用 `KRONOS_C1_ALLOW_UNVALIDATED=1`，仅证明加载、特征匹配、LightGBM 推理和前端契约技术可行。该开关会绕过负 IC 和陈旧特征门禁，生产环境必须保持为 `0`。当前 `300528` 使用的特征日期为 2026-06-16，实验预测收益 2.648%，不构成有效性结论或投资依据。
 
 ### 2.1 已核对的关键实现
 
@@ -95,6 +130,43 @@ cd C:\xapproject\Quantia\Kronos
 | 测试方向命中率 | 43.68% |
 
 判定：**不允许上线**。该 bundle 只能验证训练、保存、加载、排名流程，不得用于 Quantia 的 `pro` 评分或选股决策。
+
+### 2.4 回看窗口与预测天数复审
+
+“模型能接受的最大值”和“预测效果最优值”是两个问题。Kronos-base/small 的训练上下文上限是 512，但这不表示回看 512 根最准确。仓库固定回归测试在同一数据、预测 30 步时给出的 MSE 为：
+
+| lookback | 30 步 OHLC MSE | 判读 |
+| ---: | ---: | --- |
+| 256 | 0.003741 | 该固定样本更好 |
+| 512 | 0.008979 | 比 256 差，说明更长不必然更准 |
+
+该测试只有 4 个固定抽样窗口，且原始回归使用 Kronos-small，不能直接证明全 A 股最优参数；它足以否定“回看越长越好”。最终最优值必须用 Quantia 股票池做 walk-forward，并分别统计 3、5、10、20 日误差和方向命中率。
+
+当前建议：
+
+| 使用场景 | lookback | pred days | sample_count | 说明 |
+| --- | ---: | ---: | ---: | --- |
+| 当前 C1 特征兼容 | 90 | 5 | 10 | 必须匹配现有 `kronos_features_report.json` 的训练口径 |
+| 生产页面默认 | 256 | 3 / 5 / 10 | 1 | 固定回归证据优于 512；实际延迟需继续监控 |
+| 低延迟候选 | 90～128 | 3 / 5 / 10 | 1 | 当前 CPU 3 日约 0.4 秒，需 shadow 确认精度损失 |
+| 中期趋势研究 | 256～400 | 20～30 | 5～10 | 只看趋势和分布，不宜当精确价格 |
+| 超过 30 个交易日 | 不推荐日线自回归 | >30 | - | 误差逐步累积；应改周线/月线或滚动重预测 |
+
+参数边界：
+
+| 参数 | 模型层边界 | 本地服务边界 | 默认值 |
+| --- | --- | --- | ---: |
+| 输入列 | OHLC 必须，volume/amount 可补，共 6 维 | 同模型 | 6 维 |
+| `max_context` | base/small 最大 512；mini 为 2048 | 当前 base 服务固定保护在 32～512 | 512 |
+| `lookback` | 1～`max_context` | 32～`max_context` | 90 |
+| `pred_len/days` | ≥1，模型代码无绝对硬上限 | 1～120，Quantia 默认只开放到 30 | 30 上限 |
+| `sample_count` | ≥1，无模型硬上限，显存和耗时近似线性增长 | 1～64 | 1 |
+| `temperature` | 必须 >0 | 0.05～5.0 | 1.0 |
+| `top_k` | 0 或不超过 token vocabulary | 0～1024 | 0 |
+| `top_p` | 0～1 | 0.01～1.0 | 0.9 |
+| `clip` | 正数 | 1.0～20.0 | 5.0 |
+
+推理核心使用滑动缓冲，因此生成步数可以超过 `512-lookback`；但越过训练分布后误差会继续累积。训练数据切窗仍必须保证原始样本至少含 `lookback + pred_len` 行。
 
 ---
 
@@ -284,8 +356,17 @@ POST /v1/kline/predict
 Quantia 应调用：
 
 ```python
-load_stock_data(code, start_date=..., end_date=..., cache_only=True)
+load_stock_data(code, end_date=datetime.date.today(), cache_only=True)
 ```
+
+当前实际数据优先级：
+
+1. `quantia/cache/hist/{code[:3]}/{code}qfq.gzip.pickle`：完整股票日线主来源。
+2. `quantia/cache/hist/{code}.gzip.pickle`：旧格式兼容来源。
+3. MySQL `cn_stock_spot`：只补请求日期的单日行情，不是完整历史 K 线库。
+4. `cache_only=True` 时禁止 EastMoney/AkShare 联网。
+
+因此当前已经支持“缓存读取多年历史 + DB 补最近单日”。如果未来要求只靠 DB 完成 90～512 根回看，必须新增正式的股票历史表（建议唯一键 `code, trade_date`）并在 `load_stock_data` 增加 DB 历史查询；现有 `fund_etf_hist_em` 是基金/ETF 表，不能作为股票历史来源。
 
 必须遵守：
 
@@ -305,6 +386,19 @@ load_stock_data(code, start_date=..., end_date=..., cache_only=True)
 2. 精确生成 `days` 个交易日。
 3. 不把周末、法定节假日、休市日交给 Kronos。
 4. 交易日历不可用时返回明确错误，不使用自然日静默兜底。
+
+日线预测必须只使用已经完整结算的 K 线。默认结算边界复用 `QUANTIA_SETTLEMENT_HOUR=18`：
+
+| 调用时点 | 历史最后允许日期 | 第一根预测日期 |
+| --- | --- | --- |
+| 交易日中午 | 上一交易日 | 今天 |
+| 交易日收盘后但未到结算时间 | 上一交易日 | 今天 |
+| 交易日 18:00 后且今日数据已入库 | 今天 | 下一交易日 |
+| 周末或节假日 | 最近交易日 | 下一交易日 |
+
+因此“今天中午调用从今天还是明天开始”的答案是：**从今天开始更合适**。今天的日 K 尚未完成，不能作为历史输入；模型使用昨天及之前的完整 K 线预测今天。若业务需要盘中实时预测，应另建分钟级模型，不应把中午快照伪装成完整日线。
+
+如果缓存最后日期早于上述“历史最后允许日期”，默认 `KRONOS_REJECT_STALE_HISTORY=1` 会拒绝请求。这避免从旧日期开始生成已经落在过去的“未来 K 线”。只有研究排障时才可临时关闭，生产不建议关闭。
 
 当前 [run_fusion.py](../../Kronos/finetune_csv/run_fusion.py) 的 `_future_timestamps()` 按历史中位步长外推，不满足生产日线要求。内部服务必须接受调用方给定的 `future_timestamps`。
 
@@ -397,9 +491,12 @@ QUANTIA_KPRED_PROVIDER=local
 QUANTIA_KPRED_LOCAL_URL=http://127.0.0.1:18081/v1/open-api/kpred
 QUANTIA_KPRED_LOCAL_API_KEY=
 QUANTIA_KPRED_TIMEOUT=15
+QUANTIA_KPRED_MAX_DAYS=10
+KRONOS_LOOKBACK=256
+KRONOS_REJECT_STALE_HISTORY=1
 ```
 
-本地接口需接受 `POST {"code":"300308","days":5}`，并直接返回业务对象或 `{code:0,data:{...}}`。后续引入历史数据传输、shadow 和自动回退时，再扩展为完整的 `KpredService`：
+local 模式下 Quantia 会自动发送最近 `KRONOS_LOOKBACK` 根本地 K 线和真实未来交易日。本地接口直接返回业务对象或 `{code:0,data:{...}}`。后续引入 shadow 和自动回退时，再扩展为完整的 `KpredService`：
 
 ```dotenv
 # 后续规划，当前版本尚未实现
@@ -410,20 +507,34 @@ QUANTIA_KPRED_REJECT_STALE_HISTORY=1
 QUANTIA_KPRED_CACHE_TTL=86400
 ```
 
-Kronos 服务：
+Kronos 服务现已支持 YAML：
 
-```dotenv
-KRONOS_DEVICE=cpu
-KRONOS_TOKENIZER_PATH=C:/xapproject/Quantia/Kronos/model/pretrained/Kronos-Tokenizer-base
-KRONOS_MODEL_PATH=C:/xapproject/Quantia/Kronos/model/pretrained/Kronos-base
-KRONOS_MAX_CONTEXT=512
-KRONOS_MAX_INFLIGHT=1
-KRONOS_ENABLE_REMOTE_MODEL_DOWNLOAD=0
-KRONOS_C1_ENABLED=0
-KRONOS_C1_BUNDLE_PATH=
+```powershell
+cd C:\xapproject\Quantia\Kronos
+.\.venv\Scripts\python.exe finetune_csv\local_kpred_service.py `
+  --config finetune_csv\configs\local_kpred.yaml
 ```
 
-路径和端口必须配置化，不能把开发机绝对路径写进业务代码。
+配置文件：[local_kpred.yaml](../../Kronos/finetune_csv/configs/local_kpred.yaml)。文件中的模型、C1 bundle 和特征表路径均为**相对 Kronos 仓库根目录**的路径，不依赖 `C:` 盘符；同一配置可用于 Windows 和 Linux。环境变量优先于 YAML，适合容器或 systemd 部署时覆盖；可配置 `service`、`model`、`inference` 和 `c1` 四组参数。关键对应关系：
+
+| YAML | 环境变量 |
+| --- | --- |
+| `model.max_context` | `KRONOS_MAX_CONTEXT` |
+| `model.device` | `KRONOS_DEVICE` |
+| `inference.lookback` | `KRONOS_LOOKBACK` |
+| `inference.max_pred_days` | `KRONOS_MAX_PRED_DAYS` |
+| `inference.sample_count` | `KRONOS_SAMPLE_COUNT` |
+| `inference.temperature/top_k/top_p/clip` | `KRONOS_TEMPERATURE/TOP_K/TOP_P/CLIP` |
+| `c1.*` | `KRONOS_C1_*` |
+
+Quantia 和 Kronos 是独立进程，必须保持以下两组值一致：
+
+```text
+Quantia KRONOS_LOOKBACK          = YAML inference.lookback
+Quantia QUANTIA_KPRED_MAX_DAYS  = YAML inference.max_pred_days
+```
+
+路径和端口均位于配置文件或环境变量中，不写死在业务处理逻辑里。
 
 ---
 
@@ -667,23 +778,25 @@ Quantia：
 
 ### Kronos
 
-- [ ] 新建独立推理服务和 schema。
-- [ ] 启动时加载本地权重，禁止生产自动下载。
-- [ ] 接受调用方提供的未来交易时间戳。
-- [ ] 增加 OHLC/有限值/非负校验。
+- [x] 新建独立推理服务和兼容 schema。
+- [x] 启动时优先加载本地权重。
+- [x] 接受调用方提供的未来交易时间戳。
+- [x] 增加 OHLC/有限值/非负校验。
 - [ ] 增加有界并发、超时、健康检查和指标。
-- [ ] 增加服务契约与输出清洗测试。
+- [x] 增加健康检查、串行模型锁和输出清洗 smoke。
+- [ ] 增加正式服务契约测试和并发指标。
 - [ ] 优化或拆分耗时过长的 `run_fusion.py smoke`。
 
 ### Quantia 后端
 
-- [ ] 抽象 kpred provider，保留 AgentPit 实现。
-- [ ] 使用 `load_stock_data(..., cache_only=True)` 读取历史。
-- [ ] 接入真实交易日历和行情新鲜度检查。
+- [x] 抽象 kpred provider，保留 AgentPit 实现。
+- [x] 使用 `load_stock_data(..., cache_only=True)` 读取历史。
+- [x] 接入真实交易日历并返回行情新鲜度标记。
 - [ ] 实现 Kronos provider、shadow 模式、回退和 singleflight。
 - [ ] 升级缓存键并增加模型版本。
-- [ ] 增加 handler/service 单元测试。
-- [ ] 更新 `.env.example` 和 [API_REFERENCE.md](API_REFERENCE.md)。
+- [x] 实现 local Kronos provider；shadow、自动回退和 singleflight 待补。
+- [x] 增加 handler 单元测试。
+- [x] 更新 `.env.example` 和本落地文档。
 
 ### Quantia 前端
 

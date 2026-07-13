@@ -4,6 +4,7 @@
 
 import json
 import os
+import datetime
 from unittest import mock
 
 from tornado.testing import AsyncHTTPTestCase
@@ -86,6 +87,9 @@ class TestKpredHandler(AsyncHTTPTestCase):
             'QUANTIA_AGENTPIT_API_KEY': '',
         }
         with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch.object(kh, '_prepare_local_payload', return_value={
+                 'code': '300308', 'days': 3, 'history': [], 'future_timestamps': [],
+             }), \
              mock.patch.object(kh, '_do_provider_request', return_value=_prediction_payload()) as request:
             response = self._post({'code': '300308', 'days': 3})
 
@@ -94,10 +98,96 @@ class TestKpredHandler(AsyncHTTPTestCase):
         self.assertEqual(body['data']['provider'], 'local')
         self.assertEqual(request.call_args.args[0], env['QUANTIA_KPRED_LOCAL_URL'])
         self.assertEqual(request.call_args.args[1], '')
+        self.assertEqual(request.call_args.args[5]['code'], '300308')
+
+    def test_prepare_local_payload_reads_cache_without_network(self):
+        import pandas as pd
+
+        frame = pd.DataFrame({
+            'date': pd.bdate_range('2026-01-01', periods=90),
+            'open': 10.0,
+            'high': 10.3,
+            'low': 9.8,
+            'close': 10.1,
+            'volume': 1000,
+            'amount': 10100,
+        })
+        now = datetime.datetime(2026, 5, 7, 12, 0)
+        cutoff = frame['date'].iloc[-1].date()
+        with mock.patch.dict(os.environ, {'KRONOS_LOOKBACK': '90'}, clear=False), \
+                mock.patch('quantia.core.backtest.data_feed.load_stock_data',
+                           return_value=frame) as load, \
+                mock.patch.object(kh, '_completed_daily_cutoff', return_value=cutoff), \
+                mock.patch('quantia.lib.trade_time.get_next_trade_date',
+                           side_effect=lambda value: value + datetime.timedelta(days=1)):
+            payload = kh._prepare_local_payload('300308', 3, now=now)
+
+        load.assert_called_once_with(
+            '300308', end_date=cutoff, cache_only=True
+        )
+        self.assertEqual(len(payload['history']), 90)
+        self.assertEqual(len(payload['future_timestamps']), 3)
+        self.assertEqual(
+            payload['prediction_start_date'],
+            (cutoff + datetime.timedelta(days=1)).isoformat(),
+        )
+
+    def test_noon_prediction_starts_today_from_previous_complete_bar(self):
+        now = datetime.datetime(2026, 7, 13, 12, 0)
+        with mock.patch('quantia.lib.trade_time.is_trade_date', return_value=True), \
+             mock.patch('quantia.lib.trade_time.is_post_settlement', return_value=False), \
+             mock.patch('quantia.lib.trade_time.get_previous_trade_date',
+                        return_value=datetime.date(2026, 7, 10)):
+            cutoff = kh._completed_daily_cutoff(now)
+
+        self.assertEqual(cutoff, datetime.date(2026, 7, 10))
+
+    def test_post_settlement_prediction_uses_today_as_complete_bar(self):
+        now = datetime.datetime(2026, 7, 13, 18, 30)
+        with mock.patch('quantia.lib.trade_time.is_trade_date', return_value=True), \
+             mock.patch('quantia.lib.trade_time.is_post_settlement', return_value=True):
+            cutoff = kh._completed_daily_cutoff(now)
+
+        self.assertEqual(cutoff, datetime.date(2026, 7, 13))
+
+    def test_stale_history_is_rejected_by_default(self):
+        import pandas as pd
+
+        frame = pd.DataFrame({
+            'date': pd.bdate_range('2026-01-01', periods=90),
+            'open': 10.0, 'high': 10.3, 'low': 9.8, 'close': 10.1,
+            'volume': 1000, 'amount': 10100,
+        })
+        with mock.patch.dict(os.environ, {'KRONOS_LOOKBACK': '90'}, clear=False), \
+                mock.patch('quantia.core.backtest.data_feed.load_stock_data',
+                           return_value=frame), \
+                mock.patch.object(kh, '_completed_daily_cutoff',
+                                  return_value=datetime.date(2026, 7, 10)):
+            with self.assertRaisesRegex(ValueError, '本地历史已过期'):
+                kh._prepare_local_payload('300308', 3)
+
+    def test_max_prediction_days_is_configurable(self):
+        env = {
+            'QUANTIA_KPRED_PROVIDER': 'local',
+            'QUANTIA_KPRED_MAX_DAYS': '60',
+        }
+        local_payload = {
+            'code': '300308', 'days': 60, 'history': [], 'future_timestamps': [],
+        }
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch.object(kh, '_prepare_local_payload', return_value=local_payload) as prepare, \
+             mock.patch.object(kh, '_do_provider_request', return_value=_prediction_payload()):
+            response = self._post({'code': '300308', 'days': 99})
+
+        self.assertEqual(response.code, 200)
+        prepare.assert_called_once_with('300308', 60)
 
     def test_invalid_provider_response_returns_502_and_is_not_cached(self):
         env = {'QUANTIA_KPRED_PROVIDER': 'local'}
         with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch.object(kh, '_prepare_local_payload', return_value={
+                 'code': '300308', 'days': 5, 'history': [], 'future_timestamps': [],
+             }), \
              mock.patch.object(kh, '_do_provider_request', return_value={'code': 0, 'data': {}}):
             response = self._post({'code': '300308', 'days': 5})
 

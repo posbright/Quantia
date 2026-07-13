@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import time
+import datetime
 from concurrent.futures import ThreadPoolExecutor
 import tornado.web
 from tornado.ioloop import IOLoop
@@ -108,15 +109,16 @@ def _get_timeout(request_timeout=None) -> int:
     return _DEFAULT_TIMEOUT
 
 
-def _do_provider_request(api_url: str, api_key: str, code: str, days: int, timeout: int) -> dict:
+def _do_provider_request(api_url: str, api_key: str, code: str, days: int, timeout: int,
+                         payload: dict | None = None) -> dict:
     """同步执行供应商 HTTP 请求（在线程池中调用，不阻塞 IO 循环）。"""
-    payload = json.dumps({'code': code, 'days': days}).encode('utf-8')
+    request_body = json.dumps(payload or {'code': code, 'days': days}).encode('utf-8')
     headers = {'Content-Type': 'application/json'}
     if api_key:
         headers['Authorization'] = f'Bearer {api_key}'
     req = urllib.request.Request(
         api_url,
-        data=payload,
+        data=request_body,
         headers=headers,
         method='POST',
     )
@@ -131,6 +133,81 @@ def _do_provider_request(api_url: str, api_key: str, code: str, days: int, timeo
 def _do_upstream_request(api_url: str, api_key: str, code: str, days: int, timeout: int) -> dict:
     """兼容旧调用名。"""
     return _do_provider_request(api_url, api_key, code, days, timeout)
+
+
+def _completed_daily_cutoff(now: datetime.datetime | None = None) -> datetime.date:
+    """返回当前时点可安全使用的最后一个完整日线交易日。"""
+    from quantia.lib.trade_time import (
+        get_previous_trade_date,
+        is_post_settlement,
+        is_trade_date,
+    )
+
+    now = now or datetime.datetime.now()
+    today = now.date()
+    if not is_trade_date(today):
+        return get_previous_trade_date(today)
+    if not is_post_settlement(today, _now=now):
+        return get_previous_trade_date(today)
+    return today
+
+
+def _prepare_local_payload(code: str, days: int,
+                           now: datetime.datetime | None = None) -> dict:
+    """从 Quantia 本地缓存构造 Kronos 请求，不触发外部行情请求。"""
+    import pandas as pd
+    from quantia.core.backtest.data_feed import load_stock_data
+    from quantia.lib.trade_time import get_next_trade_date
+
+    cutoff_date = _completed_daily_cutoff(now)
+    history = load_stock_data(code, end_date=cutoff_date, cache_only=True)
+    if history is None or len(history) == 0:
+        raise ValueError(f'本地无 {code} K 线缓存')
+    history = history.sort_values('date').drop_duplicates('date', keep='last')
+    lookback = max(32, min(512, int(os.environ.get('KRONOS_LOOKBACK', '256'))))
+    if len(history) < lookback:
+        raise ValueError(f'{code} 本地历史不足：需要 {lookback} 根，实际 {len(history)} 根')
+    history = history.tail(lookback).copy()
+    if 'amount' not in history.columns:
+        history['amount'] = history['volume'] * history[['open', 'high', 'low', 'close']].mean(axis=1)
+
+    last_date = pd.Timestamp(history['date'].iloc[-1]).date()
+    history_stale = last_date < cutoff_date
+    reject_stale = (os.environ.get('KRONOS_REJECT_STALE_HISTORY', '1').strip().lower()
+                    in ('1', 'true', 'yes', 'on'))
+    if history_stale and reject_stale:
+        raise ValueError(
+            f'{code} 本地历史已过期：最后完整日线 {last_date}，应至少更新到 {cutoff_date}'
+        )
+    future_dates = []
+    cursor = last_date
+    for _ in range(days):
+        next_date = get_next_trade_date(cursor)
+        if next_date <= cursor:
+            raise ValueError(f'交易日历无法生成 {cursor} 之后的交易日')
+        future_dates.append(next_date.isoformat())
+        cursor = next_date
+
+    rows = []
+    for _, row in history.iterrows():
+        rows.append({
+            'date': pd.Timestamp(row['date']).date().isoformat(),
+            'open': float(row['open']),
+            'high': float(row['high']),
+            'low': float(row['low']),
+            'close': float(row['close']),
+            'volume': float(row.get('volume', 0) or 0),
+            'amount': float(row.get('amount', 0) or 0),
+        })
+    return {
+        'code': code,
+        'days': days,
+        'history': rows,
+        'future_timestamps': future_dates,
+        'history_cutoff_date': cutoff_date.isoformat(),
+        'prediction_start_date': future_dates[0],
+        'history_stale': history_stale,
+    }
 
 
 def _normalize_provider_response(response: dict, provider: str) -> dict:
@@ -203,10 +280,11 @@ class GetKpredHandler(tornado.web.RequestHandler):
                                   ensure_ascii=False))
             return
 
+        max_days = max(1, min(120, int(os.environ.get('QUANTIA_KPRED_MAX_DAYS', '10'))))
         days = body.get('days', 5)
         try:
             days = int(days)
-            days = max(1, min(30, days))
+            days = max(1, min(max_days, days))
         except (TypeError, ValueError):
             days = 5
 
@@ -226,8 +304,14 @@ class GetKpredHandler(tornado.web.RequestHandler):
         # 在线程池中执行同步 HTTP 请求，不阻塞 Tornado IO 循环
         loop = IOLoop.current()
         try:
+            provider_payload = None
+            if provider == 'local':
+                provider_payload = await loop.run_in_executor(
+                    _executor, _prepare_local_payload, code, days
+                )
             response = await loop.run_in_executor(
-                _executor, _do_provider_request, api_url, api_key, code, days, timeout
+                _executor, _do_provider_request, api_url, api_key, code, days, timeout,
+                provider_payload
             )
             data = _normalize_provider_response(response, provider)
         except urllib.error.HTTPError as e:
