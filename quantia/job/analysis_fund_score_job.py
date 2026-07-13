@@ -11,6 +11,7 @@
 
 用法：
     python analysis_fund_score_job.py            # 全量截面打分
+    python analysis_fund_score_job.py --date=2026-07-10 --allow-stale
 """
 import datetime
 import logging
@@ -68,18 +69,37 @@ def _completeness_threshold():
     return value
 
 
-def _load_rank_latest():
-    """读 cn_fund_rank 最新快照日的截面因子。"""
+def _to_date(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    try:
+        return datetime.date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_rank_snapshot(score_date=None):
+    """读指定日期或最新 cn_fund_rank 截面，禁止历史日期套用最新数据。"""
     if not mdb.checkTableIsExist(_RANK_TABLE):
         return pd.DataFrame(columns=_RANK_FACTOR_COLS), None
     cols = ', '.join(f'`{c}`' for c in _RANK_FACTOR_COLS)
-    sql = (
-        f"SELECT {cols} FROM `{_RANK_TABLE}` "
-        f"WHERE `date` = (SELECT MAX(`date`) FROM `{_RANK_TABLE}`)"
-    )
-    df = pd.read_sql(sql, con=mdb.engine())
-    date_rows = mdb.executeSqlFetch(f"SELECT MAX(`date`) FROM `{_RANK_TABLE}`")
-    snap = date_rows[0][0] if date_rows and date_rows[0] else None
+    if score_date is None:
+        sql = (
+            f"SELECT {cols} FROM `{_RANK_TABLE}` "
+            f"WHERE `date` = (SELECT MAX(`date`) FROM `{_RANK_TABLE}`)"
+        )
+        params = None
+        date_rows = mdb.executeSqlFetch(f"SELECT MAX(`date`) FROM `{_RANK_TABLE}`")
+        snap = date_rows[0][0] if date_rows and date_rows[0] else None
+    else:
+        snap = _to_date(score_date)
+        sql = f"SELECT {cols} FROM `{_RANK_TABLE}` WHERE `date` = %s"
+        params = (snap,)
+    df = pd.read_sql(sql, con=mdb.engine(), params=params)
     if df.empty:
         return df, snap
     df['code'] = df['code'].astype(str)
@@ -127,22 +147,29 @@ def check_rank_readiness(job_date=None):
     return result
 
 
-def _load_scale_map():
+def _load_scale_map(as_of=None):
     """读 cn_fund_profile 的 (code → scale_yi)。缺表/缺值由评分填中性。"""
     if not mdb.checkTableIsExist(_PROFILE_TABLE):
         return {}
-    rows = mdb.executeSqlFetch(
-        f"SELECT `code`, `scale_yi` FROM `{_PROFILE_TABLE}`")
+    sql = f"SELECT `code`, `scale_yi` FROM `{_PROFILE_TABLE}`"
+    params = None
+    if as_of is not None:
+        sql += " WHERE `update_date` <= %s"
+        params = (as_of,)
+    rows = mdb.executeSqlFetch(sql, params) if params else mdb.executeSqlFetch(sql)
     return {str(r[0]): r[1] for r in rows if r and r[0] is not None}
 
 
-def _load_main_industry_map():
+def _load_main_industry_map(as_of=None):
     """读 cn_fund_holding 加权得 (code → 主行业)。"""
     if not mdb.checkTableIsExist(_HOLDING_TABLE):
         return {}
-    df = pd.read_sql(
-        f"SELECT `code`, `industry`, `hold_ratio` FROM `{_HOLDING_TABLE}`",
-        con=mdb.engine())
+    sql = f"SELECT `code`, `industry`, `hold_ratio` FROM `{_HOLDING_TABLE}`"
+    params = None
+    if as_of is not None:
+        sql += " WHERE `update_date` <= %s"
+        params = (as_of,)
+    df = pd.read_sql(sql, con=mdb.engine(), params=params)
     if df.empty:
         return {}
     df['code'] = df['code'].astype(str)
@@ -157,16 +184,20 @@ def _nav_codes():
     return [str(r[0]) for r in rows if r and r[0] is not None]
 
 
-def _load_nav_series(code):
+def _load_nav_series(code, as_of=None):
     """单基金 (nav_date, acc_nav) 升序序列。"""
-    df = pd.read_sql(
-        f"SELECT `nav_date`, `acc_nav` FROM `{_NAV_TABLE}` "
-        f"WHERE `code` = %s ORDER BY `nav_date` ASC",
-        con=mdb.engine(), params=(str(code),))
+    sql = (f"SELECT `nav_date`, `acc_nav` FROM `{_NAV_TABLE}` "
+           f"WHERE `code` = %s")
+    params = [str(code)]
+    if as_of is not None:
+        sql += " AND `nav_date` <= %s"
+        params.append(as_of)
+    sql += " ORDER BY `nav_date` ASC"
+    df = pd.read_sql(sql, con=mdb.engine(), params=tuple(params))
     return df
 
 
-def _build_risk_metrics():
+def _build_risk_metrics(as_of=None):
     """逐基金（仅已回填净值历史者）算 sharpe/calmar/max_drawdown/rate_5y。
 
     逐 code 处理避免一次物化全市场净值序列（内存效率）。返回 DataFrame。
@@ -175,7 +206,7 @@ def _build_risk_metrics():
     recs = []
     for code in codes:
         try:
-            df = _load_nav_series(code)
+            df = _load_nav_series(code, as_of)
             if df is None or df.empty:
                 continue
             acc = df['acc_nav']
@@ -196,16 +227,16 @@ def _build_risk_metrics():
 
 def build_score_df(score_date=None):
     """装配因子 + 截面打分，返回对齐 cn_fund_rank_score 的 DataFrame（纯编排，便于单测 mock DB）。"""
-    rank_df, snap = _load_rank_latest()
+    rank_df, snap = _load_rank_snapshot(score_date)
     if rank_df.empty:
         return pd.DataFrame(columns=_SCORE_COLS), snap
-    score_date = score_date or snap or datetime.date.today()
+    score_date = _to_date(score_date or snap) or datetime.date.today()
 
     rank_df = rank_df.copy()
-    rank_df['scale_yi'] = rank_df['code'].map(_load_scale_map())
-    rank_df['main_industry'] = rank_df['code'].map(_load_main_industry_map())
+    rank_df['scale_yi'] = rank_df['code'].map(_load_scale_map(score_date))
+    rank_df['main_industry'] = rank_df['code'].map(_load_main_industry_map(score_date))
 
-    risk_df = _build_risk_metrics()
+    risk_df = _build_risk_metrics(score_date)
     if not risk_df.empty:
         rank_df = rank_df.merge(risk_df, on='code', how='left')
     else:
@@ -238,18 +269,23 @@ def _save_scores(scored, score_date):
     return len(scored.index)
 
 
-def run(score_date=None, job_date=None):
+def run(score_date=None, job_date=None, allow_stale=False):
     job_date = job_date or datetime.date.today()
     start = record_task_start(_JOB_NAME, 'score', job_date)
     try:
-        readiness = check_rank_readiness(job_date)
-        if not readiness['ready']:
-            message = '基金评分数据未就绪：' + '；'.join(readiness['reasons'])
-            record_task_end(_JOB_NAME, 'score', job_date, start, success=False,
-                            message=message, rows_affected=0)
-            logging.warning('%s；metrics=%s', message, readiness)
-            return 0
-        logging.info('基金评分截面门控通过：%s', readiness)
+        if allow_stale:
+            if score_date is None:
+                raise ValueError('allow_stale 仅允许用于显式历史日期回放')
+            logging.warning('基金评分历史回放已显式跳过就绪门禁：date=%s', score_date)
+        else:
+            readiness = check_rank_readiness(job_date)
+            if not readiness['ready']:
+                message = '基金评分数据未就绪：' + '；'.join(readiness['reasons'])
+                record_task_end(_JOB_NAME, 'score', job_date, start, success=False,
+                                message=message, rows_affected=0)
+                logging.warning('%s；metrics=%s', message, readiness)
+                return 0
+            logging.info('基金评分截面门控通过：%s', readiness)
         scored, eff_date = build_score_df(score_date)
         if scored is None or len(scored.index) == 0:
             record_task_end(_JOB_NAME, 'score', job_date, start, success=False,
@@ -269,7 +305,20 @@ def run(score_date=None, job_date=None):
 
 
 def main():
-    if run() <= 0:
+    score_date = None
+    allow_stale = False
+    for arg in sys.argv[1:]:
+        if arg.startswith('--date='):
+            score_date = _to_date(arg.split('=', 1)[1].strip())
+            if score_date is None:
+                raise SystemExit('无效 --date，必须使用 YYYY-MM-DD')
+        elif arg == '--allow-stale':
+            allow_stale = True
+        else:
+            raise SystemExit(f'未知参数：{arg}')
+    if (score_date is None) != (not allow_stale):
+        raise SystemExit('历史回放必须同时提供 --date=YYYY-MM-DD 和 --allow-stale')
+    if run(score_date=score_date, allow_stale=allow_stale) <= 0:
         raise SystemExit(3)
 
 

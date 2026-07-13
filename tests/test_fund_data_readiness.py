@@ -2,6 +2,7 @@
 import datetime
 from unittest import mock
 
+import pandas as pd
 import pytest
 
 from quantia.core.fund import data_readiness
@@ -105,3 +106,58 @@ def test_score_run_stops_before_build_when_not_ready():
          mock.patch.object(score_job, 'record_task_end'):
         assert score_job.run(job_date=datetime.date(2026, 7, 13)) == 0
     build.assert_not_called()
+
+
+def test_load_rank_snapshot_uses_exact_replay_date():
+    replay_date = datetime.date(2026, 7, 10)
+    frame = pd.DataFrame({'code': ['000001']})
+    with mock.patch.object(score_job.mdb, 'checkTableIsExist', return_value=True), \
+         mock.patch.object(score_job.mdb, 'engine', return_value=object()), \
+         mock.patch.object(score_job.pd, 'read_sql', return_value=frame) as read_sql, \
+         mock.patch.object(score_job.mdb, 'executeSqlFetch') as fetch:
+        result, snapshot = score_job._load_rank_snapshot(replay_date)
+    assert snapshot == replay_date
+    assert result['code'].tolist() == ['000001']
+    assert read_sql.call_args.kwargs['params'] == (replay_date,)
+    assert 'WHERE `date` = %s' in read_sql.call_args.args[0]
+    fetch.assert_not_called()
+
+
+def test_score_run_allow_stale_skips_gate_but_uses_requested_date():
+    replay_date = datetime.date(2026, 7, 10)
+    scored = pd.DataFrame({'code': ['000001']})
+    with mock.patch.object(score_job, 'check_rank_readiness') as readiness, \
+         mock.patch.object(score_job, 'build_score_df', return_value=(scored, replay_date)) as build, \
+         mock.patch.object(score_job, '_save_scores', return_value=1), \
+         mock.patch.object(score_job, 'record_task_start', return_value=0.0), \
+         mock.patch.object(score_job, 'record_task_end'):
+        assert score_job.run(score_date=replay_date, allow_stale=True) == 1
+    readiness.assert_not_called()
+    build.assert_called_once_with(replay_date)
+
+
+def test_historical_auxiliary_queries_are_bounded_by_score_date():
+    replay_date = datetime.date(2026, 7, 10)
+    with mock.patch.object(score_job.mdb, 'checkTableIsExist', return_value=True), \
+         mock.patch.object(score_job.mdb, 'executeSqlFetch', return_value=[]) as fetch:
+        score_job._load_scale_map(replay_date)
+    assert '`update_date` <= %s' in fetch.call_args.args[0]
+    assert fetch.call_args.args[1] == (replay_date,)
+
+    with mock.patch.object(score_job.mdb, 'engine', return_value=object()), \
+         mock.patch.object(score_job.pd, 'read_sql', return_value=pd.DataFrame()) as read_sql:
+        score_job._load_nav_series('000001', replay_date)
+    assert '`nav_date` <= %s' in read_sql.call_args.args[0]
+    assert read_sql.call_args.kwargs['params'] == ('000001', replay_date)
+
+
+@pytest.mark.parametrize('argv', [
+    ['analysis_fund_score_job.py', '--date=2026-07-10'],
+    ['analysis_fund_score_job.py', '--allow-stale'],
+])
+def test_score_main_requires_date_and_allow_stale_together(argv):
+    with mock.patch.object(score_job.sys, 'argv', argv), \
+         mock.patch.object(score_job, 'run') as run:
+        with pytest.raises(SystemExit):
+            score_job.main()
+    run.assert_not_called()

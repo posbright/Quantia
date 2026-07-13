@@ -1,0 +1,18 @@
+#!/bin/bash
+# P0-B 基金评分/精选/通知补偿：建议 T+1 06:30 独立调度
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+source "$PROJECT_ROOT/cron/_common.sh"
+
+init_env
+LOG_FILE=$LOG_DIR/workdayly.log
+
+check_trade_day_t1 "基金精选补偿"
+
+run_job "基金精选补偿 (analysis_fund_pick_compensation_job)" \
+    "quantia/job/analysis_fund_pick_compensation_job.py" \
+    "${QUANTIA_FUND_COMPENSATION_TIMEOUT:-2700}"
+RC=$?
+record_stage "基金精选补偿 (analysis_fund_pick_compensation_job)" $RC warn
+print_stage_summary
+exit $RC

@@ -41,4 +41,5 @@ def _is_stale(fetched_at, as_of, max_age_days):
     current = as_of or datetime.date.today()
     if isinstance(current, datetime.datetime):
         current = current.date()
-    return (current - fetched_date).days > max_age_days
+    age_days = (current - fetched_date).days
+    return age_days < 0 or age_days > max_age_days

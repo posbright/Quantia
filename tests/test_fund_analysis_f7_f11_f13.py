@@ -4,6 +4,7 @@
 
 禁真实网络/DB：纯计算直接断言；handler 用 mock.patch 打 mdb + pandas.read_sql。
 """
+import datetime
 import json
 import os
 import sys
@@ -376,7 +377,7 @@ class TestBuildScoreDf:
             {'code': '001001', 'sharpe': 0.9, 'calmar': 0.5,
              'max_drawdown': -0.25, 'rate_5y': 60.0},
         ])
-        with mock.patch.object(job, '_load_rank_latest', return_value=(rank_df, snap)), \
+        with mock.patch.object(job, '_load_rank_snapshot', return_value=(rank_df, snap)), \
              mock.patch.object(job, '_load_scale_map',
                                return_value={'001000': 5.0, '001001': 50.0}), \
              mock.patch.object(job, '_load_main_industry_map',
@@ -385,7 +386,7 @@ class TestBuildScoreDf:
             scored, eff = job.build_score_df()
         # 列序与表结构严格一致
         assert list(scored.columns) == job._SCORE_COLS
-        assert eff == snap
+        assert eff == datetime.date(2026, 5, 29)
         assert len(scored.index) == 4
         # 有夏普的基金 sharpe 落库
         row = scored[scored['code'] == '001000'].iloc[0]
@@ -401,7 +402,7 @@ class TestBuildScoreDf:
         assert not _np.isinf(numeric.to_numpy(dtype='float64', na_value=_np.nan)).any()
 
     def test_empty_rank_returns_schema(self):
-        with mock.patch.object(job, '_load_rank_latest',
+        with mock.patch.object(job, '_load_rank_snapshot',
                                return_value=(pd.DataFrame(), None)):
             scored, eff = job.build_score_df()
         assert list(scored.columns) == job._SCORE_COLS
@@ -409,7 +410,7 @@ class TestBuildScoreDf:
 
     def test_no_risk_metrics_falls_back_to_b1(self):
         rank_df, snap = self._rank_df()
-        with mock.patch.object(job, '_load_rank_latest', return_value=(rank_df, snap)), \
+        with mock.patch.object(job, '_load_rank_snapshot', return_value=(rank_df, snap)), \
              mock.patch.object(job, '_load_scale_map', return_value={}), \
              mock.patch.object(job, '_load_main_industry_map', return_value={}), \
              mock.patch.object(job, '_build_risk_metrics',

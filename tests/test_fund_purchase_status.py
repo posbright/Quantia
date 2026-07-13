@@ -20,6 +20,7 @@ def test_classify_purchase_status_and_staleness():
     assert purchase_status.classify('暂停申购', fresh, as_of) == 'unavailable'
     assert purchase_status.classify('新状态', fresh, as_of) == 'unknown'
     assert purchase_status.classify('开放申购', datetime.date(2026, 7, 10), as_of) == 'unknown'
+    assert purchase_status.classify('开放申购', datetime.date(2026, 7, 14), as_of) == 'unknown'
     assert purchase_status.classify('开放申购', None, as_of) == 'unknown'
 
 
