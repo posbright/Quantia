@@ -19,6 +19,7 @@ import pandas as pd
 import numpy as np
 
 from quantia.lib.log_config import warn_throttled
+import quantia.lib.envconfig as _cfg
 
 __author__ = 'Quantia'
 __date__ = '2026/03/16'
@@ -26,6 +27,14 @@ __date__ = '2026/03/16'
 # 缓存目录
 _CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                           'cache', 'hist')
+
+# 缓存尾段 DB 续接的最大回补天数：cn_stock_spot 主键为 (date, code)，
+# `code=? AND date BETWEEN ? AND ?` 这类按股查询无法走索引、代价近似全表扫描
+# （随交易日增长，表会持续变大）。全市场批量回测/组合回测会对成千上万只股票
+# 调用 load_stock_data，若不设上限，长期停牌/退市/缓存从未建立的股票每次都会
+# 触发一次全表扫描，拖慢批量任务。正常场景（周末、节假日、cron 偶发失败）
+# 差距通常在个位数天以内，默认 30 天足够覆盖，同时避免为异常缺口反复扫表。
+_DB_TAIL_MERGE_MAX_DAYS = max(_cfg.get_int('QUANTIA_DB_TAIL_MERGE_MAX_DAYS', 30), 0)
 
 _KNOWN_INDEX_CODES = {
     '000001', '000002', '000003', '000016', '000300', '000688',
@@ -263,6 +272,44 @@ def _batch_load_today_from_db(codes, date_str):
         return {}
 
 
+def _merge_db_rows(df, db_rows):
+    """把 DB 行情行合并进现有 DataFrame（按 date 去重，DB 数据优先）。
+
+    若 db_rows 带有 df 缺失的列（如 amount），合并后该列会在 df 原有行上产生
+    NaN；下游（如 kpredHandler._prepare_local_payload）用 `row.get('amount', 0)
+    or 0` 取值时，NaN 是真值不会被 `or 0` 兜底，会把 NaN 传给 Kronos。这里用
+    volume × OHLC 均价兜底填充，与 kpredHandler 缺列时的兜底公式保持一致。
+    """
+    merged = pd.concat([df, db_rows], ignore_index=True).drop_duplicates(
+        subset=['date'], keep='last').sort_values('date').reset_index(drop=True)
+    if 'amount' in merged.columns:
+        missing = merged['amount'].isna()
+        if missing.any():
+            fallback = merged['volume'] * merged[['open', 'high', 'low', 'close']].mean(axis=1)
+            merged.loc[missing, 'amount'] = fallback[missing]
+    return merged
+
+
+def _db_tail_is_price_continuous(df, db_rows):
+    """校验 DB 尾段的昨收是否与缓存/前一 DB 收盘连续。
+
+    文件缓存为 qfq，cn_stock_spot 为原始快照。除权除息后首个 DB 行的
+    pre_close_price 会使用除权参考价，与旧缓存末根收盘不再同尺度；此时不能直接
+    拼接，否则会给模型制造虚假跳空。2 分绝对容差兼容低价股报价精度，0.1% 相对
+    容差兼容浮点/四舍五入差异。
+    """
+    if df is None or len(df) == 0 or db_rows is None or len(db_rows) == 0:
+        return True
+    expected_close = float(df.sort_values('date').iloc[-1]['close'])
+    for _, row in db_rows.sort_values('date').iterrows():
+        pre_close = row.get('pre_close')
+        if pd.notna(pre_close) and float(pre_close) > 0:
+            if not np.isclose(float(pre_close), expected_close, rtol=0.001, atol=0.02):
+                return False
+        expected_close = float(row['close'])
+    return True
+
+
 def load_stock_data(code, start_date=None, end_date=None, cache_only=False):
     """
     加载股票日 K 线数据。优先从缓存加载，缓存不足时从 EastMoney 补全。
@@ -289,17 +336,22 @@ def load_stock_data(code, start_date=None, end_date=None, cache_only=False):
     if df is None or len(df) == 0:
         need_online = True
     elif end_date:
-        # 缓存不足时，先连续合并 DB 中缓存末日之后的全部日线快照。
+        # 缓存不足时，先连续合并 DB 中缓存末日之后的日线快照（有界回补，见
+        # _DB_TAIL_MERGE_MAX_DAYS 说明，避免对长期缺口股票反复全表扫描）。
         cache_end = df['date'].max().date() if hasattr(df['date'].max(), 'date') else df['date'].max()
         req_end = pd.Timestamp(end_date).date()
-        if cache_end < req_end:
+        gap_days = (req_end - cache_end).days
+        if 0 < gap_days <= _DB_TAIL_MERGE_MAX_DAYS:
             db_start = (cache_end + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
             db_end = req_end.strftime('%Y-%m-%d')
             db_tail = _load_spot_range_from_db(code, db_start, db_end)
             if db_tail is not None and len(db_tail) > 0:
-                df = pd.concat([df, db_tail], ignore_index=True).drop_duplicates(
-                    subset=['date'], keep='last').sort_values('date').reset_index(drop=True)
-                cache_end = df['date'].max().date()
+                if _db_tail_is_price_continuous(df, db_tail):
+                    df = _merge_db_rows(df, db_tail)
+                    cache_end = df['date'].max().date()
+                else:
+                    logging.warning(
+                        f"{code} DB尾段与qfq缓存价格基准不连续，跳过合并并等待缓存重建")
 
         # DB 仍未覆盖需求日期时，保留3天宽松度处理周末/节假日。
         if cache_end < req_end - datetime.timedelta(days=3):
@@ -317,9 +369,9 @@ def load_stock_data(code, start_date=None, end_date=None, cache_only=False):
             end_str = pd.Timestamp(end_date).strftime('%Y-%m-%d')
             db_row = _load_today_from_db(code, end_str)
             if db_row is not None and df is not None and len(df) > 0:
-                df = pd.concat([df, db_row], ignore_index=True).drop_duplicates(
-                    subset=['date'], keep='last').sort_values('date').reset_index(drop=True)
-                need_online = False
+                if _db_tail_is_price_continuous(df, db_row):
+                    df = _merge_db_rows(df, db_row)
+                    need_online = False
             elif db_row is not None and (df is None or len(df) == 0):
                 # 只有今天的 DB 数据，仍需在线补历史
                 pass

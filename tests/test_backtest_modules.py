@@ -716,6 +716,7 @@ class TestLoadStockData(unittest.TestCase):
             'low': [10.3, 10.1, 9.9], 'close': [10.4, 10.2, 10.3],
             'volume': [1200, 1300, 1400],
             'amount': [12480, 13260, 14420],
+            'pre_close': [10.8, 10.4, 10.2],
         })
 
         result = load_stock_data('300308', end_date='2026-07-06', cache_only=True)
@@ -726,6 +727,61 @@ class TestLoadStockData(unittest.TestCase):
             ['2026-06-30', '2026-07-01', '2026-07-02', '2026-07-03', '2026-07-06'],
         )
         self.assertEqual(float(result.iloc[-1]['close']), 10.3)
+        # 缓存原有两行没有 amount 列，合并后不应残留 NaN（会被当作真值传给 Kronos）。
+        self.assertFalse(result['amount'].isna().any())
+        self.assertGreater(float(result.iloc[0]['amount']), 0)
+
+    @patch('quantia.core.backtest.data_feed._load_spot_range_from_db')
+    @patch('quantia.core.backtest.data_feed._load_from_cache')
+    def test_cache_only_rejects_price_basis_discontinuity(self, mock_cache, mock_db_tail):
+        mock_cache.return_value = pd.DataFrame({
+            'date': pd.to_datetime(['2026-07-01']),
+            'open': [10.0], 'high': [10.8], 'low': [9.8], 'close': [10.5],
+            'volume': [1000],
+        })
+        mock_db_tail.return_value = pd.DataFrame({
+            'date': pd.to_datetime(['2026-07-02']),
+            'open': [9.6], 'high': [9.9], 'low': [9.4], 'close': [9.8],
+            'volume': [1200], 'amount': [11640],
+            # 除权参考昨收与旧 qfq 缓存末收盘不连续。
+            'pre_close': [9.5],
+        })
+
+        result = load_stock_data('300308', end_date='2026-07-02', cache_only=True)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result.iloc[-1]['date'], pd.Timestamp('2026-07-01'))
+
+    @patch('quantia.core.backtest.data_feed._load_spot_range_from_db')
+    @patch('quantia.core.backtest.data_feed._load_from_cache')
+    def test_cache_only_skips_db_tail_beyond_max_gap(self, mock_cache, mock_db_tail):
+        """长期缺口（如退市/长期停牌股）不应触发 DB 全表扫描式区间查询。"""
+        mock_cache.return_value = pd.DataFrame({
+            'date': pd.to_datetime(['2026-01-05']),
+            'open': [10.0], 'high': [10.8], 'low': [9.8], 'close': [10.5],
+            'volume': [1000],
+        })
+
+        result = load_stock_data('300308', end_date='2026-07-06', cache_only=True)
+
+        mock_db_tail.assert_not_called()
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 1)
+
+    @patch('quantia.core.backtest.data_feed._load_spot_range_from_db')
+    @patch('quantia.core.backtest.data_feed._load_from_cache')
+    def test_cache_only_queries_db_tail_at_exact_max_gap_boundary(self, mock_cache, mock_db_tail):
+        """恰好等于上限天数时仍应尝试续接（边界值不应被误判为超限）。"""
+        mock_cache.return_value = pd.DataFrame({
+            'date': pd.to_datetime(['2026-06-06']),
+            'open': [10.0], 'high': [10.8], 'low': [9.8], 'close': [10.5],
+            'volume': [1000],
+        })
+        mock_db_tail.return_value = None
+
+        load_stock_data('300308', end_date='2026-07-06', cache_only=True)
+
+        mock_db_tail.assert_called_once_with('300308', '2026-06-07', '2026-07-06')
 
     @patch('quantia.core.backtest.data_feed._load_from_cache')
     @patch('quantia.core.backtest.data_feed._fetch_stock_from_eastmoney')

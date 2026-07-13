@@ -178,6 +178,9 @@ quantia/fontWeb/dist/
 *.out
 
 git_log.txt
+
+# Generated Kronos validation artifacts
+runs/kronos_validation/
 test_*.py
 !tests/test_*.py
 vitest_output.txt

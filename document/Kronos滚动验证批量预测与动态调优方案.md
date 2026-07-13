@@ -2,7 +2,7 @@
 
 > 审查日期：2026-07-13
 > 适用范围：Quantia 日线预测、Kronos-base、本地推理服务、可选 C1 收益评分层
-> 文档状态：实施规格；本文描述后续建设，不代表相关模块已经上线
+> 文档状态：实施规格；Phase 1 最小闭环已落地并完成真实烟测，Phase 2～4 尚未上线
 
 ## 1. 分析结论
 
@@ -43,7 +43,19 @@
 | `top_p` | 1.0 | 概率实验 0.85、0.9、0.95、1.0 |
 | `clip` | 5.0 | 通常固定，仅在独立实验中搜索 |
 
-预测周期不是一个可以混合比较的单一超参数。1 日和 30 日是不同任务，必须分别报告指标和选择配置。确定性批量任务只需生成一次 30 日路径，然后提取第 1/3/5/10/15/30 步进行评测；不能把 30 日聚合成一个平均误差掩盖远端 horizon 的误差累积。
+预测周期不是一个可以混合比较的单一超参数。1 日和 30 日是不同任务，必须分别报告指标和选择配置。**当前 Quantia 生产语义是对 `days=1/3/5/10/15/30` 分别请求**；Kronos 自回归结果会随 `pred_len` 改变，真实验证已确认独立 5 日请求的第 5 步不等于 30 日请求的第 5 步。因此生产等价评测必须对每个 horizon 独立调用，不能用一条 30 日路径代替六次线上请求。若未来另建“固定 30 日路径模式”，只能作为不同的实验契约，必须使用独立 `mode/config_hash`，不得与当前线上指标混合。
+
+服务代码保留 `max_pred_days<=120` 作为隔离的研究硬上限，但 Quantia 对外配置和当前评测白名单仍固定在 30 日以内。任何 30 日以上实验必须使用不同 `run_type/config_hash`，不得进入生产指标或晋级判断。
+
+### 1.4 2026-07-13 深度审查后的实施修正
+
+本轮结合实际数据库、缓存、HTTP 服务和真实模型运行确认并修复了以下问题：
+
+1. `cn_stock_spot` 主键实际为 `(date, code)`，按单股日期区间查询不能使用 `code` 前缀索引。当前按需预测只允许在缓存后 **30 个自然日**内续接 DB 尾段，避免长期缺口股票反复扫描大表；全市场批量必须改用按日期批量读取/内存分发，不能逐股查询。
+2. 文件缓存是 `qfq`，DB 快照是原始行情。续接前必须校验首行 `pre_close_price` 与缓存末收盘、后续行与前一收盘连续；除权除息导致价格基准不连续时拒绝拼接并等待缓存重建，不能制造虚假跳空。
+3. Kronos 原 `model_version` 只覆盖 predictor，无法识别 tokenizer 变化。服务现已分别返回 `predictor_version`、`tokenizer_version`，并用二者生成组合 `model_version`。
+4. lookback 原为进程级固定值，无法在同一服务上执行候选搜索。服务现支持请求级 `lookback`，并严格限制在 `32..max_context`。
+5. Phase 1 CLI 首版若读取整张未来交易日历，会让数据加载器收到远未来截止日并误判已到期结果为 `not_traded`。现已将实际边界固定为 `min(MAX(cn_stock_spot.date), 最后完整交易日)`，也可用 `--actual-end` 固定可复现快照。
 
 ## 2. 总体架构与职责
 
@@ -122,6 +134,8 @@ train ----------------| embargo | validation | embargo | test
 
 股票池必须在锚点时刻可知。不能使用今天的成分股列表回测多年前的市场，否则会产生幸存者偏差。第一阶段若没有历史成分股快照，应明确标注为“固定现存股票池技术验证”，不能作为无偏收益结论。
 
+当前 Quantia 可用于两年回放的主要事实源是 `cache/hist/**/**qfq.gzip.pickle`；`cn_stock_spot` 实库当前只覆盖约 99 个交易日，不能单独承担两年回放。缓存是随时间重算的 qfq 快照，并非逐日冻结的数据版本，因此 Phase 1 MVP 只能用于技术/参数比较，不能宣称完全消除了复权因子和数据修订带来的时点偏差。要形成无偏生产证据，后续必须保存不可变 `data_snapshot_id`（至少包含文件哈希、复权方式和生成时间），或建设按交易日版本化的行情事实表。
+
 ### 3.3 指标体系
 
 #### K 线数值指标
@@ -186,7 +200,7 @@ C1 标签固定为未来 5 日收益，只能与 5 日结果比较。
 
 ### 4.1 执行时点
 
-日线批量任务建议在工作日 18:30、行情缓存完成更新后执行：
+日线批量任务应加入现有 `cron.workdayly/run_workdayly` 串行编排，放在 `run_kline_cache` 成功之后；18:30 只能作为启动时间，不能替代上游成功门禁：
 
 1. 验证当天是交易日且已经结算；
 2. 验证缓存最后日期等于当天；
@@ -217,13 +231,13 @@ created -> running -> partial/succeeded/failed
                     -> resumed -> succeeded/failed
 ```
 
-幂等键必须包含模型和配置版本，推荐：
+批次表必须另设业务唯一键，不能只靠每次新生成的 UUID `batch_id`。推荐：
 
 ```text
-(model_version, config_hash, as_of_data_date, code, target_date, horizon_step)
+(run_type, model_version, config_hash, data_snapshot_id, as_of_data_date, universe_id)
 ```
 
-同一参数重跑采用 upsert；改变参数会创建新版本记录，不覆盖旧预测。所有数据库写入使用 Quantia `quantia.lib.database`，保持 `chunksize=500` 和 NaN/inf 清洗规则。
+预测明细必须显式区分 `request_horizon` 与 `path_step`。当前生产等价模式只保存每个独立请求的终点，明细业务键为 `(batch_id, code, request_horizon, target_date)`；若未来保存完整路径，则改为 `(batch_id, code, request_horizon, path_step)`。同一参数重跑采用 upsert；改变参数或 horizon 语义会创建新版本记录，不覆盖旧预测。所有数据库写入使用 Quantia `quantia.lib.database`，保持 `chunksize=500` 和 NaN/inf 清洗规则。
 
 ## 5. 持久化数据模型
 
@@ -247,18 +261,18 @@ created -> running -> partial/succeeded/failed
 每只股票、每个目标交易日一行：
 
 - `batch_id`、`code`；
-- `as_of_data_date`、`target_date`、`horizon_step`；
+- `as_of_data_date`、`target_date`、`request_horizon`、`path_step`；
 - `last_actual_close`；
 - `pred_open/high/low/close/volume/amount`；
 - `pred_return`、可选分位数区间；
 - `c1_score`、`c1_rank`（仅兼容 5 日时填写）；
 - `latency_ms`、`status`、`error_code`、`error_message`。
 
-唯一键：`(batch_id, code, target_date)`。
+当前终点模式唯一键：`(batch_id, code, request_horizon, target_date)`。不能只用 `(batch_id, code, target_date)`，否则未来保存多个独立请求的重叠路径时会互相覆盖。
 
 ### 5.3 真实值与评估表 `cn_stock_kronos_evaluation`
 
-- 关联 `batch_id + code + target_date`；
+- 使用不可变 `prediction_id` 关联预测事实；
 - `actual_open/high/low/close/volume/amount`；
 - `actual_return`；
 - `close_abs_error`、`close_smape`、`return_abs_error`；
@@ -266,11 +280,11 @@ created -> running -> partial/succeeded/failed
 - `actual_data_version`、`evaluated_at`；
 - `status`：`pending|observed|invalidated`。
 
-真实行情后续发生复权或纠错时，不修改原始预测；只增加真实数据版本并重新计算评估。
+唯一键应为 `(prediction_id, actual_data_version)`，并另设 `is_current` 或当前版本视图。真实行情后续发生复权或纠错时，不修改原始预测；增加真实数据版本并重新计算评估。若目标区间跨越除权除息且无法把真实价转换到预测生成时的价格基准，状态必须记为 `price_basis_break`/`invalidated` 并排除出价格误差聚合，不能直接比较 qfq 与原始价。
 
 ### 5.4 聚合表 `cn_kronos_model_metric`
 
-按 `model_version + config_hash + window + horizon_step + segment` 保存：
+按 `model_version + config_hash + window + request_horizon + segment` 保存：
 
 - 样本数、覆盖率；
 - MAE、RMSE、sMAPE、方向准确率；
@@ -287,7 +301,7 @@ created -> running -> partial/succeeded/failed
 
 1. 查询 `target_date <= latest_complete_trade_date` 且状态为 `pending` 的预测；
 2. 从 Quantia 缓存/数据库读取对应真实 K 线；
-3. 数据缺失时保持 pending，并记录缺失原因；
+3. 数据缺失时保持 pending，并记录缺失原因；只有目标日之后该股票重新出现有效 K 线，才能确认目标日为 `not_traded`，数据尾端缺失一律记为 `actual_missing`，不能把缓存过期/价格基准断裂误判为停牌；
 4. 对齐后写评估明细；
 5. 更新最近 20、60、120 个交易日的聚合指标；
 6. 检查覆盖率、漂移和挑战者门禁；
@@ -295,9 +309,11 @@ created -> running -> partial/succeeded/failed
 
 需要区分：
 
-- `horizon_step=1`：目标日一到即可评估；
+- `request_horizon=1`：目标日一到即可评估；
 - 完整 `pred_len=10` 批次：第 10 个目标交易日到齐后才标记 complete；
 - 停牌：若目标交易日该股票无成交，应标记 `not_traded`，不能自动挪到下一交易日并假装原预测命中。
+- 锚点成熟度：输出必须包含选中锚点数、已成熟锚点数和因未来交易日不足跳过的锚点数，禁止静默缩小样本。
+- 同一批运行若观察到多个 `model_version`，必须标记 `mixed_model_versions=true` 并禁止用于参数比较或晋级。
 
 ## 7. 动态调优闭环
 
@@ -427,14 +443,14 @@ stateDiagram-v2
 - 当前 `local_kpred.yaml` 的 `model.device` 默认值就是 `cpu`（见 [local_kpred.yaml](../../Kronos/finetune_csv/configs/local_kpred.yaml)），CPU 是当前实现的默认路径而非陌生场景。
 - 模型体积：`Kronos-base/model.safetensors` 约 390 MB，`Kronos-Tokenizer-base/model.safetensors` 约 15 MB，磁盘合计约 405 MB。常驻推理时的实际内存占用还包含激活值和框架开销，需要在目标机型用 `/usr/bin/time -v` 或 `ps`/`smem` 实测，不能直接套用磁盘体积估算。
 - 已实测延迟（Windows 开发机 CPU，`lookback=90`）：单步约 133 ms，5 步约 595 ms；`300308` 真实缓存场景 3 步 376～483 ms。
-- 2026-07-13 新增实测：Windows 开发机 CPU、`lookback=256`、`pred_len=30`、`sample_count=1`、`top_k=1`，单股真实缓存历史黑盒耗时约 **12.8 秒**，返回 30 根预测及六档评测 metadata。该样本使用陈旧缓存并显式关闭新鲜度门禁，只用于执行/容量验证，不用于准确率结论。
-- 按上述单股串行粗算，100 只约 21 分钟，5000 只约 17.8 小时（均未计批量张量并行收益和调度开销）。因此纯 CPU 全市场逐股串行不可作为生产方案；`predict_batch` micro-batch 的目标机实测是全市场上线前的硬门禁。
+- 2026-07-13 实测：Windows 开发机 CPU、`lookback=256`、`pred_len=30`、`sample_count=1`、`top_k=1`，单股 30 日请求约 **10 秒**。服务修复后使用 DB 连续补齐至 2026-07-10 的新鲜历史，按需接口已返回 HTTP 200。
+- 生产等价评测需要分别执行六个 horizon，不能再用“单次 30 日耗时 × 股票数”低估成本。Phase 1 真实烟测（300308、锚点 2026-06-30、lookback 64）独立 1/3 日请求分别约 109/277 ms；完整六档和长 lookback 仍需单独测量。因此纯 CPU 全市场逐股串行不可作为生产方案；批量端点和目标机 micro-batch 实测是 Phase 2 的硬门禁。
 
 ### 9.3 容量测算方法
 
 在目标 Linux 机型（而不是开发机）上执行基准测试：
 
-1. 固定 `lookback=256`，分别对 `pred_len ∈ {1,3,5,10}`、若干 `micro_batch_size`（如 1、8、16、32）跑真实历史数据，记录 P50/P95 延迟和吞吐（symbols/秒）；
+1. 固定 `lookback=256`，分别对独立 `pred_len ∈ {1,3,5,10,15,30}`、若干 `micro_batch_size`（如 1、8、16、32）跑真实历史数据，记录各 horizon 的 P50/P95 延迟和吞吐（symbols/秒）；
 2. 用下式估算覆盖目标股票池所需时间：
 
 $$
@@ -455,7 +471,7 @@ $$
 
 在完成 9.3 的实测之前，不应默认承诺"CPU 可以覆盖全市场夜间批量"。建议按下列优先级分层，具体分界点由实测吞吐决定：
 
-- **Tier 1（核心关注股票池，如 100～300 只自选/重点标的）**：CPU 每日生成一次 30 日 Kronos 路径，并评测 1/3/5/10/15/30 日 step；可选叠加 C1。
+- **Tier 1（核心关注股票池，如 100～300 只自选/重点标的）**：若保持当前生产语义，CPU 每日分别执行 1/3/5/10/15/30 日请求；若容量不足，只能明确缩减 horizon，不能偷换成一条 30 日路径后沿用原指标名称；可选叠加 C1。
 - **Tier 2（全市场其余标的）**：若实测吞吐不足以覆盖全市场夜间批次，按成本从低到高降级：
   1. 缩小 horizon 集合（例如只保留 1 日和 5 日）；
   2. 降低批频率（Tier 1 每日，Tier 2 每周）；
@@ -467,7 +483,7 @@ $$
 
 ### 9.6 风险与缓解
 
-- **长尾延迟**：个别标的历史缺失或数据异常会拖慢所在 micro-batch；应设置单标的超时，超时后单独降级重试，不拖累整批；
+- **长尾延迟**：进入张量 micro-batch 后无法对单个标的设置可中断超时。必须先完成历史长度、有限值、价格基准连续性等预校验；整批设置超时/看门狗，失败后缩小 micro-batch 或逐标的隔离重试。
 - **内存增长**：常驻服务需要监控 RSS，超过阈值应告警并考虑重启或降低并发；
 - **与 Quantia 同机资源竞争**：若 Kronos 服务与 Quantia Web/Cron 部署在同一台 Linux 机器，需要用 cgroup 或进程优先级隔离，防止批量推理挤占实时 Web 请求；
 - **时区一致性**：容器时区必须设为 `Asia/Shanghai`，否则 `_completed_daily_cutoff`/`is_post_settlement` 等基于本地时间的判断会发生偏移。
@@ -476,15 +492,20 @@ $$
 
 ### 10.1 Kronos 侧
 
-建议新增：
+已落地：
+
+- `local_kpred_service.py`：请求级 `lookback`（32～`max_context`）、predictor/tokenizer 独立指纹及组合 `model_version`；
+- 现有单只端点仍为 `/v1/open-api/kpred` 和 `/v1/kline/predict`。
+
+Phase 2 仍待新增：
 
 - `finetune_csv/rolling_forecast_validator.py`：历史锚点生成式回放；
 - `finetune_csv/evaluation_metrics.py`：OHLC/收益/截面指标；
 - `finetune_csv/parameter_search.py`：候选试验编排；
 - `finetune_csv/bench_cpu_capacity.py`：CPU-only 容量测算脚本（见 9.3）；
-- 本地服务 `/v1/kline/predict-batch`：按 micro-batch 推理并返回逐标的状态。
+- 本地服务 `/v1/kline/predict-batch`：当前不存在；待按 micro-batch 推理并返回逐标的状态后，才能开始 Phase 2 全市场容量验收。
 
-多 horizon 评测核心已经落地为 `finetune_csv/pipeline/forecast_evaluation.py`，并提供可执行入口：
+`finetune_csv/pipeline/forecast_evaluation.py` 已支持对**一条固定预测路径**按 step 评测，适合 path-mode 研究，但不能替代当前生产等价的独立 horizon 请求。其可执行入口为：
 
 ```bash
 python finetune_csv/evaluate_kpred_results.py \
@@ -505,7 +526,27 @@ python finetune_csv/evaluate_kpred_results.py \
 
 ### 10.2 Quantia 侧
 
-建议新增：
+Phase 1 已落地：
+
+- `quantia/kronos/rolling_validation.py`：锚点切片、独立 horizon 调用、状态记录、random-walk 基线和分组汇总；
+- `quantia/job/kronos_rolling_validation_job.py`：只读缓存/DB 的 CLI，支持代码列表、锚点范围、lookback/horizon、固定 `actual_end` 和原子 JSON 输出；
+- `tests/test_kronos_rolling_validation.py`：独立请求、停牌、错误响应与基线契约；
+- `runs/kronos_validation/`：本地审计产物目录，已加入 `.gitignore`，不是事实数据库。
+
+真实烟测命令：
+
+```bash
+python -m quantia.job.kronos_rolling_validation_job \
+  --codes 300308 \
+  --anchor-start 2026-06-30 --anchor-end 2026-06-30 \
+  --lookbacks 64 --horizons 1,3 --anchor-step 1 \
+  --actual-end 2026-07-10 \
+  --output runs/kronos_validation/smoke_300308_20260630.json
+```
+
+已验证输出 2 条 `observed`：目标日 2026-07-01、2026-07-03，覆盖率均为 100%。该结果只证明执行链和日期对齐正确，不构成准确率通过。
+
+Phase 2～3 待新增：
 
 - `quantia/job/kronos_batch_prediction_job.py`；
 - `quantia/job/kronos_prediction_evaluation_job.py`；
@@ -547,17 +588,25 @@ promotion:
 
 ## 11. 分阶段实施计划
 
-### Phase 1：离线滚动验证
+### Phase 1：离线滚动验证（MVP 已落地）
 
-交付：
+已交付：
 
-- 历史锚点生成式回放；
-- 1/3/5/10/15/30 日指标；
-- 基线、分组和置信区间；
+- 生产等价的独立 horizon 历史锚点回放；
+- 逐记录 Close MAE/sMAPE、收益 MAE、方向、random-walk 基线；
+- `observed/not_traded/actual_missing/provider_error` 状态及稳定 `error_code`；
+- 成熟/未成熟锚点审计计数、运行中模型版本集合与混合版本标记；
+- 模型/tokenizer 指纹、lookback、实际数据截止日和配置哈希；
+- 原子 JSON 审计产物与真实模型烟测。
+
+仍待扩展：
+
+- 大股票池 1/3/5/10/15/30 全量运行；
+- 行业/波动率/市场状态分组和 block bootstrap 置信区间；
 - 固定股票池局限说明；
 - 256 与其他 lookback 的真实对比报告。
 
-验收：同一数据快照和随机种子可重复得到相同结果，无越界读取。
+MVP 验收已通过：单股单锚点真实请求可重复运行、日期严格按交易日对齐、不读取锚点后的历史输入。完整 Phase 1 验收仍要求固定不可变数据快照并完成 100～300 股票池运行。
 
 ### Phase 2：小股票池批量预测
 
@@ -598,7 +647,7 @@ promotion:
 1. 先实现 Phase 1，不要直接做自动调参。当前最重要的问题是建立可信、无泄漏的业务指标基线。
 2. 批量预测首期只做影子记录，不参与交易决策；至少积累 60 个到期交易日后再讨论晋级。
 3. 采用 Quantia 编排与持久化、Kronos 专注推理的边界。部署形态不预设 GPU：CPU-only Linux 在功能上可行，但全市场夜间批量的吸吐量必须先用第 9 章的方法实测，不能默认假定 CPU 能覆盖全市场；实测不足时优先采用分层部署（重点股票池每日全 horizon，其余股票降频或降级为轻量因子评分），而不是预先采购 GPU。
-4. 生产候选继续使用 `lookback=256`、确定性生成，页面和评测开放 1/3/5/10/15/30 日；30 步 golden 回归已经通过，开发机 CPU 单股实测约 12.8 秒，但 15/30 日不能标记为“准确率通过”，最终是否保留由滚动证据和目标 Linux 机型 micro-batch 容量测试共同决定。
+4. 线上当前仍使用 `lookback=256`、确定性生成，但它只能称为现状基线，不能称为已通过的生产冠军。本轮真实单股到期结果显示其短期方向虽命中、3/5 日幅度严重失真；仓库也没有“base 模型 30 步 golden 准确率通过”的测试。是否保留 256 必须由独立 horizon 滚动证据和目标 Linux 机型容量测试共同决定。
 5. C1 继续关闭。只有新的 5 日 walk-forward IC/RankIC 和影子结果通过门禁后才能启用。
 6. 动态调优应是“自动发现候选、自动验证、人工晋级”，而不是“自动改参数并上线”。
 7. 滚动调优数据、准确率评估、漂移监控必须有第 8 章描述的可视化面板支撑，不能只依赖 JSON 报告文件人工比对。
