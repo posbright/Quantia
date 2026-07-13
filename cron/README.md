@@ -12,6 +12,7 @@ cron/
 │   ├── run_fetch                   ← Phase 1: API 数据获取（附 F8 基金净值回填 + T3 指数估值）
 │   ├── run_kline_cache             ← Phase 2: K线缓存增量更新
 │   ├── run_analysis                ← Phase 3: 本地数据分析
+│   ├── run_fund_pick_compensation  ← P0-B: 06:30 基金评分/精选/通知补偿
 │   ├── run_paper_trading           ← Phase 4: 模拟交易执行
 │   ├── run_report_alert            ← Phase 5: AI 定时报告 + 评分预警
 │   ├── run_events_patents          ← Phase 1.5: 公告事件 + 专利采集聚合
@@ -39,6 +40,7 @@ cron/
 | `run_fetch` | 工作日 | `fetch_daily_job.py` + `fetch_fund_nav_history_job.py` + `fetch_fund_purchase_status_job.py` + `fetch_index_valuation_job.py` | API 数据采集（行情+选股+资金流向）；附 F8 基金净值历史回填、基金申购/赎回当前状态、T3 宽基指数估值 |
 | `run_kline_cache` | 工作日 | `kline_cache_daily_job.py` | K线缓存增量更新（~5000只股票） |
 | `run_analysis` | 工作日 | `analysis_daily_job.py` + `analysis_fund_score_job.py` + `analysis_fund_pick_job.py` + `notify_fund_pick_job.py` | 本地分析；基金评分先检查快照规模与核心类型净值新鲜度（默认 90%），未就绪则跳过精选和推送，禁止回退旧分 |
+| `run_fund_pick_compensation` | T+1 06:30 | `analysis_fund_pick_compensation_job.py` | 只重试基金评分→精选→通知；按期望交易日查既有榜单，有榜只补通知，无榜且门禁通过才重建，退出码 3 表示仍未就绪 |
 | `run_paper_trading` | 工作日 | `paper_trading_daily_job.py` | 模拟交易每日执行 |
 | `run_report_alert` | 工作日 | `stock_report_scheduled.py` | AI 定时报告分析 + 评分预警推送（模拟交易后） |
 | `run_events_patents` | 工作日 | `stock_announcement_em` + `stock_patent_crawler` + `aggregate_patent_data` | 公告事件采集 + 专利挖掘采集 + 专利含金量聚合（轻量 API/计算，非关键链） |
@@ -307,6 +309,7 @@ source /etc/cron/_common.sh
   | 基金综合评分 | `QUANTIA_FUND_SCORE_TIMEOUT` | 1800 |
   | 基金每日精选榜 | `QUANTIA_FUND_PICK_TIMEOUT` | 600 |
   | 基金精选榜推送（钉钉） | `QUANTIA_FUND_PICK_PUSH_TIMEOUT` | 180 |
+  | 基金精选补偿 | `QUANTIA_FUND_COMPENSATION_TIMEOUT` | 2700 |
   | 模拟交易 | `QUANTIA_PAPER_TIMEOUT` | 3600 |
   | AI报告+评分预警（LLM 调用） | `QUANTIA_REPORT_TIMEOUT` | 7200 |
   | 综合指标股票池 | `QUANTIA_COMPOSITE_TIMEOUT` | 1800 |
@@ -334,8 +337,25 @@ source /etc/cron/_common.sh
 - **P0-A 已完成**：Fetch 抓取当前申购/赎回/限额；源空时不清表；精选剔除暂停申购，保留限额与未知并快照；前端和推送展示状态。
 - **P0-B 自动链路已完成**：评分前检查快照规模与核心类型净值新鲜度，默认门槛 90%；门槛必须是 `(0, 1]` 内有限数，非法配置直接失败关闭；QDII/FOF 暂不进入首版硬门槛。
 - **链路门控已完成**：评分未就绪不生成精选；精选零产出不触发推送，禁止回退旧分或旧榜伪装当日结果。
-- **P0-B 运维增强待审核**：手工 `--date` + `--allow-stale` 历史回放入口与可选 06:30 补偿任务尚未实现，生产 cron 当前不依赖这两项。
-- **P1 及以后未开发**：Top50 净值补链、持仓季度历史保留、walk-forward go/no-go 与 timing 档位过滤仍待单独审核。
+- **P0-B 运维增强已完成**：手工历史评分必须同时提供 `--date` 与 `--allow-stale`；指定日期只读精确排名截面，净值/画像/持仓按回放日截断。06:30 补偿按 `score_as_of` 幂等查榜，不会复制榜单或回退到 `MAX(date)`。
+- **P1-B 已止损**：持仓重抓只替换响应包含的季度，不再删除同基金其他季度；最近两季历史补抓仍待独立实施。
+- **P1-A/P2/P3 待分阶段开发**：Top50 净值补链队列与 walk-forward 尚未实现；timing 档位计算和展示已存在，但筛选控件尚未实现。
+
+### 基金历史回放
+
+历史评分是显式运维操作，`--date` 与 `--allow-stale` 必须成对出现。指定日不存在
+`cn_fund_rank` 精确截面时退出 3，不允许拿最新截面改写成历史日期：
+
+```bash
+python quantia/job/analysis_fund_score_job.py --date=2026-07-10 --allow-stale
+python quantia/job/analysis_fund_pick_job.py --date=2026-07-10
+python quantia/job/notify_fund_pick_job.py --date=2026-07-10 --dry-run
+# 人工核对 dry-run 后，确需发送时去掉 --dry-run
+```
+
+回放评分只使用 `nav_date/update_date <= 2026-07-10` 的辅助数据；晚于回放日抓取的申购状态
+降级为 `unknown`。该能力用于修复指定日产物，不等同于 P2 walk-forward：画像表仍不是完整历史快照，
+无法证明当时可见的数据会按中性缺失处理，研究结论仍须走 P2 的 point-in-time 数据集。
 
 ---
 
@@ -378,6 +398,9 @@ crontab -e
 
 # AI 定时报告 + 评分预警（模拟交易完成后执行）
 15  6 * * 2-6  flock -xn /tmp/quantia_report.lock  /root/Quantia/cron/cron.workdayly/run_report_alert
+
+# 基金精选补偿（仅重试基金链；已有榜单时只补精确日期通知）
+30  6 * * 2-6  flock -xn /tmp/quantia_fund_compensation.lock /root/Quantia/cron/cron.workdayly/run_fund_pick_compensation
 
 # AI 知识库索引刷新（错峰至 07:00，避开 06:15 报告预警）
 0   7 * * 1-5  /root/Quantia/cron/cron.workdayly/refresh_ai_kb
@@ -448,6 +471,9 @@ crontab -e
 # 每日完整链路（T 日 18:10 一键串行；内部 check_trade_day 自动跳过非交易日）
 # run_workdayly 当晚串行跑完 fetch→公告专利→kline→analysis→paper→report→综合指标池→AI知识库→基金重仓股全覆盖
 10 18 * * 1-5  flock -xn /tmp/quantia_workdayly.lock /root/Quantia/cron/cron.workdayly/run_workdayly
+
+# 次日独立补偿上一交易日基金链（不重复运行完整编排器）
+30  6 * * 2-6  flock -xn /tmp/quantia_fund_compensation.lock /root/Quantia/cron/cron.workdayly/run_fund_pick_compensation
 
 # === 月度任务（与拆分模式完全相同，错峰至月初夜间 / 盘后 15:30）===
 0   0 1 * *    flock -xn /tmp/quantia_patents.lock /root/Quantia/cron/cron.monthly/run_patents_quarterly
@@ -696,6 +722,7 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 | `QUANTIA_FUND_COMPLETENESS_THRESHOLD` | 0.90 | 基金快照规模与核心类型净值新鲜度硬门槛；必须是 `(0, 1]` 内有限数，未达标或配置非法时宁缺勿旧 |
 | `QUANTIA_FUND_PICK_TIMEOUT` | 600 | 基金每日精选榜超时秒数 |
 | `QUANTIA_FUND_PICK_PUSH_TIMEOUT` | 180 | 基金精选榜钉钉推送超时秒数（`notify_fund_pick_job`） |
+| `QUANTIA_FUND_COMPENSATION_TIMEOUT` | 2700 | 06:30 基金评分/精选/通知补偿总超时秒数；失败不触发完整分析链 |
 | `QUANTIA_PAPER_TIMEOUT` | 3600 | 模拟交易超时秒数 |
 | `QUANTIA_REPORT_TIMEOUT` | 7200 | AI 报告 + 评分预警超时秒数；调大分析股票数时需同步放宽 |
 | `QUANTIA_COMPOSITE_TIMEOUT` | 1800 | 综合指标股票池刷新超时秒数 |

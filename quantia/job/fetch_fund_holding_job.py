@@ -268,10 +268,14 @@ def _augment_industry_map_star_bj(industry_map):
 
 
 def save_fund_holding(code, year, industry_map, update_date):
-    """抓取 + 行业回填 + 删旧重写单只基金最新季度持仓，返回写入行数。"""
+    """抓取 + 行业回填，按响应季度替换持仓并保留其他历史季度。"""
     df = fem.fund_holding_latest(code, year)
     if df is None or len(df.index) == 0:
         return 0
+    quarters = sorted({str(value).strip() for value in df['quarter'].dropna() if str(value).strip()}) \
+        if 'quarter' in df.columns else []
+    if not quarters:
+        raise ValueError(f'{code} 持仓响应缺少有效季度，拒绝写入')
     df = _join_industry(df, industry_map)
     df['update_date'] = update_date
     # 对齐表列序，缺失列补 None
@@ -280,13 +284,17 @@ def save_fund_holding(code, year, industry_map, update_date):
             df[col] = None
     df = df[_HOLDING_COLS]
 
-    # 删旧（同 code 旧季度）后重写，避免换季后陈旧季度残留
+    # 仅替换响应覆盖的季度，清掉同季已退出前十大的旧行，同时保留其他历史季度。
     if mdb.checkTableIsExist(_HOLDING_TABLE):
         try:
+            placeholders = ','.join(['%s'] * len(quarters))
             mdb.executeSql(
-                f"DELETE FROM `{_HOLDING_TABLE}` WHERE `code` = %s", (str(code),))
+                f"DELETE FROM `{_HOLDING_TABLE}` WHERE `code` = %s "
+                f"AND `quarter` IN ({placeholders})",
+                (str(code), *quarters))
         except Exception:
-            logging.warning(f"fetch_fund_holding_job: {code} 删除旧持仓失败，改用 upsert", exc_info=True)
+            logging.warning(f"fetch_fund_holding_job: {code} 删除同季旧持仓失败，改用 upsert",
+                            exc_info=True)
         cols_type = None
     else:
         cols_type = tbs.get_field_types(tbs.TABLE_CN_FUND_HOLDING['columns'])

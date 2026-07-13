@@ -308,7 +308,7 @@ class TestHoldingJob(unittest.TestCase):
             out = self.job._augment_industry_map_star_bj(dict(base))
         self.assertEqual(out, base)
 
-    def test_save_holding_deletes_old_then_writes(self):
+    def test_save_holding_replaces_only_fetched_quarter_then_writes(self):
         held = pd.DataFrame({
             'code': ['000001'], 'stock_code': ['600000'], 'stock_name': ['浦发银行'],
             'hold_ratio': [5.21], 'hold_shares': [1000.0], 'hold_value': [5000.0],
@@ -327,9 +327,26 @@ class TestHoldingJob(unittest.TestCase):
             n = self.job.save_fund_holding('000001', 2026, {'600000': '银行'},
                                            datetime.date(2026, 6, 1))
         self.assertEqual(n, 1)
-        dele.assert_called_once()          # 删旧
+        dele.assert_called_once()
+        delete_sql, delete_params = dele.call_args.args
+        self.assertIn('AND `quarter` IN (%s)', delete_sql)
+        self.assertEqual(delete_params, ('000001', '2025年1季度'))
         self.assertEqual(captured['cols'], list(tbs.TABLE_CN_FUND_HOLDING['columns']))
         self.assertEqual(captured['industry'], '银行')
+
+    def test_save_holding_rejects_response_without_quarter(self):
+        held = pd.DataFrame({
+            'code': ['000001'], 'stock_code': ['600000'], 'stock_name': ['浦发银行'],
+            'hold_ratio': [5.21],
+        })
+        with mock.patch.object(self.job.fem, 'fund_holding_latest', return_value=held), \
+             mock.patch.object(self.job.mdb, 'executeSql') as dele, \
+             mock.patch.object(self.job.mdb, 'insert_db_from_df') as insert:
+            with self.assertRaises(ValueError):
+                self.job.save_fund_holding('000001', 2026, {'600000': '银行'},
+                                           datetime.date(2026, 6, 1))
+        dele.assert_not_called()
+        insert.assert_not_called()
 
     def test_run_uses_equity_types(self):
         with mock.patch.object(self.job, '_select_target_codes', return_value=['000001']) as sel, \
