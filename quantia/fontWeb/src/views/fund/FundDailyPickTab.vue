@@ -81,6 +81,10 @@
           <div class="pr-name-wrap">
             <span class="pr-name">{{ p.name || p.code }}</span>
             <span class="pr-code">{{ p.code }}</span>
+            <span
+              class="pr-purchase"
+              :class="`pr-purchase--${p.purchase_availability || 'unknown'}`"
+            >{{ purchaseText(p) }}</span>
             <span v-if="reasonOf(p, activeBucket)" class="pr-reason">{{ reasonOf(p, activeBucket) }}</span>
           </div>
           <div v-if="activeBucket.timing_applicable" class="pr-nav">
@@ -270,6 +274,22 @@ function fmtY7(v: number | null | undefined): string {
   return `${v.toFixed(2)}%`
 }
 
+function fmtMoney(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return ''
+  if (v >= 100000000) return `${(v / 100000000).toFixed(v % 100000000 ? 1 : 0)}亿`
+  if (v >= 10000) return `${(v / 10000).toFixed(v % 10000 ? 1 : 0)}万`
+  return `${v.toLocaleString()}元`
+}
+
+function purchaseText(p: FundDailyPickItem): string {
+  if (p.purchase_availability === 'available') return '开放申购'
+  if (p.purchase_availability === 'limited') {
+    return p.daily_limit != null ? `限额 ${fmtMoney(p.daily_limit)}` : '限大额'
+  }
+  if (p.purchase_availability === 'unavailable') return '暂停申购'
+  return '申购状态待核实'
+}
+
 // 择时分数（对齐原型「低吸 78」）
 function tierScore(v: number | null | undefined): string {
   if (v === null || v === undefined || Number.isNaN(v)) return ''
@@ -393,6 +413,11 @@ function pickListUrl(): string {
 function pushMeta(p: FundDailyPickItem, timingApplicable: boolean): string {
   const parts: string[] = []
   if (p.quality_score != null) parts.push(`质量${Math.round(p.quality_score)}`)
+  if (p.purchase_availability === 'limited') {
+    parts.push(p.daily_limit != null ? `限额${fmtMoney(p.daily_limit)}` : '限大额')
+  } else if (p.purchase_availability === 'unknown') {
+    parts.push('申购状态待核实')
+  }
   if (timingApplicable) {
     if (p.timing_tier) {
       const emoji = TIER_EMOJI[p.timing_tier] || ''
@@ -661,6 +686,27 @@ defineExpose({ reload: load })
 .pr-code {
   font-size: 12px;
   color: #909399;
+}
+.pr-purchase {
+  align-self: flex-start;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 18px;
+  color: #4b5563;
+  background: #f1f3f5;
+}
+.pr-purchase--available {
+  color: #15803d;
+  background: #ecfdf3;
+}
+.pr-purchase--limited {
+  color: #b45309;
+  background: #fff7e6;
+}
+.pr-purchase--unavailable {
+  color: #b91c1c;
+  background: #fef2f2;
 }
 .pr-reason {
   font-size: 11px;

@@ -575,3 +575,62 @@ def fund_manager_all() -> pd.DataFrame:
         logging.warning("fund_em.fund_manager_all: 经理全量抓取失败", exc_info=True)
         return None
     return _map_manager_columns(df)
+
+
+# ── 基金申购/赎回状态（P0-A）────────────────────────────────────────
+_PURCHASE_COL_MAP = {
+    '基金代码': 'code',
+    '基金简称': 'name',
+    '申购状态': 'purchase_status',
+    '赎回状态': 'redemption_status',
+    '下一开放日': 'next_open_date',
+    '购买起点': 'min_purchase',
+    '日累计限定金额': 'daily_limit',
+    '手续费': 'fee',
+}
+
+
+def _map_purchase_status(df: pd.DataFrame) -> pd.DataFrame:
+    """映射 fund_purchase_em 全量结果；缺少核心列时返回 None。"""
+    if df is None or len(df.index) == 0:
+        return None
+    required = {'基金代码', '申购状态', '赎回状态'}
+    if not required.issubset(df.columns):
+        return None
+    keep = {cn: en for cn, en in _PURCHASE_COL_MAP.items() if cn in df.columns}
+    out = df[list(keep)].rename(columns=keep).copy()
+    out['code'] = out['code'].astype(str).str.strip().str.zfill(6)
+    out = out[out['code'].str.fullmatch(r'\d{6}', na=False)]
+    for col in ('name', 'purchase_status', 'redemption_status'):
+        if col not in out.columns:
+            out[col] = None
+        else:
+            out[col] = out[col].map(
+                lambda value: str(value).strip()
+                if pd.notna(value) and str(value).strip() not in ('', '--', '---') else None)
+    if 'next_open_date' in out.columns:
+        parsed = pd.to_datetime(out['next_open_date'], errors='coerce', format='mixed')
+        out['next_open_date'] = parsed.dt.date
+    else:
+        out['next_open_date'] = None
+    for col in ('min_purchase', 'daily_limit', 'fee'):
+        if col in out.columns:
+            out[col] = pd.to_numeric(
+                out[col].astype(str).str.replace(',', '', regex=False)
+                .str.replace('%', '', regex=False), errors='coerce')
+        else:
+            out[col] = None
+    columns = list(_PURCHASE_COL_MAP.values())
+    return out.reindex(columns=columns).drop_duplicates(subset=['code'], keep='first').reset_index(drop=True)
+
+
+def fund_purchase_status_all() -> pd.DataFrame:
+    """全量基金申购/赎回状态；失败或源契约异常返回 None。"""
+    import akshare as ak
+
+    try:
+        df = _fetch_with_retry(ak.fund_purchase_em, _desc='基金申购状态全量')
+    except Exception:
+        logging.warning('fund_em.fund_purchase_status_all: 全量抓取失败', exc_info=True)
+        return None
+    return _map_purchase_status(df)

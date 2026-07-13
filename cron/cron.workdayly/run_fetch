@@ -39,6 +39,13 @@ run_job "基金净值回填 (fetch_fund_nav_history_job)" \
     "${QUANTIA_FUND_NAV_TIMEOUT:-3600}"
 record_stage "基金净值回填 (fetch_fund_nav_history_job)" $? warn
 
+# ── P0-A 基金申购/赎回/限额当前状态（全市场单次接口，供精选与详情快照）──
+# 源失败时 job 不清空旧表；精选侧按 fetched_at 将过期状态降级为 unknown。
+run_job "基金申购状态 (fetch_fund_purchase_status_job)" \
+    "quantia/job/fetch_fund_purchase_status_job.py" \
+    "${QUANTIA_FUND_PURCHASE_TIMEOUT:-600}"
+record_stage "基金申购状态 (fetch_fund_purchase_status_job)" $? warn
+
 # ── T3 宽基指数估值采集（legulegu 全历史 PE/PB + 历史分位 → cn_index_valuation）──
 # 供 fundTimingHandler 的 T3 估值分位择时（每日精选榜 timing）。增量抓取，日常成本极低；
 # 首次全历史铺底较慢，可临时放大 QUANTIA_INDEX_VALUATION_TIMEOUT。失败不阻断主链。

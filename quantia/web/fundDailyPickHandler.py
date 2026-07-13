@@ -34,6 +34,10 @@ _NAV_HIST_TABLE = tbs.TABLE_CN_FUND_NAV_HISTORY['name']
 _MONEY_TYPE = '货币型'
 # 桶展示顺序（其余类型按字典序追加）
 _TYPE_ORDER = ['股票型', '混合型', '指数型', 'QDII', 'FOF', '债券型', '货币型']
+_PURCHASE_COLUMNS = [
+    'purchase_status', 'redemption_status', 'daily_limit',
+    'purchase_availability', 'purchase_as_of',
+]
 
 
 def _json_default(o):
@@ -77,6 +81,15 @@ def _to_iso(v):
     if hasattr(v, 'isoformat'):
         return v.isoformat()
     return str(v)[:10]
+
+
+def _available_pick_columns():
+    """读取已部署精选表列，兼容代码发布到迁移作业首次运行之间的窗口。"""
+    rows = mdb.executeSqlFetch(
+        "SELECT `COLUMN_NAME` FROM `INFORMATION_SCHEMA`.`COLUMNS` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = %s",
+        (_PICK_TABLE,)) or []
+    return {str(row[0]) for row in rows}
 
 
 def _fetch_rank_fields(codes):
@@ -251,17 +264,26 @@ class FundDailyPickHandler(webBase.BaseHandler):
                 return
             base['date'] = _to_iso(pick_date)
 
+            existing_columns = _available_pick_columns()
+            has_purchase = all(column in existing_columns for column in _PURCHASE_COLUMNS)
+            purchase_select = (
+                ", `purchase_status`, `redemption_status`, `daily_limit`, "
+                "`purchase_availability`, `purchase_as_of`"
+                if has_purchase else '')
             rows = mdb.executeSqlFetch(
                 f"SELECT `fund_type`, `rank_in_type`, `code`, `name`, "
                 f"`quality_score`, `timing_score`, `timing_tier`, `final_score`, "
                 f"`max_drawdown`, `rate_1y`, `score_as_of`, `nav_as_of`, "
-                f"`data_lag_days` FROM `{_PICK_TABLE}` WHERE `date` = %s "
+                f"`data_lag_days`{purchase_select} FROM `{_PICK_TABLE}` WHERE `date` = %s "
                 f"ORDER BY `fund_type`, `rank_in_type`", (pick_date,))
 
             groups = {}
-            for r in (rows or ()):
+            for row in (rows or ()):
+                core = row[:13]
+                purchase = row[13:] if has_purchase else (None, None, None, 'unknown', None)
                 (ftype, rank, code, name, quality, tscore, tier, final,
-                 mdd, rate_1y, score_as_of, nav_as_of, lag) = r
+                 mdd, rate_1y, score_as_of, nav_as_of, lag) = core
+                raw_status, redemption, daily_limit, availability, purchase_as_of = purchase
                 if base['score_as_of'] is None and score_as_of is not None:
                     base['score_as_of'] = _to_iso(score_as_of)
                 groups.setdefault(ftype, []).append({
@@ -276,6 +298,11 @@ class FundDailyPickHandler(webBase.BaseHandler):
                     'current_drawdown': None,
                     'main_industry': None,
                     'rate_1y': _round(rate_1y, 2),
+                    'purchase_status': raw_status,
+                    'redemption_status': redemption,
+                    'daily_limit': _round(daily_limit, 2),
+                    'purchase_availability': availability or 'unknown',
+                    'purchase_as_of': _to_iso(purchase_as_of),
                     'unit_nav': None,
                     'acc_nav': None,
                     'seven_day_annual': None,

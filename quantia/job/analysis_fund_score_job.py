@@ -38,6 +38,7 @@ except Exception:
 import quantia.core.tablestructure as tbs
 import quantia.core.fund.scoring as scoring
 import quantia.lib.database as mdb
+from quantia.core.fund import data_readiness
 from quantia.lib.job_tracker import record_task_start, record_task_end
 
 __author__ = 'Quantia'
@@ -50,6 +51,7 @@ _NAV_TABLE = tbs.TABLE_CN_FUND_NAV_HISTORY['name']
 _HOLDING_TABLE = tbs.TABLE_CN_FUND_HOLDING['name']
 _SCORE_TABLE = tbs.TABLE_CN_FUND_RANK_SCORE['name']
 _SCORE_COLS = list(tbs.TABLE_CN_FUND_RANK_SCORE['columns'])
+_CORE_FUND_TYPES = ('股票型', '混合型', '指数型', '债券型', '货币型')
 
 # cn_fund_rank 评分需要的列（截面因子 + 货币型因子）
 _RANK_FACTOR_COLS = [
@@ -74,6 +76,47 @@ def _load_rank_latest():
         return df, snap
     df['code'] = df['code'].astype(str)
     return df, snap
+
+
+def check_rank_readiness(job_date=None):
+    """只读 DB 评估基金排名截面；QDII/FOF 不进入首版硬门槛。"""
+    job_date = job_date or datetime.date.today()
+    threshold = float(os.environ.get('QUANTIA_FUND_COMPLETENESS_THRESHOLD', '0.90'))
+    same_day = os.environ.get('QUANTIA_ANALYSIS_SAME_DAY', '').strip().lower() in (
+        '1', 'true', 'yes', 'on')
+    snapshots = mdb.executeSqlFetch(
+        f"SELECT `date`, COUNT(*) FROM `{_RANK_TABLE}` "
+        f"GROUP BY `date` ORDER BY `date` DESC LIMIT 6") or []
+    snapshot_date = snapshots[0][0] if snapshots else None
+    latest_count = snapshots[0][1] if snapshots else 0
+    previous_counts = [row[1] for row in snapshots[1:]]
+    expected_operator = '<=' if same_day else '<'
+    expected_rows = mdb.executeSqlFetch(
+        f"SELECT MAX(`trade_date`) FROM `cn_stock_trade_date` "
+        f"WHERE `trade_date` {expected_operator} %s",
+        (job_date,)) or []
+    expected_snapshot = expected_rows[0][0] if expected_rows and expected_rows[0] else None
+    target_rows = mdb.executeSqlFetch(
+        "SELECT MAX(`trade_date`) FROM `cn_stock_trade_date` WHERE `trade_date` < %s",
+        (snapshot_date,)) if snapshot_date else []
+    target_nav_date = target_rows[0][0] if target_rows and target_rows[0] else None
+    fresh_count = core_count = 0
+    if snapshot_date and target_nav_date:
+        placeholders = ','.join(['%s'] * len(_CORE_FUND_TYPES))
+        rows = mdb.executeSqlFetch(
+            f"SELECT SUM(CASE WHEN `nav_date` >= %s THEN 1 ELSE 0 END), COUNT(*) "
+            f"FROM `{_RANK_TABLE}` WHERE `date` = %s "
+            f"AND `fund_type` IN ({placeholders})",
+            (target_nav_date, snapshot_date) + _CORE_FUND_TYPES) or []
+        if rows and rows[0]:
+            fresh_count = int(rows[0][0] or 0)
+            core_count = int(rows[0][1] or 0)
+    result = data_readiness.evaluate(
+        snapshot_date, expected_snapshot, latest_count, previous_counts,
+        fresh_count, core_count, threshold, threshold)
+    result['schedule_mode'] = 'same_day' if same_day else 't_plus_one'
+    result['target_nav_date'] = target_nav_date
+    return result
 
 
 def _load_scale_map():
@@ -191,6 +234,14 @@ def run(score_date=None, job_date=None):
     job_date = job_date or datetime.date.today()
     start = record_task_start(_JOB_NAME, 'score', job_date)
     try:
+        readiness = check_rank_readiness(job_date)
+        if not readiness['ready']:
+            message = '基金评分数据未就绪：' + '；'.join(readiness['reasons'])
+            record_task_end(_JOB_NAME, 'score', job_date, start, success=False,
+                            message=message, rows_affected=0)
+            logging.warning('%s；metrics=%s', message, readiness)
+            return 0
+        logging.info('基金评分截面门控通过：%s', readiness)
         scored, eff_date = build_score_df(score_date)
         if scored is None or len(scored.index) == 0:
             record_task_end(_JOB_NAME, 'score', job_date, start, success=True,
@@ -210,7 +261,8 @@ def run(score_date=None, job_date=None):
 
 
 def main():
-    run()
+    if run() <= 0:
+        raise SystemExit(3)
 
 
 if __name__ == '__main__':

@@ -25,6 +25,11 @@ vi.mock('@/api/fund', () => ({
             rate_1y: 313.46,
             nav_as_of: '2026-07-09',
             data_lag_days: 0,
+            purchase_status: '开放申购',
+            redemption_status: '开放赎回',
+            daily_limit: 100000000000,
+            purchase_availability: 'available',
+            purchase_as_of: '2026-07-09',
           },
         ],
       },
@@ -45,6 +50,11 @@ vi.mock('@/api/fund', () => ({
             rate_1y: 4.2,
             nav_as_of: '2026-07-09',
             data_lag_days: 0,
+            purchase_status: '限大额',
+            redemption_status: '开放赎回',
+            daily_limit: 100000,
+            purchase_availability: 'limited',
+            purchase_as_of: '2026-07-09',
           },
         ],
       },
@@ -66,6 +76,7 @@ describe('FundDailyPickTab', () => {
 
     expect(wrapper.find('.pick-capsules').exists()).toBe(false)
     expect(wrapper.text()).toContain('测试债券基金')
+    expect(wrapper.text()).toContain('限额 10万')
     expect(wrapper.text()).not.toContain('财通价值动量混合C')
   })
 })

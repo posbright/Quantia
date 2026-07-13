@@ -195,6 +195,19 @@ TABLE_CN_FUND_MANAGER = {'name': 'cn_fund_manager', 'cn': '基金经理经验',
                                      'fund_count': {'type': Integer, 'cn': '在管基金数', 'size': 90},
                                      'update_date': {'type': DATE, 'cn': '更新日', 'size': 100}}}
 
+# 基金当前申购/赎回状态（P0-A，Fetch 全量覆盖写当前态；每日精选另存当日快照）。主键 code。
+TABLE_CN_FUND_PURCHASE_STATUS = {
+    'name': 'cn_fund_purchase_status', 'cn': '基金当前申购赎回状态',
+    'columns': {'code': {'type': VARCHAR(6, _COLLATE), 'cn': '基金代码', 'size': 70},
+                'name': {'type': VARCHAR(60, _COLLATE), 'cn': '基金简称', 'size': 160},
+                'purchase_status': {'type': VARCHAR(20, _COLLATE), 'cn': '申购状态', 'size': 100},
+                'redemption_status': {'type': VARCHAR(20, _COLLATE), 'cn': '赎回状态', 'size': 100},
+                'next_open_date': {'type': DATE, 'cn': '下一开放日', 'size': 100},
+                'min_purchase': {'type': FLOAT, 'cn': '购买起点', 'size': 100},
+                'daily_limit': {'type': FLOAT, 'cn': '日累计限定金额', 'size': 130},
+                'fee': {'type': FLOAT, 'cn': '手续费', 'size': 90},
+                'fetched_at': {'type': DATETIME, 'cn': '抓取时间', 'size': 150}}}
+
 # 每日精选榜（P5，Analysis 管道生成，只读 MySQL）。主键 (date, fund_type, code)。
 # 每个 fund_type 桶内 Top10：先取桶内 Top-N by quality → AC 份额去重 → 截 Top10。
 # quality_score=cn_fund_rank_score.score（V1 主排序），timing_* 由 timing.py 计算（弱标签、
@@ -212,6 +225,11 @@ TABLE_CN_FUND_DAILY_PICK = {'name': 'cn_fund_daily_pick', 'cn': '基金每日精
                                         'final_score': {'type': FLOAT, 'cn': '综合分', 'size': 90},
                                         'max_drawdown': {'type': FLOAT, 'cn': '最大回撤', 'size': 90},
                                         'rate_1y': {'type': FLOAT, 'cn': '近1年', 'size': 70},
+                                        'purchase_status': {'type': VARCHAR(20, _COLLATE), 'cn': '申购状态', 'size': 100},
+                                        'redemption_status': {'type': VARCHAR(20, _COLLATE), 'cn': '赎回状态', 'size': 100},
+                                        'daily_limit': {'type': FLOAT, 'cn': '日累计限定金额', 'size': 130},
+                                        'purchase_availability': {'type': VARCHAR(16, _COLLATE), 'cn': '申购可用性', 'size': 110},
+                                        'purchase_as_of': {'type': DATETIME, 'cn': '申购状态时间', 'size': 150},
                                         'score_as_of': {'type': DATE, 'cn': '质量分截面日', 'size': 100},
                                         'nav_as_of': {'type': DATE, 'cn': '净值截面日', 'size': 100},
                                         'data_lag_days': {'type': Integer, 'cn': '净值滞后天数', 'size': 90}}}

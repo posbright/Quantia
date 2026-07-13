@@ -1215,3 +1215,29 @@ GET /quantia/api/backtest/portfolio/detail?id={backtest_id}
 ```
 
 返回简单交并集统计；不含 shapley/ab_steps/overlap 字段。
+
+---
+
+## 基金申购状态
+
+### GET `/quantia/api/fund/purchase_status?code=017730`
+
+读取 Fetch 管道落库的基金当前申购/赎回状态，不在 Handler 中调用外部接口。
+
+```json
+{
+  "code": "017730",
+  "data_available": true,
+  "purchase_status": "限大额",
+  "redemption_status": "开放赎回",
+  "next_open_date": null,
+  "min_purchase": 1.0,
+  "daily_limit": 100.0,
+  "fee": 0.15,
+  "availability": "limited",
+  "fetched_at": "2026-07-13T10:00:00",
+  "note": "申购状态来自公开基金销售数据，可能随基金公司公告变化，请以下单页面为准。"
+}
+```
+
+`availability` 取值：`available`（开放）、`limited`（限额但可申购）、`unavailable`（暂停/封闭，精选剔除）、`unknown`（缺失、未知或超过 2 个自然日未更新）。每日精选 API 还会返回榜单生成时快照的 `purchase_status`、`redemption_status`、`daily_limit`、`purchase_availability`、`purchase_as_of`。

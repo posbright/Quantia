@@ -61,7 +61,8 @@ QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 2: K线缓存更新" "$SCRIPT_DIR/run_k
 rc=$?; [ $rc -ne 0 ] && FAILED=$((FAILED + 1)); record_stage "Phase 2: K线缓存更新" $rc
 
 # Phase 3: 数据分析（零 API，纯本地计算）
-QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 3: 数据分析" "$SCRIPT_DIR/run_analysis"
+# 显式告知基金就绪门禁：本编排器在 T 日抓取后同日分析；独立 run_analysis 默认 T+1。
+QUANTIA_ANALYSIS_SAME_DAY=1 QUANTIA_NO_SERVICE_STOP=1 run_sub "Phase 3: 数据分析" "$SCRIPT_DIR/run_analysis"
 rc=$?; [ $rc -ne 0 ] && FAILED=$((FAILED + 1)); record_stage "Phase 3: 数据分析" $rc
 
 # 主动恢复服务（trap 也会兜底）

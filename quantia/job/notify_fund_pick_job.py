@@ -179,17 +179,25 @@ def read_latest_picks(pick_date=None):
     if pd is None:
         return None, []
 
+    column_rows = mdb.executeSqlFetch(
+        "SELECT `COLUMN_NAME` FROM `INFORMATION_SCHEMA`.`COLUMNS` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = %s", (_PICK_TABLE,)) or []
+    columns = {str(row[0]) for row in column_rows}
+    has_purchase = {'purchase_availability', 'daily_limit'}.issubset(columns)
+    purchase_select = ', `purchase_availability`, `daily_limit`' if has_purchase else ''
     rows = mdb.executeSqlFetch(
         f"SELECT `fund_type`, `rank_in_type`, `code`, `name`, `quality_score`, "
         f"`timing_tier`, `timing_score`, `rate_1y`, `max_drawdown`, "
-        f"`data_lag_days`, `nav_as_of` "
+        f"`data_lag_days`, `nav_as_of`{purchase_select} "
         f"FROM `{_PICK_TABLE}` WHERE `date` = %s "
         f"ORDER BY `fund_type`, `rank_in_type`", (pd,)) or []
 
     groups = {}
-    for r in rows:
+    for row in rows:
+        core = row[:11]
+        availability, daily_limit = row[11:] if has_purchase else ('unknown', None)
         (ftype, rank, code, name, quality, tier, tscore,
-         rate_1y, mdd, lag, nav_as_of) = r
+         rate_1y, mdd, lag, nav_as_of) = core
         bucket = groups.setdefault(ftype, [])
         if len(bucket) >= _TOP_N_PER_BUCKET:
             continue
@@ -204,6 +212,8 @@ def read_latest_picks(pick_date=None):
             'data_lag_days': int(lag) if lag is not None else None,
             'nav_as_of': _to_date(nav_as_of),
             'seven_day_annual': None,
+            'purchase_availability': availability or 'unknown',
+            'daily_limit': _num(daily_limit),
         })
 
     # 货币型桶：补 7 日年化（cn_fund_rank），对齐原型「收益稳定性」展示
@@ -234,6 +244,12 @@ def _fmt_pick_line(pick, timing_applicable, base):
     q = pick.get('quality_score')
     if q is not None:
         parts.append(f"质量{q:.0f}")
+    availability = pick.get('purchase_availability')
+    if availability == 'limited':
+        limit = pick.get('daily_limit')
+        parts.append(f"限额{limit:,.0f}元" if limit is not None else '限大额')
+    elif availability == 'unknown':
+        parts.append('申购状态待核实')
     if timing_applicable:
         tier = pick.get('timing_tier')
         if tier:

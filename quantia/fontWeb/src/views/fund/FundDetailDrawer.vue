@@ -28,6 +28,21 @@
           <span v-for="(t, i) in valueTags" :key="i" class="fdd-value-chip">{{ t }}</span>
         </div>
 
+        <div v-if="purchase" class="fdd-section fdd-purchase">
+          <div class="fdd-section-title">申购与赎回</div>
+          <div class="fdd-purchase-grid">
+            <div>
+              <span>申购</span>
+              <b :class="`purchase--${purchase.availability}`">{{ purchaseLabel }}</b>
+            </div>
+            <div><span>赎回</span><b>{{ purchase.redemption_status || '待核实' }}</b></div>
+            <div><span>起购</span><b>{{ formatPurchaseMoney(purchase.min_purchase) }}</b></div>
+            <div><span>日限额</span><b>{{ formatPurchaseMoney(purchase.daily_limit) }}</b></div>
+          </div>
+          <div v-if="purchase.next_open_date" class="fdd-timing-note">下一开放日 {{ purchase.next_open_date }}</div>
+          <div class="fdd-timing-note">{{ purchase.note }}</div>
+        </div>
+
         <!-- 关键指标条（§9.3 KPI：近1/3/5年/夏普/回撤/基准超额，正负着色）-->
         <div v-if="kpiItems.length" class="fdd-kpi-bar">
           <div v-for="k in kpiItems" :key="k.label" class="fdd-kpi">
@@ -368,6 +383,7 @@ import {
   getFundNavHistory,
   getFundNavPeer,
   getFundTiming,
+  getFundPurchaseStatus,
   getFundLookThrough,
   getFundStyle,
   getFundManager,
@@ -378,6 +394,7 @@ import {
   type FundNavHistory,
   type FundNavPeer,
   type FundTiming,
+  type FundPurchaseStatus,
   type FundLookThrough,
   type FundStyle,
   type FundManager,
@@ -417,6 +434,7 @@ const loadError = ref('')
 const peer = ref<FundPeerCompare | null>(null)
 const composite = ref<FundComposite | null>(null)
 const timing = ref<FundTiming | null>(null)
+const purchase = ref<FundPurchaseStatus | null>(null)
 const lookThrough = ref<FundLookThrough | null>(null)
 const style = ref<FundStyle | null>(null)
 const manager = ref<FundManager | null>(null)
@@ -446,6 +464,20 @@ const navRanges = [
   { value: '3y', label: '近3年' },
   { value: 'all', label: '成立以来' },
 ]
+const purchaseLabel = computed(() => {
+  if (!purchase.value) return '待核实'
+  if (purchase.value.availability === 'available') return '开放申购'
+  if (purchase.value.availability === 'limited') return purchase.value.purchase_status || '限大额'
+  if (purchase.value.availability === 'unavailable') return purchase.value.purchase_status || '暂停申购'
+  return '状态待核实'
+})
+
+function formatPurchaseMoney(value: number | null): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  if (value >= 100000000) return `${(value / 100000000).toFixed(value % 100000000 ? 1 : 0)}亿元`
+  if (value >= 10000) return `${(value / 10000).toFixed(value % 10000 ? 1 : 0)}万元`
+  return `${value.toLocaleString()}元`
+}
 const hasNav = computed(() => !!(navHistory.value && navHistory.value.points.length))
 
 // 行业饼图
@@ -847,6 +879,7 @@ async function loadData() {
   peer.value = null
   composite.value = null
   timing.value = null
+  purchase.value = null
   lookThrough.value = null
   style.value = null
   manager.value = null
@@ -855,14 +888,16 @@ async function loadData() {
   aiNote.value = ''
   aiSources.value = []
   try {
-    const [peerRes, compRes, timingRes] = await Promise.allSettled([
+    const [peerRes, compRes, timingRes, purchaseRes] = await Promise.allSettled([
       getFundPeerCompare(props.code) as unknown as Promise<FundPeerCompare>,
       getFundCompositeAnalysis(props.code) as unknown as Promise<FundComposite>,
       getFundTiming(props.code) as unknown as Promise<FundTiming>,
+      getFundPurchaseStatus(props.code) as unknown as Promise<FundPurchaseStatus>,
     ])
     if (peerRes.status === 'fulfilled') peer.value = peerRes.value
     if (compRes.status === 'fulfilled') composite.value = compRes.value
     if (timingRes.status === 'fulfilled') timing.value = timingRes.value
+    if (purchaseRes.status === 'fulfilled') purchase.value = purchaseRes.value
     if (peerRes.status === 'rejected' && compRes.status === 'rejected') {
       loadError.value = '加载基金分析数据失败'
     }
@@ -1009,6 +1044,26 @@ watch(
   border-left: 3px solid #409eff;
   padding-left: 8px;
 }
+.fdd-purchase-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+  padding: 10px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: #fafbfc;
+}
+.fdd-purchase-grid > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+.fdd-purchase-grid span { color: #909399; }
+.fdd-purchase-grid b { color: #303133; font-weight: 600; }
+.fdd-purchase-grid .purchase--available { color: #15803d; }
+.fdd-purchase-grid .purchase--limited { color: #b45309; }
+.fdd-purchase-grid .purchase--unavailable { color: #b91c1c; }
 .fdd-peer-count {
   font-size: 12px;
   font-weight: 400;

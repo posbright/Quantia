@@ -36,9 +36,9 @@ cron/
 | 脚本 | 频率 | Python 入口 | 说明 |
 |------|------|-------------|------|
 | `run_hourly` | 盘中/收盘 | `basic_data_daily_job.py` | 实时行情快照 |
-| `run_fetch` | 工作日 | `fetch_daily_job.py` + `fetch_fund_nav_history_job.py` + `fetch_index_valuation_job.py` | API 数据采集（行情+选股+资金流向）；附 F8 基金净值历史回填 + T3 宽基指数估值（PE/PB 历史分位 → `cn_index_valuation`，供每日精选榜择时） |
+| `run_fetch` | 工作日 | `fetch_daily_job.py` + `fetch_fund_nav_history_job.py` + `fetch_fund_purchase_status_job.py` + `fetch_index_valuation_job.py` | API 数据采集（行情+选股+资金流向）；附 F8 基金净值历史回填、基金申购/赎回当前状态、T3 宽基指数估值 |
 | `run_kline_cache` | 工作日 | `kline_cache_daily_job.py` | K线缓存增量更新（~5000只股票） |
-| `run_analysis` | 工作日 | `analysis_daily_job.py` + `analysis_fund_score_job.py` + `analysis_fund_pick_job.py` + `notify_fund_pick_job.py` | 本地分析（GPT+指标+策略+回测）；附 F7 基金多因子综合评分 + P5 每日精选榜 + P6 精选榜钉钉推送 |
+| `run_analysis` | 工作日 | `analysis_daily_job.py` + `analysis_fund_score_job.py` + `analysis_fund_pick_job.py` + `notify_fund_pick_job.py` | 本地分析；基金评分先检查快照规模与核心类型净值新鲜度（默认 90%），未就绪则跳过精选和推送，禁止回退旧分 |
 | `run_paper_trading` | 工作日 | `paper_trading_daily_job.py` | 模拟交易每日执行 |
 | `run_report_alert` | 工作日 | `stock_report_scheduled.py` | AI 定时报告分析 + 评分预警推送（模拟交易后） |
 | `run_events_patents` | 工作日 | `stock_announcement_em` + `stock_patent_crawler` + `aggregate_patent_data` | 公告事件采集 + 专利挖掘采集 + 专利含金量聚合（轻量 API/计算，非关键链） |
@@ -448,6 +448,9 @@ crontab -e
 > **编排模式注意**：
 > - `run_workdayly` 内部 Phase 3/4/5（analysis/paper/report）按 **T 日当晚连续**跑完，不再拆成 T+1 凌晨。
 >   单机一晚跑完全链路；若担心 18:10 启动后总时长过长（回测最长 ~2h），可把启动改到 17:00 或盘后更早。
+> - 编排器会向 `run_analysis` 注入 `QUANTIA_ANALYSIS_SAME_DAY=1`：基金评分日期门禁期望 T 日快照；独立拆分模式不注入，
+>   T+1 凌晨会期望 T 日快照。`QUANTIA_FUND_SETTLEMENT_HOUR=23` 只表示何时可将已有基金快照视为已结算并跳过重复抓取，
+>   不会阻止 18:10 的首次抓取；无论哪种模式，规模和核心类型净值新鲜度未达门槛都会跳过评分、精选与推送。
 > - 编排模式下**不要再单独调度** `run_fetch`/`run_kline_cache`/`run_analysis`/`run_paper_trading`/
 >   `run_report_alert`/`run_events_patents`/`refresh_composite_universe`/`refresh_ai_kb`/`run_fund_holding_batch`——它们已被 `run_workdayly` 接管，
 >   重复调度会与编排实例抢锁/抢内存。
@@ -667,6 +670,7 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 | `QUANTIA_STOP_SERVICES` | nginx | 内存密集任务前停止的系统服务（空格分隔） |
 | `QUANTIA_NO_SERVICE_STOP` | 0 | 设为 `1` 禁用自动停止/恢复服务 |
 | `QUANTIA_SETTLEMENT_HOUR` | 18 | API 数据结算时间（小时） |
+| `QUANTIA_FUND_SETTLEMENT_HOUR` | 23 | 基金快照可信结算时间；到点且当日数据完整时才允许跳过重复抓取 |
 | `QUANTIA_FETCH_TIMEOUT` | 7200 | `run_fetch` 超时秒数（默认 2 小时） |
 | `QUANTIA_FUND_NAV_TIMEOUT` | 3600 | 基金净值历史回填超时秒数 |
 | `QUANTIA_INDEX_VALUATION_TIMEOUT` | 1800 | T3 宽基指数估值采集超时秒数（`fetch_index_valuation_job`，附于 `run_fetch`；首次全历史铺底较慢可临时放大） |
@@ -676,6 +680,7 @@ python3 quantia/job/indicators_data_daily_job.py 2026-02-03,2026-02-05
 | `QUANTIA_KLINE_TIMEOUT` | 21600 | K线缓存增量更新超时秒数 |
 | `QUANTIA_ANALYSIS_TIMEOUT` | 14400 | 数据分析超时秒数 |
 | `QUANTIA_FUND_SCORE_TIMEOUT` | 1800 | 基金综合评分超时秒数 |
+| `QUANTIA_FUND_COMPLETENESS_THRESHOLD` | 0.90 | 基金快照规模与核心类型净值新鲜度硬门槛；未达标时宁缺勿旧 |
 | `QUANTIA_FUND_PICK_TIMEOUT` | 600 | 基金每日精选榜超时秒数 |
 | `QUANTIA_FUND_PICK_PUSH_TIMEOUT` | 180 | 基金精选榜钉钉推送超时秒数（`notify_fund_pick_job`） |
 | `QUANTIA_PAPER_TIMEOUT` | 3600 | 模拟交易超时秒数 |

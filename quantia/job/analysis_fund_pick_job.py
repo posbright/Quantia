@@ -41,7 +41,7 @@ except Exception:
 
 import quantia.core.tablestructure as tbs
 import quantia.lib.database as mdb
-from quantia.core.fund import pick_selection, timing, valuation_lookup
+from quantia.core.fund import pick_selection, purchase_status, timing, valuation_lookup
 from quantia.lib.job_tracker import record_task_start, record_task_end
 
 __author__ = 'Quantia'
@@ -51,6 +51,7 @@ _JOB_NAME = 'run_fund_pick'
 _SCORE_TABLE = tbs.TABLE_CN_FUND_RANK_SCORE['name']
 _RANK_TABLE = tbs.TABLE_CN_FUND_RANK['name']
 _NAV_TABLE = tbs.TABLE_CN_FUND_NAV_HISTORY['name']
+_PURCHASE_TABLE = tbs.TABLE_CN_FUND_PURCHASE_STATUS['name']
 _PICK_TABLE = tbs.TABLE_CN_FUND_DAILY_PICK['name']
 _PICK_COLS = list(tbs.TABLE_CN_FUND_DAILY_PICK['columns'])
 
@@ -125,6 +126,45 @@ def _load_candidates(score_as_of, rank_as_of):
     return buckets
 
 
+def _load_purchase_map():
+    """读基金当前申购状态；缺表时由上层统一降级 unknown。"""
+    if not mdb.checkTableIsExist(_PURCHASE_TABLE):
+        return {}
+    rows = mdb.executeSqlFetch(
+        f"SELECT `code`, `purchase_status`, `redemption_status`, `daily_limit`, "
+        f"`fetched_at` FROM `{_PURCHASE_TABLE}`")
+    return {
+        str(code): {
+            'purchase_status': raw_status,
+            'redemption_status': redemption,
+            'daily_limit': _num(daily_limit),
+            'purchase_as_of': fetched_at,
+        }
+        for code, raw_status, redemption, daily_limit, fetched_at in (rows or ())
+        if code is not None
+    }
+
+
+def _apply_purchase_status(candidates, status_map, pick_date):
+    """附加状态并剔除明确不可申购项；限额/未知保留原质量顺序。"""
+    available = []
+    for candidate in candidates:
+        row = status_map.get(str(candidate.get('code')), {})
+        availability = purchase_status.classify(
+            row.get('purchase_status'), row.get('purchase_as_of'), pick_date)
+        enriched = dict(candidate)
+        enriched.update({
+            'purchase_status': row.get('purchase_status'),
+            'redemption_status': row.get('redemption_status'),
+            'daily_limit': row.get('daily_limit'),
+            'purchase_availability': availability,
+            'purchase_as_of': row.get('purchase_as_of'),
+        })
+        if availability != purchase_status.UNAVAILABLE:
+            available.append(enriched)
+    return available
+
+
 def _load_nav_map(codes, pick_date):
     """批量读候选净值序列（<= pick_date，升序）。返回 {code: [(date, unit, acc)]}。"""
     nav_map = {}
@@ -192,10 +232,13 @@ def build_pick_df(pick_date):
     if not buckets:
         return None, score_as_of
 
+    status_map = _load_purchase_map()
+
     # 先桶内选出 Top10（去重后），再统一批量取净值算 timing
     selected = []
     for fund_type, cands in buckets.items():
-        picked = pick_selection.select_bucket_top(cands, top_k=_TOP_K, pre_n=_PRE_N)
+        eligible = _apply_purchase_status(cands, status_map, pick_date)
+        picked = pick_selection.select_bucket_top(eligible, top_k=_TOP_K, pre_n=_PRE_N)
         selected.extend(picked)
 
     has_nav = mdb.checkTableIsExist(_NAV_TABLE)
@@ -221,6 +264,11 @@ def build_pick_df(pick_date):
             'final_score': quality,  # V1 口径 C：final=quality
             'max_drawdown': r.get('max_drawdown'),
             'rate_1y': r.get('rate_1y'),
+            'purchase_status': r.get('purchase_status'),
+            'redemption_status': r.get('redemption_status'),
+            'daily_limit': r.get('daily_limit'),
+            'purchase_availability': r.get('purchase_availability'),
+            'purchase_as_of': r.get('purchase_as_of'),
             'score_as_of': score_as_of,
             'nav_as_of': nav_as_of,
             'data_lag_days': lag,
@@ -236,11 +284,33 @@ def build_pick_df(pick_date):
     return df, score_as_of
 
 
+def _ensure_pick_purchase_columns():
+    """幂等迁移现有精选表的 P0-A 快照列。"""
+    if not mdb.checkTableIsExist(_PICK_TABLE):
+        return
+    definitions = {
+        'purchase_status': 'VARCHAR(20) NULL',
+        'redemption_status': 'VARCHAR(20) NULL',
+        'daily_limit': 'FLOAT NULL',
+        'purchase_availability': 'VARCHAR(16) NULL',
+        'purchase_as_of': 'DATETIME NULL',
+    }
+    rows = mdb.executeSqlFetch(
+        "SELECT `COLUMN_NAME` FROM `INFORMATION_SCHEMA`.`COLUMNS` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = %s",
+        (_PICK_TABLE,))
+    existing = {str(row[0]) for row in (rows or ())}
+    for column, ddl in definitions.items():
+        if column not in existing:
+            mdb.executeSql(f"ALTER TABLE `{_PICK_TABLE}` ADD COLUMN `{column}` {ddl}")
+
+
 def _save_picks(df, pick_date):
     """删当日旧榜后写入（主键 (date, fund_type, code)）。"""
     if df is None or len(df.index) == 0:
         return 0
     if mdb.checkTableIsExist(_PICK_TABLE):
+        _ensure_pick_purchase_columns()
         try:
             mdb.executeSql(
                 f"DELETE FROM `{_PICK_TABLE}` WHERE `date` = %s", (pick_date,))

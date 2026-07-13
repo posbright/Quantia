@@ -132,6 +132,34 @@ class TestFundEmHolding(unittest.TestCase):
         self.assertIsNone(fem._map_holding_columns(pd.DataFrame(), '1'))
 
 
+class TestFundEmPurchaseStatus(unittest.TestCase):
+
+    def test_map_purchase_status(self):
+        source = pd.DataFrame({
+            '基金代码': ['1664', '017730'],
+            '基金简称': ['基金A', '基金B'],
+            '申购状态': ['开放申购', '限大额'],
+            '赎回状态': ['开放赎回', '开放赎回'],
+            '下一开放日': ['2026-07-15', '---'],
+            '购买起点': ['10', '1,000'],
+            '日累计限定金额': ['100000000000', '100'],
+            '手续费': ['0.15%', '---'],
+        })
+        out = fem._map_purchase_status(source)
+        self.assertEqual(list(out.columns), list(fem._PURCHASE_COL_MAP.values()))
+        self.assertEqual(out['code'].tolist(), ['001664', '017730'])
+        self.assertEqual(out['next_open_date'].iloc[0], datetime.date(2026, 7, 15))
+        self.assertTrue(pd.isna(out['next_open_date'].iloc[1]))
+        self.assertEqual(out['min_purchase'].iloc[1], 1000.0)
+        self.assertEqual(out['daily_limit'].iloc[1], 100.0)
+        self.assertTrue(pd.isna(out['fee'].iloc[1]))
+
+    def test_map_purchase_status_rejects_missing_contract(self):
+        source = pd.DataFrame({'基金代码': ['000001'], '申购状态': ['开放申购']})
+        self.assertIsNone(fem._map_purchase_status(source))
+        self.assertIsNone(fem._map_purchase_status(pd.DataFrame()))
+
+
 # ── F8 job ──────────────────────────────────────────────────────────
 class TestNavHistoryJob(unittest.TestCase):
 

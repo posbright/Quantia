@@ -39,20 +39,35 @@ record_stage "数据分析 (analysis_daily_job)" $ANALYSIS_RC
 # 依赖 run_fetch 已刷新基金排名与净值历史。失败不阻断其他分析。
 run_job "基金综合评分 (analysis_fund_score_job)" \
     "quantia/job/analysis_fund_score_job.py" "${QUANTIA_FUND_SCORE_TIMEOUT:-1800}"
-record_stage "基金综合评分 (analysis_fund_score_job)" $? warn
+FUND_SCORE_RC=$?
+record_stage "基金综合评分 (analysis_fund_score_job)" $FUND_SCORE_RC warn
 
 # ── P5 场外基金每日精选榜（零 API，读 cn_fund_rank_score + cn_fund_rank + cn_fund_nav_history）──
-# 依赖上一步基金评分已落库当日截面；桶内 Top-N→AC 去重→Top10，timing 弱标签。失败不阻断。
-run_job "基金每日精选榜 (analysis_fund_pick_job)" \
-    "quantia/job/analysis_fund_pick_job.py" "${QUANTIA_FUND_PICK_TIMEOUT:-600}"
-record_stage "基金每日精选榜 (analysis_fund_pick_job)" $? warn
+# 仅评分成功才生成；禁止评分未就绪时回退旧分伪装当日榜单。
+FUND_PICK_RC=3
+if [ $FUND_SCORE_RC -eq 0 ]; then
+    run_job "基金每日精选榜 (analysis_fund_pick_job)" \
+        "quantia/job/analysis_fund_pick_job.py" "${QUANTIA_FUND_PICK_TIMEOUT:-600}"
+    FUND_PICK_RC=$?
+    record_stage "基金每日精选榜 (analysis_fund_pick_job)" $FUND_PICK_RC warn
+else
+    log_warn "基金评分未就绪，跳过每日精选榜与推送（宁缺勿旧）"
+    record_stage "基金每日精选榜 (评分未就绪，已跳过)" 3 warn 0
+fi
 
 # ── P6 基金精选榜钉钉推送（零 API，只读 cn_fund_daily_pick + 发 webhook）──
 # 依赖上一步榜单已落库；复用 cn_stock_notification_event 幂等（dedupe_key）+ 通知配置门控
 # （event_type=fund_daily_pick，enabled 默认关，运维在通知设置启用）。未启用记 skipped，失败不阻断。
-run_job "基金精选榜推送 (notify_fund_pick_job)" \
-    "quantia/job/notify_fund_pick_job.py" "${QUANTIA_FUND_PICK_PUSH_TIMEOUT:-180}"
-record_stage "基金精选榜推送 (notify_fund_pick_job)" $? warn
+if [ $FUND_PICK_RC -eq 0 ]; then
+    run_job "基金精选榜推送 (notify_fund_pick_job)" \
+        "quantia/job/notify_fund_pick_job.py" "${QUANTIA_FUND_PICK_PUSH_TIMEOUT:-180}"
+    record_stage "基金精选榜推送 (notify_fund_pick_job)" $? warn
+elif [ $FUND_SCORE_RC -eq 0 ]; then
+    log_warn "基金精选榜生成失败，跳过推送"
+    record_stage "基金精选榜推送 (榜单失败，已跳过)" 3 warn 0
+else
+    record_stage "基金精选榜推送 (评分未就绪，已跳过)" 3 warn 0
+fi
 
 # 在 workdayly.log 记录本次各子任务成功/失败 + 耗时（拆分模式下生产可见）
 print_stage_summary

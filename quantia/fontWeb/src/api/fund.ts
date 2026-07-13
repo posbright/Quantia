@@ -255,6 +255,30 @@ export function getFundTiming(code: string) {
   })
 }
 
+export type FundPurchaseAvailability = 'available' | 'limited' | 'unavailable' | 'unknown'
+
+export interface FundPurchaseStatus {
+  code: string
+  data_available: boolean
+  purchase_status: string | null
+  redemption_status: string | null
+  next_open_date: string | null
+  min_purchase: number | null
+  daily_limit: number | null
+  fee: number | null
+  availability: FundPurchaseAvailability
+  fetched_at: string | null
+  note: string
+}
+
+export function getFundPurchaseStatus(code: string) {
+  return request<FundPurchaseStatus>({
+    url: '/api/fund/purchase_status',
+    method: 'get',
+    params: { code },
+  })
+}
+
 // ── T6 穿透式持仓位置（P4，季报前十大重仓股技术位置，仅展示参考卡）──────
 
 export interface FundLookThroughHolding {
@@ -398,6 +422,11 @@ export interface FundDailyPickItem {
   seven_day_annual: number | null
   nav_as_of: string | null
   data_lag_days: number | null
+  purchase_status: string | null
+  redemption_status: string | null
+  daily_limit: number | null
+  purchase_availability: FundPurchaseAvailability
+  purchase_as_of: string | null
 }
 
 export interface FundDailyPickBucket {
