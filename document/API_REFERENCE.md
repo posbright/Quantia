@@ -902,14 +902,14 @@ GET /quantia/api/trade_date
 - `local`：调用 `QUANTIA_KPRED_LOCAL_URL`，默认不需要 Key，可选配置本地 Bearer Key。
 - 本地服务必须兼容 `POST {"code":"300308","days":5}`；可直接返回业务对象，也可返回 `{code:0,data:{...}}`。
 
-**内置当日缓存**：同一股票+天数在同一天内只调用一次上游 API，后续所有用户请求直接返回缓存结果（<10ms）。缓存与用户无关，按 `{code}_{days}_{YYYYMMDD}` 维度全局共享，跨天自动清空。
+**内置当日缓存**：同一 provider+股票+天数在同一天内只调用一次上游 API，后续所有用户请求直接返回缓存结果（<10ms）。缓存与用户无关，按 `{provider}_{code}_{days}_{YYYYMMDD}` 维度全局共享，跨天自动清空。
 
 **请求体 (JSON)**:
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | code | string | 是 | 6 位 A 股代码 |
-| days | number | 否 | 预测天数 1~30，默认 5 |
+| days | number | 否 | 预测交易日，仅支持 `1/3/5/10/15/30`，默认 5；非法值返回 400，不会静默截断 |
 | refresh | boolean | 否 | true=绕过服务端缓存强制重新预测 |
 | timeout | number | 否 | 覆盖请求超时（秒，1~600） |
 
@@ -950,6 +950,7 @@ GET /quantia/api/trade_date
 | HTTP 状态码 | msg | 说明 |
 |------------|-----|------|
 | 400 | 缺少 code 参数 / code 格式无效 | 参数校验失败 |
+| 400 | days 仅支持 `[1, 3, 5, 10, 15, 30]` | 预测周期不在配置白名单 |
 | 401 | API Key 无效 | 当前 provider 的 API Key 错误 |
 | 429 | 月度额度已用完 | AgentPit 配额耗尽 |
 | 500 | 服务端未配置 QUANTIA_AGENTPIT_API_KEY | AgentPit 模式未配置环境变量 |
@@ -965,6 +966,8 @@ GET /quantia/api/trade_date
 | QUANTIA_KPRED_LOCAL_URL | 否 | `http://127.0.0.1:18081/v1/open-api/kpred` | 本地兼容服务端点 |
 | QUANTIA_KPRED_LOCAL_API_KEY | 否 | - | 本地服务可选 Bearer Key |
 | QUANTIA_KPRED_TIMEOUT | 否 | 300 | 供应商请求超时（秒） |
+| QUANTIA_KPRED_MAX_DAYS | 否 | 30 | 对外最大预测交易日，须与本地服务一致 |
+| QUANTIA_KPRED_HORIZONS | 否 | `1,3,5,10,15,30` | 允许的标准预测/评测周期 |
 
 **前端交互**:
 

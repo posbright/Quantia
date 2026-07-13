@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_URL = 'https://api.agentpit.io/v1/open-api/kpred'
 _DEFAULT_LOCAL_URL = 'http://127.0.0.1:18081/v1/open-api/kpred'
 _DEFAULT_TIMEOUT = 300  # seconds
+_DEFAULT_HORIZONS = (1, 3, 5, 10, 15, 30)
 _executor = ThreadPoolExecutor(max_workers=4)
 
 # ===== 服务端当日缓存 =====
@@ -107,6 +108,18 @@ def _get_timeout(request_timeout=None) -> int:
         except (TypeError, ValueError):
             pass
     return _DEFAULT_TIMEOUT
+
+
+def _get_supported_horizons() -> tuple[int, ...]:
+    """返回允许的预测交易日选项，非法配置直接失败。"""
+    raw = os.environ.get('QUANTIA_KPRED_HORIZONS', '1,3,5,10,15,30')
+    try:
+        horizons = tuple(sorted({int(value.strip()) for value in raw.split(',') if value.strip()}))
+    except ValueError as exc:
+        raise ValueError('QUANTIA_KPRED_HORIZONS 必须是逗号分隔的正整数') from exc
+    if not horizons or horizons[0] < 1 or horizons[-1] > 120:
+        raise ValueError('QUANTIA_KPRED_HORIZONS 必须位于 1~120 且不能为空')
+    return horizons
 
 
 def _do_provider_request(api_url: str, api_key: str, code: str, days: int, timeout: int,
@@ -280,13 +293,33 @@ class GetKpredHandler(tornado.web.RequestHandler):
                                   ensure_ascii=False))
             return
 
-        max_days = max(1, min(120, int(os.environ.get('QUANTIA_KPRED_MAX_DAYS', '10'))))
+        try:
+            supported_horizons = _get_supported_horizons()
+            max_days = max(1, min(120, int(os.environ.get(
+                'QUANTIA_KPRED_MAX_DAYS', str(max(_DEFAULT_HORIZONS))
+            ))))
+            supported_horizons = tuple(day for day in supported_horizons if day <= max_days)
+            if not supported_horizons:
+                raise ValueError('预测周期配置为空，请检查 QUANTIA_KPRED_MAX_DAYS/HORIZONS')
+        except ValueError as e:
+            self.set_status(500)
+            self.write(json.dumps({'code': -1, 'msg': str(e)}, ensure_ascii=False))
+            return
         days = body.get('days', 5)
         try:
             days = int(days)
-            days = max(1, min(max_days, days))
         except (TypeError, ValueError):
-            days = 5
+            self.set_status(400)
+            self.write(json.dumps({'code': -1, 'msg': 'days 必须是整数'}, ensure_ascii=False))
+            return
+        if days not in supported_horizons:
+            self.set_status(400)
+            self.write(json.dumps({
+                'code': -1,
+                'msg': f'days 仅支持 {list(supported_horizons)}',
+                'supported_horizons': list(supported_horizons),
+            }, ensure_ascii=False))
+            return
 
         # === 服务端缓存命中：同一股票+天数+日期直接返回，无需调用上游 ===
         refresh = body.get('refresh', False)  # 前端"刷新"按钮传 refresh:true 绕过缓存

@@ -158,7 +158,10 @@ class TestKpredHandler(AsyncHTTPTestCase):
             'open': 10.0, 'high': 10.3, 'low': 9.8, 'close': 10.1,
             'volume': 1000, 'amount': 10100,
         })
-        with mock.patch.dict(os.environ, {'KRONOS_LOOKBACK': '90'}, clear=False), \
+        with mock.patch.dict(os.environ, {
+            'KRONOS_LOOKBACK': '90',
+            'KRONOS_REJECT_STALE_HISTORY': '1',
+        }, clear=False), \
                 mock.patch('quantia.core.backtest.data_feed.load_stock_data',
                            return_value=frame), \
                 mock.patch.object(kh, '_completed_daily_cutoff',
@@ -166,21 +169,19 @@ class TestKpredHandler(AsyncHTTPTestCase):
             with self.assertRaisesRegex(ValueError, '本地历史已过期'):
                 kh._prepare_local_payload('300308', 3)
 
-    def test_max_prediction_days_is_configurable(self):
+    def test_unsupported_prediction_horizon_is_rejected(self):
         env = {
             'QUANTIA_KPRED_PROVIDER': 'local',
-            'QUANTIA_KPRED_MAX_DAYS': '60',
-        }
-        local_payload = {
-            'code': '300308', 'days': 60, 'history': [], 'future_timestamps': [],
+            'QUANTIA_KPRED_MAX_DAYS': '30',
+            'QUANTIA_KPRED_HORIZONS': '1,3,5,10,15,30',
         }
         with mock.patch.dict(os.environ, env, clear=False), \
-             mock.patch.object(kh, '_prepare_local_payload', return_value=local_payload) as prepare, \
-             mock.patch.object(kh, '_do_provider_request', return_value=_prediction_payload()):
-            response = self._post({'code': '300308', 'days': 99})
+             mock.patch.object(kh, '_prepare_local_payload') as prepare:
+            response = self._post({'code': '300308', 'days': 20})
 
-        self.assertEqual(response.code, 200)
-        prepare.assert_called_once_with('300308', 60)
+        self.assertEqual(response.code, 400)
+        self.assertEqual(json.loads(response.body)['supported_horizons'], [1, 3, 5, 10, 15, 30])
+        prepare.assert_not_called()
 
     def test_invalid_provider_response_returns_502_and_is_not_cached(self):
         env = {'QUANTIA_KPRED_PROVIDER': 'local'}

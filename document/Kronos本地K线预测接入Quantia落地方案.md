@@ -52,7 +52,8 @@ Quantia 配置：
 QUANTIA_KPRED_PROVIDER=local
 QUANTIA_KPRED_LOCAL_URL=http://127.0.0.1:18081/v1/open-api/kpred
 KRONOS_LOOKBACK=256
-QUANTIA_KPRED_MAX_DAYS=10
+QUANTIA_KPRED_MAX_DAYS=30
+QUANTIA_KPRED_HORIZONS=1,3,5,10,15,30
 KRONOS_REJECT_STALE_HISTORY=1
 ```
 
@@ -147,8 +148,8 @@ cd C:\xapproject\Quantia\Kronos
 | 使用场景 | lookback | pred days | sample_count | 说明 |
 | --- | ---: | ---: | ---: | --- |
 | 当前 C1 特征兼容 | 90 | 5 | 10 | 必须匹配现有 `kronos_features_report.json` 的训练口径 |
-| 生产页面默认 | 256 | 3 / 5 / 10 | 1 | 固定回归证据优于 512；实际延迟需继续监控 |
-| 低延迟候选 | 90～128 | 3 / 5 / 10 | 1 | 当前 CPU 3 日约 0.4 秒，需 shadow 确认精度损失 |
+| 生产页面选项 | 256 | 1 / 3 / 5 / 10 / 15 / 30 | 1 | 30 步回归通过；15/30 日真实准确率仍需 shadow 验收 |
+| 低延迟候选 | 90～128 | 1 / 3 / 5 / 10 / 15 / 30 | 1 | 当前 CPU 3 日约 0.4 秒，需 shadow 确认精度损失 |
 | 中期趋势研究 | 256～400 | 20～30 | 5～10 | 只看趋势和分布，不宜当精确价格 |
 | 超过 30 个交易日 | 不推荐日线自回归 | >30 | - | 误差逐步累积；应改周线/月线或滚动重预测 |
 
@@ -185,7 +186,7 @@ flowchart LR
 
 当前优点：
 
-- 前端已经支持 3/5/10 日预测蜡烛。
+- 前端已经支持 1/3/5/10/15/30 日预测蜡烛。
 - 历史 K 线与预测 K 线有明确视觉区分。
 - `pro` 存在时可显示综合评分和因子明细，不存在时仍可展示蜡烛。
 
@@ -250,7 +251,7 @@ Content-Type: application/json
 }
 ```
 
-`days` 第一阶段仍限制为 1 到 30；前端继续提供 3/5/10。
+`days` 只接受标准选项 `1/3/5/10/15/30`，非法值返回 HTTP 400，不再静默截断。批量准确率评测使用一次 30 日确定性路径，并取第 1/3/5/10/15/30 步分别对齐真实交易日，避免重复推理产生路径不一致。
 
 建议响应：
 
@@ -491,7 +492,8 @@ QUANTIA_KPRED_PROVIDER=local
 QUANTIA_KPRED_LOCAL_URL=http://127.0.0.1:18081/v1/open-api/kpred
 QUANTIA_KPRED_LOCAL_API_KEY=
 QUANTIA_KPRED_TIMEOUT=15
-QUANTIA_KPRED_MAX_DAYS=10
+QUANTIA_KPRED_MAX_DAYS=30
+QUANTIA_KPRED_HORIZONS=1,3,5,10,15,30
 KRONOS_LOOKBACK=256
 KRONOS_REJECT_STALE_HISTORY=1
 ```
@@ -646,7 +648,7 @@ C1 不能提供：
 - 为 `GetKpredHandler` 补参数、缓存、错误映射测试。
 - 为前端 `KpredResult` 增加 `pro: KpredPro | null`。
 - 固化 AgentPit 成功响应 fixture，不调用真实外部 API。
-- 记录当前页面 3/5/10 日交互截图和 tooltip 行为。
+- 记录当前页面 1/3/5/10/15/30 日交互截图和 tooltip 行为。
 
 完成标准：现有 provider 行为有自动化测试覆盖。
 

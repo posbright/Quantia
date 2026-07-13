@@ -176,7 +176,7 @@ const ciOverlay = useCustomIndicatorOverlay(codeStr, currentPeriod, klineDates)
 // === K线预测（AgentPit / 本地兼容服务） ===
 const predEnabled = ref(false)
 const predDays = ref(5)
-const predDaysOptions = [3, 5, 10]
+const predDaysOptions = [1, 3, 5, 10, 15, 30]
 const predLoading = ref(false)
 const predData = ref<KpredResult | null>(null)
 const predError = ref('')  // 预测失败时的错误信息（持久显示，直到下次成功或关闭开关）

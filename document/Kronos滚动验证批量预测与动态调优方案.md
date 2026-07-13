@@ -20,7 +20,7 @@
 
 现有 `finetune_csv/run_validate.py` 和 `pipeline/eval_runner.py` 主要计算 tokenizer 重建 MSE 与 predictor loss。这些指标适合检查模型是否退化，但不能直接回答以下业务问题：
 
-- 第 1、3、5、10 个交易日的收盘价误差是多少；
+- 第 1、3、5、10、15、30 个交易日的收盘价误差是多少；
 - 涨跌方向是否正确；
 - C1 的截面排序是否有效；
 - 不同市场状态下哪个 lookback 更稳定；
@@ -36,14 +36,14 @@
 | --- | ---: | --- |
 | `max_context` | 512 | 固定，Kronos-base 上限 |
 | `lookback` | 256 | 90、128、256、384、512 |
-| `max_pred_days` | 10 | 分别评估 1、3、5、10 日 |
+| `max_pred_days` | 30 | 分别评估 1、3、5、10、15、30 日 |
 | `sample_count` | 1 | 确定性主模型为 1；概率实验为 5、10 |
 | `temperature` | 1.0 | 确定性模式固定；概率实验 0.7、0.9、1.0 |
 | `top_k` | 1 | 确定性生产固定为 1 |
 | `top_p` | 1.0 | 概率实验 0.85、0.9、0.95、1.0 |
 | `clip` | 5.0 | 通常固定，仅在独立实验中搜索 |
 
-预测周期不是一个可以混合比较的单一超参数。1 日和 10 日是不同任务，必须分别报告指标和选择配置。
+预测周期不是一个可以混合比较的单一超参数。1 日和 30 日是不同任务，必须分别报告指标和选择配置。确定性批量任务只需生成一次 30 日路径，然后提取第 1/3/5/10/15/30 步进行评测；不能把 30 日聚合成一个平均误差掩盖远端 horizon 的误差累积。
 
 ## 2. 总体架构与职责
 
@@ -72,7 +72,7 @@ flowchart LR
 - **C1**：只作为独立的 5 日截面收益评分层；当前质量门禁未通过，继续保持默认关闭。
 - **Web Handler**：只读缓存/数据库并调用本地模型服务，不直接访问外部行情源。
 
-Kronos 不直接连接 Quantia 生产数据库。这样可以保持两个 Python 环境隔离，也便于模型服务在 GPU Linux 节点独立部署。
+Kronos 不直接连接 Quantia 生产数据库。这样可以保持两个 Python 环境隔离，也便于模型服务独立部署在 GPU 节点或纯 CPU 的 Linux 节点上（CPU-only 容量测算与降级策略见第 9 章）。
 
 ## 3. 滚动验证设计
 
@@ -117,7 +117,7 @@ train ----------------| embargo | validation | embargo | test
 | 锚点步长 | 5 个交易日 |
 | 股票池 | 先固定 100～300 只有充足历史的股票，再扩全市场 |
 | 最少历史 | `lookback + 20` 个有效交易日 |
-| 预测周期 | 1、3、5、10 分开评估 |
+| 预测周期 | 1、3、5、10、15、30 分开评估 |
 | 评估聚合 | 按日期、股票、行业、波动率分组、市场状态分别聚合 |
 
 股票池必须在锚点时刻可知。不能使用今天的成分股列表回测多年前的市场，否则会产生幸存者偏差。第一阶段若没有历史成分股快照，应明确标注为“固定现存股票池技术验证”，不能作为无偏收益结论。
@@ -191,22 +191,22 @@ C1 标签固定为未来 5 日收益，只能与 5 日结果比较。
 1. 验证当天是交易日且已经结算；
 2. 验证缓存最后日期等于当天；
 3. 以当天为 `as_of_data_date`；
-4. 从下一交易日开始生成未来 1～10 日预测。
+4. 从下一交易日开始生成未来 1～30 日预测，并按标准 horizon 保存/评测。
 
 盘中按需预测仍遵循现有规则：中午只使用上一完整交易日，并从今天开始预测。盘中结果和结算后批量结果必须使用不同 `batch_id` 和 `as_of_data_date`，不能互相覆盖。
 
 ### 4.2 批处理方式
 
-`KronosPredictor.predict_batch()` 要求同一批次的所有序列具有相同 `lookback` 和 `pred_len`。推荐流程：
+`KronosPredictor.predict_batch()` 要求同一批次的所有序列具有相同 `lookback` 和 `pred_len`。推荐流程（GPU、CPU 通用）：
 
 1. 按 `model_version + config_hash + lookback + pred_len` 分桶；
 2. 过滤历史不足、停牌或数据过期的标的；
-3. 每桶按 GPU 显存预算切成 micro-batch；
-4. 同一模型进程串行执行 micro-batch；
+3. 每桶按硬件资源预算（GPU 显存或 CPU 内存/线程数）切成 micro-batch；micro-batch 大小必须先在目标机型实测，不能沿用开发机数值；
+4. 同一模型进程串行执行各 micro-batch；
 5. 每个 micro-batch 完成后立即持久化并更新 checkpoint；
 6. 失败标的记录错误类型，重试时只处理失败项。
 
-不要默认用 `ThreadPoolExecutor` 并发调用同一个 GPU 模型实例。GPU 上优先使用 `predict_batch`；CPU 可按进程隔离模型，但必须评估模型副本的内存成本。
+不要用 `ThreadPoolExecutor` 或多进程并发调用同一个模型实例来"加速"。GPU 场景优先使用 `predict_batch` 做张量级并行；CPU 场景 PyTorch 已经在算子内部用多线程做 BLAS 并行，叠加 Python 线程池或额外进程会造成核心争抢，通常更慢而不是更快。CPU-only 部署的容量测算、线程配置和降级策略见第 9 章。
 
 ### 4.3 幂等与恢复
 
@@ -325,6 +325,7 @@ stateDiagram-v2
     Canary --> Champion: 运行与效果门禁通过
     Canary --> Rejected: 任一硬门禁失败
     Champion --> RolledBack: 持续漂移或运行故障
+    RolledBack --> Champion: 回滚至上一稳定版本
 ```
 
 晋级条件建议同时满足：
@@ -368,16 +369,132 @@ stateDiagram-v2
 
 触发只创建候选实验，不自动替换生产版本。
 
-## 8. 推荐模块与配置
+## 8. 可视化设计
 
-### 8.1 Kronos 侧
+### 8.1 定位与原则
+
+这是内部研发/风控可观测面板，不是面向普通用户的选股功能，默认不出现在公开导航中。设计原则：
+
+1. 前端只读第 5 章持久化表的**聚合结果**，不在浏览器里重新计算逐笔误差或截面排名，避免页面卡顿。
+2. 复用 Quantia 现有前端基础设施：Vue 3 + Element Plus + ECharts，图表交互风格与 [indicator/index.vue](../quantia/fontWeb/src/views/indicator/index.vue) 保持一致。
+3. 按仓库 `AGENTS.md` 的移动端适配规则，新页面必须做响应式：宽对比表格提供卡片视图，ECharts 在 tab 切换后必须 `resize()`，弹窗遵循 `isMobile` 全屏规则。这是一条硬约束，不因为是内部页面而豁免。
+4. 图表默认查询窗口不超过最近 120 个交易日；需要更长区间时要求用户显式选择，防止一次性拉取过多历史点位。
+5. 每个图表都必须能看出"样本量是否足够"，例如叠加到期交易日计数，避免把仅有 5～10 个样本的早期噪声误读成稳定结论。
+
+### 8.2 页面结构
+
+新增 `quantia/fontWeb/src/views/kronos-monitor/`，建议拆分为以下 Tab：
+
+| Tab | 核心用途 |
+| --- | --- |
+| 总览 | 当前冠军版本信息卡片（`model_version`/`lookback`/`pred_len`/生效时间）+ 关键 KPI（近 20 日方向准确率、sMAPE、覆盖率、失败率）+ 告警条 |
+| 滚动验证 | 多锚点、多 horizon 的历史回放指标趋势 |
+| 批量预测监控 | 批次状态、延迟分布、失败标的清单 |
+| 准确率评估 | 误差分布、预测 vs 实际散点/校准曲线、K 线抽查对比 |
+| C1 截面 | IC/RankIC 时间序列、分层收益 |
+| 冠军 / 挑战者 | 多维度对比 + 晋级门禁检查单 |
+
+### 8.3 关键图表规格
+
+1. **滚动验证时间序列**（折线图）：横轴为锚点日期，每个 horizon（1/3/5/10/15/30 日）一条线，叠加冠军基线和随机游走基线的虚线；默认只显示 1/5/30 以避免六条线拥挤，其余通过图例切换。置信区间用半透明面积（upper/lower 两条辅助 series + `areaStyle`）表示，避免用户把单点波动误认为趋势拐点。
+2. **误差分布箱线图**：按 horizon 或按行业/波动率分组的 `close_smape`、方向准确率分布，后端需要预先计算 `[min, Q1, median, Q3, max]` 再传给 ECharts `boxplot`，不要把全部原始样本传到前端。
+3. **预测 vs 实际收益散点/校准曲线**：横轴预测收益 $\hat r_{t,h}$，纵轴真实收益 $r_{t,h}$，叠加 $y=x$ 参考线和线性拟合线，标注该窗口的 IC/RankIC 数值；用于直观判断模型是否系统性偏多或偏空。
+4. **K 线抽查叠加图**：复用现有蜡烛图组件，用同一坐标轴叠加"预测蜡烛"（半透明或虚线描边）与"真实蜡烛"，用于人工抽查而非替代统计指标。
+5. **C1 分层收益条形图**：按预测分位数（如十分位）分组的未来实际收益均值，用于判断截面排序单调性；非单调应在图上高亮提示。
+6. **漂移监控折线图**：PSI/KS 等分布漂移指标随时间变化，叠加 `markLine` 标出告警阈值。
+7. **冠军 / 挑战者对比**：多维指标（方向准确率、sMAPE、覆盖率、延迟、样本数）归一化后用雷达图或并列柱状图对比，旁边配 7.2 节晋级门禁的检查单组件（每项显示 ✅/❌ 及当前数值）。
+8. **批量任务运行监控**：按日期的批次状态日历（成功/部分成功/失败三色），配合延迟 P50/P95/P99 趋势线和吞吐（symbols/秒）趋势线；用于判断第 9 章的容量假设是否仍然成立。
+
+### 8.4 数据契约
+
+新增只读 handler `quantia/web/kronosMonitorHandler.py`，建议路由：
+
+- `GET /quantia/api/kronos/monitor/rolling_metrics`
+- `GET /quantia/api/kronos/monitor/evaluation_summary`
+- `GET /quantia/api/kronos/monitor/champion_challenger`
+- `GET /quantia/api/kronos/monitor/batch_health`
+
+所有接口直接查询 `cn_kronos_model_metric`、`cn_kronos_prediction_batch` 等聚合/状态表，返回已经算好、与图表 series 字段一一对应的 JSON，不在 Web 层做重计算，也不反向触发批量或评估任务。
+
+## 9. CPU-only Linux 部署可行性分析
+
+### 9.1 结论
+
+功能上完全可行：本地服务默认配置 `model.device: cpu`，此前所有真实推理验证（包括 300308 黑盒调用）都是在 CPU 上完成的，不依赖 GPU。**真正的约束是吞吐**：单机 CPU 能否在夜间批处理窗口内完成目标股票池的批量预测，需要在目标机型实测后才能下结论，不能直接假设"能"或"不能"。
+
+### 9.2 已核实的事实
+
+- 当前 `local_kpred.yaml` 的 `model.device` 默认值就是 `cpu`（见 [local_kpred.yaml](../../Kronos/finetune_csv/configs/local_kpred.yaml)），CPU 是当前实现的默认路径而非陌生场景。
+- 模型体积：`Kronos-base/model.safetensors` 约 390 MB，`Kronos-Tokenizer-base/model.safetensors` 约 15 MB，磁盘合计约 405 MB。常驻推理时的实际内存占用还包含激活值和框架开销，需要在目标机型用 `/usr/bin/time -v` 或 `ps`/`smem` 实测，不能直接套用磁盘体积估算。
+- 已实测延迟（Windows 开发机 CPU，`lookback=90`）：单步约 133 ms，5 步约 595 ms；`300308` 真实缓存场景 3 步 376～483 ms。
+- 2026-07-13 新增实测：Windows 开发机 CPU、`lookback=256`、`pred_len=30`、`sample_count=1`、`top_k=1`，单股真实缓存历史黑盒耗时约 **12.8 秒**，返回 30 根预测及六档评测 metadata。该样本使用陈旧缓存并显式关闭新鲜度门禁，只用于执行/容量验证，不用于准确率结论。
+- 按上述单股串行粗算，100 只约 21 分钟，5000 只约 17.8 小时（均未计批量张量并行收益和调度开销）。因此纯 CPU 全市场逐股串行不可作为生产方案；`predict_batch` micro-batch 的目标机实测是全市场上线前的硬门禁。
+
+### 9.3 容量测算方法
+
+在目标 Linux 机型（而不是开发机）上执行基准测试：
+
+1. 固定 `lookback=256`，分别对 `pred_len ∈ {1,3,5,10}`、若干 `micro_batch_size`（如 1、8、16、32）跑真实历史数据，记录 P50/P95 延迟和吞吐（symbols/秒）；
+2. 用下式估算覆盖目标股票池所需时间：
+
+$$
+T_{batch}\approx\frac{N_{symbols}}{\text{throughput(symbols/s)}}
+$$
+
+3. 与可用批处理窗口（例如收盘数据结算后到次日开盘前）比较，判断能否覆盖目标股票池；
+4. 把结果连同硬件型号、核数、`torch`/`OMP` 线程配置一并记录到 [`finetune_csv/bench_cpu_capacity.py`](新增) 的产出文件中，作为后续容量决策的依据，不能只凭一次性口头结论。
+
+### 9.4 CPU 线程与并发配置
+
+- 单进程常驻模型，显式调用 `torch.set_num_threads(物理核数)`，并设置 `OMP_NUM_THREADS`/`MKL_NUM_THREADS` 环境变量，避免和同机的 Quantia 行情抓取、指标计算等任务抢核；
+- `predict_batch()` 已经把多只股票的矩阵运算合并成一次前向调用，是 CPU 上最有效的并行方式；不要再叠加线程池或多进程重复调用同一模型实例，那样只会造成核心争抢、拖慢整体吞吐（呼应 4.2 节）；
+- 如确需水平扩展（例如按股票池分片、每个分片一个独立进程），必须显式限制每个进程的线程数，确认所有进程线程数之和不超过物理核数，且总内存不超过机器可用内存（单进程内存 × 进程数）；
+- 容器化部署（Docker/K8s）必须显式设置 CPU limit，并提前固定线程数环境变量；否则 PyTorch 默认按宿主机核数分配线程，在共享节点上会过度订阅，拖慢所有共享该节点的服务。
+
+### 9.5 分层部署策略
+
+在完成 9.3 的实测之前，不应默认承诺"CPU 可以覆盖全市场夜间批量"。建议按下列优先级分层，具体分界点由实测吞吐决定：
+
+- **Tier 1（核心关注股票池，如 100～300 只自选/重点标的）**：CPU 每日生成一次 30 日 Kronos 路径，并评测 1/3/5/10/15/30 日 step；可选叠加 C1。
+- **Tier 2（全市场其余标的）**：若实测吞吐不足以覆盖全市场夜间批次，按成本从低到高降级：
+  1. 缩小 horizon 集合（例如只保留 1 日和 5 日）；
+  2. 降低批频率（Tier 1 每日，Tier 2 每周）；
+  3. 评估体积更小的 Kronos-small 是否能满足精度要求，以降低单步计算量（需要额外验证，当前仓库默认权重是 base）；
+  4. 增加一台 GPU 节点专门跑全市场批次，CPU 节点只保留 Tier 1 与按需请求；
+  5. 全市场其余标的改用开销远低于生成式 Transformer 的传统因子/C1 打分，Kronos 蜡烛预测只保留给 Tier 1。
+
+该分层不是最终结论，必须先完成 9.3 的实测，再确定具体股票数量和 micro-batch 参数。
+
+### 9.6 风险与缓解
+
+- **长尾延迟**：个别标的历史缺失或数据异常会拖慢所在 micro-batch；应设置单标的超时，超时后单独降级重试，不拖累整批；
+- **内存增长**：常驻服务需要监控 RSS，超过阈值应告警并考虑重启或降低并发；
+- **与 Quantia 同机资源竞争**：若 Kronos 服务与 Quantia Web/Cron 部署在同一台 Linux 机器，需要用 cgroup 或进程优先级隔离，防止批量推理挤占实时 Web 请求；
+- **时区一致性**：容器时区必须设为 `Asia/Shanghai`，否则 `_completed_daily_cutoff`/`is_post_settlement` 等基于本地时间的判断会发生偏移。
+
+## 10. 推荐模块与配置
+
+### 10.1 Kronos 侧
 
 建议新增：
 
 - `finetune_csv/rolling_forecast_validator.py`：历史锚点生成式回放；
 - `finetune_csv/evaluation_metrics.py`：OHLC/收益/截面指标；
 - `finetune_csv/parameter_search.py`：候选试验编排；
+- `finetune_csv/bench_cpu_capacity.py`：CPU-only 容量测算脚本（见 9.3）；
 - 本地服务 `/v1/kline/predict-batch`：按 micro-batch 推理并返回逐标的状态。
+
+多 horizon 评测核心已经落地为 `finetune_csv/pipeline/forecast_evaluation.py`，并提供可执行入口：
+
+```bash
+python finetune_csv/evaluate_kpred_results.py \
+  --prediction-json runs/predictions/300308_20260713.json \
+  --actual-csv DataSet/actual/300308.csv \
+  --horizons 1,3,5,10,15,30 \
+  --output runs/evaluation/300308_20260713.json
+```
+
+输入预测 JSON 使用本地服务的响应契约；真实 CSV 至少包含 `date/open/high/low/close`。尚未到期或缺失的真实交易日输出 `pending`，不会被当作错误或分母中的命中；预测路径不足则输出 `not_predicted`。聚合结果按 horizon 分别给出覆盖率、Close MAE/sMAPE、收益 MAE、方向准确率和 OHLC 合法率，可直接映射到第 5 章数据表与第 8 章图表。
 
 复用：
 
@@ -386,7 +503,7 @@ stateDiagram-v2
 - `finetune_csv/train_c1_bundle.py` 中的 IC/RankIC/Hit 计算；
 - `finetune_csv/local_kpred_service.py` 的模型加载、配置和质量门禁。
 
-### 8.2 Quantia 侧
+### 10.2 Quantia 侧
 
 建议新增：
 
@@ -395,6 +512,8 @@ stateDiagram-v2
 - `quantia/job/kronos_metric_aggregation_job.py`；
 - `cron/cron.workdayly/run_kronos_batch_prediction`；
 - `cron/cron.workdayly/run_kronos_prediction_evaluation`；
+- `quantia/web/kronosMonitorHandler.py`：第 8 章可视化面板的只读聚合接口；
+- `quantia/fontWeb/src/views/kronos-monitor/`：第 8 章可视化面板前端页面；
 - 表结构和迁移脚本，以及必要的只读查询 API。
 
 配置建议扩展：
@@ -403,7 +522,7 @@ stateDiagram-v2
 batch:
   enabled: false
   schedule_after: "18:30"
-  horizons: [1, 3, 5, 10]
+  horizons: [1, 3, 5, 10, 15, 30]
   micro_batch_size: 16
   min_history: 276
   persist_json: true
@@ -413,7 +532,7 @@ rolling_validation:
   enabled: false
   anchor_step_days: 5
   history_years: 2
-  horizons: [1, 3, 5, 10]
+  horizons: [1, 3, 5, 10, 15, 30]
   lookbacks: [90, 128, 256, 384, 512]
   min_symbols: 100
   embargo_days: 10
@@ -426,14 +545,14 @@ promotion:
 
 这些段落初始必须保持 `enabled: false`，待实现和测试后再启用。
 
-## 9. 分阶段实施计划
+## 11. 分阶段实施计划
 
 ### Phase 1：离线滚动验证
 
 交付：
 
 - 历史锚点生成式回放；
-- 1/3/5/10 日指标；
+- 1/3/5/10/15/30 日指标；
 - 基线、分组和置信区间；
 - 固定股票池局限说明；
 - 256 与其他 lookback 的真实对比报告。
@@ -444,6 +563,7 @@ promotion:
 
 先用 20～100 只股票影子运行：
 
+- 按第 9 章方法完成目标机型（尤其是 CPU-only Linux）的容量基准测试，确定初始 micro_batch_size 和预期吸吐量；
 - 批量端点和 micro-batch；
 - 四张表、幂等 upsert、断点恢复；
 - EOD Cron；
@@ -458,9 +578,9 @@ promotion:
 - pending 预测自动对齐真实值；
 - 20/60/120 日聚合；
 - 漂移告警；
-- 冠军/挑战者看板或报告。
+- 第 8 章定义的滚动验证/准确率评估/冠军挑战者可视化面板上线。
 
-验收：停牌、缺失、复权修订和跨节假日场景均有明确状态。
+验收：停牌、缺失、复权修订和跨节假日场景均有明确状态；面板能实时反映这些状态。
 
 ### Phase 4：受控动态调优
 
@@ -473,11 +593,12 @@ promotion:
 
 验收：任何生产版本都能追溯到模型、配置、代码、数据和完整评估证据。
 
-## 10. 最终建议
+## 12. 最终建议
 
 1. 先实现 Phase 1，不要直接做自动调参。当前最重要的问题是建立可信、无泄漏的业务指标基线。
 2. 批量预测首期只做影子记录，不参与交易决策；至少积累 60 个到期交易日后再讨论晋级。
-3. 采用 Quantia 编排与持久化、Kronos 专注推理的边界，Linux GPU 部署更简单。
-4. 生产默认继续使用 `lookback=256`、确定性生成、最多 10 日；最终是否调整由滚动证据决定。
+3. 采用 Quantia 编排与持久化、Kronos 专注推理的边界。部署形态不预设 GPU：CPU-only Linux 在功能上可行，但全市场夜间批量的吸吐量必须先用第 9 章的方法实测，不能默认假定 CPU 能覆盖全市场；实测不足时优先采用分层部署（重点股票池每日全 horizon，其余股票降频或降级为轻量因子评分），而不是预先采购 GPU。
+4. 生产候选继续使用 `lookback=256`、确定性生成，页面和评测开放 1/3/5/10/15/30 日；30 步 golden 回归已经通过，开发机 CPU 单股实测约 12.8 秒，但 15/30 日不能标记为“准确率通过”，最终是否保留由滚动证据和目标 Linux 机型 micro-batch 容量测试共同决定。
 5. C1 继续关闭。只有新的 5 日 walk-forward IC/RankIC 和影子结果通过门禁后才能启用。
 6. 动态调优应是“自动发现候选、自动验证、人工晋级”，而不是“自动改参数并上线”。
+7. 滚动调优数据、准确率评估、漂移监控必须有第 8 章描述的可视化面板支撑，不能只依赖 JSON 报告文件人工比对。
