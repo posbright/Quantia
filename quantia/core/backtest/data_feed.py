@@ -173,43 +173,51 @@ def _save_cache(code, df):
         logging.warning(f"缓存保存失败 {code}: {e}")
 
 
-def _load_today_from_db(code, date_str):
+def _load_spot_range_from_db(code, start_date_str, end_date_str):
     """
-    从 cn_stock_spot 表加载指定日期的行情数据（单条记录）。
+    从 cn_stock_spot 表加载指定日期区间的行情数据。
 
     每日定时任务会将全市场行情写入 cn_stock_spot，
     此处作为 K 线缓存与在线 API 之间的中间层，避免大量网络请求。
 
     Returns:
-        DataFrame with one row [date, open, high, low, close, volume] or None
+        DataFrame with [date, open, high, low, close, volume] or None
     """
     try:
         import quantia.lib.database as mdb
         rows = mdb.executeSqlFetch(
             'SELECT date, open_price, high_price, low_price, new_price, volume, '
             'pre_close_price, deal_amount '
-            'FROM cn_stock_spot WHERE code = %s AND date = %s',
-            (code, date_str))
+            'FROM cn_stock_spot WHERE code = %s AND date >= %s AND date <= %s '
+            'ORDER BY date',
+            (code, start_date_str, end_date_str))
         if not rows or len(rows) == 0:
             return None
-        r = rows[0]
-        # 跳过无效数据（停牌等: new_price=0 或 None）
-        if not r[4] or float(r[4]) <= 0:
-            return None
-        row_df = pd.DataFrame([{
-            'date': pd.Timestamp(r[0]),
-            'open': float(r[1] or r[4]),
-            'high': float(r[2] or r[4]),
-            'low': float(r[3] or r[4]),
-            'close': float(r[4]),
-            'volume': int(r[5] or 0),
-            'pre_close': float(r[6]) if r[6] else None,
-            'amount': float(r[7] or 0),
-        }])
-        return row_df
+        records = []
+        for row in rows:
+            # 跳过无效数据（停牌等: new_price=0 或 None）
+            if not row[4] or float(row[4]) <= 0:
+                continue
+            records.append({
+                'date': pd.Timestamp(row[0]),
+                'open': float(row[1] or row[4]),
+                'high': float(row[2] or row[4]),
+                'low': float(row[3] or row[4]),
+                'close': float(row[4]),
+                'volume': int(row[5] or 0),
+                'pre_close': float(row[6]) if row[6] else None,
+                'amount': float(row[7] or 0),
+            })
+        return pd.DataFrame(records) if records else None
     except Exception as e:
-        logging.debug(f"从 cn_stock_spot 加载 {code} {date_str} 失败: {e}")
+        logging.debug(
+            f"从 cn_stock_spot 加载 {code} {start_date_str}~{end_date_str} 失败: {e}")
         return None
+
+
+def _load_today_from_db(code, date_str):
+    """从 cn_stock_spot 加载指定日期，保留原有单日调用接口。"""
+    return _load_spot_range_from_db(code, date_str, date_str)
 
 
 def _batch_load_today_from_db(codes, date_str):
@@ -281,24 +289,27 @@ def load_stock_data(code, start_date=None, end_date=None, cache_only=False):
     if df is None or len(df) == 0:
         need_online = True
     elif end_date:
-        # 缓存最后日期是否覆盖 end_date（允许3天宽松度，周末/节假日）
+        # 缓存不足时，先连续合并 DB 中缓存末日之后的全部日线快照。
         cache_end = df['date'].max().date() if hasattr(df['date'].max(), 'date') else df['date'].max()
         req_end = pd.Timestamp(end_date).date()
+        if cache_end < req_end:
+            db_start = (cache_end + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+            db_end = req_end.strftime('%Y-%m-%d')
+            db_tail = _load_spot_range_from_db(code, db_start, db_end)
+            if db_tail is not None and len(db_tail) > 0:
+                df = pd.concat([df, db_tail], ignore_index=True).drop_duplicates(
+                    subset=['date'], keep='last').sort_values('date').reset_index(drop=True)
+                cache_end = df['date'].max().date()
+
+        # DB 仍未覆盖需求日期时，保留3天宽松度处理周末/节假日。
         if cache_end < req_end - datetime.timedelta(days=3):
             if cache_only:
-                # 回测模式：缓存不足但不允许在线拉取 → 跳过该股（用已有缓存数据）
-                logging.debug(f"{code} 缓存截止 {cache_end} < 需求 {req_end}，回测离线模式跳过在线补全")
-                # 仍然使用已有缓存数据（可能只是缺最近几天），让引擎自行决定是否有足够数据点
+                logging.debug(
+                    f"{code} 本地数据截止 {cache_end} < 需求 {req_end}，回测离线模式跳过在线补全")
             else:
                 need_online = True
-                logging.info(f"{code} 缓存截止 {cache_end}，需要数据到 {req_end}，尝试在线获取")
-        elif cache_end < req_end:
-            # 缓存只差1-3天（通常是今天的数据），尝试从 DB 补全（DB查询允许在 cache_only 模式下）
-            end_str = req_end.strftime('%Y-%m-%d')
-            db_row = _load_today_from_db(code, end_str)
-            if db_row is not None:
-                df = pd.concat([df, db_row], ignore_index=True).drop_duplicates(
-                    subset=['date'], keep='last').sort_values('date').reset_index(drop=True)
+                logging.info(
+                    f"{code} 本地数据截止 {cache_end}，需要数据到 {req_end}，尝试在线获取")
 
     if need_online and not cache_only:
         # 完全缺失时也先尝试 DB

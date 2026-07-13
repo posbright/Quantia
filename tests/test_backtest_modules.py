@@ -614,7 +614,7 @@ class TestCreateSafeNamespace(unittest.TestCase):
 from quantia.core.backtest.data_feed import (
     _normalize_cache_df, load_stock_data, load_multiple_stocks,
     get_trading_dates, load_benchmark_data, _load_from_cache,
-    _is_likely_stock_code,
+    _is_likely_stock_code, _load_spot_range_from_db,
 )
 
 
@@ -670,6 +670,27 @@ class TestLoadStockData(unittest.TestCase):
             'volume': np.random.randint(50000, 200000, len(dates)),
         })
 
+    @patch('quantia.lib.database.executeSqlFetch')
+    def test_spot_range_loader_keeps_valid_rows(self, mock_fetch):
+        mock_fetch.return_value = [
+            (datetime.date(2026, 7, 2), 10.0, 10.5, 9.8, 10.2,
+             1000, 10.0, 10200),
+            (datetime.date(2026, 7, 3), 0, 0, 0, 0, 0, 10.2, 0),
+            (datetime.date(2026, 7, 6), 10.3, 10.8, 10.1, 10.6,
+             1200, 10.2, 12720),
+        ]
+
+        result = _load_spot_range_from_db('300308', '2026-07-02', '2026-07-06')
+
+        sql, params = mock_fetch.call_args.args
+        self.assertIn('date >= %s AND date <= %s', sql)
+        self.assertIn('ORDER BY date', sql)
+        self.assertEqual(params, ('300308', '2026-07-02', '2026-07-06'))
+        self.assertEqual(result['date'].dt.strftime('%Y-%m-%d').tolist(), [
+            '2026-07-02', '2026-07-06',
+        ])
+        self.assertEqual(result['close'].tolist(), [10.2, 10.6])
+
     @patch('quantia.core.backtest.data_feed._load_from_cache')
     @patch('quantia.core.backtest.data_feed._fetch_stock_from_eastmoney')
     def test_cache_hit(self, mock_fetch, mock_cache):
@@ -679,6 +700,32 @@ class TestLoadStockData(unittest.TestCase):
         self.assertIsNotNone(df)
         self.assertIn('pre_close', df.columns)
         mock_fetch.assert_not_called()
+
+    @patch('quantia.core.backtest.data_feed._load_spot_range_from_db')
+    @patch('quantia.core.backtest.data_feed._load_from_cache')
+    def test_cache_only_merges_continuous_db_tail(self, mock_cache, mock_db_tail):
+        mock_cache.return_value = pd.DataFrame({
+            'date': pd.to_datetime(['2026-06-30', '2026-07-01']),
+            'open': [10.0, 10.5], 'high': [10.8, 11.0],
+            'low': [9.8, 10.2], 'close': [10.5, 10.8],
+            'volume': [1000, 1100],
+        })
+        mock_db_tail.return_value = pd.DataFrame({
+            'date': pd.to_datetime(['2026-07-02', '2026-07-03', '2026-07-06']),
+            'open': [10.7, 10.4, 10.2], 'high': [10.9, 10.6, 10.5],
+            'low': [10.3, 10.1, 9.9], 'close': [10.4, 10.2, 10.3],
+            'volume': [1200, 1300, 1400],
+            'amount': [12480, 13260, 14420],
+        })
+
+        result = load_stock_data('300308', end_date='2026-07-06', cache_only=True)
+
+        mock_db_tail.assert_called_once_with('300308', '2026-07-02', '2026-07-06')
+        self.assertEqual(
+            result['date'].dt.strftime('%Y-%m-%d').tolist(),
+            ['2026-06-30', '2026-07-01', '2026-07-02', '2026-07-03', '2026-07-06'],
+        )
+        self.assertEqual(float(result.iloc[-1]['close']), 10.3)
 
     @patch('quantia.core.backtest.data_feed._load_from_cache')
     @patch('quantia.core.backtest.data_feed._fetch_stock_from_eastmoney')
