@@ -1,6 +1,6 @@
 # Kronos 本地 K 线预测接入 Quantia 落地方案
 
-> 文档状态：第一阶段本地链路已实现并验证，C1 仅完成实验性接入
+> 文档状态：第一阶段本地链路及生产安全加固已实现并验证；Shadow、灰度和 C1 正式验收未完成
 > 审查日期：2026-07-13  
 > 适用仓库：`Kronos/` 与 `Quantia/`  
 > 目标：使用本地 Kronos 替换 Quantia 当前 AgentPit K 线预测 API，同时保留方案 C（C1）作为可选的收益评分增强层。
@@ -70,6 +70,34 @@ KRONOS_REJECT_STALE_HISTORY=1
 | C1 实验开关 | `300528` 成功返回 Pro，5 日延迟 674 ms，标记 `confidence=实验` |
 
 C1 实验验证使用 `KRONOS_C1_ALLOW_UNVALIDATED=1`，仅证明加载、特征匹配、LightGBM 推理和前端契约技术可行。该开关会绕过负 IC 和陈旧特征门禁，生产环境必须保持为 `0`。当前 `300528` 使用的特征日期为 2026-06-16，实验预测收益 2.648%，不构成有效性结论或投资依据。
+
+### 2.0.1 2026-07-13 深度审计与修复复验
+
+本轮按第 10 章验收项重新核对实现，修复了以下已证实问题：
+
+- 修复 `finetune_csv.local_kpred_service` 作为模块导入时找不到 `kronos_loader`，避免 Linux/systemd 模块化启动失败。
+- 本地服务增加有界推理准入：默认并发 1、排队 5 秒，队列满返回 HTTP 503 + `INFERENCE_BUSY`。
+- 预测 OHLC 任一价格小于等于 0 时整次失败，不再静默改写成 `0.0001`；历史成交量/成交额必须非负。
+- 正式 C1 模式除正向 IC 门禁外，必须显式满足 bundle `approved=true`；实验绕过仍只允许 `allow_unvalidated=true`。
+- Quantia 本地缓存键加入历史规范化内容、未来交易日、lookback、采样参数和模型版本提示的 SHA-256 指纹。
+- 相同输入并发未命中使用 singleflight，共享同一上游任务；成功、异常和客户端取消后均自动清理。
+- Quantia 为本地历史缺失、陈旧和不足分别返回稳定的 404/409/422 与机器错误码。
+- 本地模型版本加入实际权重内容 SHA-256 前缀，并在服务启动时计算一次。
+- 前端展示 provider、模型版本、历史基准日和延迟；允许陈旧历史时显示常驻警告。
+
+复验结果：
+
+| 验证项 | 结果 |
+| --- | --- |
+| Quantia handler 单元/并发测试 | 11 passed；5 个同输入并发请求只调用 1 次上游 |
+| Kronos 服务 + 多期限评测测试 | 13 passed |
+| 前端 `npm run build` | `vue-tsc` + Vite 通过 |
+| 新版 `/health` | 本地权重 ready；lookback=256；六期限；max_concurrency=1 |
+| 真实 1 日 CPU 推理 | 356 ms；OHLC 合法；`pro=null`；`stale=true` |
+| Quantia → Kronos 黑盒 | 首次 200，第二次 `_cached=true` |
+| 默认陈旧门禁黑盒 | HTTP 409 + `HISTORY_STALE` |
+
+结论边界：上述结果证明第一阶段代码链路、安全门禁和契约可用，不代表模型准确率通过。Shadow 的 60 个交易日、1000 只以上股票、目标 Linux 机器 SLA 和 C1 正 IC 仍未取得真实证据。
 
 ### 2.1 已核对的关键实现
 
@@ -784,9 +812,11 @@ Quantia：
 - [x] 启动时优先加载本地权重。
 - [x] 接受调用方提供的未来交易时间戳。
 - [x] 增加 OHLC/有限值/非负校验。
-- [ ] 增加有界并发、超时、健康检查和指标。
+- [x] 增加有界并发、排队超时和健康检查。
+- [ ] 增加 Prometheus/结构化延迟指标；单次 PyTorch 推理只能由 Quantia HTTP 超时隔离，不能安全强杀执行中的线程。
 - [x] 增加健康检查、串行模型锁和输出清洗 smoke。
-- [ ] 增加正式服务契约测试和并发指标。
+- [x] 增加正式服务契约、并发门禁、严格输出和 C1 审批测试。
+- [ ] 增加进程级指标采集与目标 Linux CPU/GPU 容量压测。
 - [ ] 优化或拆分耗时过长的 `run_fusion.py smoke`。
 
 ### Quantia 后端
@@ -794,19 +824,20 @@ Quantia：
 - [x] 抽象 kpred provider，保留 AgentPit 实现。
 - [x] 使用 `load_stock_data(..., cache_only=True)` 读取历史。
 - [x] 接入真实交易日历并返回行情新鲜度标记。
-- [ ] 实现 Kronos provider、shadow 模式、回退和 singleflight。
-- [ ] 升级缓存键并增加模型版本。
-- [x] 实现 local Kronos provider；shadow、自动回退和 singleflight 待补。
+- [ ] 实现 shadow 模式和 AgentPit 自动回退。
+- [x] 实现 local Kronos provider 和输入指纹缓存键。
+- [x] 实现同输入 singleflight，并覆盖成功、失败和取消清理。
+- [x] 返回模型版本、历史基准日及稳定的本地数据错误码。
 - [x] 增加 handler 单元测试。
 - [x] 更新 `.env.example` 和本落地文档。
 
 ### Quantia 前端
 
-- [ ] 将 `KpredResult.pro` 改为可空。
-- [ ] 展示 provider、模型版本和历史基准日。
-- [ ] stale 响应显示明确告警，不绘制为最新预测。
+- [x] 将 `KpredResult.pro` 改为可空。
+- [x] 展示 provider、模型版本、历史基准日和推理延迟。
+- [x] stale 响应显示明确告警，不伪装为最新数据。
 - [ ] 保持移动端 tooltip 和 K 线布局不回归。
-- [ ] 完成 `npm run build` 和相关前端测试。
+- [x] 完成 `npm run build`（含 `vue-tsc`）。
 
 ### 模型与验证
 

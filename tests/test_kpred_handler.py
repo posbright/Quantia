@@ -5,9 +5,12 @@
 import json
 import os
 import datetime
+import asyncio
+import time
 from unittest import mock
 
-from tornado.testing import AsyncHTTPTestCase
+from tornado.httpclient import HTTPRequest
+from tornado.testing import AsyncHTTPTestCase, gen_test
 from tornado.web import Application
 
 import quantia.web.kpredHandler as kh
@@ -46,6 +49,7 @@ class TestKpredHandler(AsyncHTTPTestCase):
         super().setUp()
         kh._pred_cache.clear()
         kh._pred_cache_date = ''
+        kh._singleflight_tasks.clear()
 
     def _post(self, body):
         return self.fetch(
@@ -196,6 +200,53 @@ class TestKpredHandler(AsyncHTTPTestCase):
         self.assertEqual(response.code, 502)
         self.assertIn('predictions', body['msg'])
         self.assertEqual(kh._pred_cache, {})
+
+    def test_local_cache_context_changes_when_history_is_corrected(self):
+        payload = {
+            'history': [{'date': '2026-07-10', 'close': 10.0}],
+            'future_timestamps': ['2026-07-13'],
+        }
+        with mock.patch.dict(os.environ, {'KRONOS_LOOKBACK': '256'}, clear=False):
+            first = kh._cache_context('local', payload)
+            payload['history'][0]['close'] = 10.1
+            corrected = kh._cache_context('local', payload)
+            os.environ['KRONOS_LOOKBACK'] = '90'
+            changed_lookback = kh._cache_context('local', payload)
+
+        self.assertNotEqual(first, corrected)
+        self.assertNotEqual(corrected, changed_lookback)
+
+    @gen_test
+    async def test_concurrent_identical_requests_use_singleflight(self):
+        env = {'QUANTIA_KPRED_PROVIDER': 'local'}
+        payload = {
+            'code': '300308', 'days': 3,
+            'history': [{'date': '2026-07-10', 'close': 10.0}],
+            'future_timestamps': ['2026-07-13', '2026-07-14', '2026-07-15'],
+        }
+
+        def slow_request(*args):
+            time.sleep(0.05)
+            return _prediction_payload()
+
+        request = HTTPRequest(
+            self.get_url('/quantia/api/kpred'), method='POST',
+            headers={'Content-Type': 'application/json'},
+            body=json.dumps({'code': '300308', 'days': 3}),
+        )
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch.object(kh, '_prepare_local_payload', return_value=payload), \
+             mock.patch.object(kh, '_do_provider_request', side_effect=slow_request) as upstream:
+            responses = await asyncio.gather(*[
+                self.http_client.fetch(request) for _ in range(5)
+            ])
+
+        self.assertTrue(all(response.code == 200 for response in responses))
+        self.assertEqual(upstream.call_count, 1)
+        self.assertEqual(
+            sum(bool(json.loads(response.body).get('_singleflight')) for response in responses),
+            4,
+        )
 
 
 if __name__ == '__main__':

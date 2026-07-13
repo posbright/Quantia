@@ -18,6 +18,8 @@ K 线预测 Provider Handler
 """
 
 import json
+import asyncio
+import hashlib
 import logging
 import os
 import time
@@ -38,14 +40,27 @@ _DEFAULT_HORIZONS = (1, 3, 5, 10, 15, 30)
 _executor = ThreadPoolExecutor(max_workers=4)
 
 # ===== 服务端当日缓存 =====
-# key: "provider_code_days_YYYYMMDD"  value: response_dict
-# 同一股票+天数+日期的预测结果是确定性的（同模型、同输入数据），与用户无关。
+# key includes provider, request settings, and local history fingerprint.
 # 缓存在进程内存中，web_service 重启或跨天自动失效。
 _pred_cache: dict = {}
 _pred_cache_date: str = ''  # 当前缓存所属日期，跨天时清空全部缓存
+_singleflight_tasks: dict[str, asyncio.Task] = {}
 
 
-def _get_cache(code: str, days: int, provider: str = 'agentpit') -> dict | None:
+class KpredRequestError(ValueError):
+    def __init__(self, message: str, status: int, error_code: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.error_code = error_code
+
+
+def _cache_key(code: str, days: int, provider: str, context: str = '') -> str:
+    today = time.strftime('%Y%m%d')
+    return f'{provider}_{code}_{days}_{today}_{context}'
+
+
+def _get_cache(code: str, days: int, provider: str = 'agentpit',
+               context: str = '') -> dict | None:
     """查询当日缓存，命中返回 response dict，未命中返回 None"""
     global _pred_cache, _pred_cache_date
     today = time.strftime('%Y%m%d')
@@ -54,19 +69,46 @@ def _get_cache(code: str, days: int, provider: str = 'agentpit') -> dict | None:
         _pred_cache.clear()
         _pred_cache_date = today
         return None
-    key = f'{provider}_{code}_{days}_{today}'
-    return _pred_cache.get(key)
+    return _pred_cache.get(_cache_key(code, days, provider, context))
 
 
-def _set_cache(code: str, days: int, data: dict, provider: str = 'agentpit'):
+def _set_cache(code: str, days: int, data: dict, provider: str = 'agentpit',
+               context: str = ''):
     """写入当日缓存"""
     global _pred_cache, _pred_cache_date
     today = time.strftime('%Y%m%d')
     if _pred_cache_date != today:
         _pred_cache.clear()
         _pred_cache_date = today
-    key = f'{provider}_{code}_{days}_{today}'
-    _pred_cache[key] = data
+    _pred_cache[_cache_key(code, days, provider, context)] = data
+
+
+def _cache_context(provider: str, payload: dict | None = None) -> str:
+    """Fingerprint settings and local history so corrected inputs invalidate cache."""
+    settings = {
+        'provider': provider,
+        'url': _get_api_url(provider),
+        'model_version': os.environ.get('QUANTIA_KPRED_MODEL_VERSION', ''),
+    }
+    if provider == 'local':
+        settings.update({
+            'lookback': os.environ.get('KRONOS_LOOKBACK', '256'),
+            'sample_count': os.environ.get('KRONOS_SAMPLE_COUNT', '1'),
+            'temperature': os.environ.get('KRONOS_TEMPERATURE', '1.0'),
+            'top_k': os.environ.get('KRONOS_TOP_K', '1'),
+            'top_p': os.environ.get('KRONOS_TOP_P', '1.0'),
+            'history': (payload or {}).get('history', []),
+            'future_timestamps': (payload or {}).get('future_timestamps', []),
+        })
+    encoded = json.dumps(
+        settings, sort_keys=True, separators=(',', ':'), allow_nan=False
+    ).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def _clear_singleflight(flight_key: str, task: asyncio.Task) -> None:
+    if _singleflight_tasks.get(flight_key) is task:
+        _singleflight_tasks.pop(flight_key, None)
 
 
 def _get_provider() -> str:
@@ -175,11 +217,15 @@ def _prepare_local_payload(code: str, days: int,
     cutoff_date = _completed_daily_cutoff(now)
     history = load_stock_data(code, end_date=cutoff_date, cache_only=True)
     if history is None or len(history) == 0:
-        raise ValueError(f'本地无 {code} K 线缓存')
+        raise KpredRequestError(f'本地无 {code} K 线缓存', 404, 'HISTORY_NOT_FOUND')
     history = history.sort_values('date').drop_duplicates('date', keep='last')
     lookback = max(32, min(512, int(os.environ.get('KRONOS_LOOKBACK', '256'))))
     if len(history) < lookback:
-        raise ValueError(f'{code} 本地历史不足：需要 {lookback} 根，实际 {len(history)} 根')
+        raise KpredRequestError(
+            f'{code} 本地历史不足：需要 {lookback} 根，实际 {len(history)} 根',
+            422,
+            'INSUFFICIENT_HISTORY',
+        )
     history = history.tail(lookback).copy()
     if 'amount' not in history.columns:
         history['amount'] = history['volume'] * history[['open', 'high', 'low', 'close']].mean(axis=1)
@@ -189,8 +235,10 @@ def _prepare_local_payload(code: str, days: int,
     reject_stale = (os.environ.get('KRONOS_REJECT_STALE_HISTORY', '1').strip().lower()
                     in ('1', 'true', 'yes', 'on'))
     if history_stale and reject_stale:
-        raise ValueError(
-            f'{code} 本地历史已过期：最后完整日线 {last_date}，应至少更新到 {cutoff_date}'
+        raise KpredRequestError(
+            f'{code} 本地历史已过期：最后完整日线 {last_date}，应至少更新到 {cutoff_date}',
+            409,
+            'HISTORY_STALE',
         )
     future_dates = []
     cursor = last_date
@@ -243,6 +291,16 @@ def _normalize_provider_response(response: dict, provider: str) -> dict:
     normalized = dict(data)
     normalized.setdefault('provider', provider)
     return normalized
+
+
+async def _request_provider_data(api_url: str, api_key: str, code: str, days: int,
+                                 timeout: int, payload: dict | None,
+                                 provider: str) -> dict:
+    loop = IOLoop.current()
+    response = await loop.run_in_executor(
+        _executor, _do_provider_request, api_url, api_key, code, days, timeout, payload
+    )
+    return _normalize_provider_response(response, provider)
 
 
 class GetKpredHandler(tornado.web.RequestHandler):
@@ -321,20 +379,8 @@ class GetKpredHandler(tornado.web.RequestHandler):
             }, ensure_ascii=False))
             return
 
-        # === 服务端缓存命中：同一股票+天数+日期直接返回，无需调用上游 ===
-        refresh = body.get('refresh', False)  # 前端"刷新"按钮传 refresh:true 绕过缓存
-        if not refresh:
-            cached = _get_cache(code, days, provider)
-            if cached is not None:
-                logger.debug('kpred cache hit: provider=%s code=%s days=%d', provider, code, days)
-                self.write(json.dumps({'code': 0, 'data': cached, '_cached': True},
-                                      ensure_ascii=False))
-                return
-
         timeout = _get_timeout(body.get('timeout'))
         api_url = _get_api_url(provider)
-
-        # 在线程池中执行同步 HTTP 请求，不阻塞 Tornado IO 循环
         loop = IOLoop.current()
         try:
             provider_payload = None
@@ -342,11 +388,44 @@ class GetKpredHandler(tornado.web.RequestHandler):
                 provider_payload = await loop.run_in_executor(
                     _executor, _prepare_local_payload, code, days
                 )
-            response = await loop.run_in_executor(
-                _executor, _do_provider_request, api_url, api_key, code, days, timeout,
-                provider_payload
+            cache_context = _cache_context(provider, provider_payload)
+        except KpredRequestError as e:
+            self.set_status(e.status)
+            self.write(json.dumps({
+                'code': -1, 'msg': str(e), 'error_code': e.error_code,
+            }, ensure_ascii=False))
+            return
+        except Exception as e:
+            logger.exception('kpred local payload failed: %s', e)
+            self.set_status(500)
+            self.write(json.dumps({
+                'code': -1, 'msg': f'本地历史处理失败: {e}', 'error_code': 'INVALID_HISTORY',
+            }, ensure_ascii=False))
+            return
+
+        # === 服务端缓存命中：同一输入指纹直接返回，无需调用上游 ===
+        refresh = body.get('refresh', False)  # 前端"刷新"按钮传 refresh:true 绕过缓存
+        if not refresh:
+            cached = _get_cache(code, days, provider, cache_context)
+            if cached is not None:
+                logger.debug('kpred cache hit: provider=%s code=%s days=%d', provider, code, days)
+                self.write(json.dumps({'code': 0, 'data': cached, '_cached': True},
+                                      ensure_ascii=False))
+                return
+
+        flight_key = _cache_key(code, days, provider, cache_context)
+        request_task = _singleflight_tasks.get(flight_key)
+        coalesced = request_task is not None
+        if request_task is None:
+            request_task = asyncio.create_task(_request_provider_data(
+                api_url, api_key, code, days, timeout, provider_payload, provider
+            ))
+            _singleflight_tasks[flight_key] = request_task
+            request_task.add_done_callback(
+                lambda task, key=flight_key: _clear_singleflight(key, task)
             )
-            data = _normalize_provider_response(response, provider)
+        try:
+            data = await asyncio.shield(request_task)
         except urllib.error.HTTPError as e:
             status = e.code
             err_body = ''
@@ -355,11 +434,18 @@ class GetKpredHandler(tornado.web.RequestHandler):
             except Exception:
                 pass
             logger.warning('kpred upstream HTTP %s: %s', status, err_body[:500])
+            error_payload = {}
+            try:
+                error_payload = json.loads(err_body)
+            except (TypeError, json.JSONDecodeError):
+                pass
             msg_map = {401: 'API Key 无效', 429: '月度额度已用完', 502: '预测服务异常'}
-            self.set_status(status if status in (401, 429, 502) else 502)
+            allowed_status = (400, 401, 404, 409, 422, 429, 502, 503, 504)
+            self.set_status(status if status in allowed_status else 502)
             self.write(json.dumps({
                 'code': -1,
-                'msg': msg_map.get(status, f'预测服务错误 ({status})'),
+                'msg': error_payload.get('msg') or msg_map.get(status, f'预测服务错误 ({status})'),
+                'error_code': error_payload.get('error_code') or 'UPSTREAM_ERROR',
             }, ensure_ascii=False))
             return
         except urllib.error.URLError as e:
@@ -374,6 +460,8 @@ class GetKpredHandler(tornado.web.RequestHandler):
             self.write(json.dumps({'code': -1, 'msg': f'预测服务请求失败: {e}'}, ensure_ascii=False))
             return
 
-        self.write(json.dumps({'code': 0, 'data': data}, ensure_ascii=False))
+        self.write(json.dumps({
+            'code': 0, 'data': data, **({'_singleflight': True} if coalesced else {}),
+        }, ensure_ascii=False))
         # 缓存成功的预测结果（当天有效）
-        _set_cache(code, days, data, provider)
+        _set_cache(code, days, data, provider, cache_context)

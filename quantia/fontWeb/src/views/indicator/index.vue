@@ -195,6 +195,10 @@ const fmtPredSigned = (value: unknown, digits = 3): string => {
 }
 const predValueClass = (value: unknown): string => toPredNumber(value) >= 0 ? 'is-up' : 'is-down'
 const predProviderLabel = computed(() => predData.value?.provider === 'local' ? '本地模型' : 'AgentPit')
+const predModelDetails = computed(() => [
+  predData.value?.model_version,
+  predData.value?.history_last_date ? `历史截至 ${predData.value.history_last_date}` : '',
+].filter(Boolean).join(' · '))
 
 const loadPrediction = async (forceRefresh = false) => {
   if (!code.value) return
@@ -220,8 +224,9 @@ const loadPrediction = async (forceRefresh = false) => {
     }
   } catch (e: any) {
     if (seq !== predRequestSeq) return
-    predError.value = 'K线预测服务异常，请稍后重试'
-    ElMessage.error('K线预测服务异常')
+    const msg = e?.response?.data?.msg || e?.data?.msg || 'K线预测服务异常，请稍后重试'
+    predError.value = msg
+    ElMessage.error(msg)
   } finally {
     if (seq === predRequestSeq) {
       predLoading.value = false
@@ -363,7 +368,9 @@ const renderChart = () => {
   const volumes: number[] = [...d.volumes]
 
   // === 预测K线数据追加 ===
-  const predPredictions: KpredPrediction[] = (predEnabled.value && predData.value?.predictions) ? predData.value.predictions : []
+  const predPredictions: KpredPrediction[] = (
+    predEnabled.value && !predData.value?.stale && predData.value?.predictions
+  ) ? predData.value.predictions : []
   const predStartIdx = dates.length  // 预测数据起始索引
   for (const p of predPredictions) {
     dates.push(p.date)
@@ -1562,6 +1569,20 @@ onUnmounted(() => {
         :closable="false"
         style="margin-bottom: 4px;"
       />
+      <el-alert
+        v-if="predEnabled && predData?.stale && !predLoading"
+        :title="`预测使用陈旧历史数据（截至 ${predData.history_last_date || predData.last_date}），仅供研究排障`"
+        type="warning"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 4px;"
+      />
+    </div>
+
+    <div v-if="predEnabled && predData && !predLoading" class="pred-model-meta">
+      <span class="pred-provider">{{ predProviderLabel }}</span>
+      <span v-if="predModelDetails">{{ predModelDetails }}</span>
+      <span v-if="predData.latencyMs !== undefined">{{ predData.latencyMs }} ms</span>
     </div>
 
     <section v-if="predEnabled && predPro && !predLoading" class="pred-score-panel">
@@ -1882,6 +1903,17 @@ onUnmounted(() => {
   background: #fff8e8;
   font-size: 10px;
   white-space: nowrap;
+}
+
+.pred-model-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin: 0 0 6px;
+  color: #606266;
+  font-size: 12px;
+  flex-wrap: wrap;
 }
 .pred-summary-item {
   display: flex;

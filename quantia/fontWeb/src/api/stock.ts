@@ -290,6 +290,9 @@ export interface KpredResult {
   pro: KpredPro | null
   provider?: 'agentpit' | 'local' | string
   model_version?: string
+  history_last_date?: string
+  prediction_start_date?: string
+  stale?: boolean
   latencyMs?: number
 }
 export function getKpred(params: KpredParams) {
