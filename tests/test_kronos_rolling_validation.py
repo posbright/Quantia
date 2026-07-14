@@ -52,7 +52,7 @@ def test_atomic_write_json_retries_transient_windows_file_lock(tmp_path):
     def flaky_replace(path, target):
         nonlocal attempts
         attempts += 1
-        if attempts < 3:
+        if attempts < 7:
             raise PermissionError("transient file lock")
         return original_replace(path, target)
 
@@ -60,8 +60,8 @@ def test_atomic_write_json_retries_transient_windows_file_lock(tmp_path):
             mock.patch.object(job.time, "sleep") as sleep:
         job._atomic_write_json(output, {"complete": False})
 
-    assert attempts == 3
-    assert sleep.call_count == 2
+    assert attempts == 7
+    assert sleep.call_count == 6
     assert output.read_text(encoding="utf-8").startswith("{")
 
 

@@ -52,14 +52,14 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    for attempt in range(5):
+    for attempt in range(20):
         try:
             temporary.replace(path)
             return
         except PermissionError:
-            if attempt == 4:
+            if attempt == 19:
                 raise
-            time.sleep(0.05 * (attempt + 1))
+            time.sleep(min(0.05 * (attempt + 1), 0.5))
 
 
 def main() -> None:
