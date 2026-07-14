@@ -540,6 +540,45 @@ C:\xapproject\Quantia\.venv\Scripts\python.exe `
 
 先用 `--max-configs 1` 验证服务和数据，再逐步提高到 4/8/全部配置。相同命令配合 `--resume` 可在关机、服务重启或单配置失败后继续；不要复用同一个 output-dir 跑不同股票池、日期范围或 horizon，单配置 worker 会拒绝 settings 不一致的 artifact。
 
+### 9.2.4 2026-07-14 关键缺陷：Kronos 服务此前忽略逐请求采样参数
+
+首轮 8 配置 pilot 网格（`lookback∈{64,128}` × `sample_count∈{5,10}` × `temperature∈{0.7,1.0}`）跑完后发现：**同一 `lookback` 下全部 4 个采样组合给出完全相同的指标**（例如 `lookback=64` 的 4 组结果逐位一致：`h1 delta=+0.85, h3 delta=+0.44, h5 delta=+1.23`）。深入排查 [local_kpred_service.py](../../Kronos/finetune_csv/local_kpred_service.py) 的 `LocalKpredEngine.predict()` 发现根因：
+
+- `predict()` 已经支持逐请求覆盖 `lookback`（`payload.get("lookback", self.lookback)`），但 `sample_count/temperature/top_k/top_p/clip` 全部硬编码读取 `self.*`（服务启动时从 YAML/环境变量固定一次），完全忽略了 Quantia 滚动验证引擎随请求发送的同名字段。
+- 结果是：不论 Quantia 发送什么采样参数，Kronos 实际推理永远使用服务启动时的固定配置（默认 `sample_count=1, temperature=1.0, top_k=1, top_p=1.0`，近似贪心解码）。此前所有“采样网格”实验（包括本文档 9.2.1 提到的概率采样候选）如果通过请求传参而非重启服务改配置，均未产生真实差异。
+
+修复：`predict()` 新增逐请求覆盖，与 `lookback` 使用相同的边界钳制并回落到服务默认值，响应体新增回显字段 `sample_count/temperature/top_k/top_p/clip` 供审计（[local_kpred_service.py](../../Kronos/finetune_csv/local_kpred_service.py)）。新增 3 个单元测试覆盖生效、边界钳制和缺省回落（[test_local_kpred_service.py](../../Kronos/tests/test_local_kpred_service.py)），Kronos 服务全部 17 个测试通过。
+
+真实黑盒验证（同一 `300308`/锚点 2026-06-30/`lookback=64`）：
+
+| 配置 | predicted_close |
+| --- | ---: |
+| `sample_count=1, temperature=1.0, top_k=1, top_p=1.0`（服务默认） | 1279.2948 |
+| `sample_count=10, temperature=0.7, top_k=0, top_p=0.85`（请求覆盖） | 1282.9514 |
+
+两次调用返回不同预测值，证明修复后请求参数确实影响推理路径。**修复前用请求参数做的所有采样网格结果应视为无效**（本文档 9.2.4 之前记录的任何“采样策略”结论均需在修复后重新验证）；已用新的 `phase1_parameter_search_pilot_fixed_20260714` 目录重新运行 8 配置 pilot 网格。
+
+**审计加固**：仅记录“请求参数”不足以证明 provider 真正生效（旧服务、未重启、静默钳制均可造成假象）。因此在 `run_rolling_validation` 新增强制校验：provider 响应必须回显 `sample_count/temperature/top_k/top_p/clip` 五个字段，且与请求值逐一相等（经过与服务端一致的边界钳制），否则整条记录标记为 `provider_error` 并写入 `error_code=ValueError`，不会被误判为“已验证的采样结果”。同时把 Quantia 与 Kronos 两侧的取值域对齐为 `sample_count∈[1,64]`、`temperature∈[0.05,5.0]`、`top_k∈[0,1024]`、`top_p∈[0.01,1.0]`、`clip∈[1.0,20.0]`，`sample_count/top_k` 必须为整数，禁止 `NaN`/`Infinity`/`null`。相关改动：[rolling_validation.py](../quantia/kronos/rolling_validation.py)、[local_kpred_service.py](../../Kronos/finetune_csv/local_kpred_service.py)，新增/更新单测覆盖匹配回显、缺失回显、参数不一致、非法数值边界。
+
+**8 配置 pilot 最终结论（`000001/600519/000858/601318`，3 锚点/配置，`horizon∈{1,3,5}`，均 100% 覆盖、0 provider_error）**：
+
+| 配置（lookback/sample_count/temperature） | 平均 `close_mae_vs_baseline` | 最差 horizon delta | 是否通过候选门禁 |
+| --- | ---: | ---: | :--- |
+| lb=64, sc=10, T=1.0 | **-0.82** | +0.67 (h1) | 否 |
+| lb=64, sc=5, T=1.0 | -0.58 | +1.43 (h3) | 否 |
+| lb=64, sc=5, T=0.7 | +0.08 | +1.38 (h1) | 否 |
+| lb=64, sc=10, T=0.7 | +0.22 | +1.07 (h1) | 否 |
+| lb=128, sc=5, T=0.7 | +1.47 | +1.82 (h5) | 否 |
+| lb=128, sc=10, T=0.7 | +2.11 | +3.15 (h5) | 否 |
+| lb=128, sc=10, T=1.0 | +2.48 | +2.81 (h3) | 否 |
+| lb=128, sc=5, T=1.0 | +2.79 | +3.24 (h5) | 否 |
+
+结论：
+1. **8 个配置全部未通过候选门禁**（要求全部 horizon `close_mae_vs_baseline < 0`）——本轮 pilot 未找到能全面跑赢“收盘不变基线”的采样组合。
+2. **`lookback=64` 在全部 4 个采样组合上一致优于对应的 `lookback=128`**，与本文档 9.2.2 记录的长 lookback 单调变差结论方向一致；短 lookback 仍是更优先的探索方向。
+3. 当前最优候选 `lb=64, sc=10, T=1.0` 仅在 horizon=1 落后基线（+0.67），horizon=3/5 均已反超（-0.01、-3.13）。按 000858/600519/601318/000001 拆开看，h1 的落后并非单一股票主导（4 只股票均非负），但样本量（每配置仅 3 锚点 × 4 股票）过小，不能作为参数结论，只能作为下一轮扩大验证的优先方向。
+4. 下一步：以 `lb=64` 为中心，扩大锚点数（`--max-anchors` 提高、`--anchor-step` 缩小）和股票池，重点扩展 `sample_count≥10`、`temperature∈[0.9,1.1]` 附近的网格，并要求新的 pilot 全部通过审计加固后的强制回显校验。
+
 ### 9.3 容量测算方法
 
 在目标 Linux 机型（而不是开发机）上执行基准测试：
