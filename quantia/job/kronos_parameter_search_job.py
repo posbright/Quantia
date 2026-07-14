@@ -7,8 +7,11 @@ import argparse
 import hashlib
 import itertools
 import json
+import math
+import random
 import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -67,21 +70,227 @@ def configuration_id(configuration: dict[str, Any]) -> str:
     return f"{readable}_{digest}"
 
 
-def evaluate_candidate(artifact: dict[str, Any], horizons: Iterable[int]) -> dict[str, Any]:
+def _robustness_metrics(
+    artifact: dict[str, Any], horizon: int, bootstrap_samples: int,
+) -> dict[str, Any]:
+    close_deltas_by_code: dict[str, list[float]] = defaultdict(list)
+    return_deltas_by_code: dict[str, list[float]] = defaultdict(list)
+    for record in artifact.get("records", []):
+        if record.get("status") != "observed" or record.get("horizon") != horizon:
+            continue
+        code = str(record["code"])
+        close_deltas_by_code[code].append(
+            float(record["close_abs_error"]) - float(record["baseline_close_abs_error"])
+        )
+        return_deltas_by_code[code].append(
+            float(record["return_abs_error"])
+            - float(record["baseline_return_abs_error"])
+        )
+    symbol_close_deltas = {
+        code: sum(values) / len(values)
+        for code, values in close_deltas_by_code.items()
+    }
+    symbol_return_deltas = {
+        code: sum(values) / len(values)
+        for code, values in return_deltas_by_code.items()
+    }
+    values = list(symbol_return_deltas.values())
+    if not values:
+        return {
+            "n_symbols": 0,
+            "symbol_win_rate": None,
+            "close_delta_mean": None,
+            "return_delta_mean": None,
+            "bootstrap_metric": "return_mae_delta",
+            "bootstrap_ci_upper": None,
+        }
+
+    rng = random.Random(f"{artifact.get('config_hash', '')}:{horizon}")
+    bootstrap_means = sorted(
+        sum(values[rng.randrange(len(values))] for _ in values) / len(values)
+        for _ in range(bootstrap_samples)
+    )
+    upper_index = min(
+        bootstrap_samples - 1,
+        max(0, math.ceil(bootstrap_samples * 0.975) - 1),
+    )
+    return {
+        "n_symbols": len(values),
+        "symbol_win_rate": (
+            sum(delta < 0 for delta in symbol_close_deltas.values()) / len(values)
+        ),
+        "close_delta_mean": sum(symbol_close_deltas.values()) / len(values),
+        "return_delta_mean": sum(values) / len(values),
+        "bootstrap_metric": "return_mae_delta",
+        "bootstrap_ci_upper": bootstrap_means[upper_index],
+    }
+
+
+def _artifact_audit_failures(
+    artifact: dict[str, Any], horizons: Iterable[int],
+) -> list[str]:
     failures = []
+    if artifact.get("complete") is not True:
+        failures.append("artifact: incomplete")
+
+    settings = artifact.get("settings")
+    if not isinstance(settings, dict):
+        return [*failures, "artifact: missing settings"]
+    lookbacks = settings.get("lookbacks")
+    if not isinstance(lookbacks, list) or len(lookbacks) != 1:
+        failures.append("artifact: expected exactly one lookback")
+        return failures
+    lookback = int(lookbacks[0])
+
+    codes = settings.get("codes")
+    if not isinstance(codes, list) or not codes or len(set(map(str, codes))) != len(codes):
+        failures.append("artifact: invalid codes")
+        return failures
+    mature_anchors = artifact.get("anchor_audit", {}).get("mature")
+    if not isinstance(mature_anchors, int) or mature_anchors < 1:
+        failures.append("artifact: invalid mature anchor count")
+        return failures
+
+    records = artifact.get("records")
+    if not isinstance(records, list):
+        return [*failures, "artifact: records must be a list"]
+    task_keys = [
+        (
+            str(record.get("code")), str(record.get("anchor_date")),
+            record.get("lookback"), record.get("horizon"),
+        )
+        for record in records
+    ]
+    if len(task_keys) != len(set(task_keys)):
+        failures.append("artifact: duplicate task keys")
+
+    observed = [record for record in records if record.get("status") == "observed"]
+    fingerprint_fields = ("model_version", "predictor_version", "tokenizer_version")
+    for field in fingerprint_fields:
+        values = {record.get(field) for record in observed}
+        if len(values) != 1 or None in values or "" in values:
+            failures.append(f"artifact: inconsistent {field}")
+
+    expected_per_horizon = len(codes) * mature_anchors
+    summary = artifact.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+    finite_fields = (
+        "close_abs_error", "baseline_close_abs_error",
+        "return_abs_error", "baseline_return_abs_error",
+    )
     for horizon in horizons:
-        lookback = artifact["settings"]["lookbacks"][0]
+        rows = [
+            record for record in records
+            if record.get("lookback") == lookback and record.get("horizon") == horizon
+        ]
+        if len(rows) != expected_per_horizon:
+            failures.append(
+                f"horizon={horizon}: records!={expected_per_horizon}"
+            )
+        counts_by_code = {
+            str(code): sum(str(row.get("code")) == str(code) for row in rows)
+            for code in codes
+        }
+        if any(count != mature_anchors for count in counts_by_code.values()):
+            failures.append(f"horizon={horizon}: unequal anchors by symbol")
+
+        horizon_observed = [row for row in rows if row.get("status") == "observed"]
+        for row in horizon_observed:
+            try:
+                finite = all(math.isfinite(float(row[field])) for field in finite_fields)
+            except (KeyError, TypeError, ValueError):
+                finite = False
+            if not finite:
+                failures.append(f"horizon={horizon}: invalid observed errors")
+                break
+
+        key = f"lookback={lookback},horizon={horizon}"
+        metrics = summary.get(key)
+        if not isinstance(metrics, dict):
+            failures.append(f"horizon={horizon}: missing summary")
+            continue
+        expected_summary = {
+            "n_expected": len(rows),
+            "n_observed": len(horizon_observed),
+            "n_provider_error": sum(
+                row.get("status") == "provider_error" for row in rows
+            ),
+            "coverage": len(horizon_observed) / len(rows) if rows else 0.0,
+        }
+        if any(
+            not isinstance(metrics.get(field), (int, float))
+            or not math.isclose(
+                float(metrics[field]), float(expected), abs_tol=1e-12
+            )
+            for field, expected in expected_summary.items()
+        ):
+            failures.append(f"horizon={horizon}: summary counts mismatch")
+        if horizon_observed:
+            record_delta = sum(
+                float(row["close_abs_error"])
+                - float(row["baseline_close_abs_error"])
+                for row in horizon_observed
+            ) / len(horizon_observed)
+            summary_delta = metrics.get("close_mae_vs_baseline")
+            if (
+                not isinstance(summary_delta, (int, float))
+                or not math.isfinite(float(summary_delta))
+                or not math.isclose(record_delta, float(summary_delta), abs_tol=1e-12)
+            ):
+                failures.append(f"horizon={horizon}: summary mismatch")
+    return failures
+
+
+def evaluate_candidate(
+    artifact: dict[str, Any], horizons: Iterable[int], *,
+    bootstrap_samples: int = 5000, min_symbols: int = 8,
+    min_symbol_win_rate: float = 0.5,
+) -> dict[str, Any]:
+    horizons = list(horizons)
+    artifact_failures = _artifact_audit_failures(artifact, horizons)
+    operational_failures = list(artifact_failures)
+    robustness_failures = []
+    robustness = {}
+    lookbacks = artifact.get("settings", {}).get("lookbacks", [])
+    lookback = lookbacks[0] if len(lookbacks) == 1 else None
+    for horizon in horizons:
         metrics = artifact.get("summary", {}).get(
             f"lookback={lookback},horizon={horizon}", {}
         )
         if metrics.get("coverage") != 1.0:
-            failures.append(f"horizon={horizon}: coverage<1")
+            operational_failures.append(f"horizon={horizon}: coverage<1")
         if metrics.get("n_provider_error", 0) != 0:
-            failures.append(f"horizon={horizon}: provider_error")
+            operational_failures.append(f"horizon={horizon}: provider_error")
         delta = metrics.get("close_mae_vs_baseline")
         if delta is None or delta >= 0:
-            failures.append(f"horizon={horizon}: delta>=0")
-    return {"qualified": not failures, "failures": failures}
+            operational_failures.append(f"horizon={horizon}: delta>=0")
+
+        robust = _robustness_metrics(artifact, horizon, bootstrap_samples)
+        robustness[f"horizon={horizon}"] = robust
+        if robust["n_symbols"] < min_symbols:
+            robustness_failures.append(f"horizon={horizon}: symbols<{min_symbols}")
+        win_rate = robust["symbol_win_rate"]
+        if win_rate is None or win_rate <= min_symbol_win_rate:
+            robustness_failures.append(
+                f"horizon={horizon}: symbol_win_rate<={min_symbol_win_rate}"
+            )
+        upper = robust["bootstrap_ci_upper"]
+        if upper is None or upper >= 0:
+            robustness_failures.append(f"horizon={horizon}: bootstrap_ci_upper>=0")
+
+    operational_qualified = not operational_failures
+    robust_qualified = not robustness_failures
+    return {
+        "qualified": operational_qualified and robust_qualified,
+        "operational_qualified": operational_qualified,
+        "robust_qualified": robust_qualified,
+        "failures": [*operational_failures, *robustness_failures],
+        "operational_failures": operational_failures,
+        "artifact_failures": artifact_failures,
+        "robustness_failures": robustness_failures,
+        "robustness": robustness,
+    }
 
 
 def _command(args: argparse.Namespace, configuration: dict[str, Any], output: Path) -> list[str]:
@@ -134,7 +343,16 @@ def main() -> None:
     parser.add_argument("--max-configs", type=int, default=0)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--continue-on-error", action="store_true")
+    parser.add_argument("--bootstrap-samples", type=int, default=5000)
+    parser.add_argument("--min-symbols", type=int, default=8)
+    parser.add_argument("--min-symbol-win-rate", type=float, default=0.5)
     args = parser.parse_args()
+    if args.bootstrap_samples < 100:
+        parser.error("bootstrap-samples must be at least 100")
+    if args.min_symbols < 2:
+        parser.error("min-symbols must be at least 2")
+    if not 0 < args.min_symbol_win_rate < 1:
+        parser.error("min-symbol-win-rate must be within (0, 1)")
 
     horizons = _csv_ints(args.horizons)
     configurations = build_configurations(
@@ -158,6 +376,12 @@ def main() -> None:
         "complete": False,
         "configuration_count": len(configurations),
         "horizons": horizons,
+        "robustness_gate": {
+            "bootstrap_samples": args.bootstrap_samples,
+            "bootstrap_quantile": 0.975,
+            "min_symbols": args.min_symbols,
+            "min_symbol_win_rate": args.min_symbol_win_rate,
+        },
         "runs": [],
     }
 
@@ -172,7 +396,12 @@ def main() -> None:
             for record in existing.get("records", [])
         )
         if existing and existing.get("complete") is True and not has_provider_errors:
-            candidate = evaluate_candidate(existing, horizons)
+            candidate = evaluate_candidate(
+                existing, horizons,
+                bootstrap_samples=args.bootstrap_samples,
+                min_symbols=args.min_symbols,
+                min_symbol_win_rate=args.min_symbol_win_rate,
+            )
             manifest["runs"].append({
                 "id": run_id,
                 "configuration": configuration,
@@ -203,12 +432,20 @@ def main() -> None:
 
         artifact = json.loads(output.read_text(encoding="utf-8"))
         run_state["status"] = "completed"
-        run_state.update(evaluate_candidate(artifact, horizons))
+        run_state.update(evaluate_candidate(
+            artifact, horizons,
+            bootstrap_samples=args.bootstrap_samples,
+            min_symbols=args.min_symbols,
+            min_symbol_win_rate=args.min_symbol_win_rate,
+        ))
         run_state["config_hash"] = artifact.get("config_hash")
         _atomic_write_json(manifest_path, manifest)
 
     manifest["complete"] = all(run["status"] == "completed" for run in manifest["runs"])
     manifest["qualified_count"] = sum(bool(run.get("qualified")) for run in manifest["runs"])
+    manifest["operational_qualified_count"] = sum(
+        bool(run.get("operational_qualified")) for run in manifest["runs"]
+    )
     _atomic_write_json(manifest_path, manifest)
     print(json.dumps({
         "manifest": str(manifest_path),

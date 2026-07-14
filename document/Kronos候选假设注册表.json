@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-07-14",
+  "hypotheses": [
+    {
+      "id": "H1-lb64-sc10-t100-p085",
+      "status": "rejected",
+      "configuration": {
+        "lookback": 64,
+        "sample_count": 10,
+        "temperature": 1.0,
+        "top_k": 0,
+        "top_p": 0.85,
+        "clip": 5.0
+      },
+      "decision": {
+        "operational_qualified": false,
+        "robust_qualified": false,
+        "qualified": false
+      },
+      "evidence": "runs/kronos_validation/phase1_holdout_robust_20260714/manifest.json"
+    },
+    {
+      "id": "H2-short-context-moderate-sampling",
+      "status": "registered",
+      "registered_at": "2026-07-14",
+      "hypothesis": "Compared with H1, a shorter context and moderately lower sampling temperature reduce scale-independent return MAE without sacrificing cross-sectional breadth.",
+      "rationale": [
+        "Previous experiments consistently showed that longer lookbacks degraded MAE and latency.",
+        "H1 failed on an independent holdout at every horizon, including return-normalized cluster bootstrap.",
+        "The next search must test a new mechanism rather than add samples to H1."
+      ],
+      "grid": {
+        "lookback": [32, 48, 64],
+        "sample_count": [10, 20],
+        "temperature": [0.8, 0.9],
+        "top_k": [0],
+        "top_p": [0.85],
+        "clip": [5.0],
+        "configuration_count": 12
+      },
+      "development": {
+        "codes": [
+          "000001",
+          "600519",
+          "000858",
+          "601318",
+          "000002",
+          "300750",
+          "600036",
+          "601012"
+        ],
+        "horizons": [1, 3, 5],
+        "minimum_anchors_per_symbol": 8,
+        "ranking_metric": "mean equal-symbol return_mae_delta across horizons",
+        "tie_breakers": [
+          "worst-horizon equal-symbol return_mae_delta",
+          "mean symbol win rate",
+          "lower inference latency"
+        ],
+        "maximum_selected_candidates": 1
+      },
+      "selection_gate": {
+        "artifact_audit_failures": 0,
+        "coverage": 1.0,
+        "provider_errors": 0,
+        "all_horizons_close_mae_vs_baseline_below_zero": true,
+        "all_horizons_return_delta_below_zero": true,
+        "all_horizons_symbol_win_rate_strictly_above": 0.5
+      },
+      "final_holdout": {
+        "must_be_disjoint_from_all_prior_development_and_holdout_codes": true,
+        "minimum_symbols": 20,
+        "minimum_anchors_per_symbol": 8,
+        "bootstrap_samples": 5000,
+        "bootstrap_metric": "return_mae_delta",
+        "bootstrap_upper_quantile": 0.975,
+        "all_horizons_bootstrap_upper_below_zero": true,
+        "one_shot_evaluation": true
+      },
+      "anti_leakage": {
+        "previous_holdout_codes_may_not_be_used_for_parameter_selection": true,
+        "gate_or_metric_changes_require_a_new_hypothesis_id": true,
+        "failed_final_holdout_may_not_be_reclassified_by_post_hoc_metrics": true
+      }
+    }
+  ]
+}

@@ -5,6 +5,7 @@ from unittest import mock
 
 from quantia.job import kronos_rolling_validation_job as job
 from quantia.kronos.rolling_validation import (
+    _evaluate,
     normalize_inference_parameters,
     run_rolling_validation,
 )
@@ -102,6 +103,13 @@ def test_rolling_validation_calls_each_horizon_independently_and_scores_baseline
     summary = result["summary"]["lookback=32,horizon=1"]
     assert summary["n_observed"] == 1
     assert "close_mae_vs_baseline" in summary
+    assert "return_mae_vs_baseline" in summary
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), 0.0, -1.0])
+def test_evaluate_rejects_invalid_prices(value):
+    with pytest.raises(ValueError, match="must be finite and positive"):
+        _evaluate(100.0, value, 99.0)
 
 
 def test_rolling_validation_tracks_inference_parameters():

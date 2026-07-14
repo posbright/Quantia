@@ -159,6 +159,13 @@ def _validate_terminal_prediction(response: Mapping[str, Any], horizon: int,
 
 def _evaluate(predicted_close: float, actual_close: float,
               last_actual_close: float) -> dict[str, Any]:
+    for name, value in (
+        ("predicted_close", predicted_close),
+        ("actual_close", actual_close),
+        ("last_actual_close", last_actual_close),
+    ):
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be finite and positive")
     predicted_return = predicted_close / last_actual_close - 1.0
     actual_return = actual_close / last_actual_close - 1.0
     return {
@@ -214,6 +221,9 @@ def aggregate_records(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             )
             metrics["close_mae_vs_baseline"] = (
                 metrics["close_mae"] - metrics["baseline_close_mae"]
+            )
+            metrics["return_mae_vs_baseline"] = (
+                metrics["return_mae"] - metrics["baseline_return_mae"]
             )
         result[key] = metrics
     return result
