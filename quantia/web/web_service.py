@@ -41,6 +41,7 @@ import quantia.web.backtestHandler as backtestHandler
 import quantia.web.backtestDashboardHandler as backtestDashboardHandler
 import quantia.web.klineHandler as klineHandler
 import quantia.web.kpredHandler as kpredHandler
+import quantia.web.kronosMonitorHandler as kronosMonitorHandler
 import quantia.web.portfolioBacktestHandler as portfolioBacktestHandler
 import quantia.web.paperTradingHandler as paperTradingHandler
 import quantia.web.tradeSignalHandler as tradeSignalHandler
@@ -118,6 +119,11 @@ class Application(tornado.web.Application):
             (r"/quantia/api/chip", klineHandler.GetChipDistributionHandler),
             # K线预测（AgentPit / 本地兼容服务）
             (r"/quantia/api/kpred", kpredHandler.GetKpredHandler),
+            # Kronos 影子运行控制面（参数配置 + 只读监控）
+            (r"/quantia/api/kronos/config", kronosMonitorHandler.KronosConfigHandler),
+            (r"/quantia/api/kronos/monitor/overview", kronosMonitorHandler.KronosOverviewHandler),
+            (r"/quantia/api/kronos/monitor/runs", kronosMonitorHandler.KronosRunsHandler),
+            (r"/quantia/api/kronos/monitor/health", kronosMonitorHandler.KronosHealthHandler),
             # 股票财务数据
             (r"/quantia/api/stock/financial_summary", stockFinancialHandler.StockFinancialSummaryHandler),
             # 回测验证

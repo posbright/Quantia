@@ -2,7 +2,7 @@
 
 > 审查日期：2026-07-13
 > 适用范围：Quantia 日线预测、Kronos-base、本地推理服务、可选 C1 收益评分层
-> 文档状态：实施规格；Phase 1 最小闭环已落地并完成真实烟测，Phase 2～4 尚未上线
+> 文档状态：实施规格；Phase 1 最小闭环已落地并完成真实烟测，Phase 2 控制面 MVP 实施中，Phase 2 数据闭环与 Phase 3～4 尚未上线
 
 ## 1. 分析结论
 
@@ -673,7 +673,39 @@ C:\xapproject\Quantia\.venv\Scripts\python.exe `
 - **与 Quantia 同机资源竞争**：若 Kronos 服务与 Quantia Web/Cron 部署在同一台 Linux 机器，需要用 cgroup 或进程优先级隔离，防止批量推理挤占实时 Web 请求；
 - **时区一致性**：容器时区必须设为 `Asia/Shanghai`，否则 `_completed_daily_cutoff`/`is_post_settlement` 等基于本地时间的判断会发生偏移。
 
+### 9.6.1 2026-07-14 Windows CPU OOM 复盘与修复
+
+H2 网格运行至约 61% 时出现系统级 OOM。原子 checkpoint 审计确认已完成配置和未完成配置的已落盘任务均为合法 JSON、任务键唯一且无 provider error，因此无需整批重跑；重启服务后使用同一输出目录和 `--resume` 可从最后任务键继续。
+
+根因证据如下：
+
+1. OOM 前 Kronos 服务进程 Private Bytes 约 36.3 GB，而 Working Set 仅约 0.5 GB，Windows 剩余虚拟内存约 1.3 GB；故障来自进程提交内存/pagefile 额度耗尽，而非单纯物理内存常驻集过大。
+2. 服务进程始终只有 2 个线程、约 328 个句柄，排除 `ThreadingHTTPServer` 线程或句柄持续泄漏。
+3. 重启后完成约 23 个 `sample_count=20` 请求，Private Bytes 从约 0.9 GB 抬升到 3.84 GB；随后完成约 100 个同类请求只升到约 3.97 GB。增长呈“新张量形状触发阶梯高水位、同形状随后平台化”，不符合 Python 对象按请求线性泄漏特征。
+4. Kronos-base 为 12 层、`d_model=832`、`ff_dim=2048`。自回归每一步都会对完整上下文重算注意力和 FFN，且 `sample_count` 会直接复制输入批次。H2 依次切换 `lookback × sample_count × horizon`，PyTorch 2.12.1 CPU 后端在 Windows 上保留不同形状的大块原生工作区，长进程累计高水位最终耗尽提交额度。
+
+已在 Kronos 侧实现以下修复，待下一次服务启动生效：
+
+- `sample_count` 继续表示总随机路径数，但新增内部 `sample_batch_size`，默认 5；例如 20 路按 `5+5+5+5` 分块、10 路按 `5+5` 分块，最终按各块样本数加权平均。统计语义和请求/响应审计值不变，Transformer 主要中间张量的峰值批次由 20 降至 5。
+- 推理上下文由 `torch.no_grad()` 改为 `torch.inference_mode()`，减少推理元数据。
+- `sample_batch_size`、服务实现和核心推理代码进入 `runtime_version`，并参与组合 `model_version` 哈希；不同运行时不能在 artifact 门禁中静默混用。
+- 聚焦回归已通过 20 个测试和 3 个子测试，并覆盖分块序列、加权均值及运行时指纹变化。
+
+运行约束：正在执行的正式实验不得中途重启到新运行时，否则会触发 mixed model/runtime version 并失去可比性。旧运行时若再次逼近提交内存阈值，只能在 checkpoint 后重启同一旧版本进程并续跑；新分块运行时必须先做 300～500 请求稳定性压测，再用于下一轮正式实验。生产部署还应增加 Private Bytes/RSS 与系统 commit 余量监控，达到软阈值时停止接收新批任务并受控回收进程。
+
 ## 10. 推荐模块与配置
+
+### 10.0 参数化与近似最优预设
+
+控制面允许先使用“近似最优预设”打通影子预测、监控和评估链路，但该预设必须满足以下约束：
+
+- 状态固定为 `shadow/not_qualified`，不能显示为已验证生产冠军，也不能参与交易决策；
+- `lookback/sample_count/temperature/top_k/top_p/clip/horizons/sample_batch_size` 全部由版本化配置提供，不在 Handler、任务或前端硬编码；
+- 保存配置时生成稳定 `config_hash`，历史批次继续引用原配置，修改参数创建新版本，不覆盖旧事实；
+- 参数搜索只可产生 challenger；晋级 champion 仍需独立 holdout、完整 artifact 门禁与人工审批；
+- 当前近似预设采用短上下文、中等采样方向：`lookback=48, sample_count=10, temperature=0.9, top_k=0, top_p=0.85, clip=5.0, horizons=[1,3,5], sample_batch_size=5`。它用于工程联调，不代表 H2 最终胜出；H2 完整结果出来后可通过配置替换，无需改代码。
+
+Phase 2 控制面 MVP 先提供：配置读取/原子保存、参数边界校验、Kronos 健康与运行时指纹、Phase 1 artifact 汇总、批次进度与门禁结果、响应式前端总览和参数编辑。四张事实表、EOD 批量任务、到期评估和聚合任务仍按 Phase 2～3 顺序接入；在生产 schema 未核对和迁移未部署前，Web Handler 不直接创建表或执行猜测字段的 SQL。
 
 ### 10.1 Kronos 侧
 
@@ -710,6 +742,16 @@ python finetune_csv/evaluate_kpred_results.py \
 - `finetune_csv/local_kpred_service.py` 的模型加载、配置和质量门禁。
 
 ### 10.2 Quantia 侧
+
+Phase 2 控制面 MVP 已落地：
+
+- `quantia/kronos/runtime_config.py` + `runtime_config.json`：近似预设、严格参数边界、稳定 `config_hash`、Windows 兼容原子保存；未合格配置不能启用自动批量或切换到 canary/production。
+- `quantia/kronos/monitor.py`：只读扫描 Phase 1 manifest/artifact，汇总配置进度、observed/provider error/参数审计和三层门禁，不在 Web 请求中重算模型指标。
+- `quantia/web/kronosMonitorHandler.py`：提供 `/config`、`/monitor/overview`、`/monitor/runs`、`/monitor/health` 四个接口；健康接口只查询本地 Kronos 服务，不访问外部行情源。
+- `quantia/fontWeb/src/views/kronos-monitor/`：参数预设、运行批次和候选门禁三个工作区；桌面使用表格，移动端使用卡片，并明确显示“未通过门禁、不参与交易决策”。
+- 页面注册在“选股验证 -> Kronos 验证”，而非生产选股入口。后续四张事实表上线时保持现有 API 契约，将 artifact 聚合实现替换为数据库聚合查询即可。
+
+控制面只解决“可配置、可观察、可审计”，不代表 Phase 2 数据闭环已经完成。EOD 批量预测、预测事实入库、到期评估、20/60/120 日聚合、Cron 和人工晋级审批仍按 Phase 2～4 顺序实现；在这些能力验收前 `enabled` 保持 false。
 
 Phase 1 已落地：
 

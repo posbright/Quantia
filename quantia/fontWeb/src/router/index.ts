@@ -511,6 +511,12 @@ const routes: RouteRecordRaw[] = [
         name: 'VerifyFactorLab',
         component: () => import('@/views/verify/factorLab.vue'),
         meta: { title: '因子实验室' }
+      },
+      {
+        path: 'kronos',
+        name: 'KronosMonitor',
+        component: () => import('@/views/kronos-monitor/index.vue'),
+        meta: { title: 'Kronos 验证', icon: 'DataAnalysis' }
       }
     ]
   },
