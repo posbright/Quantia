@@ -13,12 +13,44 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import pandas as pd
 
 DEFAULT_HORIZONS = (1, 3, 5, 10, 15, 30)
+DEFAULT_INFERENCE_PARAMETERS: dict[str, Any] = {
+    "sample_count": 1,
+    "temperature": 1.0,
+    "top_k": 1,
+    "top_p": 1.0,
+    "clip": 5.0,
+}
 
 
 class ProviderCallError(RuntimeError):
     def __init__(self, message: str, error_code: str) -> None:
         super().__init__(message)
         self.error_code = error_code
+
+
+def normalize_inference_parameters(
+    parameters: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized = {**DEFAULT_INFERENCE_PARAMETERS, **(parameters or {})}
+    unknown = sorted(set(normalized) - set(DEFAULT_INFERENCE_PARAMETERS))
+    if unknown:
+        raise ValueError(f"unsupported inference parameters: {unknown}")
+    normalized["sample_count"] = int(normalized["sample_count"])
+    normalized["temperature"] = float(normalized["temperature"])
+    normalized["top_k"] = int(normalized["top_k"])
+    normalized["top_p"] = float(normalized["top_p"])
+    normalized["clip"] = float(normalized["clip"])
+    if normalized["sample_count"] < 1 or normalized["sample_count"] > 64:
+        raise ValueError("sample_count must be within 1..64")
+    if normalized["temperature"] <= 0:
+        raise ValueError("temperature must be positive")
+    if normalized["top_k"] < 0 or normalized["top_k"] > 1024:
+        raise ValueError("top_k must be within 0..1024")
+    if not 0 < normalized["top_p"] <= 1:
+        raise ValueError("top_p must be within (0, 1]")
+    if normalized["clip"] <= 0:
+        raise ValueError("clip must be positive")
+    return normalized
 
 
 def _smape(predicted: float, actual: float) -> float:
@@ -163,6 +195,37 @@ def aggregate_records(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _config_hash(settings: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(settings, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _artifact(
+    settings: Mapping[str, Any],
+    anchor_audit: Mapping[str, int],
+    records: list[dict[str, Any]],
+    *,
+    complete: bool,
+) -> dict[str, Any]:
+    artifact_versions = sorted({
+        str(record["model_version"])
+        for record in records if record.get("model_version")
+    })
+    return {
+        "schema_version": 2,
+        "mode": "production_equivalent_independent_horizons",
+        "complete": complete,
+        "config_hash": _config_hash(settings),
+        "settings": dict(settings),
+        "anchor_audit": dict(anchor_audit),
+        "artifact_versions": artifact_versions,
+        "mixed_model_versions": len(artifact_versions) > 1,
+        "records": records,
+        "summary": aggregate_records(records) if complete else {},
+    }
+
+
 def run_rolling_validation(
     codes: Sequence[str],
     trade_dates: Iterable[Any],
@@ -175,6 +238,10 @@ def run_rolling_validation(
     horizons: Sequence[int] = DEFAULT_HORIZONS,
     anchor_step: int = 5,
     max_anchors: int = 0,
+    inference_parameters: Mapping[str, Any] | None = None,
+    resume_artifact: Mapping[str, Any] | None = None,
+    resume_retry_statuses: Iterable[str] = (),
+    checkpoint_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """运行滚动验证；每个 horizon 独立请求，匹配 Quantia 线上语义。"""
     normalized_dates = sorted({pd.Timestamp(value).normalize() for value in trade_dates})
@@ -188,6 +255,7 @@ def run_rolling_validation(
         raise ValueError("lookbacks must be within 32..512")
     if anchor_step < 1:
         raise ValueError("anchor_step must be positive")
+    inference_parameters = normalize_inference_parameters(inference_parameters)
 
     date_position = {date: index for index, date in enumerate(normalized_dates)}
     max_horizon = max(horizons)
@@ -200,7 +268,49 @@ def run_rolling_validation(
         if date_position[anchor] + max_horizon < len(normalized_dates)
     ]
 
-    records: list[dict[str, Any]] = []
+    settings = {
+        "codes": sorted(set(codes)),
+        "anchor_start": start.date().isoformat(),
+        "anchor_end": end.date().isoformat(),
+        "actual_data_end": normalized_dates[-1].date().isoformat(),
+        "anchor_step": anchor_step,
+        "max_anchors": max_anchors,
+        "lookbacks": list(lookbacks),
+        "horizons": list(horizons),
+        "inference_parameters": inference_parameters,
+    }
+    anchor_audit = {
+        "selected": len(anchors),
+        "mature": len(mature_anchors),
+        "skipped_insufficient_future": len(anchors) - len(mature_anchors),
+    }
+    if resume_artifact and resume_artifact.get("settings") != settings:
+        raise ValueError("resume artifact configuration mismatch")
+    resumed_records = resume_artifact.get("records", []) if resume_artifact else []
+    if not isinstance(resumed_records, list):
+        raise ValueError("resume artifact records must be a list")
+    retry_statuses = set(resume_retry_statuses)
+    records: list[dict[str, Any]] = [
+        dict(record) for record in resumed_records
+        if record.get("status") not in retry_statuses
+    ]
+    completed_tasks = {
+        (
+            str(record.get("code")),
+            str(record.get("anchor_date")),
+            int(record.get("lookback", 0)),
+            int(record.get("horizon", 0)),
+        )
+        for record in records
+    }
+
+    def append_record(record: dict[str, Any]) -> None:
+        records.append(record)
+        if checkpoint_callback:
+            checkpoint_callback(_artifact(
+                settings, anchor_audit, records, complete=False,
+            ))
+
     for code in dict.fromkeys(codes):
         frame = data_loader(code, end_date=normalized_dates[-1], cache_only=True)
         if frame is None or len(frame) == 0:
@@ -223,6 +333,11 @@ def run_rolling_validation(
                     continue
                 serialized_history = _history_rows(history, lookback)
                 for horizon in horizons:
+                    task_key = (
+                        code, anchor.date().isoformat(), lookback, horizon,
+                    )
+                    if task_key in completed_tasks:
+                        continue
                     target = future_dates[horizon - 1]
                     target_text = target.date().isoformat()
                     base = {
@@ -232,6 +347,7 @@ def run_rolling_validation(
                         "lookback": lookback,
                         "horizon": horizon,
                         "last_actual_close": last_actual_close,
+                        "inference_parameters": inference_parameters,
                     }
                     payload = {
                         "code": code,
@@ -242,12 +358,13 @@ def run_rolling_validation(
                             date.date().isoformat() for date in future_dates[:horizon]
                         ],
                         "history_stale": False,
+                        **inference_parameters,
                     }
                     try:
                         response = provider(payload)
                         terminal = _validate_terminal_prediction(response, horizon, target_text)
                     except Exception as exc:  # noqa: BLE001
-                        records.append({
+                        append_record({
                             **base, "status": "provider_error",
                             "error_code": getattr(exc, "error_code", type(exc).__name__),
                             "error": f"{type(exc).__name__}: {exc}",
@@ -266,45 +383,15 @@ def run_rolling_validation(
                         # 也可能是缓存过期/价格基准断裂，必须保守标记 actual_missing。
                         has_later_bar = bool((frame["date"] > target).any())
                         status = "not_traded" if has_later_bar else "actual_missing"
-                        records.append({**base, **metadata, "status": status})
+                        append_record({**base, **metadata, "status": status})
                         continue
                     actual_close = float(actual_by_date.loc[target]["close"])
-                    records.append({
+                    append_record({
                         **base, **metadata, "status": "observed",
                         **_evaluate(predicted_close, actual_close, last_actual_close),
                     })
 
-    settings = {
-        "codes": sorted(set(codes)),
-        "anchor_start": start.date().isoformat(),
-        "anchor_end": end.date().isoformat(),
-        "actual_data_end": normalized_dates[-1].date().isoformat(),
-        "anchor_step": anchor_step,
-        "lookbacks": list(lookbacks),
-        "horizons": list(horizons),
-    }
-    config_hash = hashlib.sha256(
-        json.dumps(settings, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()[:16]
-    artifact_versions = sorted({
-        str(record["model_version"])
-        for record in records if record.get("model_version")
-    })
-    return {
-        "schema_version": 1,
-        "mode": "production_equivalent_independent_horizons",
-        "config_hash": config_hash,
-        "settings": settings,
-        "anchor_audit": {
-            "selected": len(anchors),
-            "mature": len(mature_anchors),
-            "skipped_insufficient_future": len(anchors) - len(mature_anchors),
-        },
-        "artifact_versions": artifact_versions,
-        "mixed_model_versions": len(artifact_versions) > 1,
-        "records": records,
-        "summary": aggregate_records(records),
-    }
+    return _artifact(settings, anchor_audit, records, complete=True)
 
 
 def http_provider(url: str, timeout: float = 60.0) -> Callable[[Mapping[str, Any]], dict[str, Any]]:

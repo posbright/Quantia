@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 from unittest import mock
 
 from quantia.job import kronos_rolling_validation_job as job
@@ -68,6 +69,131 @@ def test_rolling_validation_calls_each_horizon_independently_and_scores_baseline
     summary = result["summary"]["lookback=32,horizon=1"]
     assert summary["n_observed"] == 1
     assert "close_mae_vs_baseline" in summary
+
+
+def test_rolling_validation_tracks_inference_parameters():
+    frame = _frame()
+    anchor = frame.iloc[40]["date"]
+    calls = []
+
+    def provider(payload):
+        calls.append(payload)
+        return {"predictions": [{
+            "date": payload["future_timestamps"][0],
+            "open": 150.0, "high": 152.0, "low": 149.0, "close": 151.0,
+        }]}
+
+    result = run_rolling_validation(
+        ["300308"], frame["date"], lambda *args, **kwargs: frame,
+        provider, anchor_start=anchor, anchor_end=anchor,
+        lookbacks=[32], horizons=[1], anchor_step=1,
+        inference_parameters={
+            "sample_count": 5,
+            "temperature": 0.7,
+            "top_k": 0,
+            "top_p": 0.85,
+            "clip": 5.0,
+        },
+    )
+
+    assert calls[0]["sample_count"] == 5
+    assert calls[0]["temperature"] == 0.7
+    assert calls[0]["top_p"] == 0.85
+    assert result["settings"]["inference_parameters"]["sample_count"] == 5
+    assert result["records"][0]["inference_parameters"]["top_p"] == 0.85
+
+
+def test_rolling_validation_resumes_without_repeating_completed_tasks():
+    frame = _frame()
+    anchor = frame.iloc[40]["date"]
+    calls = []
+    checkpoints = []
+
+    def provider(payload):
+        calls.append(payload["days"])
+        return {"predictions": [
+            {
+                "date": date, "open": 150.0, "high": 152.0,
+                "low": 149.0, "close": 151.0,
+            }
+            for date in payload["future_timestamps"]
+        ]}
+
+    complete = run_rolling_validation(
+        ["300308"], frame["date"], lambda *args, **kwargs: frame,
+        provider, anchor_start=anchor, anchor_end=anchor,
+        lookbacks=[32], horizons=[1, 3], anchor_step=1,
+    )
+    calls.clear()
+    interrupted = {**complete, "complete": False, "records": complete["records"][:1]}
+    resumed = run_rolling_validation(
+        ["300308"], frame["date"], lambda *args, **kwargs: frame,
+        provider, anchor_start=anchor, anchor_end=anchor,
+        lookbacks=[32], horizons=[1, 3], anchor_step=1,
+        resume_artifact=interrupted,
+        checkpoint_callback=checkpoints.append,
+    )
+
+    assert calls == [3]
+    assert len(resumed["records"]) == 2
+    assert checkpoints[-1]["complete"] is False
+    assert len(checkpoints[-1]["records"]) == 2
+
+
+def test_rolling_validation_rejects_resume_with_different_configuration():
+    frame = _frame()
+    anchor = frame.iloc[40]["date"]
+    initial = run_rolling_validation(
+        ["300308"], frame["date"], lambda *args, **kwargs: frame,
+        lambda payload: {"predictions": [{
+            "date": payload["future_timestamps"][0],
+            "open": 150.0, "high": 152.0, "low": 149.0, "close": 151.0,
+        }]},
+        anchor_start=anchor, anchor_end=anchor,
+        lookbacks=[32], horizons=[1], anchor_step=1,
+    )
+
+    with pytest.raises(ValueError, match="resume artifact configuration mismatch"):
+        run_rolling_validation(
+            ["300308"], frame["date"], lambda *args, **kwargs: frame,
+            lambda payload: {}, anchor_start=anchor, anchor_end=anchor,
+            lookbacks=[64], horizons=[1], anchor_step=1,
+            resume_artifact=initial,
+        )
+
+
+def test_rolling_validation_resume_retries_and_replaces_provider_errors():
+    frame = _frame()
+    anchor = frame.iloc[40]["date"]
+    complete = run_rolling_validation(
+        ["300308"], frame["date"], lambda *args, **kwargs: frame,
+        lambda payload: {"predictions": [{
+            "date": payload["future_timestamps"][0],
+            "open": 150.0, "high": 152.0, "low": 149.0, "close": 151.0,
+        }]},
+        anchor_start=anchor, anchor_end=anchor,
+        lookbacks=[32], horizons=[1], anchor_step=1,
+    )
+    failed_record = {
+        **complete["records"][0],
+        "status": "provider_error",
+        "error_code": "PROVIDER_TIMEOUT",
+    }
+
+    resumed = run_rolling_validation(
+        ["300308"], frame["date"], lambda *args, **kwargs: frame,
+        lambda payload: {"predictions": [{
+            "date": payload["future_timestamps"][0],
+            "open": 150.0, "high": 152.0, "low": 149.0, "close": 151.0,
+        }]},
+        anchor_start=anchor, anchor_end=anchor,
+        lookbacks=[32], horizons=[1], anchor_step=1,
+        resume_artifact={**complete, "complete": False, "records": [failed_record]},
+        resume_retry_statuses={"provider_error"},
+    )
+
+    assert len(resumed["records"]) == 1
+    assert resumed["records"][0]["status"] == "observed"
 
 
 def test_rolling_validation_marks_missing_stock_bar_not_traded():
