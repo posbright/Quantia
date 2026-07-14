@@ -35,22 +35,46 @@ def normalize_inference_parameters(
     unknown = sorted(set(normalized) - set(DEFAULT_INFERENCE_PARAMETERS))
     if unknown:
         raise ValueError(f"unsupported inference parameters: {unknown}")
-    normalized["sample_count"] = int(normalized["sample_count"])
+    sample_count = float(normalized["sample_count"])
+    top_k = float(normalized["top_k"])
+    if not sample_count.is_integer() or not top_k.is_integer():
+        raise ValueError("sample_count and top_k must be integers")
+    normalized["sample_count"] = int(sample_count)
     normalized["temperature"] = float(normalized["temperature"])
-    normalized["top_k"] = int(normalized["top_k"])
+    normalized["top_k"] = int(top_k)
     normalized["top_p"] = float(normalized["top_p"])
     normalized["clip"] = float(normalized["clip"])
+    if not all(
+        math.isfinite(normalized[field])
+        for field in ("temperature", "top_p", "clip")
+    ):
+        raise ValueError("inference parameters must be finite")
     if normalized["sample_count"] < 1 or normalized["sample_count"] > 64:
         raise ValueError("sample_count must be within 1..64")
-    if normalized["temperature"] <= 0:
-        raise ValueError("temperature must be positive")
+    if not 0.05 <= normalized["temperature"] <= 5.0:
+        raise ValueError("temperature must be within 0.05..5.0")
     if normalized["top_k"] < 0 or normalized["top_k"] > 1024:
         raise ValueError("top_k must be within 0..1024")
-    if not 0 < normalized["top_p"] <= 1:
-        raise ValueError("top_p must be within (0, 1]")
-    if normalized["clip"] <= 0:
-        raise ValueError("clip must be positive")
+    if not 0.01 <= normalized["top_p"] <= 1:
+        raise ValueError("top_p must be within 0.01..1.0")
+    if not 1.0 <= normalized["clip"] <= 20.0:
+        raise ValueError("clip must be within 1.0..20.0")
     return normalized
+
+
+def _applied_inference_parameters(
+    response: Mapping[str, Any], expected: Mapping[str, Any],
+) -> dict[str, Any]:
+    missing = [field for field in expected if field not in response]
+    if missing:
+        raise ValueError(f"provider response missing inference parameters: {missing}")
+    applied = normalize_inference_parameters({field: response[field] for field in expected})
+    mismatched = [field for field in expected if applied[field] != expected[field]]
+    if mismatched:
+        raise ValueError(
+            f"provider applied inference parameters do not match request: {mismatched}"
+        )
+    return applied
 
 
 def _smape(predicted: float, actual: float) -> float:
@@ -362,6 +386,9 @@ def run_rolling_validation(
                     }
                     try:
                         response = provider(payload)
+                        applied_parameters = _applied_inference_parameters(
+                            response, inference_parameters,
+                        )
                         terminal = _validate_terminal_prediction(response, horizon, target_text)
                     except Exception as exc:  # noqa: BLE001
                         append_record({
@@ -373,6 +400,7 @@ def run_rolling_validation(
                     predicted_close = float(terminal["close"])
                     metadata = {
                         "predicted_close": predicted_close,
+                        "applied_inference_parameters": applied_parameters,
                         "model_version": response.get("model_version"),
                         "predictor_version": response.get("predictor_version"),
                         "tokenizer_version": response.get("tokenizer_version"),
